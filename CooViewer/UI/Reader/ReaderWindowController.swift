@@ -9,11 +9,14 @@ final class ReaderWindowController: NSWindowController {
     private let pageBar = PageBarView()
     private let pageLabel = NSTextField(labelWithString: "")
 
-    /// 巻末/巻頭超えの動作(仕様書 §4.3.4)。既定 0=ループ。
-    /// 1/2(次/前の本)はマイルストーン 7 で同フォルダ移動に接続する。
-    private var loopMode = 0
+    let settings = SettingsStore.shared
+    var bindings = BindingConfiguration.load()
+
+    /// 入力ディスパッチ(+Input.swift)からのビューアクセス
+    var readerViewForInput: ReaderView { readerView }
 
     private var cursorHideTimer: Timer?
+    private var settingsObserver: (any NSObjectProtocol)?
 
     private lazy var brokenImage: CGImage? = Self.bundledCGImage(named: "broken")
     private lazy var emptyImage: CGImage? = Self.bundledCGImage(named: "empty")
@@ -35,6 +38,24 @@ final class ReaderWindowController: NSWindowController {
         window.center()
         window.delegate = self
         readerView.delegate = self
+        applySettings()
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applySettings()
+            }
+        }
+    }
+
+    /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
+    func applySettings() {
+        readerView.interpolation = settings.interpolation
+        readerView.backgroundColor = settings.viewBackgroundColor
+        if book != nil {
+            pageLabel.isHidden = !settings.showNumber
+            pageBar.isHidden = !settings.showPageBar
+        }
     }
 
     private func setUpContentViews(in window: NSWindow) {
@@ -115,8 +136,10 @@ final class ReaderWindowController: NSWindowController {
                 book.goTo(index: index)
             }
             window?.title = book.displayName
-            pageLabel.isHidden = false
-            pageBar.isHidden = false
+            book.readMode = settings.readMode
+            book.singleSetting = settings.singleSetting
+            pageLabel.isHidden = !settings.showNumber
+            pageBar.isHidden = !settings.showPageBar
             await refreshDisplay()
         } catch {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
@@ -184,7 +207,7 @@ final class ReaderWindowController: NSWindowController {
         case .moved:
             Task { await refreshDisplay() }
         case .hitEnd:
-            handleHitEnd()
+            handleEndOfBook()
         case .hitStart:
             break
         }
@@ -197,7 +220,7 @@ final class ReaderWindowController: NSWindowController {
             case .moved:
                 await refreshDisplay()
             case .hitStart:
-                handleHitStart()
+                handleStartOfBook()
             case .hitEnd:
                 break
             }
@@ -205,9 +228,9 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 巻末超え(仕様書 §4.3.4)。1/2(次の本)はマイルストーン 7 で接続。
-    private func handleHitEnd() {
+    func handleEndOfBook() {
         guard let book else { return }
-        switch loopMode {
+        switch settings.loopCheck {
         case 0:
             book.goToFirst()
             Task { await refreshDisplay() }
@@ -216,9 +239,9 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
-    private func handleHitStart() {
+    func handleStartOfBook() {
         guard let book else { return }
-        switch loopMode {
+        switch settings.loopCheck {
         case 0:
             Task {
                 await book.goToLast()
@@ -226,6 +249,29 @@ final class ReaderWindowController: NSWindowController {
             }
         default:
             break
+        }
+    }
+
+    /// ジャンプ系アクション後の再表示(+Input.swift から使用)
+    func refreshAfterJump() {
+        Task { await refreshDisplay() }
+    }
+
+    /// 前ページへ戻り、PrevPageMode=1 ならページ末尾から表示(仕様書 §6.1)
+    func performPreviousFromEnd() {
+        guard let book else { return }
+        Task {
+            switch await book.movePrevious() {
+            case .moved:
+                await refreshDisplay()
+                if settings.prevPageMode == 1 {
+                    readerView.scrollToEnd()
+                }
+            case .hitStart:
+                handleStartOfBook()
+            case .hitEnd:
+                break
+            }
         }
     }
 
@@ -348,19 +394,36 @@ extension ReaderWindowController: NSMenuItemValidation {}
 // MARK: - ReaderViewDelegate
 
 extension ReaderWindowController: ReaderViewDelegate {
-    func readerViewDidRequestNext(_ view: ReaderView) {
-        showNext()
-    }
-
-    func readerViewDidRequestPrevious(_ view: ReaderView) {
-        showPrevious()
-    }
-
     func readerView(_ view: ReaderView, didReceiveDropped url: URL) {
         openBook(at: url)
     }
 
     func readerViewMouseMoved(_ view: ReaderView) {
         noteMouseMoved()
+    }
+
+    func readerView(_ view: ReaderView, handleKey event: NSEvent) -> Bool {
+        handleKeyEvent(event)
+    }
+
+    func readerView(_ view: ReaderView, clickedButton button: Int,
+                    modifiers: Int, leftHalf: Bool) {
+        handleClick(button: button, modifiers: modifiers, leftHalf: leftHalf)
+    }
+
+    func readerView(_ view: ReaderView, gesture virtualButton: Int, modifiers: Int) {
+        handleGesture(virtualButton: virtualButton, modifiers: modifiers)
+    }
+
+    func readerView(_ view: ReaderView, dragGesture directionModifier: Int, baseModifiers: Int) {
+        handleDragGesture(directionModifier: directionModifier, baseModifiers: baseModifiers)
+    }
+
+    func readerViewShouldDragScroll(_ view: ReaderView, modifiers: Int) -> Bool {
+        shouldDragScroll(modifiers: modifiers)
+    }
+
+    func readerView(_ view: ReaderView, scrollWheel event: NSEvent) {
+        handleScrollWheel(event)
     }
 }

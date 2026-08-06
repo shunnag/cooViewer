@@ -1,10 +1,13 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var readerWindowController: ReaderWindowController?
+    private var settingsWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        SettingsStore.shared.registerDefaults()
         NSApp.mainMenu = MainMenuBuilder.build()
     }
 
@@ -57,6 +60,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Actions
+
+    @objc func showSettings(_ sender: Any?) {
+        if settingsWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: SettingsView()))
+            window.title = String(localized: "Settings")
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
 
     @objc func openDocument(_ sender: Any?) {
         let panel = NSOpenPanel()

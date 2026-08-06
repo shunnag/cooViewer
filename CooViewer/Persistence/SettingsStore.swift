@@ -1,0 +1,121 @@
+import AppKit
+
+/// 型付き設定アクセス。キー名は旧実装(仕様書 §6.1)と同一で、
+/// ドメイン jp.coo.cooViewer を引き継ぐため既存ユーザーの値がそのまま生きる。
+@MainActor
+final class SettingsStore {
+    static let shared = SettingsStore()
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    /// 揮発性既定値(旧 registerDefaults 相当。仕様書 §6.1)
+    func registerDefaults() {
+        defaults.register(defaults: [
+            "ShowPageBar": true,
+            "ShowNumber": true,
+            "WheelSensitivity": 1.0,
+            "CanScrollMode": 0,
+            "PrevPageMode": 0,
+            "OpenRecentLimit": 10,
+            "OpenLastFolder": true,
+            "SingleSetting": 740,
+        ])
+    }
+
+    var readMode: ReadMode {
+        get { ReadMode(rawValue: defaults.integer(forKey: "ReadMode")) ?? .rightToLeftSpread }
+        set { defaults.set(newValue.rawValue, forKey: "ReadMode") }
+    }
+
+    var sortMode: SortMode {
+        get { SortMode(rawValue: defaults.integer(forKey: "SortMode")) ?? .name }
+        set { defaults.set(newValue.rawValue, forKey: "SortMode") }
+    }
+
+    /// 端超え動作(仕様書 §4.3.4): 0=ループ/1=次の本の先頭/2=前は末尾から/3=何もしない
+    var loopCheck: Int { defaults.integer(forKey: "LoopCheck") }
+
+    /// 最終ページ復元(仕様書 §7.3): 0=確認/1=自動/2=無効
+    var goToLastPageMode: Int { defaults.integer(forKey: "GoToLastPage") }
+
+    var readSubFolder: Bool { defaults.bool(forKey: "ReadSubFolder") }
+    var rememberBookSettings: Bool { defaults.bool(forKey: "RememberBookSettings") }
+    var openLastFolder: Bool { defaults.bool(forKey: "OpenLastFolder") }
+    var openRecentLimit: Int { defaults.integer(forKey: "OpenRecentLimit") }
+
+    /// 見開き判定しきい値×1000(0 は 740 に補正。仕様書 §6.1)
+    var singleSetting: Int {
+        let value = defaults.integer(forKey: "SingleSetting")
+        return value == 0 ? PageLayout.defaultSingleSetting : value
+    }
+
+    var interpolation: ReaderView.Interpolation {
+        ReaderView.Interpolation(rawValue: defaults.integer(forKey: "Interpolation"))
+            ?? .systemDefault
+    }
+
+    /// ホイール動作(仕様書 §4.16)
+    var canScrollMode: Int { defaults.integer(forKey: "CanScrollMode") }
+
+    /// ホイールめくり閾値。0=無効(仕様書 §6.1)
+    var wheelSensitivity: Double { defaults.double(forKey: "WheelSensitivity") }
+
+    /// 前ページ復帰時の初期位置: 0=ページ先頭/1=ページ末尾
+    var prevPageMode: Int { defaults.integer(forKey: "PrevPageMode") }
+
+    var slideshowDelay: Double { defaults.double(forKey: "SlideshowDelay") }
+
+    var showPageBar: Bool {
+        get { defaults.bool(forKey: "ShowPageBar") }
+        set { defaults.set(newValue, forKey: "ShowPageBar") }
+    }
+
+    var showNumber: Bool {
+        get { defaults.bool(forKey: "ShowNumber") }
+        set { defaults.set(newValue, forKey: "ShowNumber") }
+    }
+
+    /// ページキャッシュ容量。旧「設定値+4」を正規化し、未設定(0)は 8(設計書 §13.4)。
+    var pageCacheCapacity: Int {
+        let value = defaults.integer(forKey: "ImageCache")
+        return value <= 0 ? 8 : value + 4
+    }
+
+    /// 背景色。新形式(sRGB 成分)を優先し、旧 NSArchiver データは一度だけ読み替える
+    /// (仕様書 §13.5)。読めなければ黒。
+    var viewBackgroundColor: NSColor {
+        get {
+            if let components = defaults.array(forKey: "ViewBackgroundColorSRGB") as? [Double],
+               components.count == 3 {
+                return NSColor(srgbRed: components[0], green: components[1],
+                               blue: components[2], alpha: 1)
+            }
+            if let data = defaults.data(forKey: "ViewBackGroundColor"),
+               let legacy = Self.legacyUnarchivedColor(data) {
+                // 旧実装同様 alpha は 1 に強制(仕様書 §6.1)
+                return legacy.withAlphaComponent(1)
+            }
+            return .black
+        }
+        set {
+            let srgb = newValue.usingColorSpace(.sRGB) ?? .black
+            defaults.set([srgb.redComponent, srgb.greenComponent, srgb.blueComponent],
+                         forKey: "ViewBackgroundColorSRGB")
+        }
+    }
+
+    /// NSArchiver 形式の NSColor を読む。NSUnarchiver は Swift から直接使えないため
+    /// ランタイム経由で呼ぶ。失敗したら nil(既定値へフォールバック。設計書 §5)。
+    private static func legacyUnarchivedColor(_ data: Data) -> NSColor? {
+        guard let unarchiverClass = NSClassFromString("NSUnarchiver") as? NSObject.Type else {
+            return nil
+        }
+        let selector = NSSelectorFromString("unarchiveObjectWithData:")
+        guard unarchiverClass.responds(to: selector) else { return nil }
+        return unarchiverClass.perform(selector, with: data)?
+            .takeUnretainedValue() as? NSColor
+    }
+}

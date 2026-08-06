@@ -23,7 +23,7 @@ enum MainMenuBuilder {
                      keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Settings…"),
-                     action: nil,  // TODO(マイルストーン6): 設定ウインドウ
+                     action: #selector(AppDelegate.showSettings(_:)),
                      keyEquivalent: ",")
         menu.addItem(.separator())
         let servicesItem = menu.addItem(withTitle: String(localized: "Services"),
