@@ -147,6 +147,10 @@ enum MainMenuBuilder {
                      action: #selector(ReaderWindowController.previousBookmarkMenu(_:)),
                      keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Show Thumbnails"),
+                     action: #selector(ReaderWindowController.showThumbnailsMenu(_:)),
+                     keyEquivalent: "t")
+        menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Next Book"),
                      action: #selector(ReaderWindowController.nextBookMenu(_:)),
                      keyEquivalent: "")

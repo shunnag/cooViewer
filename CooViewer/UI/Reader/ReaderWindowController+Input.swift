@@ -178,9 +178,11 @@ extension ReaderWindowController {
         case .positionalTrash: trashDisplayedPage(leftSide: leftHalf ?? true)
         case .openLastPage: openTheLastBook()
 
-        // ルーペ・サムネイルは今後の実装(設計書 §4 マイルストーン)
-        case .showThumbnail, .toggleLoupe, .loupePowerUp, .loupePowerDown:
-            NSSound.beep()
+        case .showThumbnail: showThumbnail()
+        case .toggleLoupe: toggleLoupe()
+        // 倍率 ±value、既定 0.5(仕様書 §4.10 action 37/38)
+        case .loupePowerUp: adjustLoupeRate(by: value ?? 0.5)
+        case .loupePowerDown: adjustLoupeRate(by: -(value ?? 0.5))
 
         case .dragScroll:
             break  // 実処理は ReaderView のドラッグ追従

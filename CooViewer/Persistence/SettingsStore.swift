@@ -68,6 +68,23 @@ final class SettingsStore {
 
     var slideshowDelay: Double { defaults.double(forKey: "SlideshowDelay") }
 
+    /// ルーペの一辺 pt(仕様書 §4.10 LoupeSize。0/未設定は 150 に補正)
+    var loupeSize: Double {
+        let value = defaults.double(forKey: "LoupeSize")
+        return value <= 0 ? 150 : value
+    }
+
+    /// ルーペ倍率(仕様書 §4.10 LoupeRate)。新実装の意味論は「表示中コンテンツの
+    /// 何倍か」で、旧既定 1.0(ピクセル等倍相当)は新意味論では等倍=無意味になるため、
+    /// 未設定(0)時の既定を 2.0 に変更する(仕様変更)。
+    var loupeRate: Double {
+        get {
+            let value = defaults.double(forKey: "LoupeRate")
+            return value <= 0 ? 2.0 : value
+        }
+        set { defaults.set(newValue, forKey: "LoupeRate") }
+    }
+
     var showPageBar: Bool {
         get { defaults.bool(forKey: "ShowPageBar") }
         set { defaults.set(newValue, forKey: "ShowPageBar") }

@@ -51,6 +51,7 @@ final class ReaderView: NSView {
 
     private let containerLayer = CALayer()
     private let pageLayers = [CALayer(), CALayer()]
+    private let loupe = LoupeController()
 
     private(set) var images: [CGImage] = []
     private(set) var readsFromLeft = false
@@ -133,6 +134,10 @@ final class ReaderView: NSView {
     override func layout() {
         super.layout()
         relayout()
+        // レイアウト変化(ページ切替・スクロール・リサイズ)をルーペにも反映
+        if loupe.isEnabled {
+            loupe.update(content: loupeContent())
+        }
     }
 
     private func relayout() {
@@ -259,6 +264,39 @@ final class ReaderView: NSView {
         scroll(by: CGPoint(x: 0, y: availableSize.height * 0.9))
     }
 
+    // MARK: - ルーペ(仕様書 §4.10。実装は LoupeController)
+
+    var isLoupeEnabled: Bool { loupe.isEnabled }
+
+    func enableLoupe(size: Double, rate: Double) {
+        guard let layer, let window else { return }
+        loupe.size = size
+        loupe.rate = rate
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        loupe.enable(in: layer, at: point, content: loupeContent())
+    }
+
+    func disableLoupe() {
+        loupe.disable()
+    }
+
+    func setLoupeRate(_ rate: Double) {
+        loupe.rate = rate
+    }
+
+    /// ルーペに渡す描画状態のスナップショット。
+    /// pageLayers[i] は images[i] に対応するため zip で表示中ページのみ拾える。
+    private func loupeContent() -> LoupeController.Content {
+        LoupeController.Content(
+            containerBounds: containerLayer.bounds,
+            containerPosition: containerLayer.position,
+            containerTransform: containerLayer.affineTransform(),
+            pages: zip(pageLayers, images).map { pageLayer, image in
+                LoupeController.Page(frame: pageLayer.frame, image: image)
+            },
+            backgroundColor: layer?.backgroundColor)
+    }
+
     // MARK: - キー入力(バインディングシステムへ転送。仕様書 §5)
 
     override func keyDown(with event: NSEvent) {
@@ -278,6 +316,9 @@ final class ReaderView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if loupe.isEnabled {
+            loupe.move(to: convert(event.locationInWindow, from: nil))
+        }
         let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
         guard fitMode != .fitToScreen,
               delegate?.readerViewShouldDragScroll(self, modifiers: modifiers) == true else {
@@ -389,6 +430,9 @@ final class ReaderView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        if loupe.isEnabled {
+            loupe.move(to: convert(event.locationInWindow, from: nil))
+        }
         delegate?.readerViewMouseMoved(self)
     }
 
