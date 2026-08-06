@@ -6,7 +6,7 @@ final class ScaffoldTests: XCTestCase {
     @MainActor
     func testMainMenuHasStandardTopLevelMenus() {
         let menu = MainMenuBuilder.build()
-        XCTAssertEqual(menu.items.count, 5)
+        XCTAssertEqual(menu.items.count, 6)
         XCTAssertNotNil(menu.items.first?.submenu)
     }
 }

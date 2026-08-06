@@ -10,6 +10,7 @@ enum MainMenuBuilder {
         mainMenu.addItem(makeAppMenu())
         mainMenu.addItem(makeFileMenu())
         mainMenu.addItem(makeViewMenu())
+        mainMenu.addItem(makeBrowseMenu())
         mainMenu.addItem(makeWindowMenu())
         mainMenu.addItem(makeHelpMenu())
         return mainMenu
@@ -64,9 +65,70 @@ enum MainMenuBuilder {
 
     private static func makeViewMenu() -> NSMenuItem {
         let menu = NSMenu(title: String(localized: "View"))
-        // TODO(マイルストーン5): 読み方向・フィット・回転・ページ移動
+
+        // 表示モード(仕様書 §3.2: ⌘1-4)
+        let fitTitles: [(String, Int)] = [
+            (String(localized: "Fit to Screen"), 0),
+            (String(localized: "Fit to Screen Width"), 1),
+            (String(localized: "No Scale"), 2),
+            (String(localized: "Fit to Screen Width (divide)"), 3),
+        ]
+        for (index, (title, tag)) in fitTitles.enumerated() {
+            let item = menu.addItem(withTitle: title,
+                                    action: #selector(ReaderWindowController.changeFitMode(_:)),
+                                    keyEquivalent: "\(index + 1)")
+            item.tag = tag
+        }
+        menu.addItem(.separator())
+
+        // 読み方向(仕様書 §4.4.1)
+        let readModeItem = menu.addItem(withTitle: String(localized: "Reading Direction"),
+                                        action: nil, keyEquivalent: "")
+        let readModeMenu = NSMenu()
+        let readTitles: [(String, Int)] = [
+            (String(localized: "Right to Left"), 0),
+            (String(localized: "Left to Right"), 1),
+            (String(localized: "Right to Left (single page)"), 2),
+            (String(localized: "Left to Right (single page)"), 3),
+        ]
+        for (title, tag) in readTitles {
+            let item = readModeMenu.addItem(
+                withTitle: title,
+                action: #selector(ReaderWindowController.changeReadMode(_:)),
+                keyEquivalent: "")
+            item.tag = tag
+        }
+        readModeItem.submenu = readModeMenu
+
+        menu.addItem(withTitle: String(localized: "Rotate Left"),
+                     action: #selector(ReaderWindowController.rotateLeft(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Rotate Right"),
+                     action: #selector(ReaderWindowController.rotateRight(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Enter Full Screen"),
                      action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+
+        let item = NSMenuItem()
+        item.submenu = menu
+        return item
+    }
+
+    private static func makeBrowseMenu() -> NSMenuItem {
+        let menu = NSMenu(title: String(localized: "Browse"))
+        menu.addItem(withTitle: String(localized: "Next Page"),
+                     action: #selector(ReaderWindowController.nextPage(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Previous Page"),
+                     action: #selector(ReaderWindowController.previousPage(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Half Page Forward"),
+                     action: #selector(ReaderWindowController.halfNextPage(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Half Page Backward"),
+                     action: #selector(ReaderWindowController.halfPreviousPage(_:)),
+                     keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "First Page"),
+                     action: #selector(ReaderWindowController.goToFirstPage(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Last Page"),
+                     action: #selector(ReaderWindowController.goToLastPage(_:)), keyEquivalent: "")
 
         let item = NSMenuItem()
         item.submenu = menu
