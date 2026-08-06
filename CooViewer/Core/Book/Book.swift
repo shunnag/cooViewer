@@ -15,6 +15,7 @@ final class Book {
     var readMode: ReadMode = .rightToLeftSpread
     var marks = PageMarks()
     var singleSetting = PageLayout.defaultSingleSetting
+    var bookmarks: [BookHistoryStore.Bookmark] = []
 
     private let cache: PageCache
     private var prefetchTask: Task<Void, Never>?
@@ -177,6 +178,45 @@ final class Book {
         sortMode = mode
         entries = PageSorter.sorted(entries, mode: mode)
         currentIndex = 0
+    }
+
+    // MARK: - サブフォルダ移動(仕様書 §4.3.5: containerPath 単位で巡回)
+
+    func nextSubFolderIndex() -> Int? {
+        guard !entries.isEmpty else { return nil }
+        let current = entries[currentIndex].containerPath
+        for offset in 1...entries.count {
+            let index = (currentIndex + offset) % entries.count
+            if entries[index].containerPath != current { return index }
+        }
+        return nil
+    }
+
+    func previousSubFolderIndex() -> Int? {
+        guard !entries.isEmpty else { return nil }
+        let current = entries[currentIndex].containerPath
+        var index = currentIndex
+        for _ in 1...entries.count {
+            index = (index - 1 + entries.count) % entries.count
+            if entries[index].containerPath != current {
+                // 前グループの先頭へ(仕様書 §4.3.5)
+                let target = entries[index].containerPath
+                var first = index
+                while first > 0, entries[first - 1].containerPath == target { first -= 1 }
+                return first
+            }
+        }
+        return nil
+    }
+
+    // MARK: - しおり移動
+
+    func nextBookmarkIndex() -> Int? {
+        bookmarks.map(\.pageIndex).filter { $0 > currentIndex }.min()
+    }
+
+    func previousBookmarkIndex() -> Int? {
+        bookmarks.map(\.pageIndex).filter { $0 < currentIndex }.max()
     }
 
     // MARK: - 先読み(仕様書 §4.5 の置換。設計書 §3.1)
