@@ -17,6 +17,8 @@ final class ReaderWindowController: NSWindowController {
 
     private var cursorHideTimer: Timer?
     private var settingsObserver: (any NSObjectProtocol)?
+    var slideshowTimer: Timer?
+    var originalSizePanel: NSPanel?
 
     private lazy var brokenImage: CGImage? = Self.bundledCGImage(named: "broken")
     private lazy var emptyImage: CGImage? = Self.bundledCGImage(named: "empty")
@@ -105,13 +107,13 @@ final class ReaderWindowController: NSWindowController {
     // MARK: - 本を開く
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
-    func openBook(at url: URL) {
+    func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false) {
         Task {
-            await openBookFlow(url: url)
+            await openBookFlow(url: url, atPage: page, atLastPage: atLastPage)
         }
     }
 
-    private func openBookFlow(url: URL) async {
+    private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool) async {
         var bookURL = url
         var initialPageName: String?
 
@@ -125,19 +127,31 @@ final class ReaderWindowController: NSWindowController {
         }
 
         do {
-            let source = try await BookSourceFactory.make(for: bookURL, readSubFolders: false)
+            let source = try await BookSourceFactory.make(
+                for: bookURL, readSubFolders: settings.readSubFolder)
             guard await unlockIfNeeded(source) else { return }
 
-            let book = try await Book.open(source: source)
+            // 旧本の後始末(仕様書 §4.1.2 手順 4)
+            stopSlideshow()
+            saveCurrentBookState()
+
+            let book = try await Book.open(source: source, sortMode: settings.sortMode)
+            book.readMode = settings.readMode
+            book.singleSetting = settings.singleSetting
             self.book = book
+
+            let skipPageRestore = initialPageName != nil || atPage != nil || atLastPage
+            await restoreBookState(for: book, skipPageRestore: skipPageRestore)
 
             if let initialPageName,
                let index = book.entries.firstIndex(where: { $0.name == initialPageName }) {
                 book.goTo(index: index)
+            } else if let atPage {
+                book.goTo(index: atPage)
+            } else if atLastPage {
+                await book.goToLast()
             }
             window?.title = book.displayName
-            book.readMode = settings.readMode
-            book.singleSetting = settings.singleSetting
             pageLabel.isHidden = !settings.showNumber
             pageBar.isHidden = !settings.showPageBar
             await refreshDisplay()
@@ -145,6 +159,17 @@ final class ReaderWindowController: NSWindowController {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
             NSSound.beep()
         }
+    }
+
+    // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
+
+    func windowWillClose(_ notification: Notification) {
+        stopSlideshow()
+        saveCurrentBookState()
+    }
+
+    func saveStateBeforeTermination() {
+        saveCurrentBookState()
     }
 
     /// パスワード書庫のロック解除。キャンセルで false(仕様書 §4.1.3)。
@@ -169,7 +194,7 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: - 表示更新
 
-    private func refreshDisplay() async {
+    func refreshDisplay() async {
         guard let book else { return }
         let spread = await book.currentSpread()
 

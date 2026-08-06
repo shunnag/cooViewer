@@ -155,18 +155,31 @@ extension ReaderWindowController {
         case .positionalRotate:
             isNextSide ? rotateRight(nil) : rotateLeft(nil)
 
-        // マイルストーン 7 で実装する機能(しおり・スライドショー・ルーペ・
-        // サムネイル・ゴミ箱・Finder・原寸・本/サブフォルダ移動・履歴)
-        case .nextBookmark, .previousBookmark, .addRemoveBookmark,
-             .positionalNextPrevBookmark,
-             .nextBook, .previousBook, .positionalNextPrevBook,
-             .nextSubFolder, .previousSubFolder, .positionalNextPrevSubFolder,
-             .switchSingleSpread, .toggleSlideshow, .showThumbnail,
-             .viewOriginalRight, .viewOriginalLeft, .positionalViewOriginal,
-             .showInFinderRight, .showInFinderLeft, .positionalShowInFinder,
-             .toggleLoupe, .loupePowerUp, .loupePowerDown,
-             .trashRight, .trashLeft, .positionalTrash,
-             .openLastPage:
+        case .nextBookmark: goToBookmark(next: true)
+        case .previousBookmark: goToBookmark(next: false)
+        case .positionalNextPrevBookmark: goToBookmark(next: isNextSide)
+        case .addRemoveBookmark: toggleBookmark()
+        case .switchSingleSpread: switchSingleSpread()
+        case .nextBook: openAdjacentBook(forward: true)
+        case .previousBook: openAdjacentBook(forward: false)
+        case .positionalNextPrevBook: openAdjacentBook(forward: isNextSide)
+        case .nextSubFolder: goToSubFolder(next: true)
+        case .previousSubFolder: goToSubFolder(next: false)
+        case .positionalNextPrevSubFolder: goToSubFolder(next: isNextSide)
+        case .toggleSlideshow: toggleSlideshow()
+        case .viewOriginalRight: viewOriginal(leftSide: false)
+        case .viewOriginalLeft: viewOriginal(leftSide: true)
+        case .positionalViewOriginal: viewOriginal(leftSide: leftHalf)
+        case .showInFinderRight: showInFinder(leftSide: false)
+        case .showInFinderLeft: showInFinder(leftSide: true)
+        case .positionalShowInFinder: showInFinder(leftSide: leftHalf)
+        case .trashRight: trashDisplayedPage(leftSide: false)
+        case .trashLeft: trashDisplayedPage(leftSide: true)
+        case .positionalTrash: trashDisplayedPage(leftSide: leftHalf ?? true)
+        case .openLastPage: openTheLastBook()
+
+        // ルーペ・サムネイルは今後の実装(設計書 §4 マイルストーン)
+        case .showThumbnail, .toggleLoupe, .loupePowerUp, .loupePowerDown:
             NSSound.beep()
 
         case .dragScroll:

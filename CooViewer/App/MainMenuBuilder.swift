@@ -53,7 +53,14 @@ enum MainMenuBuilder {
         let menu = NSMenu(title: String(localized: "File"))
         menu.addItem(withTitle: String(localized: "Open…"),
                      action: #selector(AppDelegate.openDocument(_:)), keyEquivalent: "o")
-        // TODO(マイルストーン7): Open Recent / 同フォルダの本 / 最後に開いた本
+        let recentItem = menu.addItem(withTitle: String(localized: "Open Recent"),
+                                      action: nil, keyEquivalent: "")
+        let recentMenu = NSMenu(title: String(localized: "Open Recent"))
+        recentMenu.delegate = RecentBooksMenuDelegate.shared
+        recentItem.submenu = recentMenu
+        menu.addItem(withTitle: String(localized: "Open the Last Book"),
+                     action: #selector(ReaderWindowController.openLastBookMenu(_:)),
+                     keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Close"),
                      action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -129,6 +136,27 @@ enum MainMenuBuilder {
                      action: #selector(ReaderWindowController.goToFirstPage(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Last Page"),
                      action: #selector(ReaderWindowController.goToLastPage(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Add/Remove Bookmark"),
+                     action: #selector(ReaderWindowController.addRemoveBookmarkMenu(_:)),
+                     keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Next Bookmark"),
+                     action: #selector(ReaderWindowController.nextBookmarkMenu(_:)),
+                     keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Previous Bookmark"),
+                     action: #selector(ReaderWindowController.previousBookmarkMenu(_:)),
+                     keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Next Book"),
+                     action: #selector(ReaderWindowController.nextBookMenu(_:)),
+                     keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Previous Book"),
+                     action: #selector(ReaderWindowController.previousBookMenu(_:)),
+                     keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Slideshow"),
+                     action: #selector(ReaderWindowController.toggleSlideshowMenu(_:)),
+                     keyEquivalent: "")
 
         let item = NSMenuItem()
         item.submenu = menu

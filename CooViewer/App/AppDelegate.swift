@@ -25,6 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count {
             readerWindowController?.openBook(at: URL(fileURLWithPath: arguments[index + 1]))
+        } else if SettingsStore.shared.openLastFolder,
+                  let recent = BookHistoryStore.shared.mostRecentBook() {
+            // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
+            readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
         }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
@@ -59,6 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         readerWindowController?.openBook(at: url)
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        readerWindowController?.saveStateBeforeTermination()
+    }
+
     // MARK: - Actions
 
     @objc func showSettings(_ sender: Any?) {
@@ -72,6 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func openRecentBook(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        readerWindowController?.openBook(at: URL(fileURLWithPath: path))
     }
 
     @objc func openDocument(_ sender: Any?) {
