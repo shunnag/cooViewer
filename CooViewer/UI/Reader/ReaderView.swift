@@ -2,10 +2,19 @@ import AppKit
 
 @MainActor
 protocol ReaderViewDelegate: AnyObject {
-    func readerViewDidRequestNext(_ view: ReaderView)
-    func readerViewDidRequestPrevious(_ view: ReaderView)
     func readerView(_ view: ReaderView, didReceiveDropped url: URL)
     func readerViewMouseMoved(_ view: ReaderView)
+    /// キーイベント。処理したら true(false でシステム既定=ビープ)
+    func readerView(_ view: ReaderView, handleKey event: NSEvent) -> Bool
+    /// クリック/仮想ボタン。leftHalf=画面左半分での操作か
+    func readerView(_ view: ReaderView, clickedButton button: Int,
+                    modifiers: Int, leftHalf: Bool)
+    func readerView(_ view: ReaderView, gesture virtualButton: Int, modifiers: Int)
+    /// ±30px 以上のドラッグジェスチャ(方向 modifier は LegacyModifier.drag*)
+    func readerView(_ view: ReaderView, dragGesture directionModifier: Int, baseModifiers: Int)
+    /// このドラッグを 1:1 スクロールとして扱うか(バインディング照会)
+    func readerViewShouldDragScroll(_ view: ReaderView, modifiers: Int) -> Bool
+    func readerView(_ view: ReaderView, scrollWheel event: NSEvent)
 }
 
 /// ページ描画ビュー(設計書 §3.2)。
@@ -250,25 +259,119 @@ final class ReaderView: NSView {
         scroll(by: CGPoint(x: 0, y: availableSize.height * 0.9))
     }
 
-    // MARK: - 暫定キー入力(マイルストーン6 でバインディングシステムに置換)
+    // MARK: - キー入力(バインディングシステムへ転送。仕様書 §5)
 
     override func keyDown(with event: NSEvent) {
-        switch event.specialKey {
-        case NSEvent.SpecialKey.leftArrow?:
-            readsFromLeft
-                ? delegate?.readerViewDidRequestPrevious(self)
-                : delegate?.readerViewDidRequestNext(self)
-        case NSEvent.SpecialKey.rightArrow?:
-            readsFromLeft
-                ? delegate?.readerViewDidRequestNext(self)
-                : delegate?.readerViewDidRequestPrevious(self)
-        default:
-            if event.charactersIgnoringModifiers == " " {
-                delegate?.readerViewDidRequestNext(self)
-            } else {
-                super.keyDown(with: event)
-            }
+        if delegate?.readerView(self, handleKey: event) != true {
+            super.keyDown(with: event)
         }
+    }
+
+    // MARK: - マウス(クリック/ドラッグスクロール/ドラッグジェスチャ。仕様書 §5.9)
+
+    private var mouseDownPoint: CGPoint?
+    private var didDragScroll = false
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownPoint = convert(event.locationInWindow, from: nil)
+        didDragScroll = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
+        guard fitMode != .fitToScreen,
+              delegate?.readerViewShouldDragScroll(self, modifiers: modifiers) == true else {
+            return
+        }
+        didDragScroll = true
+        NSCursor.closedHand.set()
+        scroll(by: CGPoint(x: -event.deltaX, y: -event.deltaY))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { mouseDownPoint = nil }
+        if didDragScroll {
+            NSCursor.arrow.set()
+            return  // ドラッグスクロール後はクリック処理をしない(仕様書 §5.7.5)
+        }
+        guard let start = mouseDownPoint else { return }
+        let end = convert(event.locationInWindow, from: nil)
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
+
+        if max(abs(dx), abs(dy)) >= 30 {
+            // ドラッグジェスチャ(±30px。仕様書 §5.9)。isFlipped のため dy>0 は下方向
+            let direction: Int
+            if abs(dx) >= abs(dy) {
+                direction = dx < 0 ? LegacyModifier.dragLeft : LegacyModifier.dragRight
+            } else {
+                direction = dy < 0 ? LegacyModifier.dragUp : LegacyModifier.dragDown
+            }
+            delegate?.readerView(self, dragGesture: direction, baseModifiers: modifiers)
+        } else {
+            delegate?.readerView(self, clickedButton: 0, modifiers: modifiers,
+                                 leftHalf: end.x < bounds.midX)
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        forwardClick(event, button: 1)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        forwardClick(event, button: event.buttonNumber)
+    }
+
+    private func forwardClick(_ event: NSEvent, button: Int) {
+        let point = convert(event.locationInWindow, from: nil)
+        delegate?.readerView(self, clickedButton: button,
+                             modifiers: LegacyModifier.encode(flags: event.modifierFlags),
+                             leftHalf: point.x < bounds.midX)
+    }
+
+    // MARK: - ホイール/マルチタッチジェスチャ(仕様書 §4.16, §5.1)
+
+    override func scrollWheel(with event: NSEvent) {
+        delegate?.readerView(self, scrollWheel: event)
+    }
+
+    override func swipe(with event: NSEvent) {
+        let virtualButton: Int
+        if abs(event.deltaX) >= abs(event.deltaY) {
+            virtualButton = event.deltaX > 0
+                ? VirtualButton.swipeLeft : VirtualButton.swipeRight
+        } else {
+            virtualButton = event.deltaY > 0
+                ? VirtualButton.swipeUp : VirtualButton.swipeDown
+        }
+        delegate?.readerView(self, gesture: virtualButton,
+                             modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+    }
+
+    private var magnificationSum: CGFloat = 0
+    private var rotationSum: CGFloat = 0
+
+    override func magnify(with event: NSEvent) {
+        magnificationSum += event.magnification
+        guard event.phase == .ended else { return }
+        defer { magnificationSum = 0 }
+        guard abs(magnificationSum) > 0.05 else { return }
+        let virtualButton = magnificationSum > 0
+            ? VirtualButton.pinchOut : VirtualButton.pinchIn
+        delegate?.readerView(self, gesture: virtualButton,
+                             modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+    }
+
+    override func rotate(with event: NSEvent) {
+        rotationSum += CGFloat(event.rotation)
+        guard event.phase == .ended else { return }
+        defer { rotationSum = 0 }
+        guard abs(rotationSum) > 5 else { return }
+        let virtualButton = rotationSum > 0
+            ? VirtualButton.rotateLeft : VirtualButton.rotateRight
+        delegate?.readerView(self, gesture: virtualButton,
+                             modifiers: LegacyModifier.encode(flags: event.modifierFlags))
     }
 
     // MARK: - マウス移動(フルスクリーン時のカーソル自動非表示用。仕様書 §3.3)
