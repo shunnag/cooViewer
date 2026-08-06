@@ -19,6 +19,7 @@ final class ReaderWindowController: NSWindowController {
     private var settingsObserver: (any NSObjectProtocol)?
     var slideshowTimer: Timer?
     var originalSizePanel: NSPanel?
+    var thumbnailWindowController: ThumbnailWindowController?
 
     private lazy var brokenImage: CGImage? = Self.bundledCGImage(named: "broken")
     private lazy var emptyImage: CGImage? = Self.bundledCGImage(named: "empty")
@@ -367,7 +368,7 @@ final class ReaderWindowController: NSWindowController {
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
              #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)),
-             #selector(cycleReadMode(_:)):
+             #selector(cycleReadMode(_:)), #selector(showThumbnailsMenu(_:)):
             return book != nil
         default:
             return true
