@@ -6,13 +6,13 @@
     {
       "layers" : [
         {
-          "image-name" : "icon-source-1024.png",
-          "name" : "icon-source-1024",
+          "image-name" : "ChatGPT Image 2026年8月8日 00_17_36.png",
+          "name" : "ChatGPT Image 2026年8月8日 00_17_36",
           "position" : {
-            "scale" : 1.05,
+            "scale" : 0.85,
             "translation-in-points" : [
-              1.5,
-              1.5
+              0,
+              0
             ]
           }
         }
