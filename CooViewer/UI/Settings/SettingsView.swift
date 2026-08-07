@@ -34,8 +34,10 @@ struct SettingsView: View {
                 .tabItem { Label(String(localized: "Display"), systemImage: "photo") }
             controlPane
                 .tabItem { Label(String(localized: "Control"), systemImage: "computermouse") }
+            KeyBindingsPane()
+                .tabItem { Label(String(localized: "Key Bindings"), systemImage: "keyboard") }
         }
-        .frame(width: 560, height: 500)
+        .frame(width: 640, height: 500)
     }
 
     // MARK: - 一般

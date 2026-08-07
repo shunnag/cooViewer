@@ -66,6 +66,7 @@ final class ReaderWindowController: NSWindowController {
 
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
     func applySettings() {
+        bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
         readerView.interpolation = settings.interpolation
         readerView.backgroundColor = settings.viewBackgroundColor
         // 開けなかった本(空)ではオーバーレイを出さない

@@ -122,3 +122,19 @@ final class BindingTests: XCTestCase {
         XCTAssertNil(ReaderAction.fromLegacyMouseNumber(65))
     }
 }
+
+extension BindingTests {
+    func testLegacyArrayRoundTrip() {
+        // 編集 UI の保存形式(旧互換)を読み戻して同一になること
+        let original = [
+            KeyBinding(legacyActionNumber: 13, key: "\t",
+                       modifiers: LegacyModifier.shift, value: 5, switchAction: true),
+            KeyBinding(legacyActionNumber: 39, key: "7", modifiers: 0,
+                       value: 70, switchAction: false),
+        ]
+        let encoded = BindingConfiguration.legacyArray(from: original)
+        let decoded = BindingConfiguration.keyBindings(fromLegacyArray: encoded)
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(encoded[0]["keyname"] as? String, "shift+tab")
+    }
+}

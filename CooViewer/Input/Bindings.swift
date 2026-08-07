@@ -172,6 +172,27 @@ struct BindingConfiguration: Sendable {
         }
     }
 
+    /// 旧 defaults 形式へ書き出す(編集 UI の保存用。仕様書 §5.1 のスキーマ)
+    static func legacyArray(from bindings: [KeyBinding]) -> [[String: Any]] {
+        bindings.map { binding in
+            var dict: [String: Any] = [
+                "action": binding.legacyActionNumber,
+                "key": String(binding.key),
+                "keyname": ActionNames.displayName(for: binding),
+                "modifier": binding.modifiers,
+            ]
+            if let value = binding.value { dict["value"] = value }
+            if binding.switchAction { dict["switchAction"] = true }
+            return dict
+        }
+    }
+
+    /// 編集結果を UserDefaults(旧キー名)へ保存する
+    static func saveKeyBindings(_ bindings: [KeyBinding], arrayName: String,
+                                to defaults: UserDefaults = .standard) {
+        defaults.set(legacyArray(from: bindings), forKey: arrayName)
+    }
+
     /// UserDefaults(旧キー名のまま)から読む。無ければ既定を返す。
     static func load(from defaults: UserDefaults = .standard) -> BindingConfiguration {
         func keys(_ name: String, fallback: [KeyBinding]) -> [KeyBinding] {
