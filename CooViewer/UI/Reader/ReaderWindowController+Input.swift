@@ -33,6 +33,13 @@ extension ReaderWindowController {
     }
 
     func handleGesture(virtualButton: Int, modifiers: Int) {
+        // 水平スワイプのページ送りはトグルで無効化できる。システム設定が
+        // 「3 本指でスワイプ」の場合はスクロールではなく swipe イベントとして
+        // この経路に届くため、2 本指(handleSwipeToTurn)と共通でここで見る
+        if virtualButton == VirtualButton.swipeLeft || virtualButton == VirtualButton.swipeRight,
+           !settings.swipeToTurnPage {
+            return
+        }
         handleClick(button: virtualButton, modifiers: modifiers, leftHalf: false)
     }
 

@@ -123,7 +123,7 @@ struct SettingsView: View {
     private var controlPane: some View {
         Form {
             Section {
-                Toggle(String(localized: "Turn pages with two-finger swipe"),
+                Toggle(String(localized: "Turn pages with a trackpad swipe"),
                        isOn: $swipeToTurnPage)
                 Picker(String(localized: "Scroll wheel:"), selection: $canScrollMode) {
                     Text(String(localized: "Scroll only")).tag(0)
