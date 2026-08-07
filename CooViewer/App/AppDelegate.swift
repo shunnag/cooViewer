@@ -101,6 +101,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         readerWindowController?.saveStateBeforeTermination()
     }
 
+    /// Dock アイコンクリック等での再オープン(ウインドウを閉じた後の再表示)
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            readerWindowController?.showWindow(nil)
+        }
+        return true
+    }
+
     // MARK: - Actions
 
     @objc func showSettings(_ sender: Any?) {
