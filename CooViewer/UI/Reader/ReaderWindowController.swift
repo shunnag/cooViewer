@@ -23,8 +23,12 @@ final class ReaderWindowController: NSWindowController {
     var originalSizePanel: NSPanel?
     var thumbnailWindowController: ThumbnailWindowController?
 
-    private lazy var brokenImage: CGImage? = Self.bundledCGImage(named: "broken")
-    private lazy var emptyImage: CGImage? = Self.bundledCGImage(named: "empty")
+    /// 壊れページ用の実行時生成プレースホルダ(多言語対応。旧 broken.png の置換)
+    private lazy var brokenPlaceholder: CGImage? = PlaceholderImage.make(
+        text: String(localized: "This page could not be loaded."))
+
+    /// 開けなかった本の理由(空の本の汎用メッセージと区別するため保持)
+    private var lockedBookReason: String?
 
     convenience init() {
         let window = NSWindow(
@@ -194,6 +198,7 @@ final class ReaderWindowController: NSWindowController {
                 await book.goToLast()
             }
             window?.title = book.displayName
+            lockedBookReason = nil
             statusLabel.isHidden = true
             pageLabel.isHidden = !settings.showNumber
             pageBar.isHidden = !settings.showPageBar
@@ -212,13 +217,10 @@ final class ReaderWindowController: NSWindowController {
         saveCurrentBookState()
         let placeholder = Book(source: source, entries: [])
         book = placeholder
+        lockedBookReason = reason
         window?.title = placeholder.displayName
-        pageLabel.isHidden = true
-        pageBar.isHidden = true
         readerView.setPages([], readsFromLeft: false)
-        statusLabel.stringValue = reason + "\n"
-            + String(localized: "Turn the page or use Next Book to continue.")
-        statusLabel.isHidden = false
+        showBookStatusMessage(reason)
     }
 
     // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
@@ -275,16 +277,31 @@ final class ReaderWindowController: NSWindowController {
         guard let book else { return }
         let spread = await book.currentSpread()
 
-        let images: [CGImage]
         if spread.indices.isEmpty {
-            // 空の本は empty.png 1 ページ(仕様書 §4.17)
-            images = [emptyImage].compactMap(\.self)
-        } else {
-            images = spread.images.map { $0 ?? brokenImage }.compactMap(\.self)
+            // ページのない本: 理由をウインドウ中央に表示する
+            // (旧 empty.png 方式 §4.17 を多言語メッセージに置換)
+            readerView.setPages([], readsFromLeft: book.readMode.readsFromLeft)
+            showBookStatusMessage(
+                lockedBookReason
+                    ?? String(localized: "This book contains no displayable images."))
+            updatePageIndicators(spread: spread)
+            return
         }
+        statusLabel.isHidden = true
+        // 壊れページは理由入りプレースホルダで表示(ページ数は保つ。§4.17)
+        let images = spread.images.map { $0 ?? brokenPlaceholder }.compactMap(\.self)
         readerView.setPages(images, readsFromLeft: book.readMode.readsFromLeft)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
+    }
+
+    /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する
+    private func showBookStatusMessage(_ reason: String) {
+        statusLabel.stringValue = reason + "\n"
+            + String(localized: "Turn the page or use Next Book to continue.")
+        statusLabel.isHidden = false
+        pageLabel.isHidden = true
+        pageBar.isHidden = true
     }
 
     private func updatePageIndicators(spread: Book.Spread) {
@@ -496,11 +513,6 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: -
 
-    private static func bundledCGImage(named name: String) -> CGImage? {
-        guard let image = NSImage(named: name) else { return nil }
-        var rect = NSRect(origin: .zero, size: image.size)
-        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
-    }
 }
 
 // MARK: - NSWindowDelegate
