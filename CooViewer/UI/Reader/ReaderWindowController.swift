@@ -460,7 +460,14 @@ final class ReaderWindowController: NSWindowController {
         }
         let shown = spread.indices.map { String($0 + 1) }
         let numbers = shown.count == 2 ? "\(shown[0])-\(shown[1])" : (shown.first ?? "-")
-        pageLabel.stringValue = " \(numbers)/\(book.pageCount) "
+        // 旧実装のページ番号表示は「#N-M/総数 (ファイル名 / ファイル名)」と
+        // 表示中のファイル名を併記していた(仕様書 §3.4)。読み順に並べる
+        let names = spread.indices.compactMap { index in
+            book.entries.indices.contains(index) ? book.entries[index].name : nil
+        }.joined(separator: " / ")
+        pageLabel.stringValue = names.isEmpty
+            ? " \(numbers)/\(book.pageCount) "
+            : " \(numbers)/\(book.pageCount) (\(names)) "
         let lastShown = (spread.indices.last ?? 0) + 1
         pageBar.progress = Double(lastShown) / Double(book.pageCount)
         pageBar.readsFromLeft = book.readMode.readsFromLeft
