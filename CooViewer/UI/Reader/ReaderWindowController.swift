@@ -47,6 +47,9 @@ final class ReaderWindowController: NSWindowController {
     /// 開けなかった本の理由(空の本の汎用メッセージと区別するため保持)
     private var lockedBookReason: String?
 
+    /// 直近に表示したスプレッドのページ index 列(サムネイルの強調に使う)
+    private(set) var lastSpreadIndices: [Int] = []
+
     /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
     private var displayGeneration = 0
 
@@ -379,8 +382,10 @@ final class ReaderWindowController: NSWindowController {
         maybePrepareNextBook()
         startAnimationsIfNeeded(spread: spread)
         // サムネイル表示中の本ページ移動(%ジャンプ・しおり移動等)に追従する
+        lastSpreadIndices = spread.indices
         if isThumbnailOverlayVisible {
-            thumbnailOverlayModel.focusCurrentIndex(book.currentIndex)
+            thumbnailOverlayModel.focusCurrentIndex(book.currentIndex,
+                                                    displayedIndices: spread.indices)
         }
     }
 
