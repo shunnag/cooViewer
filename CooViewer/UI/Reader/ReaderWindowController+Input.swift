@@ -14,6 +14,10 @@ extension ReaderWindowController {
         guard !event.modifierFlags.contains(.command) else { return false }
         guard let character = event.charactersIgnoringModifiers?.first else { return false }
         let modifiers = LegacyModifier.encode(keyEvent: event)
+        if isThumbnailOverlayVisible, character == "\u{1B}" {
+            hideThumbnailOverlay()  // Esc で閉じる
+            return true
+        }
         guard let binding = bindings.resolveKey(
             character: character, modifiers: modifiers,
             fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
@@ -147,6 +151,24 @@ extension ReaderWindowController {
     func perform(_ action: ReaderAction, value: Double?, leftHalf: Bool?) {
         // 「left 側=次」は右→左読みのとき。左綴じでは鏡像(仕様書 §5.6)
         let isNextSide = (leftHalf ?? true) == !readsFromLeft
+
+        // サムネイルオーバーレイ表示中はページ送りをサムネイルのめくりに転用
+        // (旧来のページ単位閲覧 §4.8)。t(showThumbnail)は下でトグル=閉じる
+        if isThumbnailOverlayVisible {
+            switch action {
+            case .nextPage, .pageDownOrNextPage, .halfNextPage:
+                thumbnailOverlayTurnPage(forward: true)
+                return
+            case .previousPage, .pageUpOrPreviousPage, .halfPreviousPage:
+                thumbnailOverlayTurnPage(forward: false)
+                return
+            case .positionalNextPrevPage, .positionalHalfNextPrev:
+                thumbnailOverlayTurnPage(forward: isNextSide)
+                return
+            default:
+                break
+            }
+        }
 
         switch action {
         case .nextPage: nextPage(nil)
