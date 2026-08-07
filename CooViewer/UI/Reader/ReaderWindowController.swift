@@ -26,6 +26,10 @@ final class ReaderWindowController: NSWindowController {
     var originalSizePanel: NSPanel?
     var thumbnailWindowController: ThumbnailWindowController?
 
+    /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
+    var preparedNextBook: (path: String, source: any BookSource)?
+    var preparingNextBookPath: String?
+
     /// 壊れページ用の実行時生成プレースホルダ(多言語対応。旧 broken.png の置換)
     private lazy var brokenPlaceholder: CGImage? = PlaceholderImage.make(
         text: String(localized: "This page could not be loaded."))
@@ -163,8 +167,15 @@ final class ReaderWindowController: NSWindowController {
         }
 
         do {
-            let source = try await BookSourceFactory.make(
-                for: bookURL, readSubFolders: settings.readSubFolder)
+            let source: any BookSource
+            if let prepared = preparedNextBook, prepared.path == bookURL.path {
+                // 事前スプール済みの本を再利用(切替を待ちなしに。設計書 §5)
+                source = prepared.source
+                preparedNextBook = nil
+            } else {
+                source = try await BookSourceFactory.make(
+                    for: bookURL, readSubFolders: settings.readSubFolder)
+            }
             switch await unlock(source) {
             case .unlocked:
                 break
@@ -313,6 +324,7 @@ final class ReaderWindowController: NSWindowController {
         if readerView.isLoupeEnabled {
             requestLoupeHighResolution()
         }
+        maybePrepareNextBook()
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する

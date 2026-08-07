@@ -271,6 +271,35 @@ extension ReaderWindowController {
         refreshAfterJump()
     }
 
+    // MARK: - 次の本の事前スプール(設計書 §5 キャッシュ・先読み)
+
+    /// 巻末が近づいたら同フォルダの次の書庫をバックグラウンドで開いて
+    /// ローカル展開を始める。開く際に openBookFlow が再利用する。
+    func maybePrepareNextBook() {
+        guard let book, book.pageCount > 0,
+              book.currentIndex >= book.pageCount - 6 else { return }
+        let siblings = siblingBooks()
+        guard siblings.count > 1,
+              let current = siblings.firstIndex(of: book.source.url.path) else { return }
+        let nextPath = siblings[(current + 1) % siblings.count]
+        guard nextPath != book.source.url.path,
+              preparedNextBook?.path != nextPath,
+              preparingNextBookPath != nextPath,
+              SupportedTypes.isArchive(URL(fileURLWithPath: nextPath)) else { return }
+        preparingNextBookPath = nextPath
+        Task {
+            defer { preparingNextBookPath = nil }
+            guard let source = try? await BookSourceFactory.make(
+                for: URL(fileURLWithPath: nextPath),
+                readSubFolders: settings.readSubFolder) else { return }
+            // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
+            if await !source.isEncrypted() {
+                await source.beginBackgroundPreparation()
+            }
+            preparedNextBook = (nextPath, source)
+        }
+    }
+
     // MARK: - 最後に開いた本(仕様書 §4.1.1 #1)
 
     func openTheLastBook() {
