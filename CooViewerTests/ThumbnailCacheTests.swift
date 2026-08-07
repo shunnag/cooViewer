@@ -76,3 +76,41 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: bookDir.path))
     }
 }
+
+/// 複数ページのカウント付きスタブ(先読み検証用)
+private actor MultiPageCountingSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/multi")
+    nonisolated var supportsDateSort: Bool { false }
+    private(set) var loadedIDs: Set<Int> = []
+
+    func entries() async throws -> [PageEntry] {
+        (0..<8).map {
+            PageEntry(id: $0, name: "p\($0).png", pathInBook: "p\($0).png",
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        loadedIDs.insert(entry.id)
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 10, height: 10), maxPixelSize: maxPixelSize)
+    }
+}
+
+@MainActor
+final class ThumbnailPrefetchTests: XCTestCase {
+    func testPrefetchCoversCurrentAndAdjacentPages() async throws {
+        let source = MultiPageCountingSource()
+        let entries = try await source.entries()
+        let book = Book(source: source, entries: entries)
+        let model = ThumbnailOverlayModel()
+        model.present(book: book)
+
+        // 1 画面 4 セル(単ページ)で先頭画面を先読み → 画面 0 と 1 の 8 ページ全て
+        let groups = entries.indices.map { [$0] }
+        model.prefetchAdjacent(groups: groups, perPage: 4)
+        await model.waitForPrefetch()
+        let loaded = await source.loadedIDs
+        XCTAssertEqual(loaded, Set(0..<8))
+    }
+}

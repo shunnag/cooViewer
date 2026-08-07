@@ -20,6 +20,7 @@ final class ThumbnailOverlayModel: ObservableObject {
     var onClose: (@MainActor () -> Void)?
     /// ビュー側から同期される実ページ数(キー転用時のクランプに使う)
     var knownPageCount = 1
+    private var prefetchTask: Task<Void, Never>?
 
     static var gridRows: Int {
         let stored = (UserDefaults.standard.dictionary(forKey: "Thumbnail")?["row"]
@@ -46,6 +47,51 @@ final class ThumbnailOverlayModel: ObservableObject {
     func movePage(by delta: Int, pageCount: Int) {
         guard pageCount > 0 else { return }
         page = min(max(0, page + delta), pageCount - 1)
+    }
+
+    /// 現在±1 画面分のサムネイルを先読みする(優先順: 現在の残り→次→前)。
+    /// キャッシュ経由なので生成済み分は即座に飛ばされる。3 並列
+    /// (書庫は actor 直列化されるため過剰な同時要求は避ける)。
+    func prefetchAdjacent(groups: [[Int]], perPage: Int) {
+        prefetchTask?.cancel()
+        guard let source, perPage > 0 else { return }
+        var targets: [PageEntry] = []
+        for offset in [0, 1, -1] {
+            let start = (page + offset) * perPage
+            guard start >= 0, start < groups.count else { continue }
+            let slice = groups[start..<min(start + perPage, groups.count)]
+            targets += slice.flatMap(\.self).compactMap {
+                entries.indices.contains($0) ? entries[$0] : nil
+            }
+        }
+        let key = bookKey
+        prefetchTask = Task {
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = targets.makeIterator()
+                for _ in 0..<3 {
+                    if let entry = iterator.next() {
+                        group.addTask {
+                            _ = await ThumbnailCache.shared.thumbnail(
+                                for: entry, in: source, bookKey: key)
+                        }
+                    }
+                }
+                while await group.next() != nil {
+                    if Task.isCancelled { break }
+                    if let entry = iterator.next() {
+                        group.addTask {
+                            _ = await ThumbnailCache.shared.thumbnail(
+                                for: entry, in: source, bookKey: key)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// テスト・診断用: 先読みの完了を待つ
+    func waitForPrefetch() async {
+        await prefetchTask?.value
     }
 }
 
@@ -114,8 +160,12 @@ struct ThumbnailOverlayView: View {
         .onAppear {
             showCurrentPage()
             model.knownPageCount = pageCount
+            model.prefetchAdjacent(groups: cellGroups, perPage: perPage)
         }
         .onChange(of: pageCount) { model.knownPageCount = pageCount }
+        .onChange(of: model.page) {
+            model.prefetchAdjacent(groups: cellGroups, perPage: perPage)
+        }
         .onChange(of: model.generation) { showCurrentPage() }
         .onChange(of: onlyBookmarks) { model.page = 0 }
         .onChange(of: comicMode) { showCurrentPage() }
