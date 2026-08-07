@@ -113,7 +113,7 @@ final class ReaderView: NSView {
             pageLayer.minificationFilter = .trilinear
             pageLayer.isHidden = true
             // HDR(ゲインマップ)画像を EDR ディスプレイで輝度拡張表示する
-            pageLayer.wantsExtendedDynamicRangeContent = true
+            pageLayer.preferredDynamicRange = .high
             containerLayer.addSublayer(pageLayer)
         }
         registerForDraggedTypes([.fileURL])
