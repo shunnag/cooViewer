@@ -24,6 +24,7 @@ final class SettingsStore {
             "SingleSetting": 740,
             "SwipeToTurnPage": true,
             "FlipSwipeDirection": true,
+            "PlayAnimatedImages": true,
         ])
     }
 
@@ -75,6 +76,9 @@ final class SettingsStore {
 
     /// スワイプページめくりの向きを反転する(既定オン。オフで導入時の向き)
     var flipSwipeDirection: Bool { defaults.bool(forKey: "FlipSwipeDirection") }
+
+    /// アニメーション画像(GIF/WebP 等)を再生する(既定オン)
+    var playAnimatedImages: Bool { defaults.bool(forKey: "PlayAnimatedImages") }
 
     /// ルーペの一辺 pt(仕様書 §4.10 LoupeSize。0/未設定は 150 に補正)
     var loupeSize: Double {

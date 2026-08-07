@@ -64,6 +64,11 @@ final class FolderSource: BookSource {
         pageEntries
     }
 
+    func imageData(for entry: PageEntry) async -> Data? {
+        guard let fileURL = entry.fileURL else { return nil }
+        return try? Data(contentsOf: fileURL)
+    }
+
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         guard let fileURL = entry.fileURL else {
             throw BookSourceError.pageLoadFailed(entry.name)

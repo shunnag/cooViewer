@@ -11,6 +11,21 @@ enum ImageDecoding {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             return try decodeWithAppKit(data, maxPixelSize: maxPixelSize)
         }
+        // ゲインマップ付き HDR は EDR 表示用にフル HDR デコードする
+        // (長辺 8192px まで。CALayer 側は wantsExtendedDynamicRangeContent)
+        if maxPixelSize != nil,
+           CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+               source, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil {
+            let hdrOptions: [CFString: Any] = [
+                kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            if let hdr = CGImageSourceCreateImageAtIndex(
+                source, 0, hdrOptions as CFDictionary),
+               max(hdr.width, hdr.height) <= 8192 {
+                return hdr
+            }
+        }
         if let maxPixelSize {
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
