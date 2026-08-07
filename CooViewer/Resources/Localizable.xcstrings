@@ -102,6 +102,36 @@
         }
       }
     },
+    "Border color:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "枠色:"
+          }
+        }
+      }
+    },
+    "Bottom left": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "左下"
+          }
+        }
+      }
+    },
+    "Bottom right": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "右下"
+          }
+        }
+      }
+    },
     "Browse": {
       "localizations": {
         "ja": {
@@ -262,6 +292,26 @@
         }
       }
     },
+    "Edit Bookmarks": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "しおりを編集"
+          }
+        }
+      }
+    },
+    "Edit Bookmarks…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "しおりを編集…"
+          }
+        }
+      }
+    },
     "Enlarge View Mode": {
       "localizations": {
         "ja": {
@@ -342,6 +392,26 @@
         }
       }
     },
+    "Font size: %lld": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイズ: %lld"
+          }
+        }
+      }
+    },
+    "Font:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フォント:"
+          }
+        }
+      }
+    },
     "General": {
       "localizations": {
         "ja": {
@@ -358,6 +428,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "移動"
+          }
+        }
+      }
+    },
+    "Go to Bookmark": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "しおりへ移動"
           }
         }
       }
@@ -412,6 +492,16 @@
         }
       }
     },
+    "Height: %lld": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高さ: %lld"
+          }
+        }
+      }
+    },
     "Help": {
       "localizations": {
         "ja": {
@@ -428,6 +518,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "ほかを隠す"
+          }
+        }
+      }
+    },
+    "Hide automatically (show on mouse move)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動的に隠す(マウス移動で表示)"
           }
         }
       }
@@ -662,6 +762,16 @@
         }
       }
     },
+    "Name": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前"
+          }
+        }
+      }
+    },
     "Name (numeric aware)": {
       "localizations": {
         "ja": {
@@ -732,6 +842,16 @@
         }
       }
     },
+    "No Bookmarks": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "しおりはありません"
+          }
+        }
+      }
+    },
     "No Recent Books": {
       "localizations": {
         "ja": {
@@ -758,6 +878,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "原寸・幅分割"
+          }
+        }
+      }
+    },
+    "No bookmarks yet.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "しおりはまだありません。"
           }
         }
       }
@@ -862,12 +992,32 @@
         }
       }
     },
+    "Page bar": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページバー"
+          }
+        }
+      }
+    },
     "Page cache memory:": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
             "value": "ページキャッシュ:"
+          }
+        }
+      }
+    },
+    "Page number": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページ番号"
           }
         }
       }
@@ -898,6 +1048,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "アニメーション画像を再生(GIF・WebP など)"
+          }
+        }
+      }
+    },
+    "Position:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位置:"
           }
         }
       }
@@ -998,6 +1158,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "cooViewer を終了"
+          }
+        }
+      }
+    },
+    "Read color:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既読色:"
           }
         }
       }
@@ -1332,6 +1502,16 @@
         }
       }
     },
+    "Show a thumbnail while hovering": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ホバー中にサムネイルを表示"
+          }
+        }
+      }
+    },
     "Show bookmarked pages only": {
       "localizations": {
         "ja": {
@@ -1482,6 +1662,26 @@
         }
       }
     },
+    "System font": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システムフォント"
+          }
+        }
+      }
+    },
+    "Text color:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字色:"
+          }
+        }
+      }
+    },
     "This archive is password-protected.": {
       "localizations": {
         "ja": {
@@ -1589,6 +1789,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "パスワードの試行回数を超えました。"
+          }
+        }
+      }
+    },
+    "Top left": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "左上"
+          }
+        }
+      }
+    },
+    "Top right": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "右上"
           }
         }
       }
@@ -1710,6 +1930,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "前のページに戻ったとき:"
+          }
+        }
+      }
+    },
+    "Width: %lld": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "幅: %lld"
           }
         }
       }

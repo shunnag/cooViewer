@@ -22,6 +22,14 @@ struct SettingsView: View {
     @State private var thumbnailRows = ThumbnailGridSetting.read().rows
     @State private var thumbnailColumns = ThumbnailGridSetting.read().columns
 
+    // ページ番号/ページバー(仕様書 §3.4, §6.1。色と寸法は SettingsStore 経由)
+    @AppStorage("PageNumPosition") private var pageNumPosition = 0
+    @AppStorage("PageNumAutoHide") private var pageNumAutoHide = false
+    @AppStorage("PageNumFontFamily") private var pageNumFontFamily = ""
+    @AppStorage("PageNumFontSize") private var pageNumFontSize = 11.0
+    @AppStorage("PageBarPosition") private var pageBarPosition = 0
+    @AppStorage("PageBarAutoHide") private var pageBarAutoHide = false
+
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
     @AppStorage("FlipSwipeDirection") private var flipSwipeDirection = true
@@ -121,9 +129,46 @@ struct SettingsView: View {
 
     private var displayPane: some View {
         Form {
-            Section {
+            Section(String(localized: "Page number")) {
                 Toggle(String(localized: "Show page number"), isOn: $showNumber)
+                positionPicker(selection: $pageNumPosition)
+                ColorPicker(String(localized: "Text color:"),
+                            selection: colorBinding(\.pageNumTextColor),
+                            supportsOpacity: true)
+                ColorPicker(String(localized: "Background color:"),
+                            selection: colorBinding(\.pageNumBackgroundColor),
+                            supportsOpacity: true)
+                ColorPicker(String(localized: "Border color:"),
+                            selection: colorBinding(\.pageNumBorderColor),
+                            supportsOpacity: true)
+                Picker(String(localized: "Font:"), selection: $pageNumFontFamily) {
+                    Text(String(localized: "System font")).tag("")
+                    ForEach(NSFontManager.shared.availableFontFamilies, id: \.self) {
+                        Text(verbatim: $0).tag($0)
+                    }
+                }
+                Stepper(String(localized: "Font size: \(Int(pageNumFontSize))"),
+                        value: $pageNumFontSize, in: 8...32)
+                Toggle(String(localized: "Hide automatically (show on mouse move)"),
+                       isOn: $pageNumAutoHide)
+            }
+            Section(String(localized: "Page bar")) {
                 Toggle(String(localized: "Show page bar"), isOn: $showPageBar)
+                positionPicker(selection: $pageBarPosition)
+                pageBarSizeSteppers
+                ColorPicker(String(localized: "Background color:"),
+                            selection: colorBinding(\.pageBarBackgroundColor),
+                            supportsOpacity: true)
+                ColorPicker(String(localized: "Border color:"),
+                            selection: colorBinding(\.pageBarBorderColor),
+                            supportsOpacity: true)
+                ColorPicker(String(localized: "Read color:"),
+                            selection: colorBinding(\.pageBarReadColor),
+                            supportsOpacity: true)
+                Toggle(String(localized: "Show a thumbnail while hovering"),
+                       isOn: pageBarShowThumbnailBinding)
+                Toggle(String(localized: "Hide automatically (show on mouse move)"),
+                       isOn: $pageBarAutoHide)
             }
             Section {
                 VStack(alignment: .leading, spacing: 4) {
@@ -304,6 +349,53 @@ struct SettingsView: View {
         default: String(localized:
             "Default: high-quality downscaling that reduces moiré on screentones.")
         }
+    }
+
+    /// 4 隅の位置選択(仕様書 §6.1: 0=左上/1=右上/2=左下/3=右下)
+    private func positionPicker(selection: Binding<Int>) -> some View {
+        Picker(String(localized: "Position:"), selection: selection) {
+            Text(String(localized: "Top left")).tag(0)
+            Text(String(localized: "Top right")).tag(1)
+            Text(String(localized: "Bottom left")).tag(2)
+            Text(String(localized: "Bottom right")).tag(3)
+        }
+    }
+
+    private var pageBarSizeSteppers: some View {
+        let size = SettingsStore.shared.pageBarSize
+        return Group {
+            Stepper(String(localized: "Width: \(Int(size.width))"),
+                    value: pageBarSizeBinding(\.width), in: 50...1000, step: 25)
+            Stepper(String(localized: "Height: \(Int(size.height))"),
+                    value: pageBarSizeBinding(\.height), in: 6...40)
+        }
+    }
+
+    private func pageBarSizeBinding(
+        _ keyPath: WritableKeyPath<CGSize, CGFloat>) -> Binding<Double> {
+        Binding(
+            get: { Double(SettingsStore.shared.pageBarSize[keyPath: keyPath]) },
+            set: {
+                var size = SettingsStore.shared.pageBarSize
+                size[keyPath: keyPath] = $0
+                SettingsStore.shared.pageBarSize = size
+            }
+        )
+    }
+
+    private func colorBinding(
+        _ keyPath: ReferenceWritableKeyPath<SettingsStore, NSColor>) -> Binding<Color> {
+        Binding(
+            get: { Color(nsColor: SettingsStore.shared[keyPath: keyPath]) },
+            set: { SettingsStore.shared[keyPath: keyPath] = NSColor($0) }
+        )
+    }
+
+    private var pageBarShowThumbnailBinding: Binding<Bool> {
+        Binding(
+            get: { SettingsStore.shared.pageBarShowThumbnail },
+            set: { SettingsStore.shared.pageBarShowThumbnail = $0 }
+        )
     }
 
     private func saveThumbnailGrid() {

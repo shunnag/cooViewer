@@ -229,15 +229,155 @@ final class SettingsStore {
         }
     }
 
-    /// NSArchiver 形式の NSColor を読む。NSUnarchiver は Swift から直接使えないため
-    /// ランタイム経由で呼ぶ。失敗したら nil(既定値へフォールバック。設計書 §5)。
-    private static func legacyUnarchivedColor(_ data: Data) -> NSColor? {
+    /// NSArchiver 形式のオブジェクト(NSColor/NSFont)を読む。NSUnarchiver は
+    /// Swift から直接使えないためランタイム経由で呼ぶ。失敗したら nil
+    /// (既定値へフォールバック。設計書 §6 リスク表)。
+    private static func legacyUnarchivedObject(_ data: Data) -> AnyObject? {
         guard let unarchiverClass = NSClassFromString("NSUnarchiver") as? NSObject.Type else {
             return nil
         }
         let selector = NSSelectorFromString("unarchiveObjectWithData:")
         guard unarchiverClass.responds(to: selector) else { return nil }
-        return unarchiverClass.perform(selector, with: data)?
-            .takeUnretainedValue() as? NSColor
+        return unarchiverClass.perform(selector, with: data)?.takeUnretainedValue()
+    }
+
+    private static func legacyUnarchivedColor(_ data: Data) -> NSColor? {
+        legacyUnarchivedObject(data) as? NSColor
+    }
+
+    // MARK: - ページ番号/ページバーのカスタマイズ(仕様書 §3.4, §6.1)
+
+    /// 位置: 0=左上/1=右上/2=左下/3=右下(旧キーをそのまま読み書き)
+    var pageNumPosition: Int {
+        get { min(3, max(0, defaults.integer(forKey: "PageNumPosition"))) }
+        set { defaults.set(newValue, forKey: "PageNumPosition") }
+    }
+
+    var pageBarPosition: Int {
+        get { min(3, max(0, defaults.integer(forKey: "PageBarPosition"))) }
+        set { defaults.set(newValue, forKey: "PageBarPosition") }
+    }
+
+    /// 2 秒自動隠し(マウス移動で再表示。仕様書 §3.4)
+    var pageNumAutoHide: Bool {
+        get { defaults.bool(forKey: "PageNumAutoHide") }
+        set { defaults.set(newValue, forKey: "PageNumAutoHide") }
+    }
+
+    var pageBarAutoHide: Bool {
+        get { defaults.bool(forKey: "PageBarAutoHide") }
+        set { defaults.set(newValue, forKey: "PageBarAutoHide") }
+    }
+
+    /// バブルのサムネイル表示。旧既定は OFF だったが新実装では ON を既定にする
+    /// (明示保存された旧値は尊重。設計書 §2.4)
+    var pageBarShowThumbnail: Bool {
+        get {
+            guard defaults.object(forKey: "PageBarShowThumbnail") != nil else { return true }
+            return defaults.integer(forKey: "PageBarShowThumbnail") != 0
+        }
+        set { defaults.set(newValue ? 1 : 0, forKey: "PageBarShowThumbnail") }
+    }
+
+    /// ページバー寸法(旧 {width,height} 辞書。0 値は旧実装同様補正 §6.2)
+    var pageBarSize: CGSize {
+        get {
+            let dict = defaults.dictionary(forKey: "PageBarSize")
+            let width = (dict?["width"] as? Double) ?? 0
+            let height = (dict?["height"] as? Double) ?? 0
+            return CGSize(width: width > 0 ? min(1000, max(50, width)) : 200,
+                          height: height > 0 ? min(40, max(6, height)) : 15)
+        }
+        set {
+            defaults.set(["width": Double(newValue.width),
+                          "height": Double(newValue.height)], forKey: "PageBarSize")
+        }
+    }
+
+    /// ページ番号フォント。新キー(ファミリー+サイズ)優先、旧 TextFont
+    /// (NSArchiver)を読み替え、無ければ等幅数字のシステムフォント 11pt
+    var pageNumFont: NSFont {
+        let size = pageNumFontSize
+        let family = defaults.string(forKey: "PageNumFontFamily") ?? ""
+        if !family.isEmpty, let font = NSFont(name: family, size: size) {
+            return font
+        }
+        if defaults.object(forKey: "PageNumFontSize") == nil,
+           let data = defaults.data(forKey: "TextFont"),
+           let legacy = Self.legacyUnarchivedObject(data) as? NSFont {
+            return legacy
+        }
+        return .monospacedDigitSystemFont(ofSize: size, weight: .regular)
+    }
+
+    var pageNumFontSize: Double {
+        let stored = defaults.double(forKey: "PageNumFontSize")
+        return stored > 0 ? min(32, max(8, stored)) : 11
+    }
+
+    var pageNumTextColor: NSColor {
+        get { color(newKey: "TextColorSRGBA", legacyKey: "TextColor", default: .white) }
+        set { setColor(newValue, newKey: "TextColorSRGBA") }
+    }
+
+    var pageNumBackgroundColor: NSColor {
+        get {
+            color(newKey: "TextBGColorSRGBA", legacyKey: "TextBGColor",
+                  default: .black.withAlphaComponent(0.8))
+        }
+        set { setColor(newValue, newKey: "TextBGColorSRGBA") }
+    }
+
+    var pageNumBorderColor: NSColor {
+        get {
+            color(newKey: "TextBorderColorSRGBA", legacyKey: "TextBorderColor",
+                  default: .white)
+        }
+        set { setColor(newValue, newKey: "TextBorderColorSRGBA") }
+    }
+
+    var pageBarBackgroundColor: NSColor {
+        get {
+            color(newKey: "PageBarBGColorSRGBA", legacyKey: "PageBarBGColor",
+                  default: .black.withAlphaComponent(0.8))
+        }
+        set { setColor(newValue, newKey: "PageBarBGColorSRGBA") }
+    }
+
+    var pageBarBorderColor: NSColor {
+        get {
+            color(newKey: "PageBarBorderColorSRGBA", legacyKey: "PageBarBorderColor",
+                  default: .white)
+        }
+        set { setColor(newValue, newKey: "PageBarBorderColorSRGBA") }
+    }
+
+    var pageBarReadColor: NSColor {
+        get {
+            color(newKey: "PageBarReadedColorSRGBA", legacyKey: "PageBarReadedColor",
+                  default: .white.withAlphaComponent(0.5))
+        }
+        set { setColor(newValue, newKey: "PageBarReadedColorSRGBA") }
+    }
+
+    /// 色設定の共通経路: 新キー(sRGB 4 成分)→ 旧 NSArchiver データ → 既定値
+    private func color(newKey: String, legacyKey: String,
+                       default defaultColor: NSColor) -> NSColor {
+        if let components = defaults.array(forKey: newKey) as? [Double],
+           components.count == 4 {
+            return NSColor(srgbRed: components[0], green: components[1],
+                           blue: components[2], alpha: components[3])
+        }
+        if let data = defaults.data(forKey: legacyKey),
+           let legacy = Self.legacyUnarchivedColor(data) {
+            return legacy
+        }
+        return defaultColor
+    }
+
+    private func setColor(_ color: NSColor, newKey: String) {
+        let srgb = color.usingColorSpace(.sRGB) ?? .black
+        defaults.set([srgb.redComponent, srgb.greenComponent, srgb.blueComponent,
+                      srgb.alphaComponent], forKey: newKey)
     }
 }
