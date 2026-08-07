@@ -1212,6 +1212,16 @@
         }
       }
     },
+    "Show bookmarked pages only": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "しおりを付けたページのみ表示"
+          }
+        }
+      }
+    },
     "Show from bottom": {
       "localizations": {
         "ja": {
@@ -1458,6 +1468,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "ページ送りか「次の本」でそのまま先へ進めます。"
+          }
+        }
+      }
+    },
+    "Two-page thumbnails": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "見開きサムネイル"
           }
         }
       }
