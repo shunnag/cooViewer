@@ -30,6 +30,12 @@ final class ReaderWindowController: NSWindowController {
     var preparedNextBook: (path: String, source: any BookSource)?
     var preparingNextBookPath: String?
 
+    /// ページバーホバーのサムネイルバブル(仕様書 §3.4)
+    private let pageBarBubble = NSView()
+    private let bubbleImageView = NSImageView()
+    private let bubbleLabel = NSTextField(labelWithString: "")
+    private var bubbleHoverIndex = -1
+
     /// 壊れページ用の実行時生成プレースホルダ(多言語対応。旧 broken.png の置換)
     private lazy var brokenPlaceholder: CGImage? = PlaceholderImage.make(
         text: String(localized: "This page could not be loaded."))
@@ -132,6 +138,25 @@ final class ReaderWindowController: NSWindowController {
             statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
         ])
 
+        // ホバーバブル(フレームベース配置。ホバー中のみ表示)
+        pageBarBubble.wantsLayer = true
+        pageBarBubble.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
+        pageBarBubble.layer?.cornerRadius = 8
+        pageBarBubble.frame = NSRect(x: 0, y: 0, width: 148, height: 190)
+        pageBarBubble.isHidden = true
+        bubbleImageView.imageScaling = .scaleProportionallyUpOrDown
+        bubbleImageView.frame = NSRect(x: 8, y: 28, width: 132, height: 154)
+        pageBarBubble.addSubview(bubbleImageView)
+        bubbleLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        bubbleLabel.textColor = .white
+        bubbleLabel.alignment = .center
+        bubbleLabel.frame = NSRect(x: 0, y: 6, width: 148, height: 18)
+        pageBarBubble.addSubview(bubbleLabel)
+        contentView.addSubview(pageBarBubble)
+
+        pageBar.onHover = { [weak self] info in
+            self?.handlePageBarHover(info)
+        }
         pageBar.onJump = { [weak self] fraction in
             guard let self, let book = self.book else { return }
             if book.goToPercent(fraction) == .moved {
@@ -325,6 +350,40 @@ final class ReaderWindowController: NSWindowController {
             requestLoupeHighResolution()
         }
         maybePrepareNextBook()
+    }
+
+    /// ページバーホバー: ページ番号+サムネイルの吹き出し(仕様書 §3.4)
+    private func handlePageBarHover(_ info: (x: CGFloat, fraction: Double)?) {
+        guard let info, let book, book.pageCount > 0,
+              let contentView = window?.contentView else {
+            pageBarBubble.isHidden = true
+            bubbleHoverIndex = -1
+            return
+        }
+        let index = min(book.pageCount - 1,
+                        max(0, Int(info.fraction * Double(book.pageCount))))
+        let barFrame = pageBar.frame
+        var x = barFrame.minX + info.x - pageBarBubble.frame.width / 2
+        x = min(max(8, x), contentView.bounds.width - pageBarBubble.frame.width - 8)
+        pageBarBubble.setFrameOrigin(NSPoint(
+            x: x, y: barFrame.minY - pageBarBubble.frame.height - 6))
+        bubbleLabel.stringValue = "\(index + 1)/\(book.pageCount)"
+        pageBarBubble.isHidden = false
+        guard index != bubbleHoverIndex else { return }
+        bubbleHoverIndex = index
+        bubbleImageView.image = nil
+        guard book.entries.indices.contains(index) else { return }
+        let entry = book.entries[index]
+        Task { [weak self] in
+            guard let self else { return }
+            if let thumbnail = await ThumbnailCache.shared.thumbnail(
+                for: entry, in: book.source, bookKey: book.cacheKey),
+               self.bubbleHoverIndex == index {
+                self.bubbleImageView.image = NSImage(
+                    cgImage: thumbnail,
+                    size: NSSize(width: thumbnail.width, height: thumbnail.height))
+            }
+        }
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する

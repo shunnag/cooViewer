@@ -148,10 +148,27 @@ extension ReaderWindowController {
             for (position, index) in spread.indices.enumerated() {
                 guard book.entries.indices.contains(index),
                       readerViewForInput.isLoupeEnabled else { return }
-                if let image = try? await book.source.loupeImage(
-                    for: book.entries[index], pixelScale: scale) {
-                    readerViewForInput.setLoupeHighResImage(image, forPageAt: position)
+                guard var image = try? await book.source.loupeImage(
+                    for: book.entries[index], pixelScale: scale) else { continue }
+                // 元解像度が必要量に足りないラスタ画像は MetalFX 超解像で補う
+                if let frame = readerViewForInput.pageFramePixelSize(at: position) {
+                    let rate = CGFloat(max(1.0, settings.loupeRate))
+                    let neededLong = min(8192, max(frame.width, frame.height) * rate)
+                    let imageLong = CGFloat(max(image.width, image.height))
+                    if imageLong < neededLong {
+                        let factor = neededLong / imageLong
+                        let target = CGSize(
+                            width: (CGFloat(image.width) * factor).rounded(),
+                            height: (CGFloat(image.height) * factor).rounded())
+                        if let upscaled = await ImageResampler.shared.resample(
+                            image, to: target,
+                            cacheKey: "loupe-sr-\(book.entries[index].id)",
+                            upscaleWithMetalFX: true) {
+                            image = upscaled
+                        }
+                    }
                 }
+                readerViewForInput.setLoupeHighResImage(image, forPageAt: position)
             }
         }
     }
