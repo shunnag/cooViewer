@@ -1392,6 +1392,26 @@
         }
       }
     },
+    "Thumbnail columns: %lld": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サムネイルの列数: %lld"
+          }
+        }
+      }
+    },
+    "Thumbnail rows: %lld": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サムネイルの行数: %lld"
+          }
+        }
+      }
+    },
     "Thumbnails": {
       "localizations": {
         "ja": {
@@ -1458,6 +1478,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "トラックパッドのスワイプでページをめくる"
+          }
+        }
+      }
+    },
+    "Turn pages with the usual page keys": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページ送りキーでめくれます"
           }
         }
       }

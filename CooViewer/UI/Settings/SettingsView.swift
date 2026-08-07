@@ -19,6 +19,8 @@ struct SettingsView: View {
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
     @AppStorage("PlayAnimatedImages") private var playAnimatedImages = true
+    @State private var thumbnailRows = ThumbnailOverlayModel.gridRows
+    @State private var thumbnailColumns = ThumbnailOverlayModel.gridColumns
 
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
@@ -114,6 +116,12 @@ struct SettingsView: View {
                        isOn: $playAnimatedImages)
                 ColorPicker(String(localized: "Background color:"),
                             selection: backgroundColorBinding, supportsOpacity: false)
+                Stepper(String(localized: "Thumbnail rows: \(thumbnailRows)"),
+                        value: $thumbnailRows, in: 1...8)
+                    .onChange(of: thumbnailRows) { saveThumbnailGrid() }
+                Stepper(String(localized: "Thumbnail columns: \(thumbnailColumns)"),
+                        value: $thumbnailColumns, in: 1...8)
+                    .onChange(of: thumbnailColumns) { saveThumbnailGrid() }
                 sliderRow(
                     label: String(localized: "Spread threshold (width/height):"),
                     value: singleSettingBinding, range: 0.4...1.0,
@@ -193,6 +201,12 @@ struct SettingsView: View {
         default: String(localized:
             "Default: high-quality downscaling that reduces moiré on screentones.")
         }
+    }
+
+    /// 旧形式 Thumbnail{row, column} へ保存(仕様書 §6.1)
+    private func saveThumbnailGrid() {
+        UserDefaults.standard.set(
+            ["row": thumbnailRows, "column": thumbnailColumns], forKey: "Thumbnail")
     }
 
     private var backgroundColorBinding: Binding<Color> {

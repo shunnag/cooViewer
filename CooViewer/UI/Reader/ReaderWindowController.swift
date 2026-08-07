@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// メインウインドウ。本のオープンフロー・表示更新・メニューアクションを担う。
 /// 旧 Controller の表示/ナビゲーション部分に相当する(仕様書 §4.1-4.3)。
@@ -24,7 +25,10 @@ final class ReaderWindowController: NSWindowController {
     var swipeTrackingActive = false
     var swipeTrackingDeltaX: CGFloat = 0
     var originalSizePanel: NSPanel?
-    var thumbnailWindowController: ThumbnailWindowController?
+
+    /// サムネイルオーバーレイ(ウインドウ内表示。仕様書 §4.8)
+    let thumbnailOverlayModel = ThumbnailOverlayModel()
+    var thumbnailHostingView: NSHostingView<ThumbnailOverlayView>?
 
     /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
     var preparedNextBook: (path: String, source: any BookSource)?
@@ -153,6 +157,20 @@ final class ReaderWindowController: NSWindowController {
         bubbleLabel.frame = NSRect(x: 0, y: 6, width: 148, height: 18)
         pageBarBubble.addSubview(bubbleLabel)
         contentView.addSubview(pageBarBubble)
+
+        // サムネイルオーバーレイ(最前面。非表示で開始)
+        let overlay = NSHostingView(
+            rootView: ThumbnailOverlayView(model: thumbnailOverlayModel))
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.isHidden = true
+        contentView.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: contentView.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            overlay.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+        ])
+        thumbnailHostingView = overlay
 
         pageBar.onHover = { [weak self] info in
             self?.handlePageBarHover(info)
