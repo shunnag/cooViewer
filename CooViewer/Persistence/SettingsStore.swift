@@ -125,10 +125,84 @@ final class SettingsStore {
     /// "PageCacheMegabytes" で明示指定可(0/未設定=自動)。
     /// 旧 ImageCache(枚数)は廃止(設計書「キャッシュ・先読み設計」)。
     var pageCacheByteLimit: Int {
+        let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
+        if advancedSettingsEnabled {
+            // 高度な設定: 指定パーセントをそのまま使う(2GB 上限は適用しない)
+            return physical / 100 * advancedMemoryPercent
+        }
         let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
         if megabytes > 0 { return megabytes * 1024 * 1024 }
-        let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
-        return min(2 * 1024 * 1024 * 1024, physical * 15 / 100)
+        return min(2 * 1024 * 1024 * 1024,
+                   physical / 100 * AdvancedDefault.memoryPercent)
+    }
+
+    // MARK: - 高度な設定(新設。設定タブ「高度」)
+
+    /// 高度な設定の既定値。マスタースイッチ OFF のとき・リセット時はこの値
+    enum AdvancedDefault {
+        static let memoryPercent = 15
+        static let prefetchAhead = 12
+        static let prefetchBehind = 3
+        static let displayPixelCap = 4096
+        static let spoolLimitGB = 4
+        static let prepareNextBookPages = 6
+        static let thumbnailCacheDays = 30
+    }
+
+    /// マスタースイッチ。OFF の間は下記アクセサすべてが既定値を返す
+    var advancedSettingsEnabled: Bool {
+        defaults.bool(forKey: "AdvancedSettingsEnabled")
+    }
+
+    /// ページキャッシュに使う物理メモリの割合(%)
+    var advancedMemoryPercent: Int {
+        advancedInt("AdvancedMemoryPercent",
+                    default: AdvancedDefault.memoryPercent, in: 5...50)
+    }
+
+    /// 進行方向の先読みページ数
+    var prefetchAheadCount: Int {
+        advancedInt("AdvancedPrefetchAhead",
+                    default: AdvancedDefault.prefetchAhead, in: 2...64)
+    }
+
+    /// 逆方向の先読みページ数(0 で無効)
+    var prefetchBehindCount: Int {
+        advancedInt("AdvancedPrefetchBehind",
+                    default: AdvancedDefault.prefetchBehind, in: 0...16)
+    }
+
+    /// 表示用デコードの長辺上限(px)。原寸表示・ルーペには影響しない
+    var displayPixelCap: Int {
+        advancedInt("AdvancedDisplayPixelCap",
+                    default: AdvancedDefault.displayPixelCap, in: 2048...8192)
+    }
+
+    /// 書庫のローカル一時展開(スプール)の合計サイズ上限
+    var archiveSpoolSizeLimit: Int64 {
+        Int64(advancedInt("AdvancedSpoolLimitGB",
+                          default: AdvancedDefault.spoolLimitGB, in: 1...64)) << 30
+    }
+
+    /// 巻末の残りページ数がこの値以内になったら次の本を事前準備(0 で無効)
+    var prepareNextBookPages: Int {
+        advancedInt("AdvancedPrepareNextBookPages",
+                    default: AdvancedDefault.prepareNextBookPages, in: 0...20)
+    }
+
+    /// サムネイルのディスクキャッシュ保持日数
+    var thumbnailCacheDays: Int {
+        advancedInt("AdvancedThumbnailCacheDays",
+                    default: AdvancedDefault.thumbnailCacheDays, in: 1...365)
+    }
+
+    /// マスタースイッチ ON かつ保存済みのときだけ保存値(範囲内に丸める)を返す
+    private func advancedInt(_ key: String, default defaultValue: Int,
+                             in range: ClosedRange<Int>) -> Int {
+        guard advancedSettingsEnabled, defaults.object(forKey: key) != nil else {
+            return defaultValue
+        }
+        return min(range.upperBound, max(range.lowerBound, defaults.integer(forKey: key)))
     }
 
     /// 背景色。新形式(sRGB 成分)を優先し、旧 NSArchiver データは一度だけ読み替える

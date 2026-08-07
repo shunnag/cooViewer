@@ -107,8 +107,8 @@ actor ArchiveSource: BookSource {
     /// 全ページのローカル展開を開始する(パスワード解除後に呼ぶこと)。
     /// 書庫順=エントリ順の逐次展開なので、ネットワーク越しでも solid 書庫でも
     /// 最速のアクセスパターンになる。展開中のページ要求は従来経路で応える。
-    func beginBackgroundPreparation() async {
-        beginSpooling(sizeLimit: Self.defaultSpoolSizeLimit)
+    func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
+        beginSpooling(sizeLimit: spoolSizeLimit)
     }
 
     func beginSpooling(sizeLimit: Int64) {
