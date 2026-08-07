@@ -59,7 +59,10 @@ extension ReaderWindowController {
         let view = readerViewForInput
 
         if view.fitMode == .fitToScreen || mode == 3 {
-            wheelTurnPage(deltaY: event.scrollingDeltaY)
+            // 慣性スクロールでは連続でめくらない。閾値は旧実装同様
+            // 行単位デルタ(deltaY)と比較する(仕様書 §4.16)
+            guard event.momentumPhase == [] else { return }
+            wheelTurnPage(deltaY: event.deltaY)
             return
         }
         let delta = CGPoint(x: -event.scrollingDeltaX, y: -event.scrollingDeltaY)

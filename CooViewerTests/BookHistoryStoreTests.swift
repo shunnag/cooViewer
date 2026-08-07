@@ -44,6 +44,16 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.mostRecentBook()?.page, 42)
     }
 
+    func testNoteOpenedPreservesSavedPageForRestore() throws {
+        // 開き直しで履歴エントリを作り直しても保存ページを失わない
+        // (最終ページ復元が読み出す前に消える回帰の防止。仕様書 §4.1.2 手順 7-8)
+        let a = try makeBookFile("a.zip")
+        store.noteClosed(path: a, pageIndex: 42)
+        store.noteOpened(path: a)
+        XCTAssertEqual(store.savedPage(forPath: a), 42)
+        XCTAssertEqual(store.recentBookPaths(), [a])
+    }
+
     func testPageZeroIsNotRemembered() throws {
         // page==0 は「復帰なし」と不可分(仕様書 §7.3)
         let a = try makeBookFile("a.zip")
@@ -71,7 +81,7 @@ final class BookHistoryStoreTests: XCTestCase {
     func testBookmarksSavedEvenWithoutRememberBookSettings() throws {
         // RememberBookSettings=NO でも bookmarks は保存(仕様書 §7.1)
         let a = try makeBookFile("book.zip")
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: "RememberBookSettings"))
+        defaults.set(false, forKey: "RememberBookSettings")
         store.save(displayName: "book.zip", path: a,
                    settings: .init(readMode: .leftToRightSpread, sortMode: nil,
                                    marks: PageMarks(), bookmarks: [.init(name: "x", pageIndex: 1)]))

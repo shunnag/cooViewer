@@ -75,3 +75,6 @@ iOSInjectionProject/
 
 # Coverage artifacts
 *.profraw
+
+# macOS noise
+.DS_Store
