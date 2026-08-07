@@ -7,7 +7,8 @@ extension ReaderWindowController {
 
     /// 現在の本の状態を保存する(切替時・クローズ時・終了時。§7.7 の穴も塞ぐ)
     func saveCurrentBookState() {
-        guard let book else { return }
+        // 開けなかった本(空のプレースホルダ)は履歴・設定に記録しない
+        guard let book, book.pageCount > 0 else { return }
         let path = book.source.url.path
         BookHistoryStore.shared.noteClosed(path: path, pageIndex: book.currentIndex)
         BookHistoryStore.shared.save(

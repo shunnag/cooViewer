@@ -621,6 +621,16 @@
         }
       }
     },
+    "Password entry was canceled.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パスワード入力はキャンセルされました。"
+          }
+        }
+      }
+    },
     "Previous Book": {
       "localizations": {
         "ja": {
@@ -961,6 +971,26 @@
         }
       }
     },
+    "Too many failed password attempts.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パスワードの試行回数を超えました。"
+          }
+        }
+      }
+    },
+    "Turn the page or use Next Book to continue.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページ送りか「次の本」でそのまま先へ進めます。"
+          }
+        }
+      }
+    },
     "View": {
       "localizations": {
         "ja": {
@@ -997,6 +1027,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "ウインドウ"
+          }
+        }
+      }
+    },
+    "Wrong password. %lld attempts left.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パスワードが違います(残り %lld 回)。"
           }
         }
       }
