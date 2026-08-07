@@ -14,6 +14,8 @@ final class ThumbnailOverlayModel: ObservableObject {
     private(set) var source: (any BookSource)?
     private(set) var bookKey = ""
     private(set) var currentIndex = 0
+    /// いま表示中のスプレッドの全ページ(見開きなら 2 枚。強調表示に使う)
+    private(set) var displayedIndices: Set<Int> = []
     private(set) var bookmarkedPages: Set<Int> = []
     private(set) var readsFromLeft = false
     var onJump: (@MainActor (Int) -> Void)?
@@ -34,11 +36,13 @@ final class ThumbnailOverlayModel: ObservableObject {
         return min(8, max(1, stored))
     }
 
-    func present(book: Book) {
+    func present(book: Book, displayedIndices: [Int] = []) {
         entries = book.entries
         source = book.source
         bookKey = book.cacheKey
         currentIndex = book.currentIndex
+        self.displayedIndices = displayedIndices.isEmpty
+            ? [book.currentIndex] : Set(displayedIndices)
         bookmarkedPages = Set(book.bookmarks.map(\.pageIndex))
         readsFromLeft = book.readMode.readsFromLeft
         generation += 1
@@ -46,9 +50,11 @@ final class ThumbnailOverlayModel: ObservableObject {
 
     /// 本のページ移動(0-9 の % ジャンプ等)に追従して、そのページを含む
     /// サムネイル画面へ飛び、現在ページ強調も更新する
-    func focusCurrentIndex(_ index: Int) {
-        guard currentIndex != index else { return }
+    func focusCurrentIndex(_ index: Int, displayedIndices: [Int] = []) {
+        let displayed = displayedIndices.isEmpty ? [index] : Set(displayedIndices)
+        guard currentIndex != index || self.displayedIndices != displayed else { return }
         currentIndex = index
+        self.displayedIndices = displayed
         generation += 1  // ビュー側の showCurrentPage が該当画面へ移動する
     }
 
@@ -237,7 +243,7 @@ struct ThumbnailOverlayView: View {
                                     entries: model.entries,
                                     source: model.source,
                                     bookKey: model.bookKey,
-                                    currentIndex: model.currentIndex,
+                                    displayedIndices: model.displayedIndices,
                                     bookmarkedPages: model.bookmarkedPages,
                                     onSelect: {
                                         model.onJump?(currentGroups[position][0])
@@ -264,9 +270,13 @@ struct ThumbnailOverlayView: View {
             .buttonStyle(.borderless)
             .disabled(model.page == 0)
             Spacer()
-            Text(String(localized: "Turn pages with the usual page keys"))
+            // いま表示中のファイル名(見開きは 2 つ併記)
+            Text(verbatim: model.displayedIndices.sorted().compactMap { index in
+                model.entries.indices.contains(index) ? model.entries[index].name : nil
+            }.joined(separator: "  "))
                 .font(.caption)
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.white.opacity(0.8))
+                .lineLimit(1)
             Spacer()
             Button {
                 model.movePage(by: 1, pageCount: pageCount)
@@ -285,11 +295,11 @@ private struct ThumbnailCell: View {
     let entries: [PageEntry]
     let source: (any BookSource)?
     let bookKey: String
-    let currentIndex: Int
+    let displayedIndices: Set<Int>
     let bookmarkedPages: Set<Int>
     let onSelect: @MainActor () -> Void
 
-    private var isCurrent: Bool { pageIndices.contains(currentIndex) }
+    private var isCurrent: Bool { !displayedIndices.isDisjoint(with: pageIndices) }
 
     var body: some View {
         VStack(spacing: 2) {
@@ -306,14 +316,22 @@ private struct ThumbnailCell: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    if isCurrent {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.accentColor.opacity(0.22))
+                    }
+                }
                 .overlay {
-                    RoundedRectangle(cornerRadius: 4)
+                    RoundedRectangle(cornerRadius: 6)
                         .stroke(isCurrent ? Color.accentColor : Color.clear, lineWidth: 3)
+                        .shadow(color: isCurrent ? Color.accentColor.opacity(0.9) : .clear,
+                                radius: 7)
                 }
             }
             .buttonStyle(.plain)
             Text(verbatim: pageIndices.map { String($0 + 1) }.joined(separator: "-"))
-                .font(.caption)
+                .font(isCurrent ? .caption.bold() : .caption)
                 .foregroundStyle(isCurrent ? Color.accentColor : .white.opacity(0.8))
         }
     }
@@ -386,7 +404,8 @@ extension ReaderWindowController {
         thumbnailOverlayModel.onClose = { [weak self] in
             self?.hideThumbnailOverlay()
         }
-        thumbnailOverlayModel.present(book: book)
+        thumbnailOverlayModel.present(book: book,
+                                      displayedIndices: lastSpreadIndices)
     }
 
     func hideThumbnailOverlay() {
