@@ -20,6 +20,9 @@ final class ReaderWindowController: NSWindowController {
     private var cursorHideTimer: Timer?
     private var settingsObserver: (any NSObjectProtocol)?
     var slideshowTimer: Timer?
+    /// 2 本指スワイプ(ページ間スワイプ)の追跡状態(+Input.swift)
+    var swipeTrackingActive = false
+    var swipeTrackingDeltaX: CGFloat = 0
     var originalSizePanel: NSPanel?
     var thumbnailWindowController: ThumbnailWindowController?
 

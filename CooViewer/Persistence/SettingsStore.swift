@@ -22,6 +22,7 @@ final class SettingsStore {
             "OpenRecentLimit": 10,
             "OpenLastFolder": true,
             "SingleSetting": 740,
+            "SwipeToTurnPage": true,
         ])
     }
 
@@ -67,6 +68,9 @@ final class SettingsStore {
     var prevPageMode: Int { defaults.integer(forKey: "PrevPageMode") }
 
     var slideshowDelay: Double { defaults.double(forKey: "SlideshowDelay") }
+
+    /// 2 本指スワイプ(システムの「ページ間をスワイプ」相当)でページを前後する
+    var swipeToTurnPage: Bool { defaults.bool(forKey: "SwipeToTurnPage") }
 
     /// ルーペの一辺 pt(仕様書 §4.10 LoupeSize。0/未設定は 150 に補正)
     var loupeSize: Double {
