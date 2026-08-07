@@ -3,7 +3,7 @@ import AppKit
 /// キーアクション番号(仕様書 §5.5)の表示名と、キーの人間可読表記。
 /// バインディング編集 UI で使う。
 enum ActionNames {
-    static let allKeyActionNumbers = Array(0...52)
+    static let allKeyActionNumbers = Array(0...53)
 
     static func keyActionName(_ number: Int) -> String {
         switch number {
@@ -60,6 +60,7 @@ enum ActionNames {
         case 50: String(localized: "Minimize")
         case 51: String(localized: "Enlarge View Mode")
         case 52: String(localized: "Reduce View Mode")
+        case 53: String(localized: "Toggle Interpolation")
         default: "#\(number)"
         }
     }

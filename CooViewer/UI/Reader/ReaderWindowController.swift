@@ -572,6 +572,14 @@ final class ReaderWindowController: NSWindowController {
         Task { await refreshDisplay() }
     }
 
+    @objc func changeInterpolation(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(sender.tag, forKey: "Interpolation")
+    }
+
+    @objc func toggleInterpolationMenu(_ sender: Any?) {
+        settings.toggleInterpolationNone()
+    }
+
     @objc func rotateLeft(_ sender: Any?) {
         readerView.rotation += 1  // 仕様書 §4.15: rotateLeft はインクリメント
     }
@@ -588,6 +596,9 @@ final class ReaderWindowController: NSWindowController {
         case #selector(changeReadMode(_:)):
             menuItem.state = book?.readMode.rawValue == menuItem.tag ? .on : .off
             return book != nil
+        case #selector(changeInterpolation(_:)):
+            menuItem.state = settings.interpolation.rawValue == menuItem.tag ? .on : .off
+            return true
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
              #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)),

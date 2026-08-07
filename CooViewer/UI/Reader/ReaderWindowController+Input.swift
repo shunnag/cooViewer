@@ -185,6 +185,7 @@ extension ReaderWindowController {
         case .toggleFullscreen: window?.toggleFullScreen(nil)
         case .minimizeWindow: window?.performMiniaturize(nil)
         case .contextualMenu: showContextMenu()
+        case .toggleInterpolation: settings.toggleInterpolationNone()
 
         case .positionalNextPrevPage:
             isNextSide ? nextPage(nil) : previousPage(nil)
