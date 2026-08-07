@@ -28,6 +28,7 @@ final class ThumbnailWindowController: NSWindowController {
         let grid = ThumbnailGridView(
             entries: book.entries,
             source: book.source,
+            bookKey: book.cacheKey,
             currentIndex: book.currentIndex,
             bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)),
             readsFromLeft: book.readMode.readsFromLeft,
@@ -59,6 +60,7 @@ final class ThumbnailWindowController: NSWindowController {
 private struct ThumbnailGridView: View {
     let entries: [PageEntry]
     let source: any BookSource
+    let bookKey: String
     let currentIndex: Int
     let bookmarkedPages: Set<Int>
     let readsFromLeft: Bool
@@ -77,6 +79,7 @@ private struct ThumbnailGridView: View {
                             entry: entries[index],
                             pageNumber: index + 1,
                             source: source,
+                            bookKey: bookKey,
                             isCurrent: index == currentIndex,
                             isBookmarked: bookmarkedPages.contains(index),
                             onSelect: { onSelect(index) })
@@ -102,6 +105,7 @@ private struct ThumbnailCell: View {
     let entry: PageEntry
     let pageNumber: Int  // 1 始まり
     let source: any BookSource
+    let bookKey: String
     let isCurrent: Bool
     let isBookmarked: Bool
     let onSelect: @MainActor () -> Void
@@ -120,7 +124,9 @@ private struct ThumbnailCell: View {
         }
         .task(id: entry.id) {
             guard image == nil else { return }
-            image = try? await source.image(for: entry, maxPixelSize: 200)
+            // メモリ+ディスクキャッシュ経由(2 回目以降は再展開しない)
+            image = await ThumbnailCache.shared.thumbnail(
+                for: entry, in: source, bookKey: bookKey)
         }
     }
 

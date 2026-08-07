@@ -17,10 +17,21 @@ final class Book {
     var singleSetting = PageLayout.defaultSingleSetting
     var bookmarks: [BookHistoryStore.Bookmark] = []
 
+    /// 表示用デコードの長辺上限(px)。原寸表示は fullResolutionImage(at:) を使う
+    /// (設計書「キャッシュ・先読み設計」)。nil で無制限。
+    var displayPixelCap: Int? = 4096
+
+    /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)
+    let cacheKey: String
+
     private let cache: PageCache
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
     private var lastMoveForward = true
+
+    /// 先読みの幅(設計書「キャッシュ・先読み設計」)
+    private static let prefetchAhead = 12
+    private static let prefetchBehind = 3
 
     /// 表示すべきページの組。images の nil は「読めないページ」
     /// (呼び出し側が壊れ画像プレースホルダを当てる。仕様書 §4.17)。
@@ -36,18 +47,36 @@ final class Book {
     }
 
     init(source: any BookSource, entries: [PageEntry],
-         sortMode: SortMode = .name, cacheCapacity: Int = 8) {
+         sortMode: SortMode = .name,
+         cacheByteLimit: Int = 512 * 1024 * 1024) {
         self.source = source
         self.sortMode = sortMode
         self.entries = PageSorter.sorted(entries, mode: sortMode)
-        self.cache = PageCache(capacity: cacheCapacity)
+        self.cache = PageCache(byteLimit: cacheByteLimit)
+        self.cacheKey = Self.makeCacheKey(for: source.url)
     }
 
     static func open(source: any BookSource, sortMode: SortMode = .name,
-                     cacheCapacity: Int = 8) async throws -> Book {
+                     cacheByteLimit: Int = 512 * 1024 * 1024) async throws -> Book {
         let entries = try await source.entries()
         return Book(source: source, entries: entries, sortMode: sortMode,
-                    cacheCapacity: cacheCapacity)
+                    cacheByteLimit: cacheByteLimit)
+    }
+
+    private static func makeCacheKey(for url: URL) -> String {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let modified = (attributes?[.modificationDate] as? Date)?
+            .timeIntervalSince1970 ?? 0
+        let size = attributes?[.size] as? Int ?? 0
+        let seed = "\(url.path)|\(modified)|\(size)"
+        // 依存を増やさない簡易ハッシュ(djb2 の 64bit 版を 2 系統)で十分
+        var hash1: UInt64 = 5381
+        var hash2: UInt64 = 52711
+        for byte in seed.utf8 {
+            hash1 = hash1 &* 33 &+ UInt64(byte)
+            hash2 = hash2 &* 37 &+ UInt64(byte)
+        }
+        return String(format: "%016llx%016llx", hash1, hash2)
     }
 
     var pageCount: Int { entries.count }
@@ -59,11 +88,18 @@ final class Book {
         guard entries.indices.contains(index) else { return nil }
         let key = entries[index].id
         if let hit = await cache.image(for: key) { return hit }
-        guard let image = try? await source.image(for: entries[index], maxPixelSize: nil) else {
+        guard let image = try? await source.image(
+            for: entries[index], maxPixelSize: displayPixelCap) else {
             return nil
         }
         await cache.insert(image, for: key)
         return image
+    }
+
+    /// 原寸表示・書き出し用: キャッシュと表示上限を介さずフル解像度でデコードする。
+    func fullResolutionImage(at index: Int) async -> CGImage? {
+        guard entries.indices.contains(index) else { return nil }
+        return try? await source.image(for: entries[index], maxPixelSize: nil)
     }
 
     private func isSmall(_ image: CGImage?, at index: Int) -> Bool {
@@ -225,17 +261,35 @@ final class Book {
 
     private func schedulePrefetch() {
         prefetchTask?.cancel()
-        let forward = lastMoveForward
-        let index = currentIndex
-        let count = lastDisplayCount
+        let ahead = (0..<Self.prefetchAhead).map { currentIndex + lastDisplayCount + $0 }
+        let behind = (1...Self.prefetchBehind).map { currentIndex - $0 }
+        let targets = (lastMoveForward ? ahead + behind : behind + ahead)
+            .filter { entries.indices.contains($0) }
+        let parallel = source.supportsParallelPageLoads
+
         prefetchTask = Task { [weak self] in
             guard let self else { return }
-            let targets = forward
-                ? [index + count, index + count + 1, index - 1]
-                : [index - 1, index - 2, index + count]
-            for target in targets {
-                if Task.isCancelled { return }
-                _ = await self.image(at: target)
+            if parallel {
+                // ローカルフォルダ等はデコードを 4 並列で先行させる
+                await withTaskGroup(of: Void.self) { group in
+                    var iterator = targets.makeIterator()
+                    for _ in 0..<4 {
+                        if let target = iterator.next() {
+                            group.addTask { _ = await self.image(at: target) }
+                        }
+                    }
+                    while await group.next() != nil {
+                        if Task.isCancelled { break }
+                        if let target = iterator.next() {
+                            group.addTask { _ = await self.image(at: target) }
+                        }
+                    }
+                }
+            } else {
+                for target in targets {
+                    if Task.isCancelled { return }
+                    _ = await self.image(at: target)
+                }
             }
         }
     }

@@ -47,12 +47,21 @@ protocol BookSource: Sendable {
     func isEncrypted() async -> Bool
     /// パスワードを設定し、正しければ true(仕様書 §4.1.3)
     func checkAndSetPassword(_ password: String) async -> Bool
+
+    /// image(for:) を並列に呼んでよいか(actor 直列化が不要なソースのみ true)
+    var supportsParallelPageLoads: Bool { get }
+
+    /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
+    /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
+    func beginBackgroundPreparation() async
 }
 
 extension BookSource {
     var displayName: String { url.lastPathComponent }
     func isEncrypted() async -> Bool { false }
     func checkAndSetPassword(_ password: String) async -> Bool { true }
+    var supportsParallelPageLoads: Bool { false }
+    func beginBackgroundPreparation() async {}
 }
 
 enum BookSourceFactory {

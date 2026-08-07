@@ -24,7 +24,8 @@ final class StubSource: BookSource, @unchecked Sendable {
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         let size = sizes[entry.id]
         return try ImageDecoding.decode(
-            TestFixtures.pngData(width: Int(size.width), height: Int(size.height)))
+            TestFixtures.pngData(width: Int(size.width), height: Int(size.height)),
+            maxPixelSize: maxPixelSize)
     }
 }
 
@@ -147,6 +148,17 @@ final class BookTests: XCTestCase {
         book.setSortMode(.shuffle)
         XCTAssertEqual(book.currentIndex, 0)             // 旧仕様維持(§13.3)
         XCTAssertEqual(book.pageCount, 5)
+    }
+
+    func testDisplayPixelCapDownsamplesButFullResolutionBypasses() async throws {
+        let book = try await makeBook([CGSize(width: 70, height: 100)])
+        book.displayPixelCap = 50
+        let display = await book.image(at: 0)
+        XCTAssertEqual(display?.height, 50)   // 長辺 100 → 50
+        XCTAssertEqual(display?.width, 35)
+        let full = await book.fullResolutionImage(at: 0)
+        XCTAssertEqual(full?.width, 70)       // 原寸はキャップを介さない
+        XCTAssertEqual(full?.height, 100)
     }
 
     func testBrokenPageReportsNilImageAndStaysSingle() async throws {

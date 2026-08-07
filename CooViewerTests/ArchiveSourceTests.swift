@@ -85,6 +85,39 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(image.width, 3)
     }
 
+    func testSpoolingServesPagesFromLocalFiles() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let url = try writeZip(named: "book.zip", entries: [
+            (Array("a.png".utf8), png),
+            (Array("b.png".utf8), png),
+            (Array("c.png".utf8), png),
+        ])
+        let source = try ArchiveSource(url: url)
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await source.waitForSpoolCompletion()
+        let spooled = await source.spooledEntryCount
+        XCTAssertEqual(spooled, 3)
+        // スプール後もページは正しくデコードできる
+        let entry = try await source.entries()[1]
+        let image = try await source.image(for: entry, maxPixelSize: nil)
+        XCTAssertEqual(image.width, 4)
+        XCTAssertEqual(image.height, 6)
+    }
+
+    func testSpoolingSkippedWhenOverSizeLimit() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let url = try writeZip(named: "book.zip", entries: [(Array("a.png".utf8), png)])
+        let source = try ArchiveSource(url: url)
+        await source.beginSpooling(sizeLimit: 1)  // 上限超過 → スプールしない
+        await source.waitForSpoolCompletion()
+        let spooled = await source.spooledEntryCount
+        XCTAssertEqual(spooled, 0)
+        // オンデマンド経路は従来どおり動く
+        let entry = try await source.entries()[0]
+        let image = try await source.image(for: entry, maxPixelSize: nil)
+        XCTAssertEqual(image.width, 4)
+    }
+
     func testGarbageArchiveDoesNotCrash() async throws {
         let url = tempDir.appendingPathComponent("garbage.zip")
         try Data((0..<256).map { _ in UInt8.random(in: 0...255) }).write(to: url)
