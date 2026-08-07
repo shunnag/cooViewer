@@ -17,7 +17,7 @@ macOS 用の漫画・画像ビューア。フォルダ / zip / rar / 7z 等の�
 Xcode 26 以降が必要です。依存ライブラリ(XADMaster / UniversalDetector)はサブモジュールです。
 
 ```
-$ git clone --recursive https://github.com/plife18/cooViewer.git
+$ git clone --recursive https://github.com/shunnag/cooViewer.git
 $ cd cooViewer
 $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Release build
 ```
