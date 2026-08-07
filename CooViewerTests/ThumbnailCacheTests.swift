@@ -15,6 +15,8 @@ private actor CountingSource: BookSource {
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         loadCount += 1
+        // 併走検証のため生成に時間がかかる状況を再現
+        try? await Task.sleep(for: .milliseconds(80))
         return try ImageDecoding.decode(
             TestFixtures.pngData(width: 40, height: 60), maxPixelSize: maxPixelSize)
     }
@@ -57,6 +59,37 @@ final class ThumbnailCacheTests: XCTestCase {
         // メモリを持たない新インスタンス=ディスクから復元(ソースは呼ばれない)
         let fresh = ThumbnailCache(diskRoot: diskRoot)
         let image = await fresh.thumbnail(for: entry, in: source, bookKey: "book1")
+        XCTAssertNotNil(image)
+        let loads = await source.loadCount
+        XCTAssertEqual(loads, 1)
+    }
+
+    func testConcurrentRequestsShareOneGeneration() async throws {
+        // 併走する同一サムネイル要求は 1 回の生成を共有する(in-flight 共有)
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+        async let first = cache.thumbnail(for: entry, in: source, bookKey: "dedup")
+        async let second = cache.thumbnail(for: entry, in: source, bookKey: "dedup")
+        let results = await (first, second)
+        XCTAssertNotNil(results.0)
+        XCTAssertNotNil(results.1)
+        let loads = await source.loadCount
+        XCTAssertEqual(loads, 1)
+    }
+
+    func testGenerationSurvivesCancelledWaiter() async throws {
+        // 待ち手をキャンセルしても生成は完走し、後続要求が結果を得られる
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+        let waiter = Task {
+            await cache.thumbnail(for: entry, in: source, bookKey: "cancel")
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        waiter.cancel()
+        try? await Task.sleep(for: .milliseconds(150))
+        let image = await cache.thumbnail(for: entry, in: source, bookKey: "cancel")
         XCTAssertNotNil(image)
         let loads = await source.loadCount
         XCTAssertEqual(loads, 1)

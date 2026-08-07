@@ -24,6 +24,10 @@ actor ThumbnailCache {
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails")
     }
 
+    /// 生成中の共有タスク(重複要求は同じ生成を待つ。待ち手がキャンセル
+    /// されても生成自体は完走し、後から来た要求がキャッシュで拾える)
+    private var inFlight: [String: Task<CGImage?, Never>] = [:]
+
     /// メモリ → ディスク → 生成の順で取得する。
     func thumbnail(for entry: PageEntry, in source: any BookSource,
                    bookKey: String) async -> CGImage? {
@@ -33,18 +37,25 @@ actor ThumbnailCache {
             return hit
         }
 
-        let fileURL = diskRoot.appendingPathComponent(bookKey)
-            .appendingPathComponent("\(entry.id).png")
-        if let data = try? Data(contentsOf: fileURL),
-           let image = try? ImageDecoding.decode(data) {
-            store(image, for: key)
-            return image
+        let task: Task<CGImage?, Never>
+        if let running = inFlight[key] {
+            task = running
+        } else {
+            let fileURL = diskRoot.appendingPathComponent(bookKey)
+                .appendingPathComponent("\(entry.id).png")
+            // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
+            // 文脈にも縛られない独立タスクとして生成を完走させる
+            task = Task.detached(priority: .userInitiated) {
+                await Self.loadOrGenerate(entry: entry, source: source, fileURL: fileURL)
+            }
+            inFlight[key] = task
         }
 
-        guard let image = try? await source.image(
-            for: entry, maxPixelSize: Self.maxPixelSize) else { return nil }
-        writeToDisk(image, at: fileURL)
-        store(image, for: key)
+        let image = await task.value
+        inFlight[key] = nil
+        if let image {
+            store(image, for: key)
+        }
         return image
     }
 
@@ -83,7 +94,20 @@ actor ThumbnailCache {
         }
     }
 
-    private func writeToDisk(_ image: CGImage, at fileURL: URL) {
+    /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)
+    private static func loadOrGenerate(entry: PageEntry, source: any BookSource,
+                                       fileURL: URL) async -> CGImage? {
+        if let data = try? Data(contentsOf: fileURL),
+           let image = try? ImageDecoding.decode(data) {
+            return image
+        }
+        guard let image = try? await source.image(
+            for: entry, maxPixelSize: maxPixelSize) else { return nil }
+        writeToDisk(image, at: fileURL)
+        return image
+    }
+
+    private static func writeToDisk(_ image: CGImage, at fileURL: URL) {
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let destination = CGImageDestinationCreateWithURL(
