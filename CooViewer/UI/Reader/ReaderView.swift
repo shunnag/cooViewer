@@ -228,6 +228,10 @@ final class ReaderView: NSView {
               !images.isEmpty else { return }
         let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String)] =
             images.indices.compactMap { index in
+                // レイアウトと setPages の間で配列長が食い違っても落ちないように検証
+                guard scaledSizes.indices.contains(index),
+                      resampledPages.indices.contains(index),
+                      pageIDs.indices.contains(index) else { return nil }
                 let pixelSize = CGSize(
                     width: (scaledSizes[index].width * backingScale).rounded(),
                     height: (scaledSizes[index].height * backingScale).rounded())
