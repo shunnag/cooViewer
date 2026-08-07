@@ -35,6 +35,9 @@ struct KeyBindingsPane: View {
                     save()
                 }
             }
+            // 配列切替時は List を作り直す(行数が減った直後に古い index の行が
+            // 再評価されて範囲外参照になるのを防ぐ)
+            .id(arrayIndex)
 
             HStack(spacing: 12) {
                 KeyCaptureField { character, modifiers in
@@ -58,7 +61,15 @@ struct KeyBindingsPane: View {
         .onChange(of: arrayIndex) { load() }
     }
 
+    @ViewBuilder
     private func bindingRow(at index: Int) -> some View {
+        // 削除・配列差し替えの過渡状態でも範囲外参照しない
+        if bindings.indices.contains(index) {
+            bindingRowContent(at: index)
+        }
+    }
+
+    private func bindingRowContent(at index: Int) -> some View {
         HStack(spacing: 8) {
             Text(ActionNames.displayName(for: bindings[index]))
                 .font(.system(.body, design: .monospaced))
