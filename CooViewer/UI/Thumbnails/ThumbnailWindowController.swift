@@ -49,14 +49,14 @@ final class ThumbnailOverlayModel: ObservableObject {
         page = min(max(0, page + delta), pageCount - 1)
     }
 
-    /// 現在±1 画面分のサムネイルを先読みする(優先順: 現在の残り→次→前)。
+    /// 現在±3 画面分のサムネイルを先読みする(優先順: 現在の残り→近い順)。
     /// キャッシュ経由なので生成済み分は即座に飛ばされる。3 並列
     /// (書庫は actor 直列化されるため過剰な同時要求は避ける)。
     func prefetchAdjacent(groups: [[Int]], perPage: Int) {
         prefetchTask?.cancel()
         guard let source, perPage > 0 else { return }
         var targets: [PageEntry] = []
-        for offset in [0, 1, -1] {
+        for offset in [0, 1, -1, 2, -2, 3, -3] {
             let start = (page + offset) * perPage
             guard start >= 0, start < groups.count else { continue }
             let slice = groups[start..<min(start + perPage, groups.count)]

@@ -204,3 +204,33 @@ private actor MultiPageCountingSourceForCancel: BookSource {
             TestFixtures.pngData(width: 10, height: 10), maxPixelSize: maxPixelSize)
     }
 }
+
+@MainActor
+final class ThumbnailWaiterHandoffTests: XCTestCase {
+    func testNewWaiterAfterAbandonmentRegenerates() async throws {
+        // 待ち手ゼロでキャンセルされた生成の直後に来た新しい要求が、
+        // キャンセル済みタスクに合流せず作り直して画像を得られること
+        let source = MultiPageCountingSourceForCancel()
+        let entries = try await source.entries()
+        let diskRoot = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: diskRoot) }
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+
+        let blocker = Task {
+            await cache.thumbnail(for: entries[0], in: source, bookKey: "handoff")
+        }
+        try? await Task.sleep(for: .milliseconds(30))
+        let abandoned = Task {
+            await cache.thumbnail(for: entries[1], in: source, bookKey: "handoff")
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        abandoned.cancel()
+        try? await Task.sleep(for: .milliseconds(20))
+        // 破棄直後の再要求(先読みの世代交代/セルの再訪に相当)
+        let image = await cache.thumbnail(
+            for: entries[1], in: source, bookKey: "handoff")
+        XCTAssertNotNil(image, "作り直した生成で画像が得られること")
+        _ = await blocker.value
+        _ = await abandoned.value
+    }
+}
