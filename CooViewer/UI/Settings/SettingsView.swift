@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage("Interpolation") private var interpolation = 0
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
+    @AppStorage("PlayAnimatedImages") private var playAnimatedImages = true
 
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
@@ -109,6 +110,8 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Toggle(String(localized: "Play animated images (GIF, WebP, etc.)"),
+                       isOn: $playAnimatedImages)
                 ColorPicker(String(localized: "Background color:"),
                             selection: backgroundColorBinding, supportsOpacity: false)
                 sliderRow(

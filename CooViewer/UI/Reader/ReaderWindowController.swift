@@ -350,6 +350,27 @@ final class ReaderWindowController: NSWindowController {
             requestLoupeHighResolution()
         }
         maybePrepareNextBook()
+        startAnimationsIfNeeded(spread: spread)
+    }
+
+    /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)
+    private func startAnimationsIfNeeded(spread: Book.Spread) {
+        guard settings.playAnimatedImages, let book else { return }
+        let animatable: Set<String> = ["gif", "png", "apng", "webp", "heics", "avif", "avifs"]
+        for (position, index) in spread.indices.enumerated() {
+            guard book.entries.indices.contains(index) else { continue }
+            let entry = book.entries[index]
+            let ext = (entry.name as NSString).pathExtension.lowercased()
+            guard animatable.contains(ext) else { continue }
+            Task { [weak self] in
+                guard let self,
+                      let data = await book.source.imageData(for: entry),
+                      let animation = AnimatedImage.load(from: data) else { return }
+                self.readerViewForInput.applyAnimation(
+                    frames: animation.frames, delays: animation.delays,
+                    forPageAt: position, id: entry.id)
+            }
+        }
     }
 
     /// ページバーホバー: ページ番号+サムネイルの吹き出し(仕様書 §3.4)

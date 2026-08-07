@@ -112,6 +112,8 @@ final class ReaderView: NSView {
             pageLayer.magnificationFilter = interpolation.filter
             pageLayer.minificationFilter = .trilinear
             pageLayer.isHidden = true
+            // HDR(ゲインマップ)画像を EDR ディスプレイで輝度拡張表示する
+            pageLayer.wantsExtendedDynamicRangeContent = true
             containerLayer.addSublayer(pageLayer)
         }
         registerForDraggedTypes([.fileURL])
@@ -132,6 +134,9 @@ final class ReaderView: NSView {
         self.readsFromLeft = readsFromLeft
         resampledPages = Array(repeating: nil, count: images.count)
         loupeHighResImages.removeAll()
+        for pageLayer in pageLayers {
+            pageLayer.removeAnimation(forKey: "pageAnimation")
+        }
         scrollOffset = .zero
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -234,7 +239,8 @@ final class ReaderView: NSView {
                 // レイアウトと setPages の間で配列長が食い違っても落ちないように検証
                 guard scaledSizes.indices.contains(index),
                       resampledPages.indices.contains(index),
-                      pageIDs.indices.contains(index) else { return nil }
+                      pageIDs.indices.contains(index),
+                      images[index].bitsPerComponent <= 8 else { return nil }
                 let pixelSize = CGSize(
                     width: (scaledSizes[index].width * backingScale).rounded(),
                     height: (scaledSizes[index].height * backingScale).rounded())
@@ -362,6 +368,31 @@ final class ReaderView: NSView {
 
     /// ルーペに渡す描画状態のスナップショット。
     /// pageLayers[i] は images[i] に対応するため zip で表示中ページのみ拾える。
+    /// アニメーション画像の再生(設計書 §5)。CAKeyframeAnimation の discrete
+    /// 補間でフレームを切り替える。ページが替わっていたら無視する。
+    func applyAnimation(frames: [CGImage], delays: [Double],
+                        forPageAt index: Int, id: Int) {
+        guard pageIDs.indices.contains(index), pageIDs[index] == id,
+              frames.count > 1, pageLayers.indices.contains(index) else { return }
+        let total = delays.reduce(0, +)
+        guard total > 0 else { return }
+        var keyTimes: [NSNumber] = [0]
+        var elapsed = 0.0
+        for delay in delays.dropLast() {
+            elapsed += delay
+            keyTimes.append(NSNumber(value: elapsed / total))
+        }
+        keyTimes.append(1)
+        let animation = CAKeyframeAnimation(keyPath: "contents")
+        animation.values = frames
+        animation.keyTimes = keyTimes
+        animation.calculationMode = .discrete
+        animation.duration = total
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        pageLayers[index].add(animation, forKey: "pageAnimation")
+    }
+
     /// ルーペ超解像の目標サイズ計算用: ページ layer の実表示ピクセルサイズ
     func pageFramePixelSize(at index: Int) -> CGSize? {
         guard pageLayers.indices.contains(index), images.indices.contains(index)

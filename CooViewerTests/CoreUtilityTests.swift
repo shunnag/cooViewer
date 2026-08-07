@@ -227,3 +227,36 @@ final class SVGSupportTests: XCTestCase {
         XCTAssertFalse(SupportedTypes.isImageFile("artwork.ai"))
     }
 }
+
+final class AnimatedImageTests: XCTestCase {
+    /// 3 フレームの GIF を生成してフレームと表示時間を検証
+    func testLoadsGIFFramesAndDelays() throws {
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(
+            data, "com.compuserve.gif" as CFString, 3, nil)!
+        let frameProperties = [
+            kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.15]
+        ] as CFDictionary
+        for shade in [0.2, 0.5, 0.8] {
+            let frame = try ImageDecoding.decode(TestFixtures.pngData(
+                width: 10, height: 10, red: shade, green: shade, blue: shade))
+            CGImageDestinationAddImage(destination, frame, frameProperties)
+        }
+        CGImageDestinationFinalize(destination)
+
+        let animation = try XCTUnwrap(AnimatedImage.load(from: data as Data))
+        XCTAssertEqual(animation.frames.count, 3)
+        XCTAssertEqual(animation.delays.count, 3)
+        XCTAssertEqual(animation.delays[0], 0.15, accuracy: 0.02)
+        XCTAssertEqual(animation.duration, 0.45, accuracy: 0.05)
+    }
+
+    func testSingleFrameReturnsNil() {
+        XCTAssertNil(AnimatedImage.load(
+            from: TestFixtures.pngData(width: 10, height: 10)))
+    }
+
+    func testAvifsExtensionIsAccepted() {
+        XCTAssertTrue(SupportedTypes.isImageFile("clip.avifs"))
+    }
+}

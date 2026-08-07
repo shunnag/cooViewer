@@ -59,6 +59,9 @@ protocol BookSource: Sendable {
     /// 縮小されたラスタ画像もルーペでは原寸になる)。ベクトルソースは
     /// pixelScale 連動でラスタライズし直す。
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage
+
+    /// ページの元データ(アニメーション再生用)。提供できないソースは nil
+    func imageData(for entry: PageEntry) async -> Data?
 }
 
 extension BookSource {
@@ -70,6 +73,7 @@ extension BookSource {
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         try await image(for: entry, maxPixelSize: nil)
     }
+    func imageData(for entry: PageEntry) async -> Data? { nil }
 }
 
 enum BookSourceFactory {

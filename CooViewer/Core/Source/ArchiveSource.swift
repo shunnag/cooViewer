@@ -74,6 +74,10 @@ actor ArchiveSource: BookSource {
         pageEntries
     }
 
+    func imageData(for entry: PageEntry) async -> Data? {
+        spooledData(for: entry.id) ?? archive.contents(ofEntry: Int32(entry.id))
+    }
+
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         let data: Data
         if let spooled = spooledData(for: entry.id) {
