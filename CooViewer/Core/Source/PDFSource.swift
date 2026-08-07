@@ -47,11 +47,14 @@ actor PDFSource: BookSource {
             height: rotated ? bounds.width : bounds.height
         )
 
-        // ポイント原寸(実効 72dpi)を基準にする(仕様書 §4.14)
+        // 表示用(maxPixelSize あり)はベクトルから 2 倍でラスタライズして
+        // Retina でのぼやけを防ぐ(旧「ポイント原寸」§4.14 からの仕様変更)。
+        // サムネイル等の小さい指定では従来どおり縮小になる。
+        // maxPixelSize なし(原寸表示)はポイント原寸を維持する。
         var scale: CGFloat = 1.0
         if let maxPixelSize {
             let longSide = max(pointSize.width, pointSize.height)
-            if longSide > 0 { scale = min(1.0, CGFloat(maxPixelSize) / longSide) }
+            if longSide > 0 { scale = min(2.0, CGFloat(maxPixelSize) / longSide) }
         }
         let pixelWidth = max(1, Int(pointSize.width * scale))
         let pixelHeight = max(1, Int(pointSize.height * scale))

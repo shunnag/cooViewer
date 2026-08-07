@@ -54,6 +54,15 @@ final class PDFSourceTests: XCTestCase {
         XCTAssertLessThan(center[2], 80)
     }
 
+    func testDisplayRenderingIsDoubleResolution() async throws {
+        // 表示経路(大きい maxPixelSize)はベクトルから 2 倍でラスタライズ
+        let source = try PDFSource(url: makePDF())
+        let entry = try await source.entries()[0]
+        let image = try await source.image(for: entry, maxPixelSize: 4096)
+        XCTAssertEqual(image.width, 400)   // 200pt x2
+        XCTAssertEqual(image.height, 200)
+    }
+
     func testThumbnailRespectsMaxPixelSize() async throws {
         let source = try PDFSource(url: makePDF())
         let entry = try await source.entries()[0]
