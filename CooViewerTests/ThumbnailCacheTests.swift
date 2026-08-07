@@ -149,3 +149,58 @@ final class ThumbnailPrefetchTests: XCTestCase {
         XCTAssertEqual(loaded, Set(0..<8))
     }
 }
+
+@MainActor
+final class ThumbnailCancellationTests: XCTestCase {
+    func testAbandonedRequestIsCancelledBeforeSourceWork() async throws {
+        // e0 の生成がソースを塞いでいる間に e1 を要求し、待ち手を即キャンセル
+        // → e1 のソース呼び出しは実行されない(遠いページの早期破棄)
+        let source = MultiPageCountingSourceForCancel()
+        let entries = try await source.entries()
+        let diskRoot = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: diskRoot) }
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+
+        let blocker = Task {
+            await cache.thumbnail(for: entries[0], in: source, bookKey: "cxl")
+        }
+        try? await Task.sleep(for: .milliseconds(30))  // e0 がソース占有中
+        let abandoned = Task {
+            await cache.thumbnail(for: entries[1], in: source, bookKey: "cxl")
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        abandoned.cancel()
+        _ = await blocker.value
+        _ = await abandoned.value
+        try? await Task.sleep(for: .milliseconds(100))
+        let loaded = await source.loadedIDs
+        XCTAssertTrue(loaded.contains(0))
+        XCTAssertFalse(loaded.contains(1), "破棄済み要求のソース実行は行わない")
+    }
+}
+
+/// 1 件目が長時間ソースを占有するスタブ(キャンセル脱落の検証用)
+private actor MultiPageCountingSourceForCancel: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/cancel-\(UUID().uuidString)")
+    nonisolated var supportsDateSort: Bool { false }
+    private(set) var loadedIDs: Set<Int> = []
+
+    func entries() async throws -> [PageEntry] {
+        (0..<2).map {
+            PageEntry(id: $0, name: "p\($0).png", pathInBook: "p\($0).png",
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        try Task.checkCancellation()  // 実ソースと同じ脱落点
+        loadedIDs.insert(entry.id)
+        if entry.id == 0 {
+            // 実書庫(XADMaster)と同様に actor を同期ブロックで占有する
+            // (Task.sleep だと再入可能になり後続がすぐ実行されてしまう)
+            usleep(200_000)
+        }
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 10, height: 10), maxPixelSize: maxPixelSize)
+    }
+}

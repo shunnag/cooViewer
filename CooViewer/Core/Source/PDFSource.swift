@@ -36,7 +36,8 @@ actor PDFSource: BookSource {
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
-        try render(entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)
+        try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
+        return try render(entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)
     }
 
     /// ルーペ用: ベクトルから倍率連動でラスタライズする(設計書 §5 描画品質)。

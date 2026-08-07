@@ -79,6 +79,7 @@ actor ArchiveSource: BookSource {
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
         let data: Data
         if let spooled = spooledData(for: entry.id) {
             data = spooled
