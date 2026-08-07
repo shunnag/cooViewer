@@ -362,8 +362,14 @@ final class ReaderView: NSView {
 
     /// ルーペに渡す描画状態のスナップショット。
     /// pageLayers[i] は images[i] に対応するため zip で表示中ページのみ拾える。
-    /// ルーペにだけ高解像度画像を差し込む(通常表示・先読みには影響しない)
+    /// ルーペにだけ高解像度画像を差し込む(通常表示・先読みには影響しない)。
+    /// 表示中の画像より低解像度なら採用しない(SVG のフォールバック既定
+    /// 2048px が表示用 4096px を下回るケースの逆転防止)。
     func setLoupeHighResImage(_ image: CGImage, forPageAt index: Int) {
+        if images.indices.contains(index),
+           image.width * image.height < images[index].width * images[index].height {
+            return
+        }
         loupeHighResImages[index] = image
         if loupe.isEnabled {
             loupe.update(content: loupeContent())
