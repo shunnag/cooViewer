@@ -46,7 +46,8 @@ struct SettingsView: View {
                 Text(String(localized: "Left to Right (single page)")).tag(3)
             }
             Picker(String(localized: "Sort by:"), selection: $sortMode) {
-                Text(String(localized: "Name")).tag(0)
+                Text(String(localized: "Name (numeric aware)")).tag(0)
+                Text(String(localized: "Name (simple)")).tag(4)
                 Text(String(localized: "Creation date")).tag(2)
                 Text(String(localized: "Modification date")).tag(3)
                 Text(String(localized: "Shuffle")).tag(1)

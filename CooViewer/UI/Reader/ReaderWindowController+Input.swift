@@ -255,17 +255,23 @@ extension ReaderWindowController {
 
     private func cycleSortMode() {
         guard let book else { return }
-        // canSortByDate 時 0→2→3→1→0、不可時 0↔1(仕様書 §5.5 action 45)
+        // 旧巡回(仕様書 §5.5 action 45)に「名前(単純)」を名前の直後に挿入:
+        // 日付可: 0→4→2→3→1→0 / 不可: 0→4→1→0
         let next: SortMode
         if book.source.supportsDateSort {
             switch book.sortMode {
-            case .name: next = .creationDate
+            case .name: next = .literalName
+            case .literalName: next = .creationDate
             case .creationDate: next = .modificationDate
             case .modificationDate: next = .shuffle
             case .shuffle: next = .name
             }
         } else {
-            next = book.sortMode == .name ? .shuffle : .name
+            switch book.sortMode {
+            case .name: next = .literalName
+            case .literalName: next = .shuffle
+            default: next = .name
+            }
         }
         book.setSortMode(next)
         refreshAfterJump()
