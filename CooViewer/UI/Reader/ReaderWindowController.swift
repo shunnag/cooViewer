@@ -30,6 +30,9 @@ final class ReaderWindowController: NSWindowController {
     let thumbnailOverlayModel = ThumbnailOverlayModel()
     var thumbnailHostingView: NSHostingView<ThumbnailOverlayView>?
 
+    /// しおり編集シート(仕様書 §4.7.2)
+    var bookmarkEditorWindow: NSWindow?
+
     /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
     var preparedNextBook: (path: String, source: any BookSource)?
     var preparingNextBookPath: String?
@@ -52,6 +55,13 @@ final class ReaderWindowController: NSWindowController {
 
     /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
     private var displayGeneration = 0
+
+    /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
+    private var indicatorConstraints: [NSLayoutConstraint] = []
+    private var indicatorLayoutSignature = ""
+    /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
+    private var indicatorHideTimer: Timer?
+    private var indicatorsTemporarilyVisible = true
 
     convenience init() {
         let window = NSWindow(
@@ -86,16 +96,102 @@ final class ReaderWindowController: NSWindowController {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
         readerView.interpolation = settings.interpolation
         readerView.backgroundColor = settings.viewBackgroundColor
-        // 開けなかった本(空)ではオーバーレイを出さない
+        // ページ番号/ページバーの見た目(仕様書 §3.4, §6.1)
+        pageLabel.font = settings.pageNumFont
+        pageLabel.textColor = settings.pageNumTextColor
+        pageLabel.backgroundColor = settings.pageNumBackgroundColor
+        pageLabel.layer?.borderColor = settings.pageNumBorderColor.cgColor
+        pageLabel.layer?.borderWidth = 1
+        pageBar.backgroundColor = settings.pageBarBackgroundColor
+        pageBar.borderColor = settings.pageBarBorderColor
+        pageBar.readColor = settings.pageBarReadColor
+        layoutPageIndicators()
+        updateIndicatorVisibility()
         if let book, book.pageCount > 0 {
-            pageLabel.isHidden = !settings.showNumber
-            pageBar.isHidden = !settings.showPageBar
             // 見開きしきい値の変更は現表示を再判定する(仕様書 §6.3)
             if book.singleSetting != settings.singleSetting {
                 book.singleSetting = settings.singleSetting
                 Task { await refreshDisplay() }
             }
             applyAdvancedSettings(to: book)
+        }
+    }
+
+    /// 位置(4 隅)と寸法の制約を設定から組み直す(仕様書 §6.1
+    /// PageNumPosition/PageBarPosition: 0=左上/1=右上/2=左下/3=右下)。
+    /// 同じ隅を指すときはページ番号とバーを縦に積む(旧既定の並び)
+    private func layoutPageIndicators() {
+        guard let contentView = window?.contentView else { return }
+        let numPosition = settings.pageNumPosition
+        let barPosition = settings.pageBarPosition
+        let barSize = settings.pageBarSize
+        let signature = "\(numPosition)-\(barPosition)-\(barSize)"
+        guard signature != indicatorLayoutSignature else { return }
+        indicatorLayoutSignature = signature
+
+        NSLayoutConstraint.deactivate(indicatorConstraints)
+        var constraints = [
+            pageBar.widthAnchor.constraint(equalToConstant: barSize.width),
+            pageBar.heightAnchor.constraint(equalToConstant: barSize.height),
+        ]
+        func pinHorizontally(_ view: NSView, position: Int) {
+            constraints.append(position % 2 == 0
+                ? view.leadingAnchor.constraint(
+                    equalTo: contentView.leadingAnchor, constant: 8)
+                : view.trailingAnchor.constraint(
+                    equalTo: contentView.trailingAnchor, constant: -8))
+        }
+        pinHorizontally(pageLabel, position: numPosition)
+        pinHorizontally(pageBar, position: barPosition)
+        let stacked = numPosition == barPosition
+        if numPosition < 2 {
+            constraints.append(pageLabel.topAnchor.constraint(
+                equalTo: contentView.topAnchor, constant: 6))
+        } else if stacked {
+            constraints.append(pageLabel.bottomAnchor.constraint(
+                equalTo: pageBar.topAnchor, constant: -4))
+        } else {
+            constraints.append(pageLabel.bottomAnchor.constraint(
+                equalTo: contentView.bottomAnchor, constant: -6))
+        }
+        if barPosition >= 2 {
+            constraints.append(pageBar.bottomAnchor.constraint(
+                equalTo: contentView.bottomAnchor, constant: -6))
+        } else if stacked {
+            constraints.append(pageBar.topAnchor.constraint(
+                equalTo: pageLabel.bottomAnchor, constant: 4))
+        } else {
+            constraints.append(pageBar.topAnchor.constraint(
+                equalTo: contentView.topAnchor, constant: 6))
+        }
+        NSLayoutConstraint.activate(constraints)
+        indicatorConstraints = constraints
+    }
+
+    /// ShowNumber/ShowPageBar と自動隠し状態から表示可否を決める
+    /// (ページのない本では常に隠す)
+    private func updateIndicatorVisibility() {
+        let hasPages = (book?.pageCount ?? 0) > 0
+        pageLabel.isHidden = !hasPages || !settings.showNumber
+            || (settings.pageNumAutoHide && !indicatorsTemporarilyVisible)
+        pageBar.isHidden = !hasPages || !settings.showPageBar
+            || (settings.pageBarAutoHide && !indicatorsTemporarilyVisible)
+    }
+
+    /// 自動隠し: マウス移動で表示を復活させ、2 秒後に隠す(仕様書 §3.4)
+    func noteMouseMovedForIndicators() {
+        guard settings.pageNumAutoHide || settings.pageBarAutoHide else { return }
+        indicatorsTemporarilyVisible = true
+        updateIndicatorVisibility()
+        indicatorHideTimer?.invalidate()
+        indicatorHideTimer = Timer.scheduledTimer(
+            withTimeInterval: 2, repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.indicatorsTemporarilyVisible = false
+                self.updateIndicatorVisibility()
+            }
         }
     }
 
@@ -111,7 +207,7 @@ final class ReaderWindowController: NSWindowController {
         readerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(readerView)
 
-        // ページバー/ページ番号は既定で左上(仕様書 §6.1 PageBarPosition/PageNumPosition=0)
+        // ページバー/ページ番号の位置・寸法は layoutPageIndicators が設定から組む
         pageLabel.translatesAutoresizingMaskIntoConstraints = false
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         pageLabel.textColor = .white
@@ -139,14 +235,6 @@ final class ReaderWindowController: NSWindowController {
             readerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             readerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             readerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-
-            pageLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
-            pageLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
-
-            pageBar.topAnchor.constraint(equalTo: pageLabel.bottomAnchor, constant: 4),
-            pageBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
-            pageBar.widthAnchor.constraint(equalToConstant: 200),
-            pageBar.heightAnchor.constraint(equalToConstant: 15),
 
             statusLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -274,8 +362,7 @@ final class ReaderWindowController: NSWindowController {
             window?.title = book.displayName
             lockedBookReason = nil
             statusLabel.isHidden = true
-            pageLabel.isHidden = !settings.showNumber
-            pageBar.isHidden = !settings.showPageBar
+            updateIndicatorVisibility()
             await refreshDisplay()
             // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す
             if isThumbnailOverlayVisible {
@@ -429,17 +516,26 @@ final class ReaderWindowController: NSWindowController {
         }
         let index = min(book.pageCount - 1,
                         max(0, Int(info.fraction * Double(book.pageCount))))
+        // サムネイル無しのときは番号だけの小さなバブルにする(§6.1 PageBarShowThumbnail)
+        let showsThumbnail = settings.pageBarShowThumbnail
+        bubbleImageView.isHidden = !showsThumbnail
+        pageBarBubble.setFrameSize(showsThumbnail
+            ? NSSize(width: 148, height: 190) : NSSize(width: 96, height: 30))
+        bubbleLabel.frame = NSRect(x: 0, y: 6, width: pageBarBubble.frame.width, height: 18)
         let barFrame = pageBar.frame
         var x = barFrame.minX + info.x - pageBarBubble.frame.width / 2
         x = min(max(8, x), contentView.bounds.width - pageBarBubble.frame.width - 8)
-        pageBarBubble.setFrameOrigin(NSPoint(
-            x: x, y: barFrame.minY - pageBarBubble.frame.height - 6))
+        // バーが画面下半分なら上側へ出す(下配置設定への対応)
+        let bubbleY = barFrame.midY < contentView.bounds.midY
+            ? barFrame.maxY + 6
+            : barFrame.minY - pageBarBubble.frame.height - 6
+        pageBarBubble.setFrameOrigin(NSPoint(x: x, y: bubbleY))
         bubbleLabel.stringValue = "\(index + 1)/\(book.pageCount)"
         pageBarBubble.isHidden = false
         guard index != bubbleHoverIndex else { return }
         bubbleHoverIndex = index
         bubbleImageView.image = nil
-        guard book.entries.indices.contains(index) else { return }
+        guard showsThumbnail, book.entries.indices.contains(index) else { return }
         let entry = book.entries[index]
         Task { [weak self] in
             guard let self else { return }
@@ -655,8 +751,9 @@ final class ReaderWindowController: NSWindowController {
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
              #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)),
-             #selector(cycleReadMode(_:)), #selector(showThumbnailsMenu(_:)):
-            return book != nil
+             #selector(cycleReadMode(_:)), #selector(showThumbnailsMenu(_:)),
+             #selector(editBookmarksMenu(_:)):
+            return (book?.pageCount ?? 0) > 0
         default:
             return true
         }
@@ -708,6 +805,7 @@ extension ReaderWindowController: ReaderViewDelegate {
 
     func readerViewMouseMoved(_ view: ReaderView) {
         noteMouseMoved()
+        noteMouseMovedForIndicators()
     }
 
     func readerView(_ view: ReaderView, handleKey event: NSEvent) -> Bool {

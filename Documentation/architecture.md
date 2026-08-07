@@ -47,6 +47,8 @@
 ├── XADMaster/               ← サブモジュール(継続)
 ├── UniversalDetector/       ← サブモジュール(継続)
 ├── Documentation/           ← 仕様書・本設計書
+├── Design/                  ← アイコン元画像(AppIcon.icon は Icon Composer 管理)
+├── Frameworks/              ← build-frameworks.sh の成果物(ビルド時生成)
 ├── legacy/                  ← 旧ソース一式を git mv(*.m/*.h/xib/旧 xcodeproj/
 │                               旧リソース)。参照用アーカイブでありビルド対象外
 └── docs/                    ← GitHub Pages(原作者マニュアル)。当面そのまま
@@ -73,20 +75,25 @@
 - readMode 4 値(既定 0=右→左見開き)、見開き合成の marks("N"/"N-M"、1 始まり)+ 縦横比 740 判定(§4.2)、switchSingle/Bind。
 - フィットモード 4 値、最大拡大率、回転、補間設定、背景色。
 - ソート: 名前自然順(localizedStandardCompare 相当 §4.4.3)/日付/シャッフル(Fisher-Yates へ置換)。
-- ページキャッシュ+先読み(方向連動)、しおり、サムネイル一覧(右→左読みは右端列から充填)、スライドショー、ルーペ、ページバー+ページ番号(4 隅+色+フォント+自動隠し+クリックジャンプ)、pageMover(Go to Page)。
+- ページキャッシュ+先読み(方向連動)、しおり、サムネイル一覧(右→左読みは右端列から充填)、スライドショー、ルーペ、ページバー+ページ番号(4 隅+色+フォント+自動隠し+クリックジャンプ+バブル)、Go to Page(簡易ダイアログ。旧 pageMover の画面中央数字表示は §2.2 で見送り)。
 - カスタムキー/マウス/ホイール/ジェスチャバインディング: **旧 6 配列スキーマとの互換移行**(§5.1-5.2)、モード別解決順(§5.3。マウスクリックの非対称は「キーと同型」に統一し仕様変更として明記)、switchAction 入替ペア(§5.4)。
 - 同フォルダ次/前の本(名前順・端ラップ)、サブフォルダ移動、loopCheck 4 値(1/2 の後方差含む §4.3.4)。
 - GoToLastPage 復元(0=確認/1=自動/2=無効、page==0 は復帰なし §7.3)、RecentItems/LastPages/BookSettings の互換移行(キー基数 0/1 始まりを厳守 §13.2)。
 - パスワード書庫(NSSecureTextField 化)、ゴミ箱(`trashItemAtURL` + 削除後のローダ再構築)、原寸表示、Finder 表示、ドラッグ&ドロップ。
 - フルスクリーン: ネイティブ全画面へ移行しつつ「上端ホバーでメニューバー」「カーソル 3 秒自動隠し」を再現(§3.3)。
-- フィルタ(CIFilter)。ただし適用対象を「ビュー全体」から「ページ画像のみ」へ変更(仕様変更として明記 §13.4)。
 - 日英ローカライズ、About パネルの XAD クレジット表記(§14.2)。
 
 ### 2.2 削除(§13.1 準拠)
 
 Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl / BufferingMode=Old + ScreenCache / ChangeCreator・ChangeOpenWith / PrevPagePageBarPositionMode / AppleScript ゴミ箱 / AliasHandle 一式(→NSURL ブックマーク) / randomCompare シャッフル / NSNumberFormatter 全域上書き / IKImageEditPanel / SkipPage(移行時に読替のみ) / 孤児ファイル群。
 
-**v2.0 では見送り(将来課題として README に明記)**: Spotlight 保存検索(.savedSearch、mode 3 §2.4)。NSMetadataQuery による再実装は可能だが利用頻度に対し複雑度が高い。
+**v2.0 では見送り(将来課題として README に明記)**:
+
+- Spotlight 保存検索(.savedSearch、mode 3 §2.4)。NSMetadataQuery による再実装は可能だが利用頻度に対し複雑度が高い。
+- カラーフィルタ(CIFilter)。§13.4 の「適用対象をページ画像のみに変更」案ごと保留。
+- pageMover の画面中央数字入力(§5.8)。Go to Page は簡易ダイアログで提供する。
+- 全しおり編集ウインドウ(本を開いていない時の一括編集 §4.7.3)。現在の本のしおり編集シート(§4.7.2)は実装済みで、コピー編集のため Cancel が有効(§13.3 の修正方針)。
+- マウス/ホイール割り当ての編集 UI(既定割り当てと旧設定の移行・実行は動作する)。
 
 ### 2.3 バグの扱い(§13.3 準拠)
 
@@ -97,12 +104,12 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 
 | 変更 | 内容 |
 |---|---|
-| 設定ウインドウ | Cancel 全ロールバック(§6.3)→ **即時反映**(SwiftUI Settings 標準)+「既定に戻す」ボタン |
+| 設定ウインドウ | Cancel 全ロールバック(§6.3)→ **即時反映**(SwiftUI Settings 標準)。「デフォルトに戻す」は「高度」タブの高度な設定に対して提供 |
 | フルスクリーン | 疑似(hidesOnDeactivate)→ ネイティブ。esc で解除、3 勘所(§13.2)は再現 |
 | マウスクリックのモード解決 | fitScreenMode 3 のとき Mode2 参照(§5.3)→ キーと同じ Mode3 参照に統一 |
-| フィルタ適用対象 | ビュー全体 → ページ画像のみ |
 | シャッフル | 非決定的比較器 → Fisher-Yates(シャッフル順の再現性はもともと保証されていない) |
 | 保存タイミング | ⌘Q 時にも本の状態を保存(§7.7 の穴を塞ぐ) |
+| ページバーバブル | サムネイル表示の既定 OFF(§6.1 PageBarShowThumbnail)→ **ON**(旧ドメインに明示保存された値は尊重) |
 
 ---
 
@@ -112,66 +119,82 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 CooViewer/
 ├── App/
 │   ├── main.swift                  — NSApplication 起動
-│   ├── AppDelegate.swift           — ライフサイクル・openFile・Dock
-│   └── MainMenuBuilder.swift       — メニューバー構築(タグ/セレクタ方式。
-│                                     動的リネーム Next↔Previous は仕様維持 §8.3)
+│   ├── AppDelegate.swift           — ライフサイクル・openFile・起動時キャッシュ掃除・
+│   │                                 検証用スナップショット引数(CLAUDE.md 参照)
+│   └── MainMenuBuilder.swift       — メニューバー構築(しおり/最近使った本の
+│                                     サブメニューは NSMenuDelegate で動的再構築)
 ├── Core/
 │   ├── Source/
-│   │   ├── BookSource.swift        — プロトコル: 页列挙・画像取得・パスワード
+│   │   ├── BookSource.swift        — プロトコル+既定実装(パスワード・スプール・ルーペ)
 │   │   ├── FolderSource.swift      — フォルダ走査(readSubFolder 意味論 §4.1)
-│   │   ├── ArchiveSource.swift     — XADMaster ラッパ(エンコーディング検出込み)
-│   │   └── PDFSource.swift         — PDFKit(ページ毎独立レンダリング)
+│   │   ├── ArchiveSource.swift     — actor。XADMaster ラッパ+ローカルスプール(§5)
+│   │   └── PDFSource.swift         — actor。PDFKit(ページ毎独立レンダリング)
 │   ├── Book/
-│   │   ├── Book.swift              — 開いている本(ページ列・ソート適用済み)
+│   │   ├── Book.swift              — @MainActor。ページ列・現在位置・見開き(§4.2)・
+│   │   │                             ナビゲーション・先読み(計画時の Navigator/
+│   │   │                             Prefetcher はここへ統合)
 │   │   ├── PageLayout.swift        — 見開き合成判定(marks + 740 比率 §4.2)
-│   │   └── Navigator.swift         — ページ遷移状態機械(loopCheck・同フォルダ・
-│   │                                 サブフォルダ・しおり移動)
+│   │   └── ReadMode.swift
 │   ├── Cache/
-│   │   ├── PageCache.swift         — actor + NSCache(デコード済み CGImage)
-│   │   └── Prefetcher.swift        — 方向連動先読み(Task キャンセルで §4.6 の
-│   │                                 順序保証を再現、ビジーウェイト排除)
-│   └── Sort/
-│       └── NaturalSort.swift       — finderCompareS 互換(§4.4.3)+ SortMode
+│   │   ├── PageCache.swift         — actor。バイト基準 LRU+メモリ圧迫トリム(§5)
+│   │   └── ThumbnailCache.swift    — actor。メモリ+ディスク、世代一致の待ち手管理
+│   ├── Rendering/
+│   │   ├── ImageResampler.swift    — 表示ピクセルへの事前リサンプル(§5 描画品質)
+│   │   └── MetalFXUpscaler.swift   — MetalFX Spatial 拡大(RGBA 正規化必須)
+│   ├── Sort/PageSorter.swift       — 自然順ほか SortMode 全種(§4.4.3)
+│   └── ImageDecoding / AnimatedImage / SupportedTypes
 ├── Input/
-│   ├── ActionCatalog.swift         — 全アクション enum(キー 0-52/マウス 0-64 →
-│   │                                 意味名。旧番号は移行専用の rawValue 対応表)
-│   ├── Binding.swift               — Codable モデル(キー/マウス/ジェスチャ、
-│   │                                 modifier 符号化の型安全表現)
-│   ├── BindingResolver.swift       — モード別解決順(§5.3)+ switchAction(§5.4)
-│   └── InputDispatcher.swift       — NSEvent → アクション実行
+│   ├── ReaderAction.swift          — 全アクション enum(旧番号 §5.5-5.6 は移行用対応表)
+│   ├── Bindings.swift              — 旧 6 配列互換の読み書き・解決順(§5.3)・
+│   │                                 switchAction(§5.4)
+│   └── ActionNames.swift           — 表示名(設定のバインディング編集用)
 ├── UI/
 │   ├── Reader/
-│   │   ├── ReaderWindowController.swift
-│   │   ├── ReaderView.swift        — layer-backed NSView。1/2 ページ配置・
-│   │   │                             スケール計算(§4.9)・スクロール端判定・回転
-│   │   ├── PageBarView.swift       — ページバー+ホバーバブル+クリックジャンプ
-│   │   ├── LoupeOverlay.swift
-│   │   └── OverlayText.swift       — ページ番号/情報表示
-│   ├── Thumbnails/ (SwiftUI)
-│   ├── Bookmarks/  (SwiftUI)
-│   └── Settings/   (SwiftUI)       — タブ構成は旧ペイン(§6)を整理統合
+│   │   ├── ReaderWindowController.swift(+Input/+Library/+Thumbnails 拡張)
+│   │   │                           — 開くフロー・表示更新・入力ディスパッチ・
+│   │   │                             付随機能・ページ番号/バーの配置と自動隠し
+│   │   ├── ReaderView.swift        — layer-backed。1/2 ページ配置・フィット・回転・
+│   │   │                             内部スクロール端判定・リサンプル差し替え
+│   │   ├── PageBarView.swift       — ページバー(色・進捗・クリック/ホバー)
+│   │   ├── LoupeController.swift / PlaceholderImage.swift
+│   ├── Thumbnails/ (SwiftUI)       — ThumbnailOverlayModel / ThumbnailOverlayView /
+│   │                                 ThumbnailGridLayout(ウインドウ内オーバーレイ §4.8)
+│   ├── Bookmarks/ (SwiftUI)        — BookmarkEditorView(しおり編集シート §4.7.2)
+│   └── Settings/ (SwiftUI)         — SettingsView(一般/表示/操作/キー/高度)+
+│                                     KeyBindingsPane
 ├── Persistence/
-│   ├── SettingsStore.swift         — 型付き UserDefaults ラッパ(新キー体系)
-│   ├── BookSettingsStore.swift     — BookSettings/RecentItems/LastPages
-│   │                                 (スキーマ §7.1-7.3 互換、URL ブックマーク)
-│   └── LegacyMigration.swift       — 旧 defaults 一括移行(§13.5 マッピング)
+│   ├── SettingsStore.swift         — 型付きアクセサ。旧キーを直接読み書きし、色/
+│   │                                 フォント等の旧 NSArchiver データは読み替え(§13.5)
+│   └── BookHistoryStore.swift      — BookSettings/RecentItems/LastPages
+│                                     (スキーマ §7.1-7.3 互換、URL ブックマーク)
 └── Resources/
-    ├── Assets.xcassets             — アイコン(旧 icns 引き継ぎ)
     ├── Localizable.xcstrings       — ja/en
-    └── Credits.rtf                 — XAD クレジット維持(§14.2)
-CooViewerTests/                     — NaturalSort・PageLayout・BindingResolver・
-                                      LegacyMigration・Navigator のユニットテスト
+    ├── Credits.rtf                 — XAD クレジット維持(§14.2)
+    └── coo_*.icns / broken.png / empty.png
+CooViewerTests/                     — ソート・ソース(スプール/暗号化 zip 含む)・Book・
+                                      バインディング移行・履歴・ページ/サムネイル
+                                      キャッシュ・リサンプル/MetalFX 色回帰・設定の
+                                      ユニットテスト(旧 defaults 移行は §6 リスク表の
+                                      とおりフィクスチャで担保)
 ```
+
+計画時との主な差分: LegacyMigration の一括移行方式は「各ストアが旧キーを
+そのまま読み書き+新形式へ読み替え」方式に変更(§13.2 のキー互換はそのまま
+成立)。アイコンは Assets.xcassets ではなく Icon Composer の AppIcon.icon。
 
 ### 3.1 並行性設計(旧 §4.6 の置換)
 
 - UI・Navigator・表示状態は `@MainActor`。
-- `PageCache`/`Prefetcher` は actor。先読みは `Task` ベースで、**「大ジャンプ前に先読みをキャンセルして完了を待つ」「表示は先読み結果を待つ」という順序保証のみ**を旧実装から移植する(§13.4)。NSLock+ビジーウェイト+threadStop は持ち込まない。
+- キャッシュは actor。先読みは `Task` ベースで、ページ移動のたびに前回の
+  先読みタスクをキャンセルして作り直す。**完了待ちはしない**(キャッシュ挿入は
+  冪等で、表示経路は先読み結果に依存しない)。表示の一貫性は
+  ReaderWindowController の世代番号(displayGeneration)で守る。
+  NSLock+ビジーウェイト+threadStop は持ち込まない。
 - 書庫展開(XADMaster)は ObjC 同期 API のため、専用 actor(`ArchiveSource` 内)で直列化。solid rar の逐次展開特性を前提にシーケンシャルな先読みを優先する(§13.4)。
 
 ### 3.2 描画設計(旧 §4.9-4.11 の置換)
 
-- ReaderView は layer-backed。ページ毎に CALayer(contents=CGImage)、位置・スケールは CGAffineTransform。補間は `magnificationFilter`、フィルタは CIFilter 配列をページ layer にのみ適用。
+- ReaderView は layer-backed。ページ毎に CALayer(contents=CGImage)、位置・スケールは CGAffineTransform。補間は `magnificationFilter`(+§5 の事前リサンプル)。フィルタ(CIFilter)は §2.2 で見送り。
 - スクロールは view 内オフセット管理(NSScrollView は使わない)。scrollTo の端到達判定(純垂直移動のみ YES §13.2)、PageUp+PrevPage 系の意味論を Navigator 側で再現。
 - 画像デコードは ImageIO(CGImageSource)で Data→CGImage。壊れ画像は broken 相当のプレースホルダでページ数を保つ(§4.17 のエラー黙殺方針を維持)。
 

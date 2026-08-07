@@ -1,12 +1,25 @@
 import AppKit
 
 /// ページバー(仕様書 §3.4)。進捗表示とクリック/ドラッグでのページジャンプ。
-/// 既読部分は読み方向に応じて左端/右端から塗る。
-/// 位置・色・寸法のカスタマイズはマイルストーン 6/7 で設定に接続する。
+/// 既読部分は読み方向に応じて左端/右端から塗る。位置・寸法は
+/// ReaderWindowController が制約で、色は下記プロパティで設定から反映する。
 @MainActor
 final class PageBarView: NSView {
     /// 0.0-1.0 の進捗(既読率)
     var progress: Double = 0 {
+        didSet { needsDisplay = true }
+    }
+
+    // 色(仕様書 §6.1 PageBarBGColor/PageBarBorderColor/PageBarReadedColor)
+    var backgroundColor: NSColor = .black.withAlphaComponent(0.8) {
+        didSet { needsDisplay = true }
+    }
+
+    var borderColor: NSColor = .white {
+        didSet { needsDisplay = true }
+    }
+
+    var readColor: NSColor = .white.withAlphaComponent(0.5) {
         didSet { needsDisplay = true }
     }
 
@@ -34,7 +47,7 @@ final class PageBarView: NSView {
         let radius = barRect.height / 2
 
         let background = NSBezierPath(roundedRect: barRect, xRadius: radius, yRadius: radius)
-        NSColor.black.withAlphaComponent(0.8).setFill()
+        backgroundColor.setFill()
         background.fill()
 
         // 既読部分(仕様書 §3.4: readFromLeft に応じ左端/右端から)
@@ -45,11 +58,11 @@ final class PageBarView: NSView {
                 : NSRect(x: barRect.maxX - readWidth, y: barRect.minY,
                          width: readWidth, height: barRect.height)
             let readPath = NSBezierPath(roundedRect: readRect, xRadius: radius, yRadius: radius)
-            NSColor.white.withAlphaComponent(0.5).setFill()
+            readColor.setFill()
             readPath.fill()
         }
 
-        NSColor.white.setStroke()
+        borderColor.setStroke()
         let border = NSBezierPath(
             roundedRect: barRect.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
         border.lineWidth = 1

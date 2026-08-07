@@ -40,7 +40,8 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   (team FQTM2788K5) with hardened runtime for notarized distribution.
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
-  the PNG (add `--show-thumbnails` to capture the thumbnail overlay). Sample book generator: create portrait PNGs in a folder (see git history for
+  the PNG (add `--show-thumbnails` to capture the thumbnail overlay; `--show-bookmark-editor`
+  with `--snapshot-settings` renders the bookmark editor). Sample book generator: create portrait PNGs in a folder (see git history for
   `makepages.swift`).
 
 ## Code conventions
@@ -67,9 +68,11 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 - `CooViewer/Input/` — `ReaderAction` (typed action catalog + legacy number maps),
   `BindingConfiguration` (legacy-compatible 6 arrays, resolution order §5.3, switchAction
   §5.4). Dispatch lives in `ReaderWindowController+Input.swift`.
-- `CooViewer/UI/Reader/` — `ReaderWindowController` (+Input/+Library extensions: open
-  flow, actions, persistence hooks), `ReaderView` (CALayer-based 1-2 page rendering, fit
-  modes, rotation, internal scroll with edge detection), `PageBarView`.
+- `CooViewer/UI/Reader/` — `ReaderWindowController` (+Input/+Library/+Thumbnails
+  extensions: open flow, actions, persistence hooks, page indicator layout/auto-hide),
+  `ReaderView` (CALayer-based 1-2 page rendering, fit modes, rotation, internal scroll
+  with edge detection), `PageBarView`.
+- `CooViewer/UI/Bookmarks/` — `BookmarkEditorView` (copy-edit sheet, Cancel-safe).
 - `CooViewer/Persistence/` — `SettingsStore` (typed accessors over legacy keys),
   `BookHistoryStore` (BookSettings/RecentItems/LastPages, URL bookmarks instead of alias).
 - `Scripts/build-frameworks.sh` — nested xcodebuild for the XADMaster submodule.

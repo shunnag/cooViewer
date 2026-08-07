@@ -57,12 +57,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.readerWindowController?.showThumbnail()
             }
         }
+        if arguments.contains("--show-bookmark-editor") {
+            // 検証用: シートではなく通常ウインドウで表示する(シートの
+            // NSHostingView は layer.render/cacheDisplay のどちらでも写らないため)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                guard let book = self.readerWindowController?.book else { return }
+                let window = NSWindow(contentViewController: NSHostingController(
+                    rootView: BookmarkEditorView(
+                        bookmarks: [
+                            .init(name: "bookmark1", pageIndex: 1),
+                            .init(name: "お気に入りの見開き", pageIndex: 3),
+                        ],
+                        pageCount: book.pageCount,
+                        onSave: { _ in }, onClose: {})))
+                window.makeKeyAndOrderFront(nil)
+                self.settingsWindow = window  // --snapshot-settings と同じ経路で撮る
+            }
+        }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
-                self.writeSnapshot(of: self.readerWindowController?.window?.contentView,
-                                   to: path)
+                // しおり編集シートが開いていればそちらを撮る(NSHostingView は反転補正)
+                if let sheet = self.readerWindowController?.bookmarkEditorWindow {
+                    self.writeCachedSnapshot(of: sheet.contentView, to: path)
+                } else {
+                    self.writeSnapshot(of: self.readerWindowController?.window?.contentView,
+                                       to: path)
+                }
                 NSApp.terminate(nil)
             }
         }
@@ -77,6 +100,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
         }
+    }
+
+    /// draw(_:) ベースのビュー(SwiftUI シート等)は cacheDisplay で撮る
+    private func writeCachedSnapshot(of targetView: NSView?, to path: String) {
+        guard let view = targetView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: path))
     }
 
     private func writeSnapshot(of targetView: NSView?, to path: String, flipped: Bool = false) {

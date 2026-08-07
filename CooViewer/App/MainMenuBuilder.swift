@@ -170,6 +170,14 @@ enum MainMenuBuilder {
         menu.addItem(withTitle: String(localized: "Previous Bookmark"),
                      action: #selector(ReaderWindowController.previousBookmarkMenu(_:)),
                      keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Edit Bookmarks…"),
+                     action: #selector(ReaderWindowController.editBookmarksMenu(_:)),
+                     keyEquivalent: "")
+        let bookmarkListItem = menu.addItem(
+            withTitle: String(localized: "Go to Bookmark"), action: nil, keyEquivalent: "")
+        let bookmarkListMenu = NSMenu()
+        bookmarkListMenu.delegate = BookmarkListMenuDelegate.shared
+        bookmarkListItem.submenu = bookmarkListMenu
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Show Thumbnails"),
                      action: #selector(ReaderWindowController.showThumbnailsMenu(_:)),

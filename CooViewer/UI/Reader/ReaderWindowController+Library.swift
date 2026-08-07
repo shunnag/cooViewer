@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// 付随機能: しおり・本の状態保存/復元・同フォルダ移動・スライドショー・
 /// ゴミ箱・Finder 表示・原寸表示(仕様書 §4.7-§4.13, §7)。
@@ -63,6 +64,34 @@ extension ReaderWindowController {
             book.bookmarks.append(.init(name: name, pageIndex: page))
         }
         saveCurrentBookState()
+    }
+
+    /// しおり編集シート(§4.7.2。コピー編集のため Cancel が有効 §13.3)
+    func editBookmarks() {
+        guard let book, book.pageCount > 0, let window,
+              bookmarkEditorWindow == nil else { return }
+        let editor = NSWindow(contentViewController: NSHostingController(
+            rootView: BookmarkEditorView(
+                bookmarks: book.bookmarks, pageCount: book.pageCount,
+                onSave: { [weak self, weak book] bookmarks in
+                    book?.bookmarks = bookmarks
+                    self?.saveCurrentBookState()
+                },
+                onClose: { [weak self] in
+                    guard let self, let sheet = self.bookmarkEditorWindow else { return }
+                    self.window?.endSheet(sheet)
+                    self.bookmarkEditorWindow = nil
+                })))
+        bookmarkEditorWindow = editor
+        window.beginSheet(editor)
+    }
+
+    /// しおり一覧メニューからのジャンプ(representedObject = 0 始まり index)
+    @objc func goToBookmarkListItem(_ sender: NSMenuItem) {
+        guard let book, let index = sender.representedObject as? Int,
+              book.entries.indices.contains(index) else { return }
+        book.goTo(index: index)
+        refreshAfterJump()
     }
 
     func goToBookmark(next: Bool) {
@@ -312,12 +341,39 @@ extension ReaderWindowController {
     // MARK: - メニュー用アクション
 
     @objc func addRemoveBookmarkMenu(_ sender: Any?) { toggleBookmark() }
+    @objc func editBookmarksMenu(_ sender: Any?) { editBookmarks() }
     @objc func nextBookmarkMenu(_ sender: Any?) { goToBookmark(next: true) }
     @objc func previousBookmarkMenu(_ sender: Any?) { goToBookmark(next: false) }
     @objc func nextBookMenu(_ sender: Any?) { openAdjacentBook(forward: true) }
     @objc func previousBookMenu(_ sender: Any?) { openAdjacentBook(forward: false) }
     @objc func openLastBookMenu(_ sender: Any?) { openTheLastBook() }
     @objc func toggleSlideshowMenu(_ sender: Any?) { toggleSlideshow() }
+}
+
+/// しおりサブメニューを開くたびに現在の本のしおりで再構築する(仕様書 §4.7.1)
+@MainActor
+final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
+    static let shared = BookmarkListMenuDelegate()
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let controller = NSApp.windows
+            .compactMap { $0.windowController as? ReaderWindowController }.first
+        let bookmarks = controller?.book?.bookmarks ?? []
+        for bookmark in bookmarks {
+            let title = "\(bookmark.name)  (p.\(bookmark.pageIndex + 1))"
+            let item = menu.addItem(
+                withTitle: title,
+                action: #selector(ReaderWindowController.goToBookmarkListItem(_:)),
+                keyEquivalent: "")
+            item.representedObject = bookmark.pageIndex
+        }
+        if bookmarks.isEmpty {
+            let empty = menu.addItem(withTitle: String(localized: "No Bookmarks"),
+                                     action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+        }
+    }
 }
 
 /// Open Recent サブメニューを開くたびに履歴から再構築する(仕様書 §7.2)
