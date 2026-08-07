@@ -21,6 +21,26 @@ final class PageSorterTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.pathInBook), ["a/2.png", "a/10.png", "b/1.png"])
     }
 
+    func testNumericAwareNameSortOrdersByNumericValue() {
+        // ゼロ埋めが混在しても数値の大小で並ぶ
+        let names = ["hoge-006.png", "hoge-0.png", "hoge-03.png",
+                     "hoge-1.png", "hoge-5.png", "hoge-2.png", "hoge-4.png"]
+        let sorted = PageSorter.sorted(names.map { entry($0) }, mode: .name)
+        XCTAssertEqual(sorted.map(\.pathInBook),
+                       ["hoge-0.png", "hoge-1.png", "hoge-2.png", "hoge-03.png",
+                        "hoge-4.png", "hoge-5.png", "hoge-006.png"])
+    }
+
+    func testLiteralNameSortIsPlainCharacterOrder() {
+        // 単純な文字コード順: 数値としては解釈しない
+        let names = ["hoge-006.png", "hoge-0.png", "hoge-03.png",
+                     "hoge-1.png", "hoge-5.png", "hoge-2.png", "hoge-4.png"]
+        let sorted = PageSorter.sorted(names.map { entry($0) }, mode: .literalName)
+        XCTAssertEqual(sorted.map(\.pathInBook),
+                       ["hoge-0.png", "hoge-006.png", "hoge-03.png", "hoge-1.png",
+                        "hoge-2.png", "hoge-4.png", "hoge-5.png"])
+    }
+
     func testShuffleIsReproducibleWithSameSeed() {
         let entries = (0..<20).map { entry("page\($0).png", id: $0) }
         var rng1 = SplitMix64(seed: 42)
