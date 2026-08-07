@@ -34,15 +34,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let path = arguments[index + 1]
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
-                self.writeSnapshot(to: path)
+                self.writeSnapshot(of: self.readerWindowController?.window?.contentView,
+                                   to: path)
+                NSApp.terminate(nil)
+            }
+        }
+        if let index = arguments.firstIndex(of: "--snapshot-settings"), index + 1 < arguments.count {
+            let path = arguments[index + 1]
+            showSettings(nil)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                // NSHostingView 配下は layer.render で上下反転するため補正する
+                self.writeSnapshot(of: self.settingsWindow?.contentView, to: path,
+                                   flipped: true)
                 NSApp.terminate(nil)
             }
         }
     }
 
-    private func writeSnapshot(to path: String) {
-        guard let view = readerWindowController?.window?.contentView,
-              let layer = view.layer else { return }
+    private func writeSnapshot(of targetView: NSView?, to path: String, flipped: Bool = false) {
+        guard let view = targetView, let layer = view.layer else { return }
         let size = view.bounds.size
         guard let context = CGContext(
             data: nil, width: Int(size.width * 2), height: Int(size.height * 2),
@@ -51,6 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return }
         context.scaleBy(x: 2, y: 2)
+        if flipped {
+            context.translateBy(x: 0, y: size.height)
+            context.scaleBy(x: 1, y: -1)
+        }
         layer.render(in: context)
         guard let image = context.makeImage() else { return }
         let rep = NSBitmapImageRep(cgImage: image)
