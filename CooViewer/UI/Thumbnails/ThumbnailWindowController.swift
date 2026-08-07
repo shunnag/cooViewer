@@ -240,3 +240,27 @@ private struct ThumbnailPageImage: View {
         }
     }
 }
+
+// MARK: - ReaderWindowController 配線
+
+extension ReaderWindowController {
+    /// サムネイル一覧の表示/トグル(仕様書 §4.8)。本が無ければ何もしない。
+    func showThumbnail() {
+        guard let book else { return }
+        if let controller = thumbnailWindowController,
+           controller.window?.isVisible == true {
+            controller.close()
+            return
+        }
+        let controller = thumbnailWindowController ?? ThumbnailWindowController()
+        thumbnailWindowController = controller
+        controller.present(book: book) { [weak self] index in
+            book.goTo(index: index)
+            self?.refreshAfterJump()
+        }
+    }
+
+    @objc func showThumbnailsMenu(_ sender: Any?) {
+        showThumbnail()
+    }
+}
