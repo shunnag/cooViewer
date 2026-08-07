@@ -264,6 +264,14 @@ final class ReaderWindowController: NSWindowController {
             pageLabel.isHidden = !settings.showNumber
             pageBar.isHidden = !settings.showPageBar
             await refreshDisplay()
+            // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す
+            if isThumbnailOverlayVisible {
+                if book.pageCount > 0 {
+                    presentThumbnailOverlay(for: book)
+                } else {
+                    hideThumbnailOverlay()
+                }
+            }
         } catch {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
             NSSound.beep()
@@ -278,6 +286,7 @@ final class ReaderWindowController: NSWindowController {
         saveCurrentBookState()
         let placeholder = Book(source: source, entries: [])
         book = placeholder
+        hideThumbnailOverlay()
         lockedBookReason = reason
         window?.title = placeholder.displayName
         readerView.setPages([], readsFromLeft: false)

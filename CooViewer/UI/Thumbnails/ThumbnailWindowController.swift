@@ -364,16 +364,21 @@ extension ReaderWindowController {
             hideThumbnailOverlay()
             return
         }
-        thumbnailOverlayModel.onJump = { [weak self] index in
+        presentThumbnailOverlay(for: book)
+        thumbnailHostingView?.isHidden = false
+    }
+
+    /// オーバーレイの内容を book で組み直す(表示中の本の切替時にも使う)
+    func presentThumbnailOverlay(for book: Book) {
+        thumbnailOverlayModel.onJump = { [weak self, weak book] index in
             self?.hideThumbnailOverlay()
-            book.goTo(index: index)
+            book?.goTo(index: index)
             self?.refreshAfterJump()
         }
         thumbnailOverlayModel.onClose = { [weak self] in
             self?.hideThumbnailOverlay()
         }
         thumbnailOverlayModel.present(book: book)
-        thumbnailHostingView?.isHidden = false
     }
 
     func hideThumbnailOverlay() {
