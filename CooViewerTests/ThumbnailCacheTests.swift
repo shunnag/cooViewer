@@ -79,7 +79,9 @@ final class ThumbnailCacheTests: XCTestCase {
 
 /// 複数ページのカウント付きスタブ(先読み検証用)
 private actor MultiPageCountingSource: BookSource {
-    nonisolated let url = URL(fileURLWithPath: "/stub/multi")
+    // 実行ごとにユニークな本にする(ディスクキャッシュにヒットすると
+    // ロード数の検証が空振りするため)
+    nonisolated let url = URL(fileURLWithPath: "/stub/multi-\(UUID().uuidString)")
     nonisolated var supportsDateSort: Bool { false }
     private(set) var loadedIDs: Set<Int> = []
 
