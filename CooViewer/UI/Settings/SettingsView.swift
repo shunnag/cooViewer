@@ -20,6 +20,7 @@ struct SettingsView: View {
     @AppStorage("ShowPageBar") private var showPageBar = true
 
     @AppStorage("CanScrollMode") private var canScrollMode = 0
+    @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
     @AppStorage("WheelSensitivity") private var wheelSensitivity = 1.0
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
@@ -122,6 +123,8 @@ struct SettingsView: View {
     private var controlPane: some View {
         Form {
             Section {
+                Toggle(String(localized: "Turn pages with two-finger swipe"),
+                       isOn: $swipeToTurnPage)
                 Picker(String(localized: "Scroll wheel:"), selection: $canScrollMode) {
                     Text(String(localized: "Scroll only")).tag(0)
                     Text(String(localized: "Scroll, then move within page")).tag(1)

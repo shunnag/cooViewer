@@ -55,6 +55,7 @@ extension ReaderWindowController {
 
     func handleScrollWheel(_ event: NSEvent) {
         guard book != nil else { return }
+        if handleSwipeToTurn(event) { return }
         let mode = settings.canScrollMode
         let view = readerViewForInput
 
@@ -83,6 +84,38 @@ extension ReaderWindowController {
             }
         default:
             break
+        }
+    }
+
+    /// システムの「ページ間をスワイプ」と同じ 2 本指の水平スクロールジェスチャで
+    /// ページを前後させる(既定オン。設定の「操作」でオフにできる)。
+    /// 方向は既存のスワイプ仮想ボタン経由で解決するため、読み方向・カスタム
+    /// バインディングに追従する。処理した(消費した)ら true。
+    private func handleSwipeToTurn(_ event: NSEvent) -> Bool {
+        guard settings.swipeToTurnPage,
+              NSEvent.isSwipeTrackingFromScrollEventsEnabled else { return false }
+        switch event.phase {
+        case .began:
+            swipeTrackingActive =
+                abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+            swipeTrackingDeltaX = event.scrollingDeltaX
+            return swipeTrackingActive
+        case .changed:
+            guard swipeTrackingActive else { return false }
+            swipeTrackingDeltaX += event.scrollingDeltaX
+            return true
+        case .ended, .cancelled:
+            guard swipeTrackingActive else { return false }
+            swipeTrackingActive = false
+            if abs(swipeTrackingDeltaX) > 60 {
+                let virtualButton = swipeTrackingDeltaX > 0
+                    ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+                handleGesture(virtualButton: virtualButton,
+                              modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+            }
+            return true
+        default:
+            return swipeTrackingActive  // 慣性イベント等はスワイプ中なら消費
         }
     }
 

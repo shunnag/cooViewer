@@ -1041,6 +1041,16 @@
         }
       }
     },
+    "Turn pages with two-finger swipe": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 本指スワイプでページをめくる"
+          }
+        }
+      }
+    },
     "Turn the page or use Next Book to continue.": {
       "localizations": {
         "ja": {
