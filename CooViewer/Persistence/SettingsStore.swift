@@ -132,7 +132,8 @@ final class SettingsStore {
         }
         let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
         if megabytes > 0 { return megabytes * 1024 * 1024 }
-        return min(2 * 1024 * 1024 * 1024,
+        // 標準時の上限は近年の搭載メモリ(32-64GB)に合わせて 6GB
+        return min(6 * 1024 * 1024 * 1024,
                    physical / 100 * AdvancedDefault.memoryPercent)
     }
 

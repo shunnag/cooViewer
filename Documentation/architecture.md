@@ -199,7 +199,7 @@ CooViewerTests/                     — NaturalSort・PageLayout・BindingResolv
 | 層 | 実装 | 既定値 |
 |---|---|---|
 | 書庫スプール | `ArchiveSource.beginSpooling`: 開いた直後にバックグラウンドで全ページ画像をローカル一時領域(`tmp/cooViewer-spool/<pid>-<uuid>/`)へ**書庫順に逐次展開**。以降のページ取得・サムネイル生成はローカル読み。展開中の要求はオンデマンド経路で応え、1 エントリ毎に譲る | 合計展開サイズ 4GB まで。超過書庫はオンデマンドのみ |
-| ページキャッシュ | `PageCache`: デコード済み CGImage の**バイト基準** LRU。メモリ圧迫通知(DispatchSource)で半減トリム | 物理メモリの 15%(上限 2GB)。`PageCacheMegabytes` で明示指定可。旧 `ImageCache`(枚数)は廃止 |
+| ページキャッシュ | `PageCache`: デコード済み CGImage の**バイト基準** LRU。メモリ圧迫通知(DispatchSource)で半減トリム | 物理メモリの 15%(上限 6GB)。`PageCacheMegabytes` で明示指定可。旧 `ImageCache`(枚数)は廃止 |
 | 先読み | `Book.schedulePrefetch`: 進行方向 12 ページ+逆方向 3 ページ。ジャンプでキャンセル。`supportsParallelPageLoads` なソース(フォルダ)は 4 並列デコード | — |
 | 表示解像度キャップ | 表示用デコードは長辺 `displayPixelCap` に制限(縦横比不変のため見開き判定に影響なし)。原寸表示は `fullResolutionImage(at:)` でキャッシュ非経由のフル解像度 | 4096px |
 | サムネイル | `ThumbnailCache`: メモリ LRU(400 枚)+ディスク(`Caches/jp.coo.cooViewer/Thumbnails/<bookKey>/`)。bookKey は本のパス+更新日時+サイズ由来で、本の更新でキーごと無効化 | ディスクは 30 日でトリム |
@@ -211,7 +211,7 @@ CooViewerTests/                     — NaturalSort・PageLayout・BindingResolv
 **高度な設定(2026-08 追加)**: 上表の既定値は設定タブ「高度」で調整できる。
 マスタースイッチ `AdvancedSettingsEnabled` が OFF の間は保存値を無視して既定値で
 動作する(`SettingsStore.AdvancedDefault` が唯一の既定値定義)。新設キー:
-`AdvancedMemoryPercent`(物理メモリ %、5-50。ON 時は 2GB 上限を適用しない)/
+`AdvancedMemoryPercent`(物理メモリ %、5-50。ON 時は標準の 6GB 上限を適用しない)/
 `AdvancedPrefetchAhead`(2-64)/`AdvancedPrefetchBehind`(0-16、0 で無効)/
 `AdvancedDisplayPixelCap`(2048-8192)/`AdvancedSpoolLimitGB`(1-64)/
 `AdvancedPrepareNextBookPages`(0-20、0 で無効)/`AdvancedThumbnailCacheDays`
