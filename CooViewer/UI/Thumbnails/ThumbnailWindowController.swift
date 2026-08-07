@@ -18,10 +18,8 @@ final class ThumbnailWindowController: NSWindowController {
         panel.title = String(localized: "Thumbnails")
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 320, height: 240)
-        // 旧パネルは透明背景(仕様書 §3.1)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // キーボードは本体ウインドウに残す(t キーでのトグルを効かせるため)
+        panel.becomesKeyOnlyIfNeeded = true
         self.init(window: panel)
     }
 
@@ -47,7 +45,6 @@ final class ThumbnailWindowController: NSWindowController {
         // 2 回目以降は直前のフレームを維持する
         let savedFrame = hasAppeared ? window?.frame : nil
         window?.contentViewController = hosting
-        hosting.view.layer?.backgroundColor = .clear
         if let savedFrame {
             window?.setFrame(savedFrame, display: true)
         } else {
@@ -55,7 +52,7 @@ final class ThumbnailWindowController: NSWindowController {
             window?.center()
             hasAppeared = true
         }
-        window?.makeKeyAndOrderFront(nil)
+        window?.orderFront(nil)
     }
 }
 
