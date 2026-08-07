@@ -49,6 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
             readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
         }
+        if arguments.contains("--show-thumbnails") {
+            // 本のロード完了を待ってからサムネイルオーバーレイを開く
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.showThumbnail()
+            }
+        }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
             Task { @MainActor in

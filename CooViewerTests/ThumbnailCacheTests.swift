@@ -134,16 +134,17 @@ private actor MultiPageCountingSource: BookSource {
 
 @MainActor
 final class ThumbnailPrefetchTests: XCTestCase {
-    func testPrefetchCoversCurrentAndAdjacentPages() async throws {
+    func testPresentPrefetchesCurrentAndAdjacentScreens() async throws {
         let source = MultiPageCountingSource()
         let entries = try await source.entries()
         let book = Book(source: source, entries: entries)
-        let model = ThumbnailOverlayModel()
-        model.present(book: book)
+        // 実 UserDefaults に依存しないよう専用スイートを注入する
+        let defaults = UserDefaults(suiteName: "thumb-test-\(UUID().uuidString)")!
+        defaults.set(["row": 2, "column": 2], forKey: "Thumbnail")
+        let model = ThumbnailOverlayModel(defaults: defaults)
 
-        // 1 画面 4 セル(単ページ)で先頭画面を先読み → 画面 0 と 1 の 8 ページ全て
-        let groups = entries.indices.map { [$0] }
-        model.prefetchAdjacent(groups: groups, perPage: 4)
+        // 1 画面 4 セル(単ページ)で present → 画面 0 と 1 の 8 ページ全て先読み
+        model.present(book: book)
         await model.waitForPrefetch()
         let loaded = await source.loadedIDs
         XCTAssertEqual(loaded, Set(0..<8))

@@ -40,7 +40,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   (team FQTM2788K5) with hardened runtime for notarized distribution.
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
-  the PNG. Sample book generator: create portrait PNGs in a folder (see git history for
+  the PNG (add `--show-thumbnails` to capture the thumbnail overlay). Sample book generator: create portrait PNGs in a folder (see git history for
   `makepages.swift`).
 
 ## Code conventions
