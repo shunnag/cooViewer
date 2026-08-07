@@ -35,6 +35,7 @@ final class ReaderWindowController: NSWindowController {
         window.collectionBehavior = [.fullScreenPrimary]
         window.minSize = NSSize(width: 300, height: 200)
         window.setFrameAutosaveName("ReaderWindow")
+        window.isReleasedWhenClosed = false  // 閉じても解放せず再表示できるように
         self.init(window: window)
 
         setUpContentViews(in: window)
@@ -120,6 +121,10 @@ final class ReaderWindowController: NSWindowController {
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool) async {
+        // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
+        // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
+        showWindow(nil)
+
         var bookURL = url
         var initialPageName: String?
 
