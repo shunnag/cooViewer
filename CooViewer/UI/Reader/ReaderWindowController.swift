@@ -378,6 +378,10 @@ final class ReaderWindowController: NSWindowController {
         }
         maybePrepareNextBook()
         startAnimationsIfNeeded(spread: spread)
+        // サムネイル表示中の本ページ移動(%ジャンプ・しおり移動等)に追従する
+        if isThumbnailOverlayVisible {
+            thumbnailOverlayModel.focusCurrentIndex(book.currentIndex)
+        }
     }
 
     /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)

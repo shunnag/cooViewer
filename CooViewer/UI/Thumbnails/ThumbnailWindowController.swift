@@ -44,6 +44,14 @@ final class ThumbnailOverlayModel: ObservableObject {
         generation += 1
     }
 
+    /// 本のページ移動(0-9 の % ジャンプ等)に追従して、そのページを含む
+    /// サムネイル画面へ飛び、現在ページ強調も更新する
+    func focusCurrentIndex(_ index: Int) {
+        guard currentIndex != index else { return }
+        currentIndex = index
+        generation += 1  // ビュー側の showCurrentPage が該当画面へ移動する
+    }
+
     func movePage(by delta: Int, pageCount: Int) {
         guard pageCount > 0 else { return }
         page = min(max(0, page + delta), pageCount - 1)
