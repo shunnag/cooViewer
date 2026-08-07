@@ -43,9 +43,11 @@ final class Book {
         self.cache = PageCache(capacity: cacheCapacity)
     }
 
-    static func open(source: any BookSource, sortMode: SortMode = .name) async throws -> Book {
+    static func open(source: any BookSource, sortMode: SortMode = .name,
+                     cacheCapacity: Int = 8) async throws -> Book {
         let entries = try await source.entries()
-        return Book(source: source, entries: entries, sortMode: sortMode)
+        return Book(source: source, entries: entries, sortMode: sortMode,
+                    cacheCapacity: cacheCapacity)
     }
 
     var pageCount: Int { entries.count }

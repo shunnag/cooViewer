@@ -77,14 +77,17 @@ final class BookHistoryStore {
 
     func noteOpened(path rawPath: String) {
         let path = normalize(rawPath)
-        let limit = SettingsStore.shared.openRecentLimit
+        let limit = defaults.object(forKey: "OpenRecentLimit") as? Int ?? 10
         guard limit > 0 else {
             defaults.removeObject(forKey: "RecentItems")  // 0 で機能無効(§7.2)
             return
         }
+        // 既存エントリの保存ページを引き継ぐ(仕様書 §4.1.2 手順 8。
+        // 0 にリセットすると最終ページ復元が読み出す前に消えてしまう)
+        let savedPage = recentItems.first { $0["temppath"] as? String == path }?["page"] as? Int
         var items = recentItems.filter { $0["temppath"] as? String != path }
         while items.count >= limit { items.removeLast() }
-        items.insert(makeEntry(path: path, page: 0), at: 0)
+        items.insert(makeEntry(path: path, page: savedPage ?? 0), at: 0)
         recentItems = items
     }
 
@@ -171,7 +174,7 @@ final class BookHistoryStore {
         guard let key else { return }
 
         var entry = makeEntry(path: path, page: nil)
-        let remember = SettingsStore.shared.rememberBookSettings
+        let remember = defaults.bool(forKey: "RememberBookSettings")
         if remember {
             if let readMode = settings.readMode { entry["readMode"] = readMode.rawValue }
             if let sortMode = settings.sortMode { entry["sortMode"] = sortMode.rawValue }

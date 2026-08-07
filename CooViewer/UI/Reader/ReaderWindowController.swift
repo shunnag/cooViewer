@@ -55,9 +55,14 @@ final class ReaderWindowController: NSWindowController {
     func applySettings() {
         readerView.interpolation = settings.interpolation
         readerView.backgroundColor = settings.viewBackgroundColor
-        if book != nil {
+        if let book {
             pageLabel.isHidden = !settings.showNumber
             pageBar.isHidden = !settings.showPageBar
+            // 見開きしきい値の変更は現表示を再判定する(仕様書 §6.3)
+            if book.singleSetting != settings.singleSetting {
+                book.singleSetting = settings.singleSetting
+                Task { await refreshDisplay() }
+            }
         }
     }
 
@@ -136,7 +141,8 @@ final class ReaderWindowController: NSWindowController {
             stopSlideshow()
             saveCurrentBookState()
 
-            let book = try await Book.open(source: source, sortMode: settings.sortMode)
+            let book = try await Book.open(source: source, sortMode: settings.sortMode,
+                                           cacheCapacity: settings.pageCacheCapacity)
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
             self.book = book
@@ -253,13 +259,16 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
-    /// 巻末超え(仕様書 §4.3.4)。1/2(次の本)はマイルストーン 7 で接続。
+    /// 巻末超え(仕様書 §4.3.4)
     func handleEndOfBook() {
         guard let book else { return }
         switch settings.loopCheck {
         case 0:
             book.goToFirst()
             Task { await refreshDisplay() }
+        case 1, 2:
+            // 前方は 1/2 とも「次の本の先頭」(仕様書 §4.3.4)
+            openAdjacentBook(forward: true)
         default:
             break
         }
@@ -273,6 +282,12 @@ final class ReaderWindowController: NSWindowController {
                 await book.goToLast()
                 await refreshDisplay()
             }
+        case 1:
+            // 前の本の先頭へ(GoToLastPage 復元が働き得る。仕様書 §4.3.4)
+            openAdjacentBook(forward: false)
+        case 2:
+            // 前の本を必ず末尾から(復元バイパス。仕様書 §4.3.4)
+            openAdjacentBook(forward: false, openLast: true)
         default:
             break
         }

@@ -11,6 +11,8 @@ struct SettingsView: View {
     @AppStorage("ReadSubFolder") private var readSubFolder = false
     @AppStorage("RememberBookSettings") private var rememberBookSettings = false
     @AppStorage("OpenLastFolder") private var openLastFolder = true
+    @AppStorage("AlwaysRememberLastPage") private var alwaysRememberLastPage = false
+    @AppStorage("OpenRecentLimit") private var openRecentLimit = 10
 
     @AppStorage("SingleSetting") private var singleSetting = 740
     @AppStorage("Interpolation") private var interpolation = 0
@@ -63,6 +65,11 @@ struct SettingsView: View {
             Toggle(String(localized: "Read subfolders"), isOn: $readSubFolder)
             Toggle(String(localized: "Remember settings per book"), isOn: $rememberBookSettings)
             Toggle(String(localized: "Open the last book at launch"), isOn: $openLastFolder)
+            // 履歴から溢れた本のページも LastPages に残す(仕様書 §7.3)
+            Toggle(String(localized: "Always remember the last page"),
+                   isOn: $alwaysRememberLastPage)
+            Stepper(String(localized: "Recent books to keep: \(openRecentLimit)"),
+                    value: $openRecentLimit, in: 0...50)
         }
         .padding(.vertical, 8)
     }
@@ -77,6 +84,8 @@ struct SettingsView: View {
                 Text(String(localized: "Low")).tag(2)
                 Text(String(localized: "High")).tag(3)
             }
+            ColorPicker(String(localized: "Background color:"),
+                        selection: backgroundColorBinding, supportsOpacity: false)
             VStack(alignment: .leading) {
                 Slider(value: singleSettingBinding, in: 0.4...1.0) {
                     Text(String(localized: "Spread threshold (width/height):"))
@@ -87,6 +96,13 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private var backgroundColorBinding: Binding<Color> {
+        Binding(
+            get: { Color(nsColor: SettingsStore.shared.viewBackgroundColor) },
+            set: { SettingsStore.shared.viewBackgroundColor = NSColor($0) }
+        )
     }
 
     private var singleSettingBinding: Binding<Double> {

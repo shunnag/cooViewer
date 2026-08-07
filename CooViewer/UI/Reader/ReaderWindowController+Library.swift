@@ -28,11 +28,13 @@ extension ReaderWindowController {
             book.marks = saved.marks
             book.bookmarks = saved.bookmarks
         }
+        // 復元ページは履歴を更新する前に読む(仕様書 §4.1.2: 手順 7 → 8 の順)
+        let restorePage = store.savedPage(forPath: path)
         store.noteOpened(path: path)
 
         // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)
         guard !skipPageRestore, settings.goToLastPageMode < 2,
-              let page = store.savedPage(forPath: path), page > 0,
+              let page = restorePage, page > 0,
               page < book.pageCount else { return }
         if settings.goToLastPageMode == 1 {
             book.goTo(index: page)
