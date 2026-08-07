@@ -70,6 +70,7 @@ final class FolderSource: BookSource {
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
         guard let fileURL = entry.fileURL else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }

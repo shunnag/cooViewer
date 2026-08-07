@@ -24,9 +24,11 @@ actor ThumbnailCache {
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails")
     }
 
-    /// 生成中の共有タスク(重複要求は同じ生成を待つ。待ち手がキャンセル
-    /// されても生成自体は完走し、後から来た要求がキャッシュで拾える)
+    /// 生成中の共有タスク(重複要求は同じ生成を待つ)
     private var inFlight: [String: Task<CGImage?, Never>] = [:]
+    /// キーごとの待ち手数。全員がキャンセルで去った生成は、まだ実行に
+    /// 入っていなければキャンセルして遠いページの生成を早期に破棄する
+    private var waiterCounts: [String: Int] = [:]
 
     /// メモリ → ディスク → 生成の順で取得する。
     func thumbnail(for entry: PageEntry, in source: any BookSource,
@@ -51,12 +53,29 @@ actor ThumbnailCache {
             inFlight[key] = task
         }
 
-        let image = await task.value
+        waiterCounts[key, default: 0] += 1
+        let image = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { await self.waiterCancelled(key: key) }
+        }
+        waiterCounts[key] = max(0, (waiterCounts[key] ?? 1) - 1)
+        if waiterCounts[key] == 0 { waiterCounts.removeValue(forKey: key) }
         inFlight[key] = nil
         if let image {
             store(image, for: key)
         }
         return image
+    }
+
+    /// 待ち手のキャンセル通知。全員去っていたら生成タスクをキャンセルする
+    /// (実行前ならソース側の checkCancellation で脱落し、実行中なら完走する)。
+    private func waiterCancelled(key: String) {
+        waiterCounts[key] = max(0, (waiterCounts[key] ?? 1) - 1)
+        if waiterCounts[key] == 0 {
+            waiterCounts.removeValue(forKey: key)
+            inFlight[key]?.cancel()
+        }
     }
 
     /// 古い本のディスクキャッシュを回収する(起動時に呼ぶ)。
@@ -97,6 +116,9 @@ actor ThumbnailCache {
     /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)
     private static func loadOrGenerate(entry: PageEntry, source: any BookSource,
                                        fileURL: URL) async -> CGImage? {
+        // 実行に入る前にキャンセル済みなら何もしない(遠いページの早期破棄)。
+        // ソース呼び出しが始まった後は完走させてキャッシュに残す
+        guard !Task.isCancelled else { return nil }
         if let data = try? Data(contentsOf: fileURL),
            let image = try? ImageDecoding.decode(data) {
             return image
