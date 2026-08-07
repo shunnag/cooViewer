@@ -12,7 +12,7 @@ enum ImageDecoding {
             return try decodeWithAppKit(data, maxPixelSize: maxPixelSize)
         }
         // ゲインマップ付き HDR は EDR 表示用にフル HDR デコードする
-        // (長辺 8192px まで。CALayer 側は wantsExtendedDynamicRangeContent)
+        // (長辺 8192px まで。CALayer 側は preferredDynamicRange = .high)
         if maxPixelSize != nil,
            CGImageSourceCopyAuxiliaryDataInfoAtIndex(
                source, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil {
