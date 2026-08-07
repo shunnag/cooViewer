@@ -961,6 +961,26 @@
         }
       }
     },
+    "This book contains no displayable images.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この本には表示できる画像がありません。"
+          }
+        }
+      }
+    },
+    "This page could not be loaded.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このページを読み込めませんでした。"
+          }
+        }
+      }
+    },
     "Thumbnails": {
       "localizations": {
         "ja": {
