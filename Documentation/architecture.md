@@ -208,6 +208,16 @@ CooViewerTests/                     — NaturalSort・PageLayout・BindingResolv
 残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策)。サムネイルの旧キー
 フォルダも起動時トリムで回収する。
 
+**高度な設定(2026-08 追加)**: 上表の既定値は設定タブ「高度」で調整できる。
+マスタースイッチ `AdvancedSettingsEnabled` が OFF の間は保存値を無視して既定値で
+動作する(`SettingsStore.AdvancedDefault` が唯一の既定値定義)。新設キー:
+`AdvancedMemoryPercent`(物理メモリ %、5-50。ON 時は 2GB 上限を適用しない)/
+`AdvancedPrefetchAhead`(2-64)/`AdvancedPrefetchBehind`(0-16、0 で無効)/
+`AdvancedDisplayPixelCap`(2048-8192)/`AdvancedSpoolLimitGB`(1-64)/
+`AdvancedPrepareNextBookPages`(0-20、0 で無効)/`AdvancedThumbnailCacheDays`
+(1-365)。いずれも新設キーのため旧ドメインと衝突しない。範囲外の保存値は
+読み出し時に丸める。「デフォルトに戻す」は保存値を既定値で上書きする。
+
 **描画品質(2026-08 追加)**: CALayer の trilinear 拡縮(スクリーントーンの
 モアレ・甘さが出る)の代わりに、レイアウト確定後 150ms のデバウンスを挟んで
 表示ピクセルサイズへ事前リサンプルし、等倍(1:1)画像に差し替える

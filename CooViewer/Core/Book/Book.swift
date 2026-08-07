@@ -30,8 +30,9 @@ final class Book {
     private var lastMoveForward = true
 
     /// 先読みの幅(設計書「キャッシュ・先読み設計」)
-    private static let prefetchAhead = 12
-    private static let prefetchBehind = 3
+    /// 先読み枚数(設定「高度」から注入される。既定は設計書 §3.1 の値)
+    var prefetchAhead = 12
+    var prefetchBehind = 3
 
     /// 表示すべきページの組。images の nil は「読めないページ」
     /// (呼び出し側が壊れ画像プレースホルダを当てる。仕様書 §4.17)。
@@ -261,8 +262,9 @@ final class Book {
 
     private func schedulePrefetch() {
         prefetchTask?.cancel()
-        let ahead = (0..<Self.prefetchAhead).map { currentIndex + lastDisplayCount + $0 }
-        let behind = (1...Self.prefetchBehind).map { currentIndex - $0 }
+        let ahead = (0..<max(0, prefetchAhead)).map { currentIndex + lastDisplayCount + $0 }
+        let behind = prefetchBehind > 0
+            ? (1...prefetchBehind).map { currentIndex - $0 } : []
         let targets = (lastMoveForward ? ahead + behind : behind + ahead)
             .filter { entries.indices.contains($0) }
         let parallel = source.supportsParallelPageLoads

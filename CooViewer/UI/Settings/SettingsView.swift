@@ -29,16 +29,43 @@ struct SettingsView: View {
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
 
+    // 高度な設定(SettingsStore.AdvancedDefault と同値の既定)
+    @AppStorage("AdvancedSettingsEnabled") private var advancedEnabled = false
+    @AppStorage("AdvancedMemoryPercent") private var advMemoryPercent =
+        SettingsStore.AdvancedDefault.memoryPercent
+    @AppStorage("AdvancedPrefetchAhead") private var advPrefetchAhead =
+        SettingsStore.AdvancedDefault.prefetchAhead
+    @AppStorage("AdvancedPrefetchBehind") private var advPrefetchBehind =
+        SettingsStore.AdvancedDefault.prefetchBehind
+    @AppStorage("AdvancedDisplayPixelCap") private var advDisplayPixelCap =
+        SettingsStore.AdvancedDefault.displayPixelCap
+    @AppStorage("AdvancedSpoolLimitGB") private var advSpoolLimitGB =
+        SettingsStore.AdvancedDefault.spoolLimitGB
+    @AppStorage("AdvancedPrepareNextBookPages") private var advPrepareNextBook =
+        SettingsStore.AdvancedDefault.prepareNextBookPages
+    @AppStorage("AdvancedThumbnailCacheDays") private var advThumbnailDays =
+        SettingsStore.AdvancedDefault.thumbnailCacheDays
+
+    /// 前回選択していたタブを記憶する(検証用に引数 -SettingsSelectedTab n でも指定可)
+    @AppStorage("SettingsSelectedTab") private var selectedTab = 0
+
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             generalPane
                 .tabItem { Label(String(localized: "General"), systemImage: "gearshape") }
+                .tag(0)
             displayPane
                 .tabItem { Label(String(localized: "Display"), systemImage: "photo") }
+                .tag(1)
             controlPane
                 .tabItem { Label(String(localized: "Control"), systemImage: "computermouse") }
+                .tag(2)
             KeyBindingsPane()
                 .tabItem { Label(String(localized: "Key Bindings"), systemImage: "keyboard") }
+                .tag(3)
+            advancedPane
+                .tabItem { Label(String(localized: "Advanced"), systemImage: "gearshape.2") }
+                .tag(4)
         }
         .frame(width: 640, height: 500)
     }
@@ -170,6 +197,82 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - 高度
+
+    /// 挙動チューニング(設計書 キャッシュ・先読み節)。マスタースイッチが
+    /// OFF の間、SettingsStore 側は保存値を無視して既定値で動作する
+    private var advancedPane: some View {
+        Form {
+            Section {
+                Toggle(String(localized: "Use advanced settings"), isOn: $advancedEnabled)
+                Text(String(localized: "When off, the recommended defaults are used."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section(String(localized: "Memory & Cache")) {
+                Stepper(value: $advMemoryPercent, in: 5...50, step: 5) {
+                    Text(String(localized: "Page cache memory:")
+                         + " \(advMemoryPercent)% (\(advancedMemoryDisplay))")
+                }
+                Stepper(String(localized: "Archive spool limit: \(advSpoolLimitGB) GB"),
+                        value: $advSpoolLimitGB, in: 1...64)
+                Stepper(String(localized: "Keep thumbnails for: \(advThumbnailDays) days"),
+                        value: $advThumbnailDays, in: 1...365)
+            }
+            .disabled(!advancedEnabled)
+            Section(String(localized: "Prefetch")) {
+                Stepper(String(localized: "Prefetch ahead: \(advPrefetchAhead) pages"),
+                        value: $advPrefetchAhead, in: 2...64)
+                Stepper(String(localized: "Prefetch behind: \(advPrefetchBehind) pages"),
+                        value: $advPrefetchBehind, in: 0...16)
+                Stepper(String(localized:
+                    "Prepare the next book in the last \(advPrepareNextBook) pages (0: off)"),
+                        value: $advPrepareNextBook, in: 0...20)
+            }
+            .disabled(!advancedEnabled)
+            Section {
+                Picker(String(localized: "Max decode size (long edge):"),
+                       selection: $advDisplayPixelCap) {
+                    ForEach([2048, 4096, 6144, 8192], id: \.self) { size in
+                        Text(verbatim: "\(size) px").tag(size)
+                    }
+                }
+            }
+            .disabled(!advancedEnabled)
+            Section {
+                LabeledContent {
+                    Button(String(localized: "Restore Defaults")) {
+                        restoreAdvancedDefaults()
+                    }
+                    .disabled(!advancedEnabled)
+                } label: {
+                    Text(String(localized:
+                        "Cache and spool sizes apply when the next book is opened."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 現在のパーセント指定が実メモリで何バイトになるかの表示
+    private var advancedMemoryDisplay: String {
+        let bytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
+            / 100 * Int64(advMemoryPercent)
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)
+    }
+
+    private func restoreAdvancedDefaults() {
+        advMemoryPercent = SettingsStore.AdvancedDefault.memoryPercent
+        advPrefetchAhead = SettingsStore.AdvancedDefault.prefetchAhead
+        advPrefetchBehind = SettingsStore.AdvancedDefault.prefetchBehind
+        advDisplayPixelCap = SettingsStore.AdvancedDefault.displayPixelCap
+        advSpoolLimitGB = SettingsStore.AdvancedDefault.spoolLimitGB
+        advPrepareNextBook = SettingsStore.AdvancedDefault.prepareNextBookPages
+        advThumbnailDays = SettingsStore.AdvancedDefault.thumbnailCacheDays
     }
 
     // MARK: - 部品

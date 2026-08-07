@@ -95,7 +95,15 @@ final class ReaderWindowController: NSWindowController {
                 book.singleSetting = settings.singleSetting
                 Task { await refreshDisplay() }
             }
+            applyAdvancedSettings(to: book)
         }
+    }
+
+    /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)
+    private func applyAdvancedSettings(to book: Book) {
+        book.prefetchAhead = settings.prefetchAheadCount
+        book.prefetchBehind = settings.prefetchBehindCount
+        book.displayPixelCap = settings.displayPixelCap
     }
 
     private func setUpContentViews(in window: NSWindow) {
@@ -245,10 +253,12 @@ final class ReaderWindowController: NSWindowController {
                                            cacheByteLimit: settings.pageCacheByteLimit)
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
+            applyAdvancedSettings(to: book)
             self.book = book
 
             // 書庫のローカルスプール等を開始(パスワード解除後。設計書 キャッシュ節)
-            await source.beginBackgroundPreparation()
+            await source.beginBackgroundPreparation(
+                spoolSizeLimit: settings.archiveSpoolSizeLimit)
 
             let skipPageRestore = initialPageName != nil || atPage != nil || atLastPage
             await restoreBookState(for: book, skipPageRestore: skipPageRestore)

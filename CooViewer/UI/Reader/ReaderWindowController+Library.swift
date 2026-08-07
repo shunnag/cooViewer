@@ -276,8 +276,9 @@ extension ReaderWindowController {
     /// 巻末が近づいたら同フォルダの次の書庫をバックグラウンドで開いて
     /// ローカル展開を始める。開く際に openBookFlow が再利用する。
     func maybePrepareNextBook() {
-        guard let book, book.pageCount > 0,
-              book.currentIndex >= book.pageCount - 6 else { return }
+        let threshold = settings.prepareNextBookPages  // 0 は無効(設定「高度」)
+        guard threshold > 0, let book, book.pageCount > 0,
+              book.currentIndex >= book.pageCount - threshold else { return }
         let siblings = siblingBooks()
         guard siblings.count > 1,
               let current = siblings.firstIndex(of: book.source.url.path) else { return }
@@ -294,7 +295,8 @@ extension ReaderWindowController {
                 readSubFolders: settings.readSubFolder) else { return }
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
-                await source.beginBackgroundPreparation()
+                await source.beginBackgroundPreparation(
+                    spoolSizeLimit: settings.archiveSpoolSizeLimit)
             }
             preparedNextBook = (nextPath, source)
         }

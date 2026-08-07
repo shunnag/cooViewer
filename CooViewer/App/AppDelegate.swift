@@ -33,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? FileManager.default.removeItem(at: child)
                 }
             }
-            await ThumbnailCache.shared.trimDiskCache(olderThanDays: 30)
+            await ThumbnailCache.shared.trimDiskCache(
+                olderThanDays: SettingsStore.shared.thumbnailCacheDays)
         }
     }
 

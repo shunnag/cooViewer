@@ -1,0 +1,76 @@
+import XCTest
+@testable import cooViewer
+
+/// 設定「高度」: マスタースイッチと保存値の解決(SettingsStore)
+@MainActor
+final class SettingsStoreAdvancedTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var store: SettingsStore!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "advanced-test-\(UUID().uuidString)")!
+        store = SettingsStore(defaults: defaults)
+    }
+
+    func testDefaultsWhenSwitchIsOff() {
+        // 保存値があってもマスタースイッチ OFF なら既定値
+        defaults.set(40, forKey: "AdvancedPrefetchAhead")
+        defaults.set(30, forKey: "AdvancedMemoryPercent")
+        XCTAssertEqual(store.prefetchAheadCount, 12)
+        XCTAssertEqual(store.prefetchBehindCount, 3)
+        XCTAssertEqual(store.displayPixelCap, 4096)
+        XCTAssertEqual(store.archiveSpoolSizeLimit, 4 << 30)
+        XCTAssertEqual(store.prepareNextBookPages, 6)
+        XCTAssertEqual(store.thumbnailCacheDays, 30)
+    }
+
+    func testStoredValuesWhenSwitchIsOn() {
+        defaults.set(true, forKey: "AdvancedSettingsEnabled")
+        defaults.set(40, forKey: "AdvancedPrefetchAhead")
+        defaults.set(0, forKey: "AdvancedPrefetchBehind")
+        defaults.set(8192, forKey: "AdvancedDisplayPixelCap")
+        defaults.set(16, forKey: "AdvancedSpoolLimitGB")
+        defaults.set(0, forKey: "AdvancedPrepareNextBookPages")
+        defaults.set(7, forKey: "AdvancedThumbnailCacheDays")
+        XCTAssertEqual(store.prefetchAheadCount, 40)
+        XCTAssertEqual(store.prefetchBehindCount, 0)  // 0 = 逆方向なし
+        XCTAssertEqual(store.displayPixelCap, 8192)
+        XCTAssertEqual(store.archiveSpoolSizeLimit, 16 << 30)
+        XCTAssertEqual(store.prepareNextBookPages, 0)  // 0 = 事前準備なし
+        XCTAssertEqual(store.thumbnailCacheDays, 7)
+    }
+
+    func testSwitchOnWithoutStoredValuesFallsBackToDefaults() {
+        defaults.set(true, forKey: "AdvancedSettingsEnabled")
+        XCTAssertEqual(store.prefetchAheadCount, 12)
+        XCTAssertEqual(store.advancedMemoryPercent, 15)
+    }
+
+    func testOutOfRangeValuesAreClamped() {
+        defaults.set(true, forKey: "AdvancedSettingsEnabled")
+        defaults.set(999, forKey: "AdvancedPrefetchAhead")
+        defaults.set(-5, forKey: "AdvancedPrefetchBehind")
+        defaults.set(90, forKey: "AdvancedMemoryPercent")
+        XCTAssertEqual(store.prefetchAheadCount, 64)
+        XCTAssertEqual(store.prefetchBehindCount, 0)
+        XCTAssertEqual(store.advancedMemoryPercent, 50)
+    }
+
+    func testMemoryLimitUsesPercentWithoutCapWhenOn() {
+        defaults.set(true, forKey: "AdvancedSettingsEnabled")
+        defaults.set(30, forKey: "AdvancedMemoryPercent")
+        let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
+        XCTAssertEqual(store.pageCacheByteLimit, physical / 100 * 30)
+    }
+
+    func testMemoryLimitKeepsLegacyBehaviorWhenOff() {
+        // OFF: 15% を 2GB 上限で丸める従来動作
+        let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
+        XCTAssertEqual(store.pageCacheByteLimit,
+                       min(2 * 1024 * 1024 * 1024, physical / 100 * 15))
+        // OFF でも旧 PageCacheMegabytes の逃げ道は生かす
+        defaults.set(256, forKey: "PageCacheMegabytes")
+        XCTAssertEqual(store.pageCacheByteLimit, 256 * 1024 * 1024)
+    }
+}
