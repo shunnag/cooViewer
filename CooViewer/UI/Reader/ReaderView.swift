@@ -54,7 +54,13 @@ final class ReaderView: NSView {
     private let loupe = LoupeController()
 
     private(set) var images: [CGImage] = []
+    private(set) var pageIDs: [Int] = []
     private(set) var readsFromLeft = false
+
+    /// ページ毎の高品質リサンプル結果(対象ピクセルサイズ付き。設計書 §5 描画品質)
+    private var resampledPages: [(size: CGSize, image: CGImage)?] = []
+    private var resampleTask: Task<Void, Never>?
+    private var resampleGeneration = 0
 
     var fitMode: FitMode = .fitToScreen {
         didSet { scrollOffset = .zero; needsLayout = true }
@@ -73,6 +79,10 @@ final class ReaderView: NSView {
         didSet {
             for layer in pageLayers {
                 layer.magnificationFilter = interpolation.filter
+            }
+            if interpolation != oldValue {
+                resampledPages = Array(repeating: nil, count: images.count)
+                needsLayout = true
             }
         }
     }
@@ -113,9 +123,12 @@ final class ReaderView: NSView {
     // MARK: - コンテンツ設定
 
     /// 読み順のページ画像(1 or 2 枚)を表示する。
-    func setPages(_ images: [CGImage], readsFromLeft: Bool) {
+    /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
+    func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool) {
         self.images = images
+        self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
+        resampledPages = Array(repeating: nil, count: images.count)
         scrollOffset = .zero
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -175,6 +188,7 @@ final class ReaderView: NSView {
         )
 
         // 画面上の並び: 読み順先頭ページは、左綴じなら左、右綴じなら右(仕様書 §4.2.5)
+        let backingScale = window?.backingScaleFactor ?? 2
         let screenOrder = readsFromLeft ? Array(scaled.indices) : scaled.indices.reversed()
         var x = pad.x - scrollOffset.x
         for (position, imageIndex) in screenOrder.enumerated() {
@@ -182,7 +196,16 @@ final class ReaderView: NSView {
             let size = scaled[imageIndex]
             let layer = pageLayers[imageIndex]
             layer.isHidden = false
-            layer.contents = images[imageIndex]
+            // 高品質リサンプル済みで表示サイズが一致するならそれを使う(1:1 表示)
+            let pixelSize = CGSize(width: (size.width * backingScale).rounded(),
+                                   height: (size.height * backingScale).rounded())
+            if let resampled = resampledPages.indices.contains(imageIndex)
+                ? resampledPages[imageIndex] : nil,
+               resampled.size == pixelSize {
+                layer.contents = resampled.image
+            } else {
+                layer.contents = images[imageIndex]
+            }
             // 垂直はコンテンツ高(2 枚の最大)に対しセンタリング(仕様書 §4.2.3)
             let y = pad.y - scrollOffset.y + (contentSize.height - size.height) / 2
             layer.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
@@ -191,6 +214,52 @@ final class ReaderView: NSView {
         for index in images.count..<pageLayers.count {
             pageLayers[index].isHidden = true
         }
+        scheduleHighQualityResample(scaledSizes: scaled, backingScale: backingScale)
+    }
+
+    // MARK: - 高品質リサンプル(設計書 §5 描画品質)
+
+    /// 補間設定が「既定/高」のとき、表示ピクセルサイズへの事前リサンプルを
+    /// 予約する(縮小=CG Lanczos 相当、「高」は拡大に MetalFX)。
+    /// ライブリサイズ中の洪水を避けるため短いデバウンスを挟み、
+    /// 完成したページから順に等倍画像へ差し替える。
+    private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
+        guard interpolation == .systemDefault || interpolation == .high,
+              !images.isEmpty else { return }
+        let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String)] =
+            images.indices.compactMap { index in
+                let pixelSize = CGSize(
+                    width: (scaledSizes[index].width * backingScale).rounded(),
+                    height: (scaledSizes[index].height * backingScale).rounded())
+                if let done = resampledPages[index], done.size == pixelSize { return nil }
+                return (index, images[index], pixelSize, String(pageIDs[index]))
+            }
+        guard !requests.isEmpty else { return }
+
+        resampleTask?.cancel()
+        resampleGeneration += 1
+        let generation = resampleGeneration
+        let useMetalFX = interpolation == .high
+        resampleTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            for request in requests {
+                guard let resampled = await ImageResampler.shared.resample(
+                    request.image, to: request.pixelSize,
+                    cacheKey: request.key, upscaleWithMetalFX: useMetalFX) else { continue }
+                guard let self, !Task.isCancelled else { return }
+                self.applyResampled(resampled, size: request.pixelSize,
+                                    at: request.index, generation: generation)
+            }
+        }
+    }
+
+    private func applyResampled(_ image: CGImage, size: CGSize,
+                                at index: Int, generation: Int) {
+        guard generation == resampleGeneration,
+              resampledPages.indices.contains(index) else { return }
+        resampledPages[index] = (size, image)
+        needsLayout = true
     }
 
     /// ページ毎のスケール(仕様書 §4.2.3, §3.2)

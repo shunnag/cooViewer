@@ -208,6 +208,16 @@ CooViewerTests/                     — NaturalSort・PageLayout・BindingResolv
 残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策)。サムネイルの旧キー
 フォルダも起動時トリムで回収する。
 
+**描画品質(2026-08 追加)**: CALayer の trilinear 拡縮(スクリーントーンの
+モアレ・甘さが出る)の代わりに、レイアウト確定後 150ms のデバウンスを挟んで
+表示ピクセルサイズへ事前リサンプルし、等倍(1:1)画像に差し替える
+(`ImageResampler` + ReaderView)。縮小は CG の高品質補間(Lanczos 相当)、
+補間設定「高」では拡大に **MetalFX Spatial**(`MetalFXUpscaler`。2 倍超は
+テクスチャのまま段階適用、非対応環境は CG フォールバック)。補間設定の意味:
+なし=nearest / 低=GPU linear のみ / 既定=高品質縮小 / 高=+MetalFX 拡大。
+注意: MTKTextureLoader は premultipliedFirst 系 CGImage のバイト順を誤読する
+ため、入力は必ず RGBA 正規化してから渡す(色化けの回帰テストあり)。
+
 ## 6. リスクと対策
 
 | リスク | 対策 |

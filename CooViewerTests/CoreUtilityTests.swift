@@ -89,3 +89,120 @@ final class PageCacheTests: XCTestCase {
         XCTAssertNotNil(newest)
     }
 }
+
+final class ImageResamplerTests: XCTestCase {
+    private func image(width: Int, height: Int) -> CGImage {
+        try! ImageDecoding.decode(TestFixtures.pngData(width: width, height: height))
+    }
+
+    func testDownscaleProducesExactTargetSize() async {
+        let source = image(width: 100, height: 100)
+        let result = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 50, height: 50),
+            cacheKey: "t-down", upscaleWithMetalFX: false)
+        XCTAssertEqual(result?.width, 50)
+        XCTAssertEqual(result?.height, 50)
+    }
+
+    func testUpscaleWithMetalFXProducesExactTargetSize() async {
+        // MetalFX 非対応環境では CG フォールバックで同サイズになる
+        let source = image(width: 40, height: 60)
+        let result = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 80, height: 120),
+            cacheKey: "t-up", upscaleWithMetalFX: true)
+        XCTAssertEqual(result?.width, 80)
+        XCTAssertEqual(result?.height, 120)
+    }
+
+    func testOverTwoTimesUpscalePreservesSizeAndColor() async throws {
+        // 2 倍超の段階適用でも色が化けないこと(テクスチャ内チェーンの回帰防止)
+        let source = try ImageDecoding.decode(
+            TestFixtures.pngData(width: 20, height: 20, red: 0.9, green: 0.2, blue: 0.2))
+        let resampled = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 100, height: 100),
+            cacheKey: "t-up5x", upscaleWithMetalFX: true)
+        let result = try XCTUnwrap(resampled)
+        XCTAssertEqual(result.width, 100)
+        XCTAssertEqual(result.height, 100)
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let offset = 50 * result.bytesPerRow + 50 * (result.bitsPerPixel / 8)
+        XCTAssertGreaterThan(Int(data[offset]), 180)      // R
+        XCTAssertLessThan(Int(data[offset + 1]), 120)     // G
+        XCTAssertLessThan(Int(data[offset + 2]), 120)     // B
+    }
+
+    func testSameSizeReturnsOriginal() async {
+        let source = image(width: 30, height: 30)
+        let result = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 30, height: 30),
+            cacheKey: "t-same", upscaleWithMetalFX: false)
+        XCTAssertTrue(result === source)
+    }
+
+    func testCacheReturnsSameInstance() async {
+        let source = image(width: 64, height: 64)
+        let first = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "t-cache", upscaleWithMetalFX: false)
+        let second = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "t-cache", upscaleWithMetalFX: false)
+        XCTAssertTrue(first === second)
+    }
+}
+
+@MainActor
+final class MetalFXUpscalerTests: XCTestCase {
+    func testSpatialUpscaleDoubles() throws {
+        guard let upscaler = MetalFXUpscaler() else {
+            throw XCTSkip("MetalFX が使えない環境")
+        }
+        let source = try ImageDecoding.decode(TestFixtures.pngData(width: 64, height: 64))
+        let result = upscaler.upscale(source, to: CGSize(width: 128, height: 128))
+        XCTAssertEqual(result?.width, 128)
+        XCTAssertEqual(result?.height, 128)
+    }
+
+    func testUpscalePreservesColor() throws {
+        // Metal テクスチャ⇄CIImage のバイトオーダー解釈ズレによる色化けの回帰防止
+        guard let upscaler = MetalFXUpscaler() else {
+            throw XCTSkip("MetalFX が使えない環境")
+        }
+        let source = try ImageDecoding.decode(
+            TestFixtures.pngData(width: 64, height: 64, red: 0.9, green: 0.2, blue: 0.2))
+        let result = try XCTUnwrap(upscaler.upscale(source, to: CGSize(width: 128, height: 128)))
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let offset = 64 * result.bytesPerRow + 64 * (result.bitsPerPixel / 8)
+        let red = Int(data[offset])
+        let green = Int(data[offset + 1])
+        let blue = Int(data[offset + 2])
+        XCTAssertGreaterThan(red, 180, "R が主成分のはず (R\(red) G\(green) B\(blue))")
+        XCTAssertLessThan(green, 120)
+        XCTAssertLessThan(blue, 120)
+    }
+
+    func testUpscalePreservesColorForThumbnailDecodedInput() throws {
+        // アプリの実経路: ImageIO サムネイルデコード(premultipliedFirst)の入力でも
+        // 色が化けないこと(MTKTextureLoader のバイト順誤読の回帰防止)
+        guard let upscaler = MetalFXUpscaler() else {
+            throw XCTSkip("MetalFX が使えない環境")
+        }
+        let source = try ImageDecoding.decode(
+            TestFixtures.pngData(width: 64, height: 64, red: 0.9, green: 0.2, blue: 0.2),
+            maxPixelSize: 4096)
+        let result = try XCTUnwrap(upscaler.upscale(source, to: CGSize(width: 128, height: 129)))
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let offset = 64 * result.bytesPerRow + 64 * (result.bitsPerPixel / 8)
+        XCTAssertGreaterThan(Int(data[offset]), 180)      // R
+        XCTAssertLessThan(Int(data[offset + 1]), 120)     // G
+        XCTAssertLessThan(Int(data[offset + 2]), 120)     // B
+    }
+
+    func testNonUpscaleReturnsNil() throws {
+        guard let upscaler = MetalFXUpscaler() else {
+            throw XCTSkip("MetalFX が使えない環境")
+        }
+        let source = try ImageDecoding.decode(TestFixtures.pngData(width: 64, height: 64))
+        XCTAssertNil(upscaler.upscale(source, to: CGSize(width: 32, height: 32)))
+    }
+}
