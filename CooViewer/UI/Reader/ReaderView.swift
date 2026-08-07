@@ -362,6 +362,15 @@ final class ReaderView: NSView {
 
     /// ルーペに渡す描画状態のスナップショット。
     /// pageLayers[i] は images[i] に対応するため zip で表示中ページのみ拾える。
+    /// ルーペ超解像の目標サイズ計算用: ページ layer の実表示ピクセルサイズ
+    func pageFramePixelSize(at index: Int) -> CGSize? {
+        guard pageLayers.indices.contains(index), images.indices.contains(index)
+        else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        let size = pageLayers[index].frame.size
+        return CGSize(width: size.width * scale, height: size.height * scale)
+    }
+
     /// ルーペにだけ高解像度画像を差し込む(通常表示・先読みには影響しない)。
     /// 表示中の画像より低解像度なら採用しない(SVG のフォールバック既定
     /// 2048px が表示用 4096px を下回るケースの逆転防止)。

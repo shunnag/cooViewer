@@ -17,6 +17,9 @@ final class PageBarView: NSView {
     /// クリック位置(読み方向基準の 0.0-1.0)でのジャンプ要求
     var onJump: ((Double) -> Void)?
 
+    /// ホバー位置((バー内 x, 読み方向基準の割合))。nil で退出(仕様書 §3.4 バブル)
+    var onHover: (((x: CGFloat, fraction: Double)?) -> Void)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
     }
@@ -64,8 +67,36 @@ final class PageBarView: NSView {
     private func jump(to event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.width > 0 else { return }
-        var fraction = min(max(0, point.x / bounds.width), 1)
+        onJump?(fraction(atX: point.x))
+    }
+
+    /// x 位置 → 読み方向補正済みの割合
+    private func fraction(atX x: CGFloat) -> Double {
+        var fraction = min(max(0, x / bounds.width), 1)
         if !readsFromLeft { fraction = 1 - fraction }
-        onJump?(fraction)
+        return fraction
+    }
+
+    // MARK: - ホバー(サムネイルバブル用)
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.width > 0 else { return }
+        onHover?((x: point.x, fraction: fraction(atX: point.x)))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHover?(nil)
     }
 }
