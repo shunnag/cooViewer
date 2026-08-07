@@ -151,6 +151,16 @@
         }
       }
     },
+    "Default: high-quality downscaling that reduces moiré on screentones.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既定: 縮小を高品質リサンプルし、網点のモアレを抑えます。"
+          }
+        }
+      }
+    },
     "Disabled": {
       "localizations": {
         "ja": {
@@ -351,6 +361,16 @@
         }
       }
     },
+    "High: high-quality downscaling plus MetalFX upscaling for enlargement.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高: 既定の処理に加え、拡大時に MetalFX で補間します。"
+          }
+        }
+      }
+    },
     "Interpolation:": {
       "localizations": {
         "ja": {
@@ -407,6 +427,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "低"
+          }
+        }
+      }
+    },
+    "Low: fast GPU scaling only.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "低: GPU の高速な拡縮のみを行います。"
           }
         }
       }
@@ -537,6 +567,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "なし"
+          }
+        }
+      }
+    },
+    "None: pixels are scaled as-is (for pixel art).": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "なし: ピクセルをそのまま拡縮します(ドット絵向け)。"
           }
         }
       }
