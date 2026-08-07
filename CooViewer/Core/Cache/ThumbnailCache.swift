@@ -40,7 +40,10 @@ actor ThumbnailCache {
         }
 
         let task: Task<CGImage?, Never>
-        if let running = inFlight[key] {
+        if let running = inFlight[key], !running.isCancelled {
+            // 進行中の生成に合流(キャンセル済みタスクには合流しない:
+            // 先読みの世代交代で待ち手ゼロ→キャンセル直後に新しい要求が
+            // 来た場合は作り直す)
             task = running
         } else {
             let fileURL = diskRoot.appendingPathComponent(bookKey)
@@ -61,7 +64,11 @@ actor ThumbnailCache {
         }
         waiterCounts[key] = max(0, (waiterCounts[key] ?? 1) - 1)
         if waiterCounts[key] == 0 { waiterCounts.removeValue(forKey: key) }
-        inFlight[key] = nil
+        // 自分の待っていたタスクの登録だけを外す(遅れて終了した旧世代が
+        // 新しい生成の登録を消さないように)
+        if inFlight[key] == task {
+            inFlight[key] = nil
+        }
         if let image {
             store(image, for: key)
         }
@@ -75,6 +82,7 @@ actor ThumbnailCache {
         if waiterCounts[key] == 0 {
             waiterCounts.removeValue(forKey: key)
             inFlight[key]?.cancel()
+            inFlight.removeValue(forKey: key)  // 新しい要求は作り直す
         }
     }
 
