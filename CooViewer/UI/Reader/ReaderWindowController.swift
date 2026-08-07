@@ -8,6 +8,8 @@ final class ReaderWindowController: NSWindowController {
     private let readerView = ReaderView()
     private let pageBar = PageBarView()
     private let pageLabel = NSTextField(labelWithString: "")
+    /// 開けなかった本の理由等をウインドウ中央に表示するラベル
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     let settings = SettingsStore.shared
     var bindings = BindingConfiguration.load()
@@ -56,7 +58,8 @@ final class ReaderWindowController: NSWindowController {
     func applySettings() {
         readerView.interpolation = settings.interpolation
         readerView.backgroundColor = settings.viewBackgroundColor
-        if let book {
+        // 開けなかった本(空)ではオーバーレイを出さない
+        if let book, book.pageCount > 0 {
             pageLabel.isHidden = !settings.showNumber
             pageBar.isHidden = !settings.showPageBar
             // 見開きしきい値の変更は現表示を再判定する(仕様書 §6.3)
@@ -88,6 +91,13 @@ final class ReaderWindowController: NSWindowController {
         pageBar.isHidden = true
         contentView.addSubview(pageBar)
 
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.alignment = .center
+        statusLabel.font = .systemFont(ofSize: 14)
+        statusLabel.textColor = .white
+        statusLabel.isHidden = true
+        contentView.addSubview(statusLabel)
+
         NSLayoutConstraint.activate([
             readerView.topAnchor.constraint(equalTo: contentView.topAnchor),
             readerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -101,6 +111,10 @@ final class ReaderWindowController: NSWindowController {
             pageBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
             pageBar.widthAnchor.constraint(equalToConstant: 200),
             pageBar.heightAnchor.constraint(equalToConstant: 15),
+
+            statusLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            statusLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
         ])
 
         pageBar.onJump = { [weak self] fraction in
@@ -140,7 +154,20 @@ final class ReaderWindowController: NSWindowController {
         do {
             let source = try await BookSourceFactory.make(
                 for: bookURL, readSubFolders: settings.readSubFolder)
-            guard await unlockIfNeeded(source) else { return }
+            switch await unlock(source) {
+            case .unlocked:
+                break
+            case .cancelled:
+                presentLockedPlaceholder(
+                    source: source,
+                    reason: String(localized: "Password entry was canceled."))
+                return
+            case .attemptsExceeded:
+                presentLockedPlaceholder(
+                    source: source,
+                    reason: String(localized: "Too many failed password attempts."))
+                return
+            }
 
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
             stopSlideshow()
@@ -167,6 +194,7 @@ final class ReaderWindowController: NSWindowController {
                 await book.goToLast()
             }
             window?.title = book.displayName
+            statusLabel.isHidden = true
             pageLabel.isHidden = !settings.showNumber
             pageBar.isHidden = !settings.showPageBar
             await refreshDisplay()
@@ -174,6 +202,23 @@ final class ReaderWindowController: NSWindowController {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
             NSSound.beep()
         }
+    }
+
+    /// 開けなかった本(パスワードのキャンセル/試行超過)を「現在の本」として
+    /// 空の状態で表示する。これによりページ送りや「次の本」でこの本を
+    /// 飛ばして先へ進める。履歴・設定には記録しない。
+    private func presentLockedPlaceholder(source: any BookSource, reason: String) {
+        stopSlideshow()
+        saveCurrentBookState()
+        let placeholder = Book(source: source, entries: [])
+        book = placeholder
+        window?.title = placeholder.displayName
+        pageLabel.isHidden = true
+        pageBar.isHidden = true
+        readerView.setPages([], readsFromLeft: false)
+        statusLabel.stringValue = reason + "\n"
+            + String(localized: "Turn the page or use Next Book to continue.")
+        statusLabel.isHidden = false
     }
 
     // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
@@ -187,24 +232,41 @@ final class ReaderWindowController: NSWindowController {
         saveCurrentBookState()
     }
 
-    /// パスワード書庫のロック解除。キャンセルで false(仕様書 §4.1.3)。
-    /// 旧実装と異なり NSSecureTextField を使う(設計書 §13.4)。
-    private func unlockIfNeeded(_ source: any BookSource) async -> Bool {
+    private enum UnlockResult {
+        case unlocked
+        case cancelled
+        case attemptsExceeded
+    }
+
+    /// パスワード書庫のロック解除(仕様書 §4.1.3)。
+    /// 旧実装の「正解かキャンセルまで無限に再表示」をやめ、3 回で打ち切る。
+    private func unlock(_ source: any BookSource) async -> UnlockResult {
+        // UI 検証用の隠しフック(モーダルを出さずキャンセル扱いにする)
+        if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil,
+           await source.isEncrypted() {
+            return .cancelled
+        }
+        let maxAttempts = 3
+        var attemptsLeft = maxAttempts
         while await source.isEncrypted() {
+            guard attemptsLeft > 0 else { return .attemptsExceeded }
             let alert = NSAlert()
             alert.messageText = String(localized: "This archive is password-protected.")
-            alert.informativeText = String(localized: "Enter the password to open it.")
+            alert.informativeText = attemptsLeft == maxAttempts
+                ? String(localized: "Enter the password to open it.")
+                : String(localized: "Wrong password. \(attemptsLeft) attempts left.")
             alert.addButton(withTitle: String(localized: "OK"))
             alert.addButton(withTitle: String(localized: "Cancel"))
             let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
             alert.accessoryView = field
             alert.window.initialFirstResponder = field
-            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+            guard alert.runModal() == .alertFirstButtonReturn else { return .cancelled }
             if await source.checkAndSetPassword(field.stringValue) {
-                return true
+                return .unlocked
             }
+            attemptsLeft -= 1
         }
-        return true
+        return .unlocked
     }
 
     // MARK: - 表示更新
@@ -270,6 +332,11 @@ final class ReaderWindowController: NSWindowController {
     /// 巻末超え(仕様書 §4.3.4)
     func handleEndOfBook() {
         guard let book else { return }
+        // 開けなかった本(空)はループ設定に関わらずスキップして次へ
+        if book.pageCount == 0 {
+            openAdjacentBook(forward: true)
+            return
+        }
         switch settings.loopCheck {
         case 0:
             book.goToFirst()
@@ -284,6 +351,10 @@ final class ReaderWindowController: NSWindowController {
 
     func handleStartOfBook() {
         guard let book else { return }
+        if book.pageCount == 0 {
+            openAdjacentBook(forward: false)
+            return
+        }
         switch settings.loopCheck {
         case 0:
             Task {
