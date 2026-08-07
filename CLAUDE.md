@@ -32,6 +32,12 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 - The pbxproj is hand-written (objectVersion 77, filesystem-synchronized groups): files
   added under `CooViewer/` or `CooViewerTests/` are picked up automatically — do not add
   per-file entries to the pbxproj.
+- The app is **arm64-only by design** (`ARCHS = arm64` at project level; the frameworks in
+  `Frameworks/` are built arm64-only). Never set `ARCHS = $(ARCHS_STANDARD)` on the target —
+  the x86_64 slice then fails to link XADMaster with `Undefined symbol: _OBJC_CLASS_$_XADArchive`.
+  Xcode's Signing & Capabilities pane may inject this silently; remove it if it reappears.
+- Signing: Debug is ad-hoc (`CODE_SIGN_IDENTITY = "-"`), Release is manual Developer ID
+  (team FQTM2788K5) with hardened runtime for notarized distribution.
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
   the PNG. Sample book generator: create portrait PNGs in a folder (see git history for

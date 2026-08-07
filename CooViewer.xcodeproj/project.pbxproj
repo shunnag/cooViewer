@@ -61,19 +61,11 @@
 			exceptions = (
 				C00000000000000000000024 /* Exceptions for "CooViewer" folder in "cooViewer" target */,
 			);
-			explicitFileTypes = {
-			};
-			explicitFolders = (
-			);
 			path = CooViewer;
 			sourceTree = "<group>";
 		};
 		C00000000000000000000005 /* CooViewerTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			explicitFileTypes = {
-			};
-			explicitFolders = (
-			);
 			path = CooViewerTests;
 			sourceTree = "<group>";
 		};
@@ -351,9 +343,12 @@
 		C0000000000000000000001F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2000;
-				ENABLE_HARDENED_RUNTIME = NO;
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = FQTM2788K5;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CooViewer/Info.plist;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
