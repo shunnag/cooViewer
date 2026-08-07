@@ -24,11 +24,15 @@ actor ThumbnailCache {
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails")
     }
 
-    /// 生成中の共有タスク(重複要求は同じ生成を待つ)
-    private var inFlight: [String: Task<CGImage?, Never>] = [:]
-    /// キーごとの待ち手数。全員がキャンセルで去った生成は、まだ実行に
-    /// 入っていなければキャンセルして遠いページの生成を早期に破棄する
-    private var waiterCounts: [String: Int] = [:]
+    /// 生成中の共有タスクと待ち手数(重複要求は同じ生成を待つ)。
+    /// キャンセル/完了の通知は「自分の世代のタスク」に一致する場合のみ作用させ、
+    /// キー再利用後の新しい生成を旧世代の遅延通知が壊さないようにする。
+    private struct InFlight {
+        let task: Task<CGImage?, Never>
+        var waiters: Int
+    }
+
+    private var inFlight: [String: InFlight] = [:]
 
     /// メモリ → ディスク → 生成の順で取得する。
     func thumbnail(for entry: PageEntry, in source: any BookSource,
@@ -40,34 +44,30 @@ actor ThumbnailCache {
         }
 
         let task: Task<CGImage?, Never>
-        if let running = inFlight[key], !running.isCancelled {
-            // 進行中の生成に合流(キャンセル済みタスクには合流しない:
-            // 先読みの世代交代で待ち手ゼロ→キャンセル直後に新しい要求が
-            // 来た場合は作り直す)
-            task = running
+        if let running = inFlight[key], !running.task.isCancelled {
+            // 進行中の生成に合流(キャンセル済みには合流せず作り直す)
+            task = running.task
+            inFlight[key]?.waiters += 1
         } else {
             let fileURL = diskRoot.appendingPathComponent(bookKey)
                 .appendingPathComponent("\(entry.id).png")
             // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
-            // 文脈にも縛られない独立タスクとして生成を完走させる
-            task = Task.detached(priority: .userInitiated) {
+            // 文脈にも縛られない独立タスクとして生成する
+            let generation = Task.detached(priority: .userInitiated) {
                 await Self.loadOrGenerate(entry: entry, source: source, fileURL: fileURL)
             }
-            inFlight[key] = task
+            task = generation
+            inFlight[key] = InFlight(task: generation, waiters: 1)
         }
 
-        waiterCounts[key, default: 0] += 1
         let image = await withTaskCancellationHandler {
             await task.value
         } onCancel: {
-            Task { await self.waiterCancelled(key: key) }
+            Task { await self.waiterCancelled(key: key, task: task) }
         }
-        waiterCounts[key] = max(0, (waiterCounts[key] ?? 1) - 1)
-        if waiterCounts[key] == 0 { waiterCounts.removeValue(forKey: key) }
-        // 自分の待っていたタスクの登録だけを外す(遅れて終了した旧世代が
-        // 新しい生成の登録を消さないように)
-        if inFlight[key] == task {
-            inFlight[key] = nil
+        // キャンセルされた待ち手の分は waiterCancelled 側が処理済み
+        if !Task.isCancelled {
+            releaseWaiter(key: key, task: task)
         }
         if let image {
             store(image, for: key)
@@ -75,15 +75,25 @@ actor ThumbnailCache {
         return image
     }
 
-    /// 待ち手のキャンセル通知。全員去っていたら生成タスクをキャンセルする
-    /// (実行前ならソース側の checkCancellation で脱落し、実行中なら完走する)。
-    private func waiterCancelled(key: String) {
-        waiterCounts[key] = max(0, (waiterCounts[key] ?? 1) - 1)
-        if waiterCounts[key] == 0 {
-            waiterCounts.removeValue(forKey: key)
-            inFlight[key]?.cancel()
-            inFlight.removeValue(forKey: key)  // 新しい要求は作り直す
+    /// 待ち手のキャンセル通知。同一世代のタスクで、かつ全員去っていたら
+    /// 生成をキャンセルして登録を外す(実行前ならソース側の
+    /// checkCancellation で脱落し、実行中なら完走してキャッシュに残る)。
+    private func waiterCancelled(key: String, task: Task<CGImage?, Never>) {
+        guard var entry = inFlight[key], entry.task == task else { return }
+        entry.waiters -= 1
+        if entry.waiters <= 0 {
+            task.cancel()
+            inFlight[key] = nil
+        } else {
+            inFlight[key] = entry
         }
+    }
+
+    /// 通常完了した待ち手の登録解除(同一世代のタスクの場合のみ)
+    private func releaseWaiter(key: String, task: Task<CGImage?, Never>) {
+        guard var entry = inFlight[key], entry.task == task else { return }
+        entry.waiters -= 1
+        inFlight[key] = entry.waiters <= 0 ? nil : entry
     }
 
     /// 古い本のディスクキャッシュを回収する(起動時に呼ぶ)。
