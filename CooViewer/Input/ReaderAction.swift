@@ -34,6 +34,8 @@ enum ReaderAction: Equatable, Sendable {
     case enlargeViewMode, reduceViewMode
     case dragScroll
     case contextualMenu
+    /// 補間なし ⇔ 直前の補間の切り替え(新実装で追加。旧番号 53 は未使用域)
+    case toggleInterpolation
 
     // 画面の左右どちらで操作したかで分岐する系(仕様書 §5.6 の **)
     case positionalNextPrevPage, positionalHalfNextPrev, positionalLastTop
@@ -99,6 +101,7 @@ extension ReaderAction {
         case 50: .minimizeWindow
         case 51: .enlargeViewMode
         case 52: .reduceViewMode
+        case 53: .toggleInterpolation
         default: nil
         }
     }

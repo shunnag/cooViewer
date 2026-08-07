@@ -60,6 +60,20 @@ final class SettingsStore {
             ?? .systemDefault
     }
 
+    /// 補間なし ⇔ 直前の補間を切り替える(直前が未保存なら「高」へ)
+    func toggleInterpolationNone() {
+        let current = defaults.integer(forKey: "Interpolation")
+        if current == ReaderView.Interpolation.none.rawValue {
+            let stored = defaults.object(forKey: "InterpolationBeforeNone") as? Int
+            let restored = (stored == nil || stored == ReaderView.Interpolation.none.rawValue)
+                ? ReaderView.Interpolation.high.rawValue : stored!
+            defaults.set(restored, forKey: "Interpolation")
+        } else {
+            defaults.set(current, forKey: "InterpolationBeforeNone")
+            defaults.set(ReaderView.Interpolation.none.rawValue, forKey: "Interpolation")
+        }
+    }
+
     /// ホイール動作(仕様書 §4.16)
     var canScrollMode: Int { defaults.integer(forKey: "CanScrollMode") }
 

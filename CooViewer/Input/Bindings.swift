@@ -199,8 +199,17 @@ struct BindingConfiguration: Sendable {
             guard let array = defaults.array(forKey: name) as? [[String: Any]] else {
                 return fallback
             }
-            let bindings = keyBindings(fromLegacyArray: array)
-            return bindings.isEmpty ? fallback : bindings
+            var bindings = keyBindings(fromLegacyArray: array)
+            guard !bindings.isEmpty else { return fallback }
+            // 保存済み配列への新既定の移行: f が未使用かつ補間切替(53)が
+            // 未割当のときだけ追記する(ユーザーのカスタマイズは尊重)
+            if name == "KeyArray",
+               !bindings.contains(where: { $0.key == "f" && $0.modifiers == 0 }),
+               !bindings.contains(where: { $0.legacyActionNumber == 53 }) {
+                bindings.append(KeyBinding(legacyActionNumber: 53, key: "f",
+                                           modifiers: 0, value: nil, switchAction: false))
+            }
+            return bindings
         }
         func mice(_ name: String, fallback: [MouseBinding]) -> [MouseBinding] {
             guard let array = defaults.array(forKey: name) as? [[String: Any]] else {
@@ -267,7 +276,7 @@ struct BindingConfiguration: Sendable {
             key(10, "a"), key(11, "s"), key(12, "p"),
             key(13, tab, value: 10), key(14, tab, LegacyModifier.shift, value: 10),
             key(15, "w"), key(16, "q"), key(17, "g"), key(18, "t"), key(19, "r"),
-            key(20, "o"), key(34, "l"),
+            key(20, "o"), key(34, "l"), key(53, "f"),
             key(35, "c", LegacyModifier.shift + LegacyModifier.control),
             key(35, down, LegacyModifier.shift + LegacyModifier.control),
             key(36, "d", LegacyModifier.shift + LegacyModifier.control),

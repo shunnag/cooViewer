@@ -107,6 +107,30 @@ enum MainMenuBuilder {
         }
         readModeItem.submenu = readModeMenu
 
+        // 補間(なし/低/既定/高。f キーの切替アクションもここから)
+        let interpolationItem = menu.addItem(
+            withTitle: String(localized: "Interpolation"), action: nil, keyEquivalent: "")
+        let interpolationMenu = NSMenu()
+        let interpolationTitles: [(String, Int)] = [
+            (String(localized: "Default"), 0),
+            (String(localized: "None"), 1),
+            (String(localized: "Low"), 2),
+            (String(localized: "High"), 3),
+        ]
+        for (title, tag) in interpolationTitles {
+            let item = interpolationMenu.addItem(
+                withTitle: title,
+                action: #selector(ReaderWindowController.changeInterpolation(_:)),
+                keyEquivalent: "")
+            item.tag = tag
+        }
+        interpolationMenu.addItem(.separator())
+        interpolationMenu.addItem(
+            withTitle: String(localized: "Toggle Interpolation"),
+            action: #selector(ReaderWindowController.toggleInterpolationMenu(_:)),
+            keyEquivalent: "")
+        interpolationItem.submenu = interpolationMenu
+        menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Rotate Left"),
                      action: #selector(ReaderWindowController.rotateLeft(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Rotate Right"),

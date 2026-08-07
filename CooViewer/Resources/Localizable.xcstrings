@@ -432,6 +432,16 @@
         }
       }
     },
+    "Interpolation": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "補間"
+          }
+        }
+      }
+    },
     "Interpolation:": {
       "localizations": {
         "ja": {
@@ -1388,6 +1398,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "フルスクリーン切替"
+          }
+        }
+      }
+    },
+    "Toggle Interpolation": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "補間なしを切り替え"
           }
         }
       }

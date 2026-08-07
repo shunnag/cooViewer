@@ -109,10 +109,16 @@ final class BindingTests: XCTestCase {
     }
 
     func testAllLegacyKeyNumbersMapped() {
-        for number in 0...52 {
+        for number in 0...53 {
             XCTAssertNotNil(ReaderAction.fromLegacyKeyNumber(number), "key action \(number)")
         }
-        XCTAssertNil(ReaderAction.fromLegacyKeyNumber(53))
+        XCTAssertNil(ReaderAction.fromLegacyKeyNumber(54))
+    }
+
+    func testDefaultFKeyTogglesInterpolation() {
+        let binding = bindings.resolveKey(character: "f", modifiers: 0,
+                                          fitMode: 0, readsFromLeft: false)
+        XCTAssertEqual(binding?.action, .toggleInterpolation)
     }
 
     func testAllLegacyMouseNumbersMapped() {
@@ -124,6 +130,23 @@ final class BindingTests: XCTestCase {
 }
 
 extension BindingTests {
+    func testStoredKeyArrayGainsInterpolationToggleMigration() {
+        let suite = UserDefaults(suiteName: "test.cooViewer.bindings")!
+        suite.removePersistentDomain(forName: "test.cooViewer.bindings")
+        suite.set([["action": 0, "key": "z", "keyname": "z", "modifier": 0]],
+                  forKey: "KeyArray")
+        let loaded = BindingConfiguration.load(from: suite)
+        XCTAssertTrue(loaded.keyNormal.contains {
+            $0.key == "f" && $0.legacyActionNumber == 53
+        })
+        // f を別用途に使っている場合は追記しない
+        suite.set([["action": 0, "key": "f", "keyname": "f", "modifier": 0]],
+                  forKey: "KeyArray")
+        let custom = BindingConfiguration.load(from: suite)
+        XCTAssertFalse(custom.keyNormal.contains { $0.legacyActionNumber == 53 })
+        suite.removePersistentDomain(forName: "test.cooViewer.bindings")
+    }
+
     func testLegacyArrayRoundTrip() {
         // 編集 UI の保存形式(旧互換)を読み戻して同一になること
         let original = [
