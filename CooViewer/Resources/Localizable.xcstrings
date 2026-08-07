@@ -1496,6 +1496,7 @@
       }
     },
     "Turn pages with the usual page keys" : {
+      "extractionState" : "stale",
       "localizations" : {
         "ja" : {
           "stringUnit" : {

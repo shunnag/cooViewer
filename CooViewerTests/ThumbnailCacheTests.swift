@@ -233,4 +233,26 @@ final class ThumbnailWaiterHandoffTests: XCTestCase {
         _ = await blocker.value
         _ = await abandoned.value
     }
+
+    func testRapidCancelAndRerequestAlwaysYieldsImage() async throws {
+        // サムネイル画面の素早い往復の再現: 同じキーへの要求→即キャンセル→
+        // 再要求を繰り返しても、キャンセルしていない要求は必ず画像を得る
+        // (旧世代の遅延キャンセル通知が新世代の生成を壊さないこと)
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+        for round in 0..<10 {
+            let diskRoot = try TestFixtures.makeTempDir()
+            defer { try? FileManager.default.removeItem(at: diskRoot) }
+            let cache = ThumbnailCache(diskRoot: diskRoot)
+            let abandoned = Task {
+                await cache.thumbnail(for: entry, in: source, bookKey: "rapid")
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+            abandoned.cancel()
+            let image = await cache.thumbnail(
+                for: entry, in: source, bookKey: "rapid")
+            XCTAssertNotNil(image, "round \(round): 生き残った要求が画像を得ること")
+            _ = await abandoned.value
+        }
+    }
 }
