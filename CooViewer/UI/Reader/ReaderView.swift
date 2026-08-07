@@ -59,6 +59,8 @@ final class ReaderView: NSView {
 
     /// ページ毎の高品質リサンプル結果(対象ピクセルサイズ付き。設計書 §5 描画品質)
     private var resampledPages: [(size: CGSize, image: CGImage)?] = []
+    /// ルーペ表示専用の高解像度画像(ページ index → 画像)。通常表示には使わない
+    private var loupeHighResImages: [Int: CGImage] = [:]
     private var resampleTask: Task<Void, Never>?
     private var resampleGeneration = 0
 
@@ -129,6 +131,7 @@ final class ReaderView: NSView {
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
         resampledPages = Array(repeating: nil, count: images.count)
+        loupeHighResImages.removeAll()
         scrollOffset = .zero
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -359,13 +362,22 @@ final class ReaderView: NSView {
 
     /// ルーペに渡す描画状態のスナップショット。
     /// pageLayers[i] は images[i] に対応するため zip で表示中ページのみ拾える。
+    /// ルーペにだけ高解像度画像を差し込む(通常表示・先読みには影響しない)
+    func setLoupeHighResImage(_ image: CGImage, forPageAt index: Int) {
+        loupeHighResImages[index] = image
+        if loupe.isEnabled {
+            loupe.update(content: loupeContent())
+        }
+    }
+
     private func loupeContent() -> LoupeController.Content {
         LoupeController.Content(
             containerBounds: containerLayer.bounds,
             containerPosition: containerLayer.position,
             containerTransform: containerLayer.affineTransform(),
-            pages: zip(pageLayers, images).map { pageLayer, image in
-                LoupeController.Page(frame: pageLayer.frame, image: image)
+            pages: images.indices.map { index in
+                LoupeController.Page(frame: pageLayers[index].frame,
+                                     image: loupeHighResImages[index] ?? images[index])
             },
             backgroundColor: layer?.backgroundColor)
     }
