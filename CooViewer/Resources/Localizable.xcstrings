@@ -1041,12 +1041,12 @@
         }
       }
     },
-    "Turn pages with two-finger swipe": {
+    "Turn pages with a trackpad swipe": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "2 本指スワイプでページをめくる"
+            "value": "トラックパッドのスワイプでページをめくる"
           }
         }
       }
