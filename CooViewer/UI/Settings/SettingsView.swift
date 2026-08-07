@@ -26,77 +26,142 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            general
+            generalPane
                 .tabItem { Label(String(localized: "General"), systemImage: "gearshape") }
-            display
+            displayPane
                 .tabItem { Label(String(localized: "Display"), systemImage: "photo") }
-            control
+            controlPane
                 .tabItem { Label(String(localized: "Control"), systemImage: "computermouse") }
         }
-        .frame(width: 440)
-        .padding(20)
+        .frame(width: 560, height: 500)
     }
 
-    private var general: some View {
-        Form {
-            Picker(String(localized: "Reading direction:"), selection: $readMode) {
-                Text(String(localized: "Right to Left")).tag(0)
-                Text(String(localized: "Left to Right")).tag(1)
-                Text(String(localized: "Right to Left (single page)")).tag(2)
-                Text(String(localized: "Left to Right (single page)")).tag(3)
-            }
-            Picker(String(localized: "Sort by:"), selection: $sortMode) {
-                Text(String(localized: "Name (numeric aware)")).tag(0)
-                Text(String(localized: "Name (simple)")).tag(4)
-                Text(String(localized: "Creation date")).tag(2)
-                Text(String(localized: "Modification date")).tag(3)
-                Text(String(localized: "Shuffle")).tag(1)
-            }
-            Picker(String(localized: "At the end of a book:"), selection: $loopCheck) {
-                Text(String(localized: "Loop")).tag(0)
-                Text(String(localized: "Open the next book (first page)")).tag(1)
-                Text(String(localized: "Open the next book (backward: last page)")).tag(2)
-                Text(String(localized: "Do nothing")).tag(3)
-            }
-            Picker(String(localized: "Restore last page:"), selection: $goToLastPage) {
-                Text(String(localized: "Ask")).tag(0)
-                Text(String(localized: "Always")).tag(1)
-                Text(String(localized: "Never")).tag(2)
-            }
-            Toggle(String(localized: "Read subfolders"), isOn: $readSubFolder)
-            Toggle(String(localized: "Remember settings per book"), isOn: $rememberBookSettings)
-            Toggle(String(localized: "Open the last book at launch"), isOn: $openLastFolder)
-            // 履歴から溢れた本のページも LastPages に残す(仕様書 §7.3)
-            Toggle(String(localized: "Always remember the last page"),
-                   isOn: $alwaysRememberLastPage)
-            Stepper(String(localized: "Recent books to keep: \(openRecentLimit)"),
-                    value: $openRecentLimit, in: 0...50)
-        }
-        .padding(.vertical, 8)
-    }
+    // MARK: - 一般
 
-    private var display: some View {
+    private var generalPane: some View {
         Form {
-            Toggle(String(localized: "Show page number"), isOn: $showNumber)
-            Toggle(String(localized: "Show page bar"), isOn: $showPageBar)
-            Picker(String(localized: "Interpolation:"), selection: $interpolation) {
-                Text(String(localized: "Default")).tag(0)
-                Text(String(localized: "None")).tag(1)
-                Text(String(localized: "Low")).tag(2)
-                Text(String(localized: "High")).tag(3)
-            }
-            ColorPicker(String(localized: "Background color:"),
-                        selection: backgroundColorBinding, supportsOpacity: false)
-            VStack(alignment: .leading) {
-                Slider(value: singleSettingBinding, in: 0.4...1.0) {
-                    Text(String(localized: "Spread threshold (width/height):"))
+            Section {
+                Picker(String(localized: "Reading direction:"), selection: $readMode) {
+                    Text(String(localized: "Right to Left")).tag(0)
+                    Text(String(localized: "Left to Right")).tag(1)
+                    Text(String(localized: "Right to Left (single page)")).tag(2)
+                    Text(String(localized: "Left to Right (single page)")).tag(3)
                 }
-                Text(String(format: "%.2f", Double(singleSetting) / 1000))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Picker(String(localized: "Sort by:"), selection: $sortMode) {
+                    Text(String(localized: "Name (numeric aware)")).tag(0)
+                    Text(String(localized: "Name (simple)")).tag(4)
+                    Text(String(localized: "Creation date")).tag(2)
+                    Text(String(localized: "Modification date")).tag(3)
+                    Text(String(localized: "Shuffle")).tag(1)
+                }
+                Picker(String(localized: "At the end of a book:"), selection: $loopCheck) {
+                    Text(String(localized: "Loop")).tag(0)
+                    Text(String(localized: "Open the next book (first page)")).tag(1)
+                    Text(String(localized: "Open the next book (backward: last page)")).tag(2)
+                    Text(String(localized: "Do nothing")).tag(3)
+                }
+            }
+            Section {
+                Picker(String(localized: "Restore last page:"), selection: $goToLastPage) {
+                    Text(String(localized: "Ask")).tag(0)
+                    Text(String(localized: "Always")).tag(1)
+                    Text(String(localized: "Never")).tag(2)
+                }
+                // 履歴から溢れた本のページも LastPages に残す(仕様書 §7.3)
+                Toggle(String(localized: "Always remember the last page"),
+                       isOn: $alwaysRememberLastPage)
+                Toggle(String(localized: "Open the last book at launch"), isOn: $openLastFolder)
+                Stepper(String(localized: "Recent books to keep: \(openRecentLimit)"),
+                        value: $openRecentLimit, in: 0...50)
+            }
+            Section {
+                Toggle(String(localized: "Read subfolders"), isOn: $readSubFolder)
+                Toggle(String(localized: "Remember settings per book"),
+                       isOn: $rememberBookSettings)
             }
         }
-        .padding(.vertical, 8)
+        .formStyle(.grouped)
+    }
+
+    // MARK: - 表示
+
+    private var displayPane: some View {
+        Form {
+            Section {
+                Toggle(String(localized: "Show page number"), isOn: $showNumber)
+                Toggle(String(localized: "Show page bar"), isOn: $showPageBar)
+            }
+            Section {
+                Picker(String(localized: "Interpolation:"), selection: $interpolation) {
+                    Text(String(localized: "Default")).tag(0)
+                    Text(String(localized: "None")).tag(1)
+                    Text(String(localized: "Low")).tag(2)
+                    Text(String(localized: "High")).tag(3)
+                }
+                ColorPicker(String(localized: "Background color:"),
+                            selection: backgroundColorBinding, supportsOpacity: false)
+                sliderRow(
+                    label: String(localized: "Spread threshold (width/height):"),
+                    value: singleSettingBinding, range: 0.4...1.0,
+                    display: String(format: "%.2f", Double(singleSetting) / 1000)
+                )
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - 操作
+
+    private var controlPane: some View {
+        Form {
+            Section {
+                Picker(String(localized: "Scroll wheel:"), selection: $canScrollMode) {
+                    Text(String(localized: "Scroll only")).tag(0)
+                    Text(String(localized: "Scroll, then move within page")).tag(1)
+                    Text(String(localized: "Scroll, then turn page")).tag(2)
+                    Text(String(localized: "Always turn page")).tag(3)
+                }
+                sliderRow(
+                    label: String(localized: "Wheel page-turn threshold:"),
+                    value: $wheelSensitivity, range: 0...2.0,
+                    display: wheelSensitivity == 0
+                        ? String(localized: "Disabled")
+                        : String(format: "%.1f", wheelSensitivity)
+                )
+            }
+            Section {
+                Picker(String(localized: "When returning to previous page:"),
+                       selection: $prevPageMode) {
+                    Text(String(localized: "Show from top")).tag(0)
+                    Text(String(localized: "Show from bottom")).tag(1)
+                }
+                sliderRow(
+                    label: String(localized: "Slideshow interval (seconds):"),
+                    value: $slideshowDelay, range: 0...30,
+                    display: String(format: "%.1f", slideshowDelay)
+                )
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - 部品
+
+    /// ラベル+スライダー+現在値の 1 行(値は幅固定でガタつかないように)
+    private func sliderRow(
+        label: String, value: Binding<Double>,
+        range: ClosedRange<Double>, display: String
+    ) -> some View {
+        LabeledContent(label) {
+            HStack(spacing: 10) {
+                Slider(value: value, in: range)
+                    .frame(width: 180)
+                Text(display)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 44, alignment: .trailing)
+            }
+        }
     }
 
     private var backgroundColorBinding: Binding<Color> {
@@ -111,39 +176,5 @@ struct SettingsView: View {
             get: { Double(singleSetting) / 1000 },
             set: { singleSetting = Int($0 * 1000) }
         )
-    }
-
-    private var control: some View {
-        Form {
-            Picker(String(localized: "Scroll wheel:"), selection: $canScrollMode) {
-                Text(String(localized: "Scroll only")).tag(0)
-                Text(String(localized: "Scroll, then move within page")).tag(1)
-                Text(String(localized: "Scroll, then turn page")).tag(2)
-                Text(String(localized: "Always turn page")).tag(3)
-            }
-            VStack(alignment: .leading) {
-                Slider(value: $wheelSensitivity, in: 0...2.0) {
-                    Text(String(localized: "Wheel page-turn threshold:"))
-                }
-                Text(wheelSensitivity == 0
-                     ? String(localized: "Disabled")
-                     : String(format: "%.1f", wheelSensitivity))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Picker(String(localized: "When returning to previous page:"), selection: $prevPageMode) {
-                Text(String(localized: "Show from top")).tag(0)
-                Text(String(localized: "Show from bottom")).tag(1)
-            }
-            VStack(alignment: .leading) {
-                Slider(value: $slideshowDelay, in: 0...30) {
-                    Text(String(localized: "Slideshow interval (seconds):"))
-                }
-                Text(String(format: "%.1f", slideshowDelay))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 8)
     }
 }
