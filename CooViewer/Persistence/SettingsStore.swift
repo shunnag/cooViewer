@@ -95,10 +95,14 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "ShowNumber") }
     }
 
-    /// ページキャッシュ容量。旧「設定値+4」を正規化し、未設定(0)は 8(設計書 §13.4)。
-    var pageCacheCapacity: Int {
-        let value = defaults.integer(forKey: "ImageCache")
-        return value <= 0 ? 8 : value + 4
+    /// ページキャッシュ上限(バイト)。既定は物理メモリの 15%(上限 2GB)。
+    /// "PageCacheMegabytes" で明示指定可(0/未設定=自動)。
+    /// 旧 ImageCache(枚数)は廃止(設計書「キャッシュ・先読み設計」)。
+    var pageCacheByteLimit: Int {
+        let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
+        if megabytes > 0 { return megabytes * 1024 * 1024 }
+        let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
+        return min(2 * 1024 * 1024 * 1024, physical * 15 / 100)
     }
 
     /// 背景色。新形式(sRGB 成分)を優先し、旧 NSArchiver データは一度だけ読み替える

@@ -142,10 +142,13 @@ final class ReaderWindowController: NSWindowController {
             saveCurrentBookState()
 
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
-                                           cacheCapacity: settings.pageCacheCapacity)
+                                           cacheByteLimit: settings.pageCacheByteLimit)
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
             self.book = book
+
+            // 書庫のローカルスプール等を開始(パスワード解除後。設計書 キャッシュ節)
+            await source.beginBackgroundPreparation()
 
             let skipPageRestore = initialPageName != nil || atPage != nil || atLastPage
             await restoreBookState(for: book, skipPageRestore: skipPageRestore)

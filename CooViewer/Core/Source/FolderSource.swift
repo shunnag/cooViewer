@@ -9,6 +9,7 @@ final class FolderSource: BookSource {
     private let pageEntries: [PageEntry]
 
     var supportsDateSort: Bool { true }
+    var supportsParallelPageLoads: Bool { true }
 
     init(url: URL, readSubFolders: Bool) throws {
         self.url = url

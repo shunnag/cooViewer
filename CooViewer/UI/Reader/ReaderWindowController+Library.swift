@@ -213,7 +213,8 @@ extension ReaderWindowController {
         Task {
             let spread = await book.currentSpread()
             guard let index = displayedIndex(in: spread, leftSide: leftSide),
-                  let image = await book.image(at: index) else { return }
+                  // 原寸表示は表示上限(displayPixelCap)を介さないフル解像度で
+                  let image = await book.fullResolutionImage(at: index) else { return }
             presentOriginalSizePanel(image: image, title: book.entries[index].name)
         }
     }

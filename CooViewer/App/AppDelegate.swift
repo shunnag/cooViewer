@@ -15,7 +15,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = ReaderWindowController()
         readerWindowController = controller
         controller.showWindow(nil)
+        cleanUpCaches()
         handleDebugArguments()
+    }
+
+    /// 起動時のキャッシュ掃除: 生存していないプロセスのスプール残骸
+    /// (仕様書 §4.17 の temp 残り問題への対策)と古いサムネイルを回収する。
+    private func cleanUpCaches() {
+        Task.detached(priority: .utility) {
+            let root = ArchiveSource.spoolRoot()
+            if let children = try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil) {
+                for child in children {
+                    let pid = child.lastPathComponent.split(separator: "-").first
+                        .flatMap { Int32($0) }
+                    if let pid, kill(pid, 0) == 0 { continue }  // 生存プロセスの分は残す
+                    try? FileManager.default.removeItem(at: child)
+                }
+            }
+            await ThumbnailCache.shared.trimDiskCache(olderThanDays: 30)
+        }
     }
 
     /// 動作検証用の隠し引数(スクリーンショット権限なしで描画結果を確認するため):
