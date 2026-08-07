@@ -206,3 +206,24 @@ final class MetalFXUpscalerTests: XCTestCase {
         XCTAssertNil(upscaler.upscale(source, to: CGSize(width: 32, height: 32)))
     }
 }
+
+final class SVGSupportTests: XCTestCase {
+    func testSVGDecodesViaAppKitFallback() throws {
+        let svg = Data("""
+        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">\
+        <rect width="40" height="20" fill="#e63333"/></svg>
+        """.utf8)
+        let image = try ImageDecoding.decode(svg, maxPixelSize: 200)
+        XCTAssertEqual(image.width, 200)   // ベクトルは指定解像度でラスタライズ
+        XCTAssertEqual(image.height, 100)
+        let data = try XCTUnwrap(image.dataProvider?.data as Data?)
+        let offset = 50 * image.bytesPerRow + 100 * (image.bitsPerPixel / 8)
+        XCTAssertGreaterThan(Int(data[offset]), 180)   // R
+        XCTAssertLessThan(Int(data[offset + 1]), 120)  // G
+    }
+
+    func testSVGIsListedAndAIIsExcluded() {
+        XCTAssertTrue(SupportedTypes.isImageFile("cover.svg"))
+        XCTAssertFalse(SupportedTypes.isImageFile("artwork.ai"))
+    }
+}
