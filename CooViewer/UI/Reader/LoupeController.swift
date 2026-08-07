@@ -134,11 +134,31 @@ extension ReaderWindowController {
             view.disableLoupe()
         } else {
             view.enableLoupe(size: settings.loupeSize, rate: settings.loupeRate)
+            requestLoupeHighResolution()
+        }
+    }
+
+    /// 表示中ページのルーペ用高解像度画像を非同期取得して差し込む。
+    /// 実効倍率=表示 2 倍 × ルーペ倍率(上限 6 倍)。
+    func requestLoupeHighResolution() {
+        guard let book, readerViewForInput.isLoupeEnabled else { return }
+        let scale = min(6.0, 2.0 * max(1.0, settings.loupeRate))
+        Task {
+            let spread = await book.currentSpread()
+            for (position, index) in spread.indices.enumerated() {
+                guard book.entries.indices.contains(index),
+                      readerViewForInput.isLoupeEnabled else { return }
+                if let image = try? await book.source.loupeImage(
+                    for: book.entries[index], pixelScale: scale) {
+                    readerViewForInput.setLoupeHighResImage(image, forPageAt: position)
+                }
+            }
         }
     }
 
     /// 倍率 ±delta(下限 1.0)。旧実装同様 defaults へ直接保存する(仕様書 §4.10)。
     func adjustLoupeRate(by delta: Double) {
+        defer { requestLoupeHighResolution() }
         let rate = max(1.0, settings.loupeRate + delta)
         settings.loupeRate = rate
         readerViewForInput.setLoupeRate(rate)

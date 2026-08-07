@@ -36,6 +36,17 @@ actor PDFSource: BookSource {
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        try render(entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)
+    }
+
+    /// ルーペ用: ベクトルから倍率連動でラスタライズする(設計書 §5 描画品質)。
+    /// 通常表示の 2 倍キャップとは独立で、非使用時のコストに影響しない。
+    func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
+        try render(entry: entry, maxPixelSize: nil, pixelScale: min(pixelScale, 6.0))
+    }
+
+    private func render(entry: PageEntry, maxPixelSize: Int?,
+                        pixelScale: CGFloat?) throws -> CGImage {
         guard let page = document.page(at: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
@@ -51,7 +62,7 @@ actor PDFSource: BookSource {
         // Retina でのぼやけを防ぐ(旧「ポイント原寸」§4.14 からの仕様変更)。
         // サムネイル等の小さい指定では従来どおり縮小になる。
         // maxPixelSize なし(原寸表示)はポイント原寸を維持する。
-        var scale: CGFloat = 1.0
+        var scale: CGFloat = pixelScale ?? 1.0
         if let maxPixelSize {
             let longSide = max(pointSize.width, pointSize.height)
             if longSide > 0 { scale = min(2.0, CGFloat(maxPixelSize) / longSide) }

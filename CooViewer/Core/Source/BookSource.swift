@@ -54,6 +54,11 @@ protocol BookSource: Sendable {
     /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
     /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
     func beginBackgroundPreparation() async
+
+    /// ルーペ用の高解像度画像。既定はフル解像度デコード(表示キャップで
+    /// 縮小されたラスタ画像もルーペでは原寸になる)。ベクトルソースは
+    /// pixelScale 連動でラスタライズし直す。
+    func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage
 }
 
 extension BookSource {
@@ -62,6 +67,9 @@ extension BookSource {
     func checkAndSetPassword(_ password: String) async -> Bool { true }
     var supportsParallelPageLoads: Bool { false }
     func beginBackgroundPreparation() async {}
+    func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
+        try await image(for: entry, maxPixelSize: nil)
+    }
 }
 
 enum BookSourceFactory {

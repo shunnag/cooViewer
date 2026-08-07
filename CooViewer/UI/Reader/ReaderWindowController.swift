@@ -310,6 +310,9 @@ final class ReaderWindowController: NSWindowController {
                             readsFromLeft: book.readMode.readsFromLeft)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
+        if readerView.isLoupeEnabled {
+            requestLoupeHighResolution()
+        }
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する

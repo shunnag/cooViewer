@@ -83,3 +83,24 @@ final class PDFSourceTests: XCTestCase {
         return [data[offset], data[offset + 1], data[offset + 2]]
     }
 }
+
+extension PDFSourceTests {
+    func testLoupeImageRendersAtRequestedScale() async throws {
+        let source = try PDFSource(url: makePDFForLoupe())
+        let entry = try await source.entries()[0]
+        let image = try await source.loupeImage(for: entry, pixelScale: 4)
+        XCTAssertEqual(image.width, 800)   // 200pt x4
+        XCTAssertEqual(image.height, 400)
+    }
+
+    private func makePDFForLoupe() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loupe-\(UUID().uuidString).pdf")
+        var mediaBox = CGRect(x: 0, y: 0, width: 200, height: 100)
+        let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil)!
+        context.beginPDFPage(nil)
+        context.endPDFPage()
+        context.closePDF()
+        return url
+    }
+}
