@@ -92,11 +92,18 @@ struct SettingsView: View {
                 Toggle(String(localized: "Show page bar"), isOn: $showPageBar)
             }
             Section {
-                Picker(String(localized: "Interpolation:"), selection: $interpolation) {
-                    Text(String(localized: "Default")).tag(0)
-                    Text(String(localized: "None")).tag(1)
-                    Text(String(localized: "Low")).tag(2)
-                    Text(String(localized: "High")).tag(3)
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker(String(localized: "Interpolation:"), selection: $interpolation) {
+                        Text(String(localized: "Default")).tag(0)
+                        Text(String(localized: "None")).tag(1)
+                        Text(String(localized: "Low")).tag(2)
+                        Text(String(localized: "High")).tag(3)
+                    }
+                    .help(interpolationDescription)
+                    // 選択中モードの処理内容(ツールチップと同文)
+                    Text(interpolationDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 ColorPicker(String(localized: "Background color:"),
                             selection: backgroundColorBinding, supportsOpacity: false)
@@ -161,6 +168,18 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 44, alignment: .trailing)
             }
+        }
+    }
+
+    /// 補間モードごとの処理内容(設計書 §5 描画品質)
+    private var interpolationDescription: String {
+        switch interpolation {
+        case 1: String(localized: "None: pixels are scaled as-is (for pixel art).")
+        case 2: String(localized: "Low: fast GPU scaling only.")
+        case 3: String(localized:
+            "High: high-quality downscaling plus MetalFX upscaling for enlargement.")
+        default: String(localized:
+            "Default: high-quality downscaling that reduces moiré on screentones.")
         }
     }
 
