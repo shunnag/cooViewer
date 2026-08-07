@@ -21,6 +21,7 @@ struct SettingsView: View {
 
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
+    @AppStorage("FlipSwipeDirection") private var flipSwipeDirection = true
     @AppStorage("WheelSensitivity") private var wheelSensitivity = 1.0
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
@@ -125,6 +126,9 @@ struct SettingsView: View {
             Section {
                 Toggle(String(localized: "Turn pages with a trackpad swipe"),
                        isOn: $swipeToTurnPage)
+                Toggle(String(localized: "Reverse swipe direction"),
+                       isOn: $flipSwipeDirection)
+                    .disabled(!swipeToTurnPage)
                 Picker(String(localized: "Scroll wheel:"), selection: $canScrollMode) {
                     Text(String(localized: "Scroll only")).tag(0)
                     Text(String(localized: "Scroll, then move within page")).tag(1)
