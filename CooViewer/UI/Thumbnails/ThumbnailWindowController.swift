@@ -318,14 +318,17 @@ private struct ThumbnailPageImage: View {
     let bookKey: String
     let isBookmarked: Bool
 
-    @State private var image: CGImage?
+    /// 固定グリッドではセルのビュー実体がページめくり後も再利用されるため、
+    /// 画像がどのエントリのものかを併せて保持し、表示時に必ず照合する
+    /// (素早い往復でのキャンセル・遅延代入による空白/取り違えの防止)。
+    @State private var loaded: (id: Int, image: CGImage)?
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 4)
                 .fill(.white.opacity(0.08))  // ロード中プレースホルダ
-            if let image {
-                Image(decorative: image, scale: 1)
+            if let loaded, loaded.id == entry.id {
+                Image(decorative: loaded.image, scale: 1)
                     .resizable()
                     .scaledToFit()
                     .padding(2)
@@ -339,10 +342,14 @@ private struct ThumbnailPageImage: View {
             }
         }
         .task(id: entry.id) {
-            guard image == nil, let source else { return }
-            // メモリ+ディスクキャッシュ経由(2 回目以降は再展開しない)
-            image = await ThumbnailCache.shared.thumbnail(
-                for: entry, in: source, bookKey: bookKey)
+            guard let source else { return }
+            // 常に読み直す(キャッシュ命中は即時)。id を添えて保存するため、
+            // 旧タスクの遅延代入が現エントリの表示を汚すことはない
+            let id = entry.id
+            if let image = await ThumbnailCache.shared.thumbnail(
+                for: entry, in: source, bookKey: bookKey) {
+                loaded = (id, image)
+            }
         }
     }
 }
