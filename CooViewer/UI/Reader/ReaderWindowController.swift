@@ -33,6 +33,9 @@ final class ReaderWindowController: NSWindowController {
     /// 開けなかった本の理由(空の本の汎用メッセージと区別するため保持)
     private var lockedBookReason: String?
 
+    /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
+    private var displayGeneration = 0
+
     convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
@@ -278,7 +281,11 @@ final class ReaderWindowController: NSWindowController {
 
     func refreshDisplay() async {
         guard let book else { return }
+        displayGeneration += 1
+        let generation = displayGeneration
         let spread = await book.currentSpread()
+        // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
+        guard generation == displayGeneration, book === self.book else { return }
 
         if spread.indices.isEmpty {
             // ページのない本: 理由をウインドウ中央に表示する
