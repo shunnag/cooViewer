@@ -23,6 +23,7 @@ final class SettingsStore {
             "OpenLastFolder": true,
             "SingleSetting": 740,
             "SwipeToTurnPage": true,
+            "FlipSwipeDirection": true,
         ])
     }
 
@@ -71,6 +72,9 @@ final class SettingsStore {
 
     /// 2 本指スワイプ(システムの「ページ間をスワイプ」相当)でページを前後する
     var swipeToTurnPage: Bool { defaults.bool(forKey: "SwipeToTurnPage") }
+
+    /// スワイプページめくりの向きを反転する(既定オン。オフで導入時の向き)
+    var flipSwipeDirection: Bool { defaults.bool(forKey: "FlipSwipeDirection") }
 
     /// ルーペの一辺 pt(仕様書 §4.10 LoupeSize。0/未設定は 150 に補正)
     var loupeSize: Double {

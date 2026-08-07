@@ -771,6 +771,16 @@
         }
       }
     },
+    "Reverse swipe direction": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スワイプの方向を反転する"
+          }
+        }
+      }
+    },
     "Right to Left": {
       "localizations": {
         "ja": {
