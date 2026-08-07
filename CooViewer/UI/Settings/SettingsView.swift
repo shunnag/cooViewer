@@ -19,8 +19,8 @@ struct SettingsView: View {
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
     @AppStorage("PlayAnimatedImages") private var playAnimatedImages = true
-    @State private var thumbnailRows = ThumbnailOverlayModel.gridRows
-    @State private var thumbnailColumns = ThumbnailOverlayModel.gridColumns
+    @State private var thumbnailRows = ThumbnailGridSetting.read().rows
+    @State private var thumbnailColumns = ThumbnailGridSetting.read().columns
 
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
@@ -203,10 +203,8 @@ struct SettingsView: View {
         }
     }
 
-    /// 旧形式 Thumbnail{row, column} へ保存(仕様書 §6.1)
     private func saveThumbnailGrid() {
-        UserDefaults.standard.set(
-            ["row": thumbnailRows, "column": thumbnailColumns], forKey: "Thumbnail")
+        ThumbnailGridSetting.write(rows: thumbnailRows, columns: thumbnailColumns)
     }
 
     private var backgroundColorBinding: Binding<Color> {
