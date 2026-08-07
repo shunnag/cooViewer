@@ -290,7 +290,8 @@ final class ReaderWindowController: NSWindowController {
         statusLabel.isHidden = true
         // 壊れページは理由入りプレースホルダで表示(ページ数は保つ。§4.17)
         let images = spread.images.map { $0 ?? brokenPlaceholder }.compactMap(\.self)
-        readerView.setPages(images, readsFromLeft: book.readMode.readsFromLeft)
+        readerView.setPages(images, ids: spread.indices.map { book.entries[$0].id },
+                            readsFromLeft: book.readMode.readsFromLeft)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
     }
