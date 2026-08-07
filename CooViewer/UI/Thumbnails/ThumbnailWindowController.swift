@@ -4,8 +4,8 @@ import SwiftUI
 /// サムネイル一覧パネル(仕様書 §4.8 の近代化版)。
 /// 旧 ThumbnailController の performSelector 連鎖による疑似非同期充填は、
 /// SwiftUI LazyVGrid + 表示セル単位の非同期ロードに置き換える(設計書 §1.1 補助 UI)。
-/// mangaMode 合成・ソートポップアップ・キーボードジャンプ等の旧パネル内機能は
-/// 近代化版では持たない(ページ選択と現在位置/しおりの可視化に絞る)。
+/// 旧パネルの意匠に合わせ、透明背景+ツールバー帯(しおりのみ表示/見開き
+/// サムネイル)を持ち、列数は旧設定 Thumbnail{column} に従う(§3.1, §6.1)。
 @MainActor
 final class ThumbnailWindowController: NSWindowController {
     private var hasAppeared = false
@@ -18,6 +18,10 @@ final class ThumbnailWindowController: NSWindowController {
         panel.title = String(localized: "Thumbnails")
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 320, height: 240)
+        // 旧パネルは透明背景(仕様書 §3.1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
         self.init(window: panel)
     }
 
@@ -43,6 +47,7 @@ final class ThumbnailWindowController: NSWindowController {
         // 2 回目以降は直前のフレームを維持する
         let savedFrame = hasAppeared ? window?.frame : nil
         window?.contentViewController = hosting
+        hosting.view.layer?.backgroundColor = .clear
         if let savedFrame {
             window?.setFrame(savedFrame, display: true)
         } else {
@@ -56,7 +61,7 @@ final class ThumbnailWindowController: NSWindowController {
 
 // MARK: - グリッド
 
-/// ページサムネイルの格子。列数は 4 固定(将来設定化)。
+/// ページサムネイルの格子。列数は旧設定 Thumbnail{column}(既定 4、2-8 に制限)。
 private struct ThumbnailGridView: View {
     let entries: [PageEntry]
     let source: any BookSource
@@ -66,71 +71,150 @@ private struct ThumbnailGridView: View {
     let readsFromLeft: Bool
     let onSelect: @MainActor (Int) -> Void
 
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+    /// 旧キーそのまま(仕様書 §6.1): しおりのみ表示 / 見開きサムネイル
+    @AppStorage("ThumbnailOnlyBookmark") private var onlyBookmarks = false
+    @AppStorage("ThumbnailComicMode") private var comicMode = false
+
+    private var columnCount: Int {
+        let stored = (UserDefaults.standard.dictionary(forKey: "Thumbnail")?["column"]
+            as? Int) ?? 4
+        return min(8, max(2, stored))
+    }
+
+    /// フィルタ適用後のページ index 列
+    private var visibleIndices: [Int] {
+        onlyBookmarks
+            ? entries.indices.filter { bookmarkedPages.contains($0) }
+            : Array(entries.indices)
+    }
+
+    /// セル単位のページ組(見開きモードでは 2 ページずつ。仕様書 §4.8 mangaMode)
+    private var cellGroups: [[Int]] {
+        guard comicMode else { return visibleIndices.map { [$0] } }
+        var groups: [[Int]] = []
+        var iterator = visibleIndices.makeIterator()
+        var pending: Int?
+        while let index = iterator.next() {
+            if let first = pending {
+                groups.append([first, index])
+                pending = nil
+            } else {
+                pending = index
+            }
+        }
+        if let last = pending { groups.append([last]) }
+        return groups
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(entries.indices, id: \.self) { index in
-                        ThumbnailCell(
-                            entry: entries[index],
-                            pageNumber: index + 1,
-                            source: source,
-                            bookKey: bookKey,
-                            isCurrent: index == currentIndex,
-                            isBookmarked: bookmarkedPages.contains(index),
-                            onSelect: { onSelect(index) })
-                            .id(index)
+        VStack(spacing: 0) {
+            toolbar
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: Array(
+                        repeating: GridItem(.flexible(), spacing: 8),
+                        count: comicMode ? max(1, columnCount / 2) : columnCount),
+                              spacing: 12) {
+                        ForEach(cellGroups, id: \.first) { group in
+                            ThumbnailCell(
+                                pageIndices: group,
+                                entries: entries,
+                                source: source,
+                                bookKey: bookKey,
+                                currentIndex: currentIndex,
+                                bookmarkedPages: bookmarkedPages,
+                                onSelect: { onSelect(group[0]) })
+                                .id(group.first ?? 0)
+                        }
                     }
+                    .padding(12)
                 }
-                .padding(12)
-            }
-            .onAppear {
-                // 旧実装の「現在ページを含む画面から開始」(§4.8)に相当
-                proxy.scrollTo(currentIndex, anchor: .center)
+                .onAppear {
+                    // 旧実装の「現在ページを含む画面から開始」(§4.8)に相当
+                    proxy.scrollTo(currentIndex, anchor: .center)
+                }
             }
         }
         // 右→左読みでは行内を右端の列から充填する(仕様書 §4.8)。
         // LazyVGrid に行単位の反転はないため layoutDirection で簡易再現する。
         .environment(\.layoutDirection, readsFromLeft ? .leftToRight : .rightToLeft)
     }
+
+    /// 旧パネルのツールバー帯に相当(仕様書 §3.1)
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            Toggle(isOn: $onlyBookmarks) {
+                Image(systemName: onlyBookmarks ? "bookmark.fill" : "bookmark")
+            }
+            .toggleStyle(.button)
+            .help(String(localized: "Show bookmarked pages only"))
+
+            Toggle(isOn: $comicMode) {
+                Image(systemName: comicMode ? "book.fill" : "book")
+            }
+            .toggleStyle(.button)
+            .help(String(localized: "Two-page thumbnails"))
+
+            Spacer()
+            Text(verbatim: "\(visibleIndices.count)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .environment(\.layoutDirection, .leftToRight)  // ツールバーは常に左→右
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
+    }
 }
 
-/// 1 ページ分のセル。表示されたときに縮小画像を非同期ロードする
-/// (LazyVGrid の遅延生成に相乗り。ロード中はプレースホルダ)。
+/// 1 セル(単ページまたは見開き 2 ページ)。
 private struct ThumbnailCell: View {
-    let entry: PageEntry
-    let pageNumber: Int  // 1 始まり
+    let pageIndices: [Int]  // 読み順
+    let entries: [PageEntry]
     let source: any BookSource
     let bookKey: String
-    let isCurrent: Bool
-    let isBookmarked: Bool
+    let currentIndex: Int
+    let bookmarkedPages: Set<Int>
     let onSelect: @MainActor () -> Void
 
-    @State private var image: CGImage?
+    private var isCurrent: Bool { pageIndices.contains(currentIndex) }
 
     var body: some View {
         VStack(spacing: 4) {
             Button(action: onSelect) {
-                thumbnail
+                HStack(spacing: 1) {
+                    ForEach(pageIndices, id: \.self) { index in
+                        ThumbnailPageImage(
+                            entry: entries[index],
+                            source: source,
+                            bookKey: bookKey,
+                            isBookmarked: bookmarkedPages.contains(index))
+                    }
+                }
+                .frame(height: 140)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isCurrent ? Color.accentColor : Color.clear, lineWidth: 3)
+                }
             }
             .buttonStyle(.plain)
-            Text(verbatim: "\(pageNumber)")
+            Text(verbatim: pageIndices.map { String($0 + 1) }.joined(separator: "-"))
                 .font(.caption)
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
         }
-        .task(id: entry.id) {
-            guard image == nil else { return }
-            // メモリ+ディスクキャッシュ経由(2 回目以降は再展開しない)
-            image = await ThumbnailCache.shared.thumbnail(
-                for: entry, in: source, bookKey: bookKey)
-        }
     }
+}
 
-    private var thumbnail: some View {
+/// 1 ページ分のサムネイル画像(表示されたときに非同期ロード。キャッシュ経由)。
+private struct ThumbnailPageImage: View {
+    let entry: PageEntry
+    let source: any BookSource
+    let bookKey: String
+    let isBookmarked: Bool
+
+    @State private var image: CGImage?
+
+    var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 4)
                 .fill(.quaternary)  // ロード中プレースホルダ
@@ -141,46 +225,18 @@ private struct ThumbnailCell: View {
                     .padding(2)
             }
         }
-        .frame(height: 140)
-        .overlay {
-            // 現在ページの枠(旧実装の開始位置強調に相当 §4.8)
-            if isCurrent {
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(Color.accentColor, lineWidth: 3)
-            }
-        }
         .overlay(alignment: .topTrailing) {
-            // しおり付きページの記号(旧 bookmark_a.tiff 相当 §4.8)
             if isBookmarked {
                 Image(systemName: "bookmark.fill")
                     .foregroundStyle(.orange)
-                    .shadow(radius: 1)
                     .padding(4)
             }
         }
-        .contentShape(Rectangle())
-    }
-}
-
-// MARK: - ReaderWindowController 配線(仕様書 §5.5 action 18/メニュー)
-
-extension ReaderWindowController {
-    /// サムネイル一覧の表示/非表示トグル。本が無ければ何もしない。
-    func showThumbnail() {
-        guard let book else { return }
-        if let controller = thumbnailWindowController,
-           controller.window?.isVisible == true {
-            controller.close()
-            return
-        }
-        let controller = thumbnailWindowController ?? ThumbnailWindowController()
-        thumbnailWindowController = controller
-        controller.present(book: book) { [weak self] index in
-            guard let self, let book = self.book else { return }
-            book.goTo(index: index)
-            self.refreshAfterJump()
+        .task(id: entry.id) {
+            guard image == nil else { return }
+            // メモリ+ディスクキャッシュ経由(2 回目以降は再展開しない)
+            image = await ThumbnailCache.shared.thumbnail(
+                for: entry, in: source, bookKey: bookKey)
         }
     }
-
-    @objc func showThumbnailsMenu(_ sender: Any?) { showThumbnail() }
 }
