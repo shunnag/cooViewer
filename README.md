@@ -65,8 +65,8 @@ $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Relea
 ## ライセンス
 
 - cooViewer 本体: MIT ライセンス([Licence.txt](Licence.txt))。Copyright (c) 2005- coo.
-- [XADMaster](https://github.com/plife18/XADMaster) /
-  [UniversalDetector](https://github.com/plife18/universal-detector): **LGPL 2.1**
+- [XADMaster](https://github.com/MacPaw/XADMaster) /
+  [UniversalDetector](https://github.com/MacPaw/universal-detector): **LGPL 2.1**
   (動的リンクの .framework として同梱。各サブモジュールの LICENSE を参照)
 - 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みですが、
   ライセンス文書は参照用に [Licence_RemoteControlWrapper.txt](Licence_RemoteControlWrapper.txt)
