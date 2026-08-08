@@ -8,6 +8,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 FW_DIR="$PWD/Frameworks"
 
+# Sparkle(自動更新)は公式バイナリ配布を取得する(バージョン・チェックサム固定)
+# EN: Sparkle is fetched as the pinned official binary distribution.
+"$PWD/Scripts/fetch-sparkle.sh"
+
 if [[ ! -d XADMaster/XADMaster.xcodeproj ]]; then
     echo "error: XADMaster submodule is missing. Run: git submodule update --init --recursive" >&2
     exit 1
