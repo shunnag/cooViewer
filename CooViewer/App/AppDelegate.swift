@@ -1,0 +1,199 @@
+import AppKit
+import SwiftUI
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var readerWindowController: ReaderWindowController?
+    private var settingsWindow: NSWindow?
+    /// 検証用スナップショットの一時ウインドウ(設定ウインドウとは別管理)
+    /// EN: Debug-only preview window; must never shadow the settings window.
+    private var debugPreviewWindow: NSWindow?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        SettingsStore.shared.registerDefaults()
+        NSApp.mainMenu = MainMenuBuilder.build()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let controller = ReaderWindowController()
+        readerWindowController = controller
+        controller.showWindow(nil)
+        cleanUpCaches()
+        handleDebugArguments()
+    }
+
+    /// 起動時のキャッシュ掃除: 生存していないプロセスのスプール残骸
+    /// (仕様書 §4.17 の temp 残り問題への対策)と古いサムネイルを回収する。
+    /// EN: Startup cleanup: delete spool leftovers of dead processes and trim
+    /// EN: thumbnails older than the configured retention.
+    private func cleanUpCaches() {
+        Task.detached(priority: .utility) {
+            let root = ArchiveSource.spoolRoot()
+            if let children = try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil) {
+                for child in children {
+                    let pid = child.lastPathComponent.split(separator: "-").first
+                        .flatMap { Int32($0) }
+                    // EN: keep directories owned by still-running processes.
+                    if let pid, kill(pid, 0) == 0 { continue }  // 生存プロセスの分は残す
+                    try? FileManager.default.removeItem(at: child)
+                }
+            }
+            await ThumbnailCache.shared.trimDiskCache(
+                olderThanDays: SettingsStore.shared.thumbnailCacheDays)
+        }
+    }
+
+    /// 動作検証用の隠し引数(スクリーンショット権限なしで描画結果を確認するため):
+    /// --open <path> で本を開き、--snapshot <path> で 2 秒後に contentView を
+    /// PNG 出力して終了する。
+    /// EN: Hidden verification flags (--open / --snapshot / --show-thumbnails /
+    /// EN: --show-bookmark-editor / --snapshot-settings) used to check rendering
+    /// EN: without screen-recording permission.
+    private func handleDebugArguments() {
+        let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count {
+            readerWindowController?.openBook(at: URL(fileURLWithPath: arguments[index + 1]))
+        } else if SettingsStore.shared.openLastFolder,
+                  let recent = BookHistoryStore.shared.mostRecentBook() {
+            // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
+            // EN: reopen the most recent book on launch (OpenLastFolder, default on).
+            readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
+        }
+        if arguments.contains("--show-thumbnails") {
+            // 本のロード完了を待ってからサムネイルオーバーレイを開く
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.showThumbnail()
+            }
+        }
+        if arguments.contains("--show-bookmark-editor") {
+            // 検証用: シートではなく通常ウインドウで表示する(シートの
+            // NSHostingView は layer.render/cacheDisplay のどちらでも写らないため)
+            // EN: preview in a plain window; sheet-hosted SwiftUI content does not
+            // EN: render into offline snapshots.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                guard let book = self.readerWindowController?.book else { return }
+                let window = NSWindow(contentViewController: NSHostingController(
+                    rootView: BookmarkEditorView(
+                        bookmarks: [
+                            .init(name: "bookmark1", pageIndex: 1),
+                            .init(name: "お気に入りの見開き", pageIndex: 3),
+                        ],
+                        pageCount: book.pageCount,
+                        onSave: { _ in }, onClose: {})))
+                window.makeKeyAndOrderFront(nil)
+                self.debugPreviewWindow = window
+            }
+        }
+        if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
+            let path = arguments[index + 1]
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                // しおり編集シートが開いていればそちらを撮る(NSHostingView は反転補正)
+                // EN: capture the bookmark sheet when open, else the reader view.
+                if let sheet = self.readerWindowController?.bookmarkEditorWindow {
+                    self.writeCachedSnapshot(of: sheet.contentView, to: path)
+                } else {
+                    self.writeSnapshot(of: self.readerWindowController?.window?.contentView,
+                                       to: path)
+                }
+                NSApp.terminate(nil)
+            }
+        }
+        if let index = arguments.firstIndex(of: "--snapshot-settings"), index + 1 < arguments.count {
+            let path = arguments[index + 1]
+            showSettings(nil)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                // NSHostingView 配下は layer.render で上下反転するため補正する
+                // EN: layer.render draws NSHostingView trees upside down; compensate.
+                self.writeSnapshot(of: self.settingsWindow?.contentView, to: path,
+                                   flipped: true)
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// draw(_:) ベースのビュー(SwiftUI シート等)は cacheDisplay で撮る
+    /// EN: cacheDisplay-based capture for views that draw via draw(_:).
+    private func writeCachedSnapshot(of targetView: NSView?, to path: String) {
+        guard let view = targetView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: path))
+    }
+
+    /// EN: Renders a view's layer tree into a 2x PNG (no screen recording needed).
+    private func writeSnapshot(of targetView: NSView?, to path: String, flipped: Bool = false) {
+        guard let view = targetView, let layer = view.layer else { return }
+        let size = view.bounds.size
+        guard let context = CGContext(
+            data: nil, width: Int(size.width * 2), height: Int(size.height * 2),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        context.scaleBy(x: 2, y: 2)
+        if flipped {
+            context.translateBy(x: 0, y: size.height)
+            context.scaleBy(x: 1, y: -1)
+        }
+        layer.render(in: context)
+        guard let image = context.makeImage() else { return }
+        let rep = NSBitmapImageRep(cgImage: image)
+        try? rep.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: path))
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        readerWindowController?.openBook(at: url)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        readerWindowController?.saveStateBeforeTermination()
+    }
+
+    /// Dock アイコンクリック等での再オープン(ウインドウを閉じた後の再表示)
+    /// EN: Re-show the reader window when the Dock icon is clicked after close.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            readerWindowController?.showWindow(nil)
+        }
+        return true
+    }
+
+    // MARK: - Actions
+
+    @objc func showSettings(_ sender: Any?) {
+        if settingsWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: SettingsView()))
+            window.title = String(localized: "Settings")
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func openRecentBook(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        readerWindowController?.openBook(at: URL(fileURLWithPath: path))
+    }
+
+    @objc func openDocument(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = String(localized: "Choose a folder, archive, or PDF to read.")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        readerWindowController?.openBook(at: url)
+    }
+}
