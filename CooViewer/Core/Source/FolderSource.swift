@@ -11,6 +11,26 @@ final class FolderSource: BookSource {
     var supportsDateSort: Bool { true }
     var supportsParallelPageLoads: Bool { true }
 
+    /// サブフォルダのどこかに画像があるか(空フォルダ表示のヒント用)。
+    /// 最初の 1 件で打ち切り、巨大ツリーでも走査を 2000 項目で止める
+    static func subfoldersContainImages(at url: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return false }
+        var visited = 0
+        for case let fileURL as URL in enumerator {
+            visited += 1
+            if visited > 2000 { return false }
+            let isDirectory = (try? fileURL.resourceValues(
+                forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if !isDirectory, SupportedTypes.isImageFile(fileURL.lastPathComponent) {
+                return true
+            }
+        }
+        return false
+    }
+
     init(url: URL, readSubFolders: Bool) throws {
         self.url = url
         let fileManager = FileManager.default

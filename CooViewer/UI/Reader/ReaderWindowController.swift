@@ -291,7 +291,8 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
-    private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool) async {
+    private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
+                              autoOpenDepth: Int = 0) async {
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
         showWindow(nil)
@@ -339,6 +340,14 @@ final class ReaderWindowController: NSWindowController {
 
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
                                            cacheByteLimit: settings.pageCacheByteLimit)
+            // 画像ゼロのフォルダ(コレクションフォルダ)は中の最初の本を開く
+            // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)
+            if book.pageCount == 0, autoOpenDepth < 4,
+               let inner = Self.firstInnerBook(in: bookURL) {
+                await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
+                                   autoOpenDepth: autoOpenDepth + 1)
+                return
+            }
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
             applyAdvancedSettings(to: book)
@@ -441,6 +450,24 @@ final class ReaderWindowController: NSWindowController {
         return .unlocked
     }
 
+    /// 画像ゼロのフォルダ内にある最初の「本」(名前順)。フォルダ以外は nil
+    private static func firstInnerBook(in url: URL) -> URL? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: url.path)
+        else { return nil }
+        return names
+            .filter { !$0.hasPrefix(".") }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .map { url.appendingPathComponent($0) }
+            .first { candidate in
+                var isDir: ObjCBool = false
+                FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir)
+                return isDir.boolValue || SupportedTypes.isBookFile(candidate)
+            }
+    }
+
     // MARK: - 表示更新
 
     func refreshDisplay() async {
@@ -455,10 +482,24 @@ final class ReaderWindowController: NSWindowController {
             // ページのない本: 理由をウインドウ中央に表示する
             // (旧 empty.png 方式 §4.17 を多言語メッセージに置換)
             readerView.setPages([], readsFromLeft: book.readMode.readsFromLeft)
-            showBookStatusMessage(
-                lockedBookReason
-                    ?? String(localized: "This book contains no displayable images."))
+            let reason = lockedBookReason
+                ?? String(localized: "This book contains no displayable images.")
+            showBookStatusMessage(reason)
             updatePageIndicators(spread: spread)
+            // サブフォルダに画像があるならヒントを添える(走査があるので非同期)
+            if lockedBookReason == nil, !settings.readSubFolder,
+               book.source is FolderSource {
+                let url = book.source.url
+                Task { [weak self, weak book] in
+                    let found = await Task.detached {
+                        FolderSource.subfoldersContainImages(at: url)
+                    }.value
+                    guard found, let self, let book, book === self.book,
+                          book.pageCount == 0 else { return }
+                    self.showBookStatusMessage(reason + "\n" + String(localized:
+                        "Subfolders contain images. Turn on “Read subfolders” in Settings to include them."))
+                }
+            }
             return
         }
         statusLabel.isHidden = true

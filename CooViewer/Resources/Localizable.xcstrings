@@ -1682,6 +1682,16 @@
         }
       }
     },
+    "Subfolders contain images. Turn on “Read subfolders” in Settings to include them.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サブフォルダには画像があります。設定の「サブフォルダを読む」をオンにすると表示できます。"
+          }
+        }
+      }
+    },
     "Swap with the symmetric action in left-to-right books.": {
       "localizations": {
         "ja": {
