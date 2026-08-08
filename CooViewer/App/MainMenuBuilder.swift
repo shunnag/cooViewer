@@ -24,6 +24,10 @@ enum MainMenuBuilder {
                      action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                      keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Check for Updates…"),
+                     action: #selector(AppDelegate.checkForUpdates(_:)),
+                     keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Settings…"),
                      action: #selector(AppDelegate.showSettings(_:)),
                      keyEquivalent: ",")

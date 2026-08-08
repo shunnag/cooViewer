@@ -48,6 +48,14 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   `xcrun stapler staple cooViewer.app` → re-zip the STAPLED app for distribution →
   verify `spctl -a -vv cooViewer.app` says "Notarized Developer ID". Tag `vX.YbN`
   on master and publish via `gh release create` (beta = `--prerelease`).
+- Auto-update (Sparkle 2, since 2.0b3): after publishing the GitHub release, run
+  `Scripts/make-appcast.sh <stapled-zip> <version> <build>` (signs the zip with the
+  EdDSA key in the login keychain and inserts an `<item>` into `appcast.xml`), then
+  commit & push `appcast.xml` to master — the feed URL is the raw master file.
+  The Sparkle framework + `sign_update` tooling are fetched by
+  `Scripts/fetch-sparkle.sh` (version + SHA-256 pinned; bump both to upgrade).
+  `SUFeedURL`/`SUPublicEDKey` live in `CooViewer/Info.plist`. The asset file name
+  must be `cooViewer-<version>.zip` because the appcast URL is derived from it.
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
   the PNG (add `--show-thumbnails` to capture the thumbnail overlay; `--show-bookmark-editor`
