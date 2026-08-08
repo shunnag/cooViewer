@@ -2,6 +2,22 @@ import AppKit
 import Sparkle
 import SwiftUI
 
+/// 自動実行(XCTest / スナップショット検証)の判定。
+/// テストホストがユーザーの実データ(最後に開いた本)に触ったり、
+/// モーダル(Sparkle 許可・パスワード)で停止したりしないための共通ゲート
+/// EN: Detects automated runs (XCTest / snapshot verification) so the app
+/// EN: never touches the user's real books or blocks on modals there.
+enum AutomatedRun {
+    static var isXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+    }
+
+    static var isSnapshot: Bool {
+        CommandLine.arguments.contains("--snapshot")
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var readerWindowController: ReaderWindowController?
@@ -13,12 +29,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
     /// Info.plist(SUFeedURL / SUPublicEDKey)。初回は Sparkle 標準の
     /// 許可ダイアログでユーザーが自動チェックを選ぶ。検証用スナップショット
-    /// 実行(--snapshot)ではダイアログが写り込まないよう起動しない
+    /// 実行(--snapshot)と XCTest 実行では、許可ダイアログ(モーダル)が
+    /// 写り込み・ハングの原因になるため起動しない
     /// EN: Sparkle auto-update; feed URL and EdDSA key live in Info.plist,
     /// EN: and Sparkle's standard permission prompt governs automatic checks.
-    /// EN: Snapshot verification runs keep the updater stopped.
+    /// EN: Snapshot and XCTest runs keep the updater stopped — its modal
+    /// EN: permission prompt would pollute snapshots and hang test runs.
     let updaterController = SPUStandardUpdaterController(
-        startingUpdater: !CommandLine.arguments.contains("--snapshot"),
+        startingUpdater: !AutomatedRun.isSnapshot && !AutomatedRun.isXCTest,
         updaterDelegate: nil, userDriverDelegate: nil)
 
     /// メニュー「アップデートを確認…」(MainMenuBuilder から使用)
@@ -81,9 +99,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             readerWindowController?.openBook(
                 at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
+                  !AutomatedRun.isXCTest,
                   let recent = BookHistoryStore.shared.mostRecentBook() {
-            // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
-            // EN: reopen the most recent book on launch (OpenLastFolder, default on).
+            // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)。
+            // XCTest のホストとしての起動では開かない: ユーザーの実データに
+            // 触れない・履歴を汚さない・モーダルでテストを止めないため
+            // EN: reopen the most recent book on launch (OpenLastFolder, default
+            // EN: on) — but never as an XCTest host, which must not touch the
+            // EN: user's real books, pollute history, or block on modals.
             readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
         }
         if arguments.contains("--show-thumbnails") {

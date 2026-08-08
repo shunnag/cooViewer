@@ -208,15 +208,31 @@ final class SettingsStore {
 
     /// 本の置き場所の速度(内蔵 SSD/USB-HDD/ネットワーク)に応じて
     /// 読み込み・キャッシュ構築を自動調整する(既定 ON。設計書 キャッシュ節)。
-    /// OFF では従来の固定動作(unknown プロファイル)になる
+    /// OFF では従来の固定動作(unknown プロファイル)になる。
+    /// 高度設定で明示した値(先読み枚数・スプール方針)は常に自動より優先
     /// EN: Adapt reading/caching to the volume speed (default on); off keeps
-    /// EN: the legacy fixed behavior.
+    /// EN: the legacy fixed behavior. Explicit Advanced values always win.
     var adaptiveMediaTuning: Bool {
         get {
             defaults.object(forKey: "AdaptiveMediaTuning") == nil
                 ? true : defaults.bool(forKey: "AdaptiveMediaTuning")
         }
         set { defaults.set(newValue, forKey: "AdaptiveMediaTuning") }
+    }
+
+    /// 書庫スプールの方針(高度設定の三択)。
+    /// automatic=メディア速度で判断 / always=常に展開 / never=展開しない。
+    /// マスタースイッチ OFF の間は automatic
+    /// EN: Archive-spool policy: automatic (by media speed) / always / never.
+    enum SpoolPolicy: Int {
+        case automatic = 0
+        case always = 1
+        case never = 2
+    }
+
+    var archiveSpoolPolicy: SpoolPolicy {
+        SpoolPolicy(rawValue: advancedInt(
+            "AdvancedSpoolPolicy", default: 0, in: 0...2)) ?? .automatic
     }
 
     /// マスタースイッチ ON かつ保存済みのときだけ保存値(範囲内に丸める)を返す

@@ -133,6 +133,34 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(slowSpooled, 2, "低速媒体は従来どおり全ページ展開する")
     }
 
+    /// 高度設定のスプール方針(明示)は自動判定より優先されること
+    func testSpoolOverrideBeatsProfileClass() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let entries: [(nameBytes: [UInt8], data: Data)] = [
+            (Array("a.png".utf8), png),
+        ]
+
+        // 「行わない」: 低速媒体でも展開しない
+        let neverURL = try writeZip(named: "never.zip", entries: entries)
+        let never = try ArchiveSource(url: neverURL)
+        await never.applyMediaProfile(
+            MediaProfile(mediaClass: .slowLocal, spoolOverride: false))
+        await never.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await never.waitForSpoolCompletion()
+        let neverSpooled = await never.spooledEntryCount
+        XCTAssertEqual(neverSpooled, 0)
+
+        // 「常に行う」: 高速ローカルの zip でも展開する
+        let alwaysURL = try writeZip(named: "always.zip", entries: entries)
+        let always = try ArchiveSource(url: alwaysURL)
+        await always.applyMediaProfile(
+            MediaProfile(mediaClass: .fastLocal, spoolOverride: true))
+        await always.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await always.waitForSpoolCompletion()
+        let alwaysSpooled = await always.spooledEntryCount
+        XCTAssertEqual(alwaysSpooled, 1)
+    }
+
     func testSpoolingServesPagesFromLocalFiles() async throws {
         let png = TestFixtures.pngData(width: 4, height: 6)
         let url = try writeZip(named: "book.zip", entries: [
