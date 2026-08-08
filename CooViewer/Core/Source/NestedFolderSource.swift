@@ -27,6 +27,9 @@ actor NestedFolderSource: BookSource {
     private var buildTask: Task<[PageEntry], Never>?
     private var locations: [Int: PageLocation] = [:]
     private var children: [any BookSource] = []
+    /// 置き場所の速度プロファイル(フォルダと全子ソースへ配る)
+    /// EN: Volume-speed profile propagated to the folder and every child.
+    private var mediaProfile: MediaProfile = .unknown
 
     /// ネストページの id 基数(ArchiveSource と同じ 1M 刻み)
     /// EN: Same 1M id stride as ArchiveSource.
@@ -103,6 +106,7 @@ actor NestedFolderSource: BookSource {
         guard let childEntries = try? await child.entries(), !childEntries.isEmpty else {
             return
         }
+        await child.applyMediaProfile(mediaProfile)
         children.append(child)
         let sourceIndex = children.count - 1
         let idBase = ordinal * Self.nestedIDStride
@@ -174,5 +178,17 @@ actor NestedFolderSource: BookSource {
 
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {
         await unlocker.setProvider(provider)
+    }
+
+    /// プロファイルはフォルダ(読み取りゲート)と、生成済み/今後生成される
+    /// 子ソース(書庫のスプール方針)の両方へ配る
+    /// EN: Forward the profile to the folder gate and to all children,
+    /// EN: existing and future.
+    func applyMediaProfile(_ profile: MediaProfile) async {
+        mediaProfile = profile
+        await folder.applyMediaProfile(profile)
+        for child in children {
+            await child.applyMediaProfile(profile)
+        }
     }
 }

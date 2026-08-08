@@ -38,6 +38,9 @@ final class Book {
     /// EN: Prefetch window sizes, injected from the Advanced settings tab.
     var prefetchAhead = 12
     var prefetchBehind = 3
+    /// 置き場所の速度プロファイル(先読み並列度・サムネイル並列度の根拠)
+    /// EN: Volume-speed profile driving prefetch and thumbnail concurrency.
+    var mediaProfile: MediaProfile = .unknown
 
     /// 表示すべきページの組。images の nil は「読めないページ」
     /// (呼び出し側が壊れ画像プレースホルダを当てる。仕様書 §4.17)。
@@ -309,14 +312,16 @@ final class Book {
         let targets = (lastMoveForward ? ahead + behind : behind + ahead)
             .filter { entries.indices.contains($0) }
         let parallel = source.supportsParallelPageLoads
+        // 並列幅は置き場所の速度で決める(SSD=4 / HDD=1 / ネットワーク=2)
+        // EN: Prefetch width follows the volume-speed profile.
+        let width = max(1, mediaProfile.bookPrefetchConcurrency)
 
         prefetchTask = Task { [weak self] in
             guard let self else { return }
             if parallel {
-                // ローカルフォルダ等はデコードを 4 並列で先行させる
                 await withTaskGroup(of: Void.self) { group in
                     var iterator = targets.makeIterator()
-                    for _ in 0..<4 {
+                    for _ in 0..<width {
                         if let target = iterator.next() {
                             group.addTask { _ = await self.image(at: target) }
                         }
