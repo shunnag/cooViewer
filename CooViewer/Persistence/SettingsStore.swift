@@ -245,6 +245,12 @@ final class SettingsStore {
         legacyUnarchivedObject(data) as? NSColor
     }
 
+    /// ページ名の表示: false=ファイル名のみ / true=本の中の相対パス(新設キー)
+    var showRelativePaths: Bool {
+        get { defaults.bool(forKey: "ShowRelativePaths") }
+        set { defaults.set(newValue, forKey: "ShowRelativePaths") }
+    }
+
     // MARK: - ページ番号/ページバーのカスタマイズ(仕様書 §3.4, §6.1)
 
     /// 位置: 0=左上/1=右上/2=左下/3=右下(旧キーをそのまま読み書き)

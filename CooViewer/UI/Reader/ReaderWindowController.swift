@@ -568,8 +568,10 @@ final class ReaderWindowController: NSWindowController {
         let numbers = shown.count == 2 ? "\(shown[0])-\(shown[1])" : (shown.first ?? "-")
         // 旧実装のページ番号表示は「#N-M/総数 (ファイル名 / ファイル名)」と
         // 表示中のファイル名を併記していた(仕様書 §3.4)。読み順に並べる
+        let relativePaths = settings.showRelativePaths
         let names = spread.indices.compactMap { index in
-            book.entries.indices.contains(index) ? book.entries[index].name : nil
+            book.entries.indices.contains(index)
+                ? book.entries[index].displayTitle(relativePath: relativePaths) : nil
         }.joined(separator: " / ")
         pageLabel.stringValue = names.isEmpty
             ? " \(numbers)/\(book.pageCount) "

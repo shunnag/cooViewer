@@ -19,6 +19,15 @@ struct PageEntry: Sendable, Hashable, Identifiable {
     var containerPath: String {
         (pathInBook as NSString).deletingLastPathComponent
     }
+
+    /// 表示用の名前。relativePath 指定時はサブフォルダ/書庫内の相対パスを含める。
+    /// 擬似パスのソース(PDF: 0 埋めページ番号)は末尾がファイル名と一致しない
+    /// ため、常にファイル名へフォールバックする
+    func displayTitle(relativePath: Bool) -> String {
+        guard relativePath, pathInBook != name,
+              (pathInBook as NSString).lastPathComponent == name else { return name }
+        return pathInBook
+    }
 }
 
 enum BookSourceError: Error {

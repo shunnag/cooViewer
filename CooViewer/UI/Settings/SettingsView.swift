@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var thumbnailColumns = ThumbnailGridSetting.read().columns
 
     // ページ番号/ページバー(仕様書 §3.4, §6.1。色と寸法は SettingsStore 経由)
+    @AppStorage("ShowRelativePaths") private var showRelativePaths = false
     @AppStorage("PageNumPosition") private var pageNumPosition = 0
     @AppStorage("PageNumAutoHide") private var pageNumAutoHide = false
     @AppStorage("PageNumFontFamily") private var pageNumFontFamily = ""
@@ -131,6 +132,12 @@ struct SettingsView: View {
         Form {
             Section(String(localized: "Page number")) {
                 Toggle(String(localized: "Show page number"), isOn: $showNumber)
+                // サムネイル一覧のフッターと原寸表示のタイトルにも効く
+                Picker(String(localized: "File name display:"),
+                       selection: $showRelativePaths) {
+                    Text(String(localized: "File name only")).tag(false)
+                    Text(String(localized: "Relative path in book")).tag(true)
+                }
                 positionPicker(selection: $pageNumPosition)
                 ColorPicker(String(localized: "Text color:"),
                             selection: colorBinding(\.pageNumTextColor),
