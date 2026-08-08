@@ -45,6 +45,9 @@ actor ArchiveSource: BookSource {
     private var children: [any BookSource] = []
     private var nestedRoot: URL?
     private var password: String?
+    /// ネスト書庫/PDF のロック解除係(本の全ネスト階層で共有)
+    /// EN: Shared unlocker for encrypted nested children (all nesting levels).
+    private let unlocker: NestedUnlocker
 
     private var spoolDirectory: URL?
     private var spooledIDs: Set<Int> = []
@@ -68,9 +71,10 @@ actor ArchiveSource: BookSource {
         FileManager.default.temporaryDirectory.appendingPathComponent("cooViewer-spool")
     }
 
-    init(url: URL, nestingDepth: Int = 0) throws {
+    init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil) throws {
         self.url = url
         self.nestingDepth = nestingDepth
+        self.unlocker = unlocker ?? NestedUnlocker()
         guard let archive = XADArchive(file: url.path) else {
             throw BookSourceError.unreadable(url)
         }
@@ -173,11 +177,19 @@ actor ArchiveSource: BookSource {
             child = pdf
         } else {
             guard let nested = try? ArchiveSource(
-                url: fileURL, nestingDepth: nestingDepth + 1) else { return }
-            if let password {
-                _ = await nested.checkAndSetPassword(password)
-            }
+                url: fileURL, nestingDepth: nestingDepth + 1,
+                unlocker: unlocker) else { return }
             child = nested
+        }
+        // 暗号化された子は共有アンロッカーで解除する(既知パスワード→入力依頼)。
+        // 解除できない/キャンセルされた子は本から外す(§4.17 の黙殺方針。
+        // 恒久的な空セルとして残すより一覧が正直になる)
+        // EN: Unlock encrypted children via the shared unlocker (known
+        // EN: passwords, then prompt); still-locked children are skipped
+        // EN: entirely rather than left as permanently blank pages.
+        if await child.isEncrypted() {
+            let name = (candidate.path as NSString).lastPathComponent
+            guard await unlocker.unlock(child, name: name) else { return }
         }
         guard let childEntries = try? await child.entries(), !childEntries.isEmpty else {
             return
@@ -186,6 +198,12 @@ actor ArchiveSource: BookSource {
         let sourceIndex = children.count - 1
         let idBase = ordinal * Self.nestedIDStride
         for (offset, childEntry) in childEntries.enumerated() {
+            // 子のページ数が id 域(1M)を超えたら以降を切り捨てる。
+            // 溢れると次のネスト候補の id と衝突し、locations の上書きで
+            // 別ページの画像が表示されてしまう(外側の 1M ガードと同じ方針)
+            // EN: Cap child pages at the id stride; overflow would collide with
+            // EN: the next candidate's id range and swap page images.
+            guard offset < Self.nestedIDStride else { break }
             let id = idBase + offset
             locations[id] = .child(sourceIndex: sourceIndex, entry: childEntry)
             result.append(PageEntry(
@@ -262,16 +280,31 @@ actor ArchiveSource: BookSource {
         archive.isEncrypted()
     }
 
+    func hasSkippedLockedContent() async -> Bool {
+        await unlocker.sawSkippedChild
+    }
+
+    func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {
+        await unlocker.setProvider(provider)
+    }
+
     /// パスワードを設定し、先頭エントリの展開を試して検証する(仕様書 §4.1.3)。
     /// 画像がなくネスト書庫だけの本でも検証できるよう候補もプローブに使う。
     /// EN: Set and verify the password by test-extracting the first entry;
     /// EN: nested-only books probe the first nested candidate instead.
     func checkAndSetPassword(_ password: String) async -> Bool {
         let probe = outerImages.first.map { Int32($0.id) } ?? nestedCandidates.first?.index
-        guard let probe else { return false }
+        // 画像も書庫/PDF もない書庫は検証しようがない(=本としては空)。
+        // false を返すと正しいパスワードでも「試行超過」になってしまうため通す
+        // EN: Nothing to verify (the book is empty anyway); rejecting here would
+        // EN: mislabel a correct password as "too many failed attempts".
+        guard let probe else { return true }
         archive.setPassword(password)
         guard archive.contents(ofEntry: probe) != nil else { return false }
         self.password = password
+        // ネストした子の解除でも再利用できるよう記録する
+        // EN: Remember it so nested children can be unlocked with it too.
+        await unlocker.addKnown(password)
         return true
     }
 

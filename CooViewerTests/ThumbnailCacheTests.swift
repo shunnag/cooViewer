@@ -2,6 +2,23 @@ import CoreGraphics
 import XCTest
 @testable import cooViewer
 
+/// 常に失敗するスタブ(生成失敗のネガティブキャッシュ検証用)
+private actor FailingSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/failing")
+    nonisolated var supportsDateSort: Bool { false }
+    private(set) var attemptCount = 0
+
+    func entries() async throws -> [PageEntry] {
+        [PageEntry(id: 0, name: "broken.png", pathInBook: "broken.png",
+                   fileURL: nil, creationDate: nil, modificationDate: nil)]
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        attemptCount += 1
+        throw BookSourceError.pageLoadFailed(entry.name)
+    }
+}
+
 /// ソースへのロード回数を数えるスタブ(キャッシュヒットの検証用)
 private actor CountingSource: BookSource {
     nonisolated let url = URL(fileURLWithPath: "/stub/counting")
@@ -93,6 +110,21 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertNotNil(image)
         let loads = await source.loadCount
         XCTAssertEqual(loads, 1)
+    }
+
+    func testFailedGenerationIsNotRetried() async throws {
+        // 生成失敗(壊れページ・パスワード付きネスト書庫等)は記録され、
+        // 画面に入り直すたびに展開し直さない(ネガティブキャッシュ)
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = FailingSource()
+        let entry = try await source.entries()[0]
+
+        let first = await cache.thumbnail(for: entry, in: source, bookKey: "bad")
+        let second = await cache.thumbnail(for: entry, in: source, bookKey: "bad")
+        XCTAssertNil(first)
+        XCTAssertNil(second)
+        let attempts = await source.attemptCount
+        XCTAssertEqual(attempts, 1, "失敗ページに再挑戦しないこと")
     }
 
     func testTrimDiskCacheRemovesOldBooks() async throws {

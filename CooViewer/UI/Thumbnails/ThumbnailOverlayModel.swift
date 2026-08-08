@@ -22,12 +22,37 @@ final class ThumbnailOverlayModel: ObservableObject {
         var displayedIndices: Set<Int> = []
         var bookmarkedPages: Set<Int> = []
         var readsFromLeft = false
+        /// 見開き判定用(旧 mangaMode の isSmallImage 規則。§4.2.1/§4.8)
+        /// EN: Inputs for the pairing decision (legacy isSmallImage rule).
+        var marks = PageMarks()
+        var singleSetting = PageLayout.defaultSingleSetting
     }
 
     @Published private(set) var snapshot = Snapshot()
     /// 表示中のサムネイル画面(0 始まり)
     /// EN: Thumbnail screen currently shown (0-based).
     @Published private(set) var screen = 0
+    /// サムネイル生成で計測したページの縦横比(幅/高さ)。見開きモードの
+    /// ペア判定に使い、レイアウトが漸進的に旧仕様へ収束する。marks は
+    /// ここに混ぜず表示時に適用する(マーク変更に即追従するため)
+    /// EN: Measured aspect ratios (w/h) from thumbnail generation; marks are
+    /// EN: applied at layout time so mark edits take effect immediately.
+    @Published private(set) var measuredAspects: [Int: CGFloat] = [:]
+
+    /// 見開きモードでペアにしないページ(計測済みの横長+強制単ページ。
+    /// 強制ペア指定は縦横比に優先する。旧 isSmallImage 規則 §4.2.1)
+    /// EN: Pages kept single in comic mode: measured-landscape plus forced
+    /// EN: singles; forced pairs override the aspect test (legacy rule).
+    var knownLargePages: Set<Int> {
+        var large = Set(snapshot.marks.forcedSingleIndices)
+        let paired = Set(snapshot.marks.forcedPairMemberIndices)
+        let threshold = CGFloat(snapshot.singleSetting) / 1000
+        for (index, ratio) in measuredAspects
+            where ratio > threshold && !paired.contains(index) && !large.contains(index) {
+            large.insert(index)
+        }
+        return large
+    }
 
     /// しおり付きページのみ表示(旧 ThumbnailOnlyBookmark)
     /// EN: Show bookmarked pages only (legacy ThumbnailOnlyBookmark key).
@@ -75,7 +100,8 @@ final class ThumbnailOverlayModel: ObservableObject {
             onlyBookmarks: onlyBookmarks,
             comicMode: comicMode,
             rows: grid.rows,
-            columns: grid.columns)
+            columns: grid.columns,
+            knownLargePages: knownLargePages)
     }
 
     // MARK: - 操作
@@ -91,15 +117,52 @@ final class ThumbnailOverlayModel: ObservableObject {
             displayedIndices: displayedIndices.isEmpty
                 ? [book.currentIndex] : Set(displayedIndices),
             bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)),
-            readsFromLeft: book.readMode.readsFromLeft)
+            readsFromLeft: book.readMode.readsFromLeft,
+            marks: book.marks,
+            singleSetting: book.singleSetting)
+        measuredAspects = [:]
         showScreenContainingCurrentPage()
         prefetchAroundScreen()
+    }
+
+    /// 表示中の本の更新に追従する(リーダーの表示更新ごとに呼ばれる)。
+    /// ソート変更・シャッフル(仕様書 §4.4)等でエントリ列が変わっていたら
+    /// スナップショットごと組み直す。古い並びのまま放置すると、一覧の表示も
+    /// クリックでのジャンプ先も実際の本とずれる(別の画像に飛ぶ)ため。
+    /// 並びが同じなら現在ページの強調と画面追従だけを更新する。
+    /// EN: Follow the displayed book. When the entry order changed underneath
+    /// EN: the overlay (sort change / shuffle), rebuild the whole snapshot —
+    /// EN: a stale order makes clicks jump to the wrong image. Otherwise just
+    /// EN: update the current-page highlight and containing screen.
+    func follow(book: Book, displayedIndices: [Int]) {
+        if snapshot.entries != book.entries {
+            present(book: book, displayedIndices: displayedIndices)
+        } else {
+            // しおり・マーク(見開き強制)・読み方向・見開きしきい値は本側で
+            // 変わり得るので併せて追従する
+            // EN: Bookmarks, page marks, read direction and the pairing
+            // EN: threshold can change on the book; keep them in sync.
+            let bookmarked = Set(book.bookmarks.map(\.pageIndex))
+            if snapshot.bookmarkedPages != bookmarked {
+                snapshot.bookmarkedPages = bookmarked
+            }
+            if snapshot.marks != book.marks {
+                snapshot.marks = book.marks
+            }
+            if snapshot.readsFromLeft != book.readMode.readsFromLeft {
+                snapshot.readsFromLeft = book.readMode.readsFromLeft
+            }
+            if snapshot.singleSetting != book.singleSetting {
+                snapshot.singleSetting = book.singleSetting
+            }
+            focusCurrentIndex(book.currentIndex, displayedIndices: displayedIndices)
+        }
     }
 
     /// 本のページ移動(0-9 の % ジャンプ・しおり移動等)に追従して、
     /// そのページを含む画面へ飛び、現在ページ強調も更新する
     /// EN: Follow a book-page jump: show the containing screen, update highlight.
-    func focusCurrentIndex(_ index: Int, displayedIndices: [Int] = []) {
+    private func focusCurrentIndex(_ index: Int, displayedIndices: [Int] = []) {
         let displayed = displayedIndices.isEmpty ? [index] : Set(displayedIndices)
         guard snapshot.currentIndex != index
             || snapshot.displayedIndices != displayed else { return }
@@ -107,6 +170,22 @@ final class ThumbnailOverlayModel: ObservableObject {
         snapshot.displayedIndices = displayed
         showScreenContainingCurrentPage()
         prefetchAroundScreen()
+    }
+
+    /// スナップショットを空にして本への参照を解く。オーバーレイ非表示のまま
+    /// 本が切り替わったときに呼ぶ: 古い Snapshot.source(ArchiveSource)を
+    /// 持ち続けると、その本のスプール/ネスト展開の一時ファイル(数 GB になり得る)が
+    /// deinit で回収されないため。次回表示時は present が組み直す。
+    /// EN: Drop the snapshot (and its strong source reference) when the book
+    /// EN: switches while the overlay is hidden; otherwise the old
+    /// EN: ArchiveSource — and its multi-GB spool/nested temp files — stays
+    /// EN: alive. The next show re-presents from the current book.
+    func clear() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        snapshot = Snapshot()
+        measuredAspects = [:]
+        screen = 0
     }
 
     /// サムネイル画面のページ送り(ページ送りキー・フッターの矢印)
@@ -132,33 +211,54 @@ final class ThumbnailOverlayModel: ObservableObject {
         prefetchTask?.cancel()
         guard let source = snapshot.source else { return }
         let layout = layout
-        let targets: [PageEntry] = Self.prefetchScreenOffsets.flatMap { offset in
-            layout.groups(onScreen: screen + offset).flatMap(\.self).compactMap {
-                snapshot.entries.indices.contains($0) ? snapshot.entries[$0] : nil
+        let targets: [(index: Int, entry: PageEntry)] =
+            Self.prefetchScreenOffsets.flatMap { offset in
+                layout.groups(onScreen: screen + offset).flatMap(\.self).compactMap {
+                    snapshot.entries.indices.contains($0)
+                        ? (index: $0, entry: snapshot.entries[$0]) : nil
+                }
             }
-        }
         let bookKey = snapshot.bookKey
         prefetchTask = Task {
-            // 常時 prefetchConcurrency 本を維持しつつ 1 件ずつ流し込む
-            // EN: keep N requests in flight, feeding one new entry per completion.
+            // 常時 prefetchConcurrency 本を維持しつつ 1 件ずつ流し込む。
+            // 生成結果の寸法は見開きモードのペア判定へ反映する(旧 isSmallImage)
+            // EN: keep N requests in flight; report generated sizes back for
+            // EN: the comic-mode pairing decision (legacy isSmallImage).
             await withTaskGroup(of: Void.self) { group in
                 var iterator = targets.makeIterator()
+                let fetchOne: @Sendable ((index: Int, entry: PageEntry)) async -> Void = {
+                    target in
+                    guard let image = await ThumbnailCache.shared.thumbnail(
+                        for: target.entry, in: source, bookKey: bookKey) else { return }
+                    await self.noteThumbnailSize(
+                        bookKey: bookKey, index: target.index, entryID: target.entry.id,
+                        size: CGSize(width: image.width, height: image.height))
+                }
                 for _ in 0..<Self.prefetchConcurrency {
-                    guard let entry = iterator.next() else { break }
-                    group.addTask {
-                        _ = await ThumbnailCache.shared.thumbnail(
-                            for: entry, in: source, bookKey: bookKey)
-                    }
+                    guard let target = iterator.next() else { break }
+                    group.addTask { await fetchOne(target) }
                 }
                 while await group.next() != nil {
-                    guard !Task.isCancelled, let entry = iterator.next() else { continue }
-                    group.addTask {
-                        _ = await ThumbnailCache.shared.thumbnail(
-                            for: entry, in: source, bookKey: bookKey)
-                    }
+                    guard !Task.isCancelled, let target = iterator.next() else { continue }
+                    group.addTask { await fetchOne(target) }
                 }
             }
         }
+    }
+
+    /// 生成済みサムネイルの寸法から縦横比を記録する(§4.2.1 の判定材料)。
+    /// 縮小生成でも縦横比は保たれるため判定に使える。本の切替や並び替えを
+    /// またいで届いた古い完了は bookKey とエントリ id の照合で捨てる
+    /// EN: Record aspect ratios from generated thumbnails; stale completions
+    /// EN: from a previous book/sort order are rejected via bookKey+entry id.
+    private func noteThumbnailSize(bookKey: String, index: Int, entryID: Int,
+                                   size: CGSize) {
+        guard bookKey == snapshot.bookKey,
+              snapshot.entries.indices.contains(index),
+              snapshot.entries[index].id == entryID,
+              size.height > 0,
+              measuredAspects[index] == nil else { return }
+        measuredAspects[index] = size.width / size.height
     }
 
     /// テスト・診断用: 先読みの完了を待つ

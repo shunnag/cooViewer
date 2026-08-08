@@ -19,6 +19,17 @@ actor ThumbnailCache {
     /// EN: About 64 MB worth of 200 px thumbnails.
     private let memoryCountLimit = 400
 
+    /// 生成に失敗したページ(壊れ画像・パスワード付きネスト書庫等)の記録。
+    /// これがないと画面に入るたびに毎回展開し直してしまい、solid 書庫や
+    /// ネットワークボリュームでは失敗ページ 1 つが延々と CPU/IO を食い続ける。
+    /// メモリのみ(セッション内)。本が更新されれば bookKey ごと変わるので解ける。
+    /// EN: Negative cache for failed generations (broken pages, locked nested
+    /// EN: archives). Without it every screen visit re-extracts the doomed
+    /// EN: entry — seconds of CPU per attempt on solid archives. Memory-only.
+    private var failedKeys: Set<String> = []
+    private var failedOrder: [String] = []
+    private let failedCountLimit = 4096
+
     private let diskRoot: URL
 
     init(diskRoot: URL? = nil) {
@@ -48,6 +59,11 @@ actor ThumbnailCache {
         if let hit = memory[key] {
             touch(key)
             return hit
+        }
+        // 過去に生成失敗したページは再挑戦しない(プレースホルダ表示のまま)
+        // EN: Known-failed pages are not retried; the cell keeps its placeholder.
+        if failedKeys.contains(key) {
+            return nil
         }
 
         let task: Task<CGImage?, Never>
@@ -81,6 +97,11 @@ actor ThumbnailCache {
         }
         if let image {
             store(image, for: key)
+        } else if !task.isCancelled {
+            // キャンセルではなく「実行して失敗」した場合のみ記録する
+            // (キャンセルされた生成は次の要求で普通に作り直される)
+            // EN: Record only real failures; cancelled generations may retry.
+            markFailed(key)
         }
         return image
     }
@@ -130,6 +151,15 @@ actor ThumbnailCache {
         if let index = order.firstIndex(of: key) {
             order.remove(at: index)
             order.append(key)
+        }
+    }
+
+    private func markFailed(_ key: String) {
+        guard !failedKeys.contains(key) else { return }
+        failedKeys.insert(key)
+        failedOrder.append(key)
+        while failedOrder.count > failedCountLimit {
+            failedKeys.remove(failedOrder.removeFirst())
         }
     }
 

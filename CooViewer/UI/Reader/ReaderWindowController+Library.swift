@@ -14,11 +14,34 @@ extension ReaderWindowController {
         // 開けなかった本(空のプレースホルダ)は履歴・設定に記録しない
         guard let book, book.pageCount > 0 else { return }
         let path = book.source.url.path
-        BookHistoryStore.shared.noteClosed(path: path, pageIndex: book.currentIndex)
+        // ページ番号に加えて「どのファイルか」も添える(新規キー)。次回開いたとき
+        // エントリ列が変わっていても(ネスト展開の失敗・並び替え)照合できる
+        // EN: Record the page's in-book path next to the index so a changed
+        // EN: entry list (failed nested expansion, re-sort) can be re-resolved.
+        func pagePath(_ index: Int) -> String? {
+            book.entries.indices.contains(index) ? book.entries[index].pathInBook : nil
+        }
+        BookHistoryStore.shared.noteClosed(
+            path: path, pageIndex: book.currentIndex,
+            pagePath: pagePath(book.currentIndex))
+        let bookmarks = book.bookmarks.map { bookmark in
+            // 記録済みパスのページが今回の本に存在しない(ネスト展開の失敗等で
+            // 照合できなかった)場合は元の記録を保つ。今回の位置で上書きすると、
+            // 次回そのページが戻ってきたときに照合できなくなる
+            // EN: Keep the stored path when its page is absent this session
+            // EN: (failed reconciliation); overwriting would lose the target.
+            if let stored = bookmark.pagePath,
+               !book.entries.contains(where: { $0.pathInBook == stored }) {
+                return bookmark
+            }
+            return BookHistoryStore.Bookmark(
+                name: bookmark.name, pageIndex: bookmark.pageIndex,
+                pagePath: pagePath(bookmark.pageIndex) ?? bookmark.pagePath)
+        }
         BookHistoryStore.shared.save(
             displayName: book.displayName, path: path,
             settings: .init(readMode: book.readMode, sortMode: book.sortMode,
-                            marks: book.marks, bookmarks: book.bookmarks))
+                            marks: book.marks, bookmarks: bookmarks))
     }
 
     /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)
@@ -32,16 +55,28 @@ extension ReaderWindowController {
                 book.setSortMode(sortMode)
             }
             book.marks = saved.marks
-            book.bookmarks = saved.bookmarks
+            // しおりは保存時のページパスで照合し直す(エントリ列の変化に追従)
+            // EN: Re-resolve bookmarks via their recorded page paths.
+            book.bookmarks = saved.bookmarks.map { bookmark in
+                var resolved = bookmark
+                resolved.pageIndex = BookHistoryStore.reconciledIndex(
+                    saved: bookmark.pageIndex, pagePath: bookmark.pagePath,
+                    entries: book.entries)
+                return resolved
+            }
         }
         // 復元ページは履歴を更新する前に読む(仕様書 §4.1.2: 手順 7 → 8 の順)
         let restorePage = store.savedPage(forPath: path)
         store.noteOpened(path: path)
 
-        // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)
+        // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)。
+        // ページパスが記録されていれば同じファイルのページへ照合し直す
         guard !skipPageRestore, settings.goToLastPageMode < 2,
-              let page = restorePage, page > 0,
-              page < book.pageCount else { return }
+              let restorePage else { return }
+        let page = BookHistoryStore.reconciledIndex(
+            saved: restorePage.page, pagePath: restorePage.pagePath,
+            entries: book.entries)
+        guard page > 0, page < book.pageCount else { return }
         if settings.goToLastPageMode == 1 {
             book.goTo(index: page)
         } else {

@@ -26,14 +26,17 @@ struct PageEntry: Sendable, Hashable, Identifiable {
     }
 
     /// 表示用の名前。relativePath 指定時はサブフォルダ/書庫内の相対パスを含める。
-    /// 擬似パスのソース(PDF: 0 埋めページ番号)は末尾がファイル名と一致しない
-    /// ため、常にファイル名へフォールバックする
+    /// 擬似パスのソース(PDF: 0 埋めページ番号)は末尾がファイル名と一致しないため
+    /// 末尾をページ名に置き換える: 最上位 PDF は名前のみ、ネストした PDF は
+    /// 「書庫内パス/ページ名」(巻をまたいで同じ「ページ N」にならないように)。
     /// EN: Name for display; with relativePath, includes the in-book path.
-    /// EN: Pseudo-path sources (PDF) always fall back to the plain name.
+    /// EN: Pseudo-path sources (PDF) swap the last component for the page name,
+    /// EN: so nested PDFs keep their container path and stay distinguishable.
     func displayTitle(relativePath: Bool) -> String {
-        guard relativePath, pathInBook != name,
-              (pathInBook as NSString).lastPathComponent == name else { return name }
-        return pathInBook
+        guard relativePath, pathInBook != name else { return name }
+        if (pathInBook as NSString).lastPathComponent == name { return pathInBook }
+        let container = containerPath
+        return container.isEmpty ? name : container + "/" + name
     }
 }
 
@@ -86,6 +89,15 @@ protocol BookSource: Sendable {
     /// ページの元データ(アニメーション再生用)。提供できないソースは nil
     /// EN: Raw page data for animation playback; nil when unavailable.
     func imageData(for entry: PageEntry) async -> Data?
+
+    /// 解除できずに本から外したネスト書庫/PDF があるか(バックグラウンド準備で
+    /// 組んだソースを対話的に開くときの使い回し判定。ネスト対応ソースのみ実装)
+    /// EN: Whether locked nested children were skipped during assembly.
+    func hasSkippedLockedContent() async -> Bool
+
+    /// ネストのパスワード入力コールバックを後付けする(準備済みソースの再利用時)
+    /// EN: Attach a nested-password provider to a prepared source.
+    func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async
 }
 
 extension BookSource {
@@ -98,6 +110,8 @@ extension BookSource {
         try await image(for: entry, maxPixelSize: nil)
     }
     func imageData(for entry: PageEntry) async -> Data? { nil }
+    func hasSkippedLockedContent() async -> Bool { false }
+    func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {}
 }
 
 enum BookSourceFactory {
@@ -106,19 +120,34 @@ enum BookSourceFactory {
     /// 済ませておくこと。
     /// EN: Pick the right BookSource for a URL; the "single image opens its parent
     /// EN: folder" rewrite must be done by the caller.
-    static func make(for url: URL, readSubFolders: Bool) async throws -> any BookSource {
+    /// nestedPasswordProvider: 暗号化されたネスト書庫/PDF のパスワードを UI に
+    /// 求めるコールバック(nil なら既知パスワードのみ試して黙って飛ばす)
+    /// EN: nestedPasswordProvider asks the UI for nested books' passwords;
+    /// EN: nil silently skips still-locked children.
+    static func make(for url: URL, readSubFolders: Bool,
+                     nestedPasswordProvider: NestedPasswordProvider? = nil)
+        async throws -> any BookSource {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw BookSourceError.unreadable(url)
         }
+        let unlocker = NestedUnlocker(provider: nestedPasswordProvider)
         if isDirectory.boolValue {
-            return try FolderSource(url: url, readSubFolders: readSubFolders)
+            let folder = try FolderSource(url: url, readSubFolders: readSubFolders)
+            // 書庫/PDF を含むフォルダは統合ソースで包む(旧ネストローダー §2.4)。
+            // 画像だけなら従来どおり(並列ロード・日付ソート可を維持)
+            // EN: Wrap only folders that contain books; plain image folders
+            // EN: keep the parallel, date-sortable FolderSource.
+            if folder.nestedBookCandidates.isEmpty {
+                return folder
+            }
+            return NestedFolderSource(folder: folder, unlocker: unlocker)
         }
         if SupportedTypes.isPDF(url) {
             return try PDFSource(url: url)
         }
         if SupportedTypes.isArchive(url) {
-            return try ArchiveSource(url: url)
+            return try ArchiveSource(url: url, unlocker: unlocker)
         }
         throw BookSourceError.unsupportedFormat(url)
     }

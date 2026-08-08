@@ -328,16 +328,17 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2001;
+				CURRENT_PROJECT_VERSION = 2002;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CooViewer/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0b1;
+				MARKETING_VERSION = 2.0b2;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.cooViewer;
 				PRODUCT_NAME = cooViewer;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -352,17 +353,18 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2001;
+				CURRENT_PROJECT_VERSION = 2002;
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = FQTM2788K5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CooViewer/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0b1;
+				MARKETING_VERSION = 2.0b2;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.cooViewer;
 				PRODUCT_NAME = cooViewer;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -373,9 +375,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CURRENT_PROJECT_VERSION = 2001;
+				CURRENT_PROJECT_VERSION = 2002;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 2.0b1;
+				MARKETING_VERSION = 2.0b2;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.CooViewerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -387,9 +389,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CURRENT_PROJECT_VERSION = 2001;
+				CURRENT_PROJECT_VERSION = 2002;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 2.0b1;
+				MARKETING_VERSION = 2.0b2;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.CooViewerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
