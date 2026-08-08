@@ -48,6 +48,9 @@ actor ArchiveSource: BookSource {
     /// ネスト書庫/PDF のロック解除係(本の全ネスト階層で共有)
     /// EN: Shared unlocker for encrypted nested children (all nesting levels).
     private let unlocker: NestedUnlocker
+    /// 置き場所の速度プロファイル(スプール方針に使う。既定=従来動作)
+    /// EN: Volume-speed profile driving the spool policy.
+    private var mediaProfile: MediaProfile = .unknown
 
     private var spoolDirectory: URL?
     private var spooledIDs: Set<Int> = []
@@ -288,6 +291,10 @@ actor ArchiveSource: BookSource {
         await unlocker.setProvider(provider)
     }
 
+    func applyMediaProfile(_ profile: MediaProfile) async {
+        mediaProfile = profile
+    }
+
     /// パスワードを設定し、先頭エントリの展開を試して検証する(仕様書 §4.1.3)。
     /// 画像がなくネスト書庫だけの本でも検証できるよう候補もプローブに使う。
     /// EN: Set and verify the password by test-extracting the first entry;
@@ -323,6 +330,12 @@ actor ArchiveSource: BookSource {
     }
 
     func beginSpooling(sizeLimit: Int64) {
+        // 高速ローカルボリュームではランダムアクセスが安い形式(zip 系)の
+        // スプールを省き、二重書き込みを避ける(設計書 キャッシュ節)
+        // EN: Fast local volumes skip spooling for cheap-random-access formats.
+        guard mediaProfile.shouldSpoolArchive(fileExtension: url.pathExtension) else {
+            return
+        }
         guard spoolTask == nil, !outerImages.isEmpty else { return }
         var total: Int64 = 0
         for entry in outerImages {

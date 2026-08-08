@@ -206,6 +206,19 @@ final class SettingsStore {
                     default: AdvancedDefault.thumbnailCacheDays, in: 1...365)
     }
 
+    /// 本の置き場所の速度(内蔵 SSD/USB-HDD/ネットワーク)に応じて
+    /// 読み込み・キャッシュ構築を自動調整する(既定 ON。設計書 キャッシュ節)。
+    /// OFF では従来の固定動作(unknown プロファイル)になる
+    /// EN: Adapt reading/caching to the volume speed (default on); off keeps
+    /// EN: the legacy fixed behavior.
+    var adaptiveMediaTuning: Bool {
+        get {
+            defaults.object(forKey: "AdaptiveMediaTuning") == nil
+                ? true : defaults.bool(forKey: "AdaptiveMediaTuning")
+        }
+        set { defaults.set(newValue, forKey: "AdaptiveMediaTuning") }
+    }
+
     /// マスタースイッチ ON かつ保存済みのときだけ保存値(範囲内に丸める)を返す
     /// EN: Stored value only when the switch is on and the key exists; clamped.
     private func advancedInt(_ key: String, default defaultValue: Int,

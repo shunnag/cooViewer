@@ -54,6 +54,16 @@
         }
       }
     },
+    "Adapt to media speed (SSD / HDD / network)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メディア速度に応じた自動調整(SSD / HDD / ネットワーク)"
+          }
+        }
+      }
+    },
     "Always remember the last page" : {
       "localizations" : {
         "ja" : {
@@ -360,6 +370,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "フルスクリーンにする"
+          }
+        }
+      }
+    },
+    "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Takes effect when the next book is opened." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本の置き場所を判定して、読み込み・先読み・書庫の一時展開を自動調整します。次に本を開いたときから有効になります。"
           }
         }
       }
