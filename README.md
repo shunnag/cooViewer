@@ -1,74 +1,78 @@
-# Monterey, Appleシリコン(M1)/arm64 対応版 cooViewer
-依存する XADMaster と UniversalDetector を submodule 化して簡単にビルドできるようにしただけ。
-自分でビルドできる方向け(要: Xcode, git)、バイナリは配布しません。
-ビルド方法は後述。
+# cooViewer 2.0(macOS 26+ / Apple Silicon)
 
-2022/08 現在の XADMaster を持ってきているので RAR5 アーカイブも扱える。
+macOS 用の漫画・画像ビューア。フォルダ / zip / rar / 7z 等の書庫 / PDF を「本」として開き、
+右→左(右綴じ)・左→右の読み方向、単ページ/見開き表示で快適に読むことができます。
 
-<br>
+このブランチは、Objective-C 製の旧 cooViewer 1.2b(coo-ona 氏作)を
+**Swift 6 + AppKit/SwiftUI で全面的に書き直した近代化版**です。
 
-## 開発, 確認環境
-- MacBook Pro (2021, M1) + Monterey -> Sonoma
-- MacBook Pro (2018, Intel) + Monterey
+- 対応環境: **macOS 26 (Tahoe) 以降 / Apple Silicon のみ**(x86_64 は打ち切り)
+- 旧ソース一式は参照用に [`legacy/`](legacy/) にアーカイブしています(ビルド対象外)
+- 書き直しにあたり旧アプリの全挙動を調査・記録した資料が
+  [`Documentation/legacy-app-analysis.md`](Documentation/legacy-app-analysis.md)(詳細仕様)と
+  [`Documentation/architecture.md`](Documentation/architecture.md)(設計方針)にあります
 
 ## ビルド
-### CLI
+
+Xcode 26 以降が必要です。依存ライブラリ(XADMaster / UniversalDetector)はサブモジュールです。
+
 ```
-$ git clone --recursive https://github.com/plife18/cooViewer.git
+$ git clone --recursive https://github.com/shunnag/cooViewer.git
 $ cd cooViewer
-$ xcodebuild -configuration Deployment [-arch x86_64/arm64]
+$ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Release build
 ```
-ビルドに成功すると `cooViewer/build/Deployment` 以下に `cooViewer.app` ができる。
-`-arch` 以下を省略すると x86_64/arm64 のユニバーサルバイナリ２ができる。
-`-arch` を指定する場合は自分の環境に合わせて指定する。
-<br>
-\# Apple系の開発者ではなく Xcode 的な流儀は知らないので、configuration の "Deployment" が適切なのか否かは不明。
 
-### GUI: Xcode.app
-1. cooViewer/cooViewer.xcodeproj を開く。
-1. メニュー → Build (or Cmd+B)
-1. 左ペインの Project Nagivator: cooViewer/Products/cooViewer.app の右クリックから "Show in Finder" でビルドした app が見つかる。
+- Xcode.app で `CooViewer.xcodeproj` を開いてビルドしても構いません。
+- 初回ビルド時に XADMaster.framework / UniversalDetector.framework が `Frameworks/` に
+  自動ビルドされます。サブモジュール更新後に作り直す場合は `rm -rf Frameworks` してから
+  ビルドしてください。
+- テスト: `xcodebuild -project CooViewer.xcodeproj -scheme cooViewer test`
 
-\# configuration: "Development" が適用され、操作中環境用ビルドができる、多分。Apple系の開発者ではないので(略)。
+## 主な機能
 
+- 本 = 画像入りフォルダ / 書庫(zip, cbz, rar, cbr, lzh, lha, 7z, sit)/ PDF。
+  単一の画像ファイルを開くと親フォルダを本として開きます
+- 読み方向 4 種(右→左・左→右 × 見開き・単ページ)、見開き自動判定
+  (縦横比しきい値+ページ毎の強制指定)
+- 表示モード 4 種(全体フィット / 幅フィット / 原寸 / 幅フィット(横長分割))、回転、補間設定
+- Finder 互換の自然順ソート / 日付順 / シャッフル
+- 書庫ファイル名の文字コード自動判定(Shift-JIS の zip も文字化けしません)、
+  パスワード付き書庫・PDF、書庫の中の書庫/PDF(ネスト)に対応
+- キー / マウス / ホイール / トラックパッドジェスチャの操作割り当て
+  (旧版の設定をそのまま引き継ぎます)
+- しおり、最終ページの記憶と復元、履歴、同フォルダの次/前の本への移動、
+  サブフォルダ移動、スライドショー、ゴミ箱へ移動、原寸表示、ページバー/ページ番号表示
+- サムネイル一覧(⌘T。現在ページとしおりを表示、クリックでジャンプ)、
+  ルーペ(全表示モード・回転対応)
+- ネイティブフルスクリーン(カーソル自動非表示)
 
-<br>
-<br>
-以下、fork 元の README.md
+### 旧版ユーザーへ: 設定の引き継ぎ
 
----
----
----
-<br>
-<br>
+設定ドメインは旧版と同じ `jp.coo.cooViewer` を使い続けます。
+キー/マウス割り当て・履歴・しおり・本ごとの設定は旧形式をそのまま読み込みます
+(ファイル参照は旧 Carbon alias から URL ブックマークへ順次移行されます)。
 
+### 旧版からの主な変更点
 
-# cooViewer1.2b
-https://coo-ona.github.io/cooViewer/
+- 疑似フルスクリーン → ネイティブフルスクリーン
+- 設定ウインドウは即時反映(旧: Cancel で全ロールバック)
+- Apple Remote / Keyspan リモコン対応は削除(受信ハードウェアが現行 Mac に存在しないため)
+- Spotlight 保存検索(.savedSearch)は未対応(将来課題)
+- キー割り当ての編集 UI はあります。マウス/ホイール割り当ての編集 UI は未実装(既定割り当て+旧版から引き継いだ割り当ては動作します)
+- カラーフィルタは未実装(将来課題)
+- ページ番号入力の画面中央オーバーレイ(旧 pageMover)は簡易ダイアログでの提供、
+  本を開いていない時の全しおり編集ウインドウは未対応(将来課題)
+- 旧版の既知バグの扱いは仕様書 §13.3 の判断リストに従い、修正または意図的に維持しています
 
-## 開発環境
-MacBook Pro (2.3GHz/16GB)<br>
-MacOS X 10.14.5
+## ライセンス
 
-## 操作方法
-https://coo-ona.github.io/cooViewer/manual.html
+- cooViewer 本体: MIT ライセンス([Licence.txt](Licence.txt))。Copyright (c) 2005- coo.
+- [XADMaster](https://github.com/MacPaw/XADMaster) /
+  [UniversalDetector](https://github.com/MacPaw/universal-detector): **LGPL 2.1**
+  (動的リンクの .framework として同梱。各サブモジュールの LICENSE を参照)
+- 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みですが、
+  ライセンス文書は参照用に [Licence_RemoteControlWrapper.txt](Licence_RemoteControlWrapper.txt)
+  として残しています
 
-## アンインストール
-・アプリ本体<br>
-・/Users/(ユーザー名)/ライブラリ/Preferences/jp.coo.cooViewer.plist<br>
-を消してください
-
-## 著作権、免責等
-cooViewerはMITライセンスです。
-ライセンスについては添付のLicence.txtを参照してください。
-
-このソフトウェアはXAD library system ( http://sourceforge.net/projects/libxad/ ) を使用しています。<br>
-ライセンスについては添付のLicence_xad.txtを参照してください。
-
-このソフトウェアはRemote Control Wrapper ( http://www.martinkahr.com/source-code/ ) を使用しています。<br>
-ライセンスについては添付のLicence_RemoteControlWrapper.txtを参照してください。
-
-デフォルトの書類アイコンは新・mac板 オナニー用画像ビューアー Part4の971さんに作成していただきました。
-
-64bit化対応にあたり、スレの皆様をはじめ、多くの方にご協力いただきました。ありがとうございます。
-また、nibをxibに変換いただいたkanjitalk755さんには特に感謝申し上げます。
+旧版の README・操作説明は [docs/](docs/)(原作者による GitHub Pages)と
+[`legacy/`](legacy/) を参照してください。

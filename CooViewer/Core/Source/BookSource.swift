@@ -1,0 +1,125 @@
+import CoreGraphics
+import Foundation
+
+/// 本の中の 1 ページ(1 画像)を表す。
+/// EN: One page (one image) of a book.
+struct PageEntry: Sendable, Hashable, Identifiable {
+    /// ソース内での安定 ID(書庫エントリ番号 / PDF ページ番号 / フォルダ列挙順)
+    /// EN: Stable ID within the source (archive entry no. / PDF page no. / folder order).
+    let id: Int
+    /// 表示名(拡張子付きファイル名)
+    let name: String
+    /// 本の中の相対パス。ソート(名前順)とサブフォルダ移動の単位に使う。
+    /// PDF はページ番号を 0 埋めした擬似パス。
+    /// EN: Relative path inside the book; used as the sort key and subfolder unit.
+    /// EN: PDFs use a zero-padded page number as a pseudo path.
+    let pathInBook: String
+    /// 実ファイルの URL(フォルダの本のみ。Finder 表示・ゴミ箱に使う)
+    let fileURL: URL?
+    let creationDate: Date?
+    let modificationDate: Date?
+
+    /// 本の中でこのページが属するフォルダ(サブフォルダ移動の判定単位。仕様書 §4.3.5)
+    /// EN: Folder this page belongs to inside the book (subfolder-navigation unit).
+    var containerPath: String {
+        (pathInBook as NSString).deletingLastPathComponent
+    }
+
+    /// 表示用の名前。relativePath 指定時はサブフォルダ/書庫内の相対パスを含める。
+    /// 擬似パスのソース(PDF: 0 埋めページ番号)は末尾がファイル名と一致しない
+    /// ため、常にファイル名へフォールバックする
+    /// EN: Name for display; with relativePath, includes the in-book path.
+    /// EN: Pseudo-path sources (PDF) always fall back to the plain name.
+    func displayTitle(relativePath: Bool) -> String {
+        guard relativePath, pathInBook != name,
+              (pathInBook as NSString).lastPathComponent == name else { return name }
+        return pathInBook
+    }
+}
+
+enum BookSourceError: Error {
+    case unreadable(URL)
+    case unsupportedFormat(URL)
+    case pageLoadFailed(String)
+}
+
+/// 「本」の供給源(フォルダ / 書庫 / PDF)。
+/// 旧実装の COImageLoader(仕様書 §2.4)に相当するが、mode 整数ではなく型で区別する。
+/// EN: Supplies a book's pages (folder / archive / PDF); a typed replacement
+/// EN: for the legacy COImageLoader and its integer "mode".
+protocol BookSource: Sendable {
+    var url: URL { get }
+    /// ウインドウタイトル等に使う表示名(旧実装同様、拡張子付き lastPathComponent)
+    var displayName: String { get }
+    /// 日付ソートが可能か(仕様書 §4.4.2: フォルダ系のみ)
+    var supportsDateSort: Bool { get }
+
+    /// 全ページをソース順(未ソート)で返す。
+    /// EN: All pages in source order (unsorted).
+    func entries() async throws -> [PageEntry]
+
+    /// ページ画像をデコードして返す。maxPixelSize を指定すると長辺をその値以下に
+    /// 縮小した画像を返す(サムネイル用)。
+    /// EN: Decode one page; maxPixelSize caps the long side (used for thumbnails).
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage
+
+    /// パスワード付き書庫か
+    func isEncrypted() async -> Bool
+    /// パスワードを設定し、正しければ true(仕様書 §4.1.3)
+    func checkAndSetPassword(_ password: String) async -> Bool
+
+    /// image(for:) を並列に呼んでよいか(actor 直列化が不要なソースのみ true)
+    var supportsParallelPageLoads: Bool { get }
+
+    /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
+    /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
+    /// spoolSizeLimit: ローカル一時展開に使ってよい合計バイト数
+    /// EN: One-shot background warm-up after unlock (archive spooling); returns fast.
+    func beginBackgroundPreparation(spoolSizeLimit: Int64) async
+
+    /// ルーペ用の高解像度画像。既定はフル解像度デコード(表示キャップで
+    /// 縮小されたラスタ画像もルーペでは原寸になる)。ベクトルソースは
+    /// pixelScale 連動でラスタライズし直す。
+    /// EN: High-res image for the loupe; vector sources re-rasterize at pixelScale.
+    func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage
+
+    /// ページの元データ(アニメーション再生用)。提供できないソースは nil
+    /// EN: Raw page data for animation playback; nil when unavailable.
+    func imageData(for entry: PageEntry) async -> Data?
+}
+
+extension BookSource {
+    var displayName: String { url.lastPathComponent }
+    func isEncrypted() async -> Bool { false }
+    func checkAndSetPassword(_ password: String) async -> Bool { true }
+    var supportsParallelPageLoads: Bool { false }
+    func beginBackgroundPreparation(spoolSizeLimit: Int64) async {}
+    func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
+        try await image(for: entry, maxPixelSize: nil)
+    }
+    func imageData(for entry: PageEntry) async -> Data? { nil }
+}
+
+enum BookSourceFactory {
+    /// URL から適切な BookSource を生成する。
+    /// 単一画像ファイル → 親フォルダの読み替え(仕様書 §4.1.2 手順 2)は呼び出し側で
+    /// 済ませておくこと。
+    /// EN: Pick the right BookSource for a URL; the "single image opens its parent
+    /// EN: folder" rewrite must be done by the caller.
+    static func make(for url: URL, readSubFolders: Bool) async throws -> any BookSource {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw BookSourceError.unreadable(url)
+        }
+        if isDirectory.boolValue {
+            return try FolderSource(url: url, readSubFolders: readSubFolders)
+        }
+        if SupportedTypes.isPDF(url) {
+            return try PDFSource(url: url)
+        }
+        if SupportedTypes.isArchive(url) {
+            return try ArchiveSource(url: url)
+        }
+        throw BookSourceError.unsupportedFormat(url)
+    }
+}
