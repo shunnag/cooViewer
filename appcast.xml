@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- cooViewer の自動更新フィード(Sparkle)。
+     リリースごとに Scripts/make-appcast.sh が <item> を挿入する。
+     この URL は Info.plist の SUFeedURL から参照される:
+     https://raw.githubusercontent.com/shunnag/cooViewer/master/appcast.xml -->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>cooViewer</title>
+        <description>cooViewer updates</description>
+        <language>en</language>
+        <!-- make-appcast.sh inserts new items below -->
+        <item>
+            <title>cooViewer 2.0b2</title>
+            <pubDate>Sat, 08 Aug 2026 11:40:25 +0000</pubDate>
+            <sparkle:version>2002</sparkle:version>
+            <sparkle:shortVersionString>2.0b2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b2</link>
+            <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b2</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b2/cooViewer-2.0b2.zip" sparkle:edSignature="W3NRJNK+4ghr7ptYyP407kbsDo1LhchH4bzNkjKuXlJ7i0p3yxvAmrTCSunRuxVFG8D4Zacvezb2A2HQLLSaAw==" length="4193436" type="application/octet-stream"/>
+        </item>
+    </channel>
+</rss>
