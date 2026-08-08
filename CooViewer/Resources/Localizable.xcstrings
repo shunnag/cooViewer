@@ -24,6 +24,16 @@
         }
       }
     },
+    "Adapt to media speed (SSD / HDD / network)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メディア速度に応じた自動調整(SSD / HDD / ネットワーク)"
+          }
+        }
+      }
+    },
     "Add/Remove Bookmark" : {
       "localizations" : {
         "ja" : {
@@ -50,16 +60,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "常に移動"
-          }
-        }
-      }
-    },
-    "Adapt to media speed (SSD / HDD / network)" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "メディア速度に応じた自動調整(SSD / HDD / ネットワーク)"
           }
         }
       }
@@ -94,6 +94,16 @@
         }
       }
     },
+    "Archive spooling:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "書庫の一時展開:"
+          }
+        }
+      }
+    },
     "Ask" : {
       "localizations" : {
         "ja" : {
@@ -110,6 +120,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "本の端に達したとき:"
+          }
+        }
+      }
+    },
+    "Automatic (by media speed)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自動(メディア速度で判断)"
           }
         }
       }
@@ -304,6 +324,16 @@
         }
       }
     },
+    "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Explicit values below always take precedence. Takes effect when the next book is opened." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本の置き場所を判定して、読み込み・先読み・書庫の一時展開を自動調整します。下で明示した値は常に自動調整より優先されます。次に本を開いたときから有効になります。"
+          }
+        }
+      }
+    },
     "Disabled" : {
       "localizations" : {
         "ja" : {
@@ -370,16 +400,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "フルスクリーンにする"
-          }
-        }
-      }
-    },
-    "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Takes effect when the next book is opened." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "本の置き場所を判定して、読み込み・先読み・書庫の一時展開を自動調整します。次に本を開いたときから有効になります。"
           }
         }
       }
@@ -1748,6 +1768,40 @@
         }
       }
     },
+    "spool.policy.always" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Always"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "常に行う"
+          }
+        }
+      }
+    },
+    "spool.policy.never" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Never"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "行わない"
+          }
+        }
+      }
+    },
     "Spread threshold (width/height):" : {
       "localizations" : {
         "ja" : {
@@ -2046,6 +2100,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "前のページに戻ったとき:"
+          }
+        }
+      }
+    },
+    "While advanced settings are off, prefetch depth follows the media speed: SSD 12/3, HDD 16/4, network 20/4." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高度な設定がオフの間、先読みの深さはメディア速度に追従します(SSD 12/3・HDD 16/4・ネットワーク 20/4)。"
           }
         }
       }

@@ -63,7 +63,7 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(loads, 1)
 
         // ディスクにも書かれている
-        let file = diskRoot.appendingPathComponent("book1/0.png")
+        let file = diskRoot.appendingPathComponent("book1/0.heic")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 

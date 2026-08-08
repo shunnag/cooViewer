@@ -41,6 +41,20 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         XCTAssertEqual(store.thumbnailCacheDays, 7)
     }
 
+    func testArchiveSpoolPolicyFollowsMasterSwitch() {
+        // マスタースイッチ OFF なら保存値があっても「自動」
+        defaults.set(2, forKey: "AdvancedSpoolPolicy")
+        XCTAssertEqual(store.archiveSpoolPolicy, .automatic)
+        // ON なら保存値(常に/しない)を返す
+        defaults.set(true, forKey: "AdvancedSettingsEnabled")
+        XCTAssertEqual(store.archiveSpoolPolicy, .never)
+        defaults.set(1, forKey: "AdvancedSpoolPolicy")
+        XCTAssertEqual(store.archiveSpoolPolicy, .always)
+        // 範囲外は丸められる(clamp で 2 = never)
+        defaults.set(99, forKey: "AdvancedSpoolPolicy")
+        XCTAssertEqual(store.archiveSpoolPolicy, .never)
+    }
+
     func testSwitchOnWithoutStoredValuesFallsBackToDefaults() {
         defaults.set(true, forKey: "AdvancedSettingsEnabled")
         XCTAssertEqual(store.prefetchAheadCount, 12)

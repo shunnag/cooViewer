@@ -2,6 +2,22 @@ import AppKit
 import Sparkle
 import SwiftUI
 
+/// 自動実行(XCTest / スナップショット検証)の判定。
+/// テストホストがユーザーの実データ(最後に開いた本)に触ったり、
+/// モーダル(Sparkle 許可・パスワード)で停止したりしないための共通ゲート
+/// EN: Detects automated runs (XCTest / snapshot verification) so the app
+/// EN: never touches the user's real books or blocks on modals there.
+enum AutomatedRun {
+    static var isXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+    }
+
+    static var isSnapshot: Bool {
+        CommandLine.arguments.contains("--snapshot")
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var readerWindowController: ReaderWindowController?
@@ -13,12 +29,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
     /// Info.plist(SUFeedURL / SUPublicEDKey)。初回は Sparkle 標準の
     /// 許可ダイアログでユーザーが自動チェックを選ぶ。検証用スナップショット
-    /// 実行(--snapshot)ではダイアログが写り込まないよう起動しない
+    /// 実行(--snapshot)と XCTest 実行では、許可ダイアログ(モーダル)が
+    /// 写り込み・ハングの原因になるため起動しない
     /// EN: Sparkle auto-update; feed URL and EdDSA key live in Info.plist,
     /// EN: and Sparkle's standard permission prompt governs automatic checks.
-    /// EN: Snapshot verification runs keep the updater stopped.
+    /// EN: Snapshot and XCTest runs keep the updater stopped — its modal
+    /// EN: permission prompt would pollute snapshots and hang test runs.
     let updaterController = SPUStandardUpdaterController(
-        startingUpdater: !CommandLine.arguments.contains("--snapshot"),
+        startingUpdater: !AutomatedRun.isSnapshot && !AutomatedRun.isXCTest,
         updaterDelegate: nil, userDriverDelegate: nil)
 
     /// メニュー「アップデートを確認…」(MainMenuBuilder から使用)
@@ -29,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         SettingsStore.shared.registerDefaults()
+        // 旧形式の本の状態(BookSettings/RecentItems/LastPages)を v2 へ
+        // 一括インポート(初回のみ。旧キーは 1.x 用に凍結保持)
+        // EN: One-time import of legacy book state into the v2 store.
+        BookHistoryStore.shared.migrateLegacyDataIfNeeded()
         NSApp.mainMenu = MainMenuBuilder.build()
     }
 
@@ -46,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// EN: thumbnails older than the configured retention.
     private func cleanUpCaches() {
         Task.detached(priority: .utility) {
+            // 旧 PNG サムネイルキャッシュは丸ごと削除(v2 HEIC で作り直す)
+            // EN: Drop the legacy PNG thumbnail cache; v2 rebuilds as HEIC.
+            ThumbnailCache.removeLegacyCacheDirectory()
             let root = ArchiveSource.spoolRoot()
             if let children = try? FileManager.default.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: nil) {
@@ -81,9 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             readerWindowController?.openBook(
                 at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
+                  !AutomatedRun.isXCTest,
                   let recent = BookHistoryStore.shared.mostRecentBook() {
-            // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
-            // EN: reopen the most recent book on launch (OpenLastFolder, default on).
+            // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)。
+            // XCTest のホストとしての起動では開かない: ユーザーの実データに
+            // 触れない・履歴を汚さない・モーダルでテストを止めないため
+            // EN: reopen the most recent book on launch (OpenLastFolder, default
+            // EN: on) — but never as an XCTest host, which must not touch the
+            // EN: user's real books, pollute history, or block on modals.
             readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
         }
         if arguments.contains("--show-thumbnails") {

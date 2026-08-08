@@ -312,8 +312,8 @@ final class NestedArchiveSourceTests: XCTestCase {
 
         let fm = FileManager.default
         XCTAssertTrue(fm.fileExists(
-            atPath: cacheRoot.appendingPathComponent("K/0.png").path))
+            atPath: cacheRoot.appendingPathComponent("K/0.heic").path))
         XCTAssertTrue(fm.fileExists(
-            atPath: cacheRoot.appendingPathComponent("K/1000000.png").path))
+            atPath: cacheRoot.appendingPathComponent("K/1000000.heic").path))
     }
 }

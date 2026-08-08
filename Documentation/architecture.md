@@ -229,11 +229,12 @@ CooViewerTests/                     — ソート・ソース(スプール/暗�
 | 層 | 実装 | 既定値 |
 |---|---|---|
 | 書庫スプール | `ArchiveSource.beginSpooling`: 開いた直後にバックグラウンドで全ページ画像をローカル一時領域(`tmp/cooViewer-spool/<pid>-<uuid>/`)へ**書庫順に逐次展開**。以降のページ取得・サムネイル生成はローカル読み。展開中の要求はオンデマンド経路で応え、1 エントリ毎に譲る。ネストした書庫/PDF(`<pid>-<uuid>-nested/`)は entries() 確定時に展開済みのためスプール対象外 | 合計展開サイズ 4GB まで。超過書庫はオンデマンドのみ |
-| メディア速度適応 | `MediaSpeedProbe` が本を開くとき置き場所を判定(statfs でネットワーク → IOKit の Medium Type で SSD/回転 → 不明なら 16MB/250ms 上限の実測ベンチ。結果はマウントポイント単位でセッションキャッシュ)。`MediaProfile` の方針表: **fastLocal**=zip 系スプール省略(solid 系と分割書庫はスプール)・フォルダ読み 6 並列・サムネイル 6 並列 / **slowLocal(HDD)**=全スプール・読み 2 並列・先読み 16/4 / **network**=全スプール・読み 3 並列・先読み 20/4 / **unknown**=従来動作と同一。フォルダの本は `SourceReadGate` で全読者(サムネイルのセル読み含む)の同時読み取りを制御。先読み深さの適応は高度設定 OFF のときのみ(明示値を尊重)。「高度」タブの「メディア速度に応じた自動調整」(既定 ON)で無効化可 | プローブは開くフローと並行実行・時間バジェット付き |
+| メディア速度適応 | `MediaSpeedProbe` が本を開くとき置き場所を判定(statfs でネットワーク → IOKit の Medium Type で SSD/回転 → 不明なら 16MB/250ms 上限の実測ベンチ。結果はマウントポイント単位でセッションキャッシュ)。`MediaProfile` の方針表: **fastLocal**=zip 系スプール省略(solid 系と分割書庫はスプール)・フォルダ読み 6 並列・サムネイル 6 並列 / **slowLocal(HDD)**=全スプール・読み 2 並列・先読み 16/4 / **network**=全スプール・読み 3 並列・先読み 20/4 / **unknown**=従来動作と同一。フォルダの本は `SourceReadGate` で全読者(サムネイルのセル読み含む)の同時読み取りを制御。整合規則は「**明示は自動に勝つ**」: 先読み深さの適応は高度設定 OFF のときのみ(ON では明示値)、書庫スプールは「高度」タブの三択(自動=メディア速度で判断/常に行う/行わない)が最優先(自動調整 OFF でも明示は有効)。「メディア速度に応じた自動調整」(既定 ON)で判定自体を無効化可 | プローブは開くフローと並行実行・時間バジェット付き |
 | ページキャッシュ | `PageCache`: デコード済み CGImage の**バイト基準** LRU。メモリ圧迫通知(DispatchSource)で半減トリム | 物理メモリの 15%(上限 6GB)。`PageCacheMegabytes` で明示指定可。旧 `ImageCache`(枚数)は廃止 |
 | 先読み | `Book.schedulePrefetch`: 進行方向 12 ページ+逆方向 3 ページ。ジャンプでキャンセル。`supportsParallelPageLoads` なソース(フォルダ)は 4 並列デコード | — |
 | 表示解像度キャップ | 表示用デコードは長辺 `displayPixelCap` に制限(縦横比不変のため見開き判定に影響なし)。原寸表示は `fullResolutionImage(at:)` でキャッシュ非経由のフル解像度 | 4096px |
-| サムネイル | `ThumbnailCache`: メモリ LRU(400 枚)+ディスク(`Caches/jp.coo.cooViewer/Thumbnails/<bookKey>/`)。bookKey は本のパス+更新日時+サイズ由来で、本の更新でキーごと無効化 | ディスクは 30 日でトリム |
+| サムネイル | `ThumbnailCache`: メモリ LRU(400 枚)+ディスク(`Caches/jp.coo.cooViewer/Thumbnails-v2/<bookKey>/<id>.heic`)。v2: PNG → **HEIC**(ハードウェアエンコード、約 1/5 サイズ)。旧 Thumbnails/ は起動時に削除して作り直し。bookKey は本のパス+更新日時+サイズ由来で、本の更新でキーごと無効化 | ディスクは 30 日でトリム |
+| 本の状態ストア v2 | `BookHistoryStore`: **1 冊 = 1 JSON**(パスの SHA-256 名)+ recents.json を Application Support に保存。パスから O(1) 参照・移動した本はミス時のみ URL ブックマークで再配置。旧形式(BookSettings/RecentItems/LastPages)は初回起動時に一括インポート変換(しおり 1 始まり文字列 → 0 始まり Int、保存ページは旧探索順を Recents 優先で再現)し、旧キーは 1.x 用に凍結保持。一覧外の本の復元可否は「閉じた時点」の AlwaysRememberLastPage を状態に固定保存(旧 LastPages の write-time 意味論)。消えた本は一覧から飛ばし(削除はしない)、移動した本はミス時のみ URL ブックマーク(マウント・UI 抑止)で再配置して一覧も付け替える | 旧形式の「表示名キー衝突解決+ブックマーク blob 逐次解決+配列全体の defaults 書き直し」を廃止 |
 
 後始末: スプールは ArchiveSource 解放時に削除し、起動時に**生存していない PID の
 残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策)。サムネイルの旧キー
