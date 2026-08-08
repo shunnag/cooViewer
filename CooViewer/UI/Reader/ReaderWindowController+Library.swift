@@ -397,6 +397,13 @@ extension ReaderWindowController {
                 readSubFolders: settings.readSubFolder) else { return }
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
+                // 置き場所の速度プロファイルを適用してから展開(スプール方針)
+                // EN: Apply the volume-speed profile before spooling starts.
+                if settings.adaptiveMediaTuning {
+                    let profile = await MediaSpeedProbe.profile(
+                        for: URL(fileURLWithPath: nextPath))
+                    await source.applyMediaProfile(profile)
+                }
                 await source.beginBackgroundPreparation(
                     spoolSizeLimit: settings.archiveSpoolSizeLimit)
             }

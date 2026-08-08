@@ -108,6 +108,31 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertTrue(entries.isEmpty, "本としては空(表示できる画像なし)")
     }
 
+    /// 高速ローカル判定では zip のスプールを省き(直読みで十分)、
+    /// 低速判定では従来どおり全ページをローカル展開すること
+    func testMediaProfileControlsZipSpooling() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let entries: [(nameBytes: [UInt8], data: Data)] = [
+            (Array("a.png".utf8), png), (Array("b.png".utf8), png),
+        ]
+
+        let fastURL = try writeZip(named: "fast.zip", entries: entries)
+        let fast = try ArchiveSource(url: fastURL)
+        await fast.applyMediaProfile(MediaProfile(mediaClass: .fastLocal))
+        await fast.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await fast.waitForSpoolCompletion()
+        let fastSpooled = await fast.spooledEntryCount
+        XCTAssertEqual(fastSpooled, 0, "高速ローカルの zip はスプールしない")
+
+        let slowURL = try writeZip(named: "slow.zip", entries: entries)
+        let slow = try ArchiveSource(url: slowURL)
+        await slow.applyMediaProfile(MediaProfile(mediaClass: .slowLocal))
+        await slow.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await slow.waitForSpoolCompletion()
+        let slowSpooled = await slow.spooledEntryCount
+        XCTAssertEqual(slowSpooled, 2, "低速媒体は従来どおり全ページ展開する")
+    }
+
     func testSpoolingServesPagesFromLocalFiles() async throws {
         let png = TestFixtures.pngData(width: 4, height: 6)
         let url = try writeZip(named: "book.zip", entries: [

@@ -18,6 +18,15 @@ final class FolderSource: BookSource {
     var supportsDateSort: Bool { true }
     var supportsParallelPageLoads: Bool { true }
 
+    /// 同時読み取りゲート(サムネイルのセル読みも含む全読者に適用)。
+    /// HDD のシーク嵐防止と SSD の並列デコードの両立(設計書 キャッシュ節)
+    /// EN: Concurrency gate applied to every reader (thumbnail cells included).
+    private let readGate = SourceReadGate(limit: MediaProfile.unknown.sourceReadConcurrency)
+
+    func applyMediaProfile(_ profile: MediaProfile) async {
+        await readGate.setLimit(profile.sourceReadConcurrency)
+    }
+
     /// サブフォルダのどこかに画像があるか(空フォルダ表示のヒント用)。
     /// 最初の 1 件で打ち切り、巨大ツリーでも走査を 2000 項目で止める
     /// EN: Used by the empty-book hint; stops at the first image or 2000 items.
@@ -113,7 +122,12 @@ final class FolderSource: BookSource {
 
     func imageData(for entry: PageEntry) async -> Data? {
         guard let fileURL = entry.fileURL else { return nil }
-        return try? Data(contentsOf: fileURL)
+        // アニメーション用の生データ読みも同じゲートを通す(全読者を制御)
+        // EN: Animation raw reads honor the same gate (every reader is capped).
+        await readGate.acquire()
+        let data = try? Data(contentsOf: fileURL)
+        await readGate.release()
+        return data
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
@@ -122,7 +136,16 @@ final class FolderSource: BookSource {
         guard let fileURL = entry.fileURL else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
-        let data = try Data(contentsOf: fileURL)
-        return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
+        await readGate.acquire()
+        do {
+            try Task.checkCancellation()
+            let data = try Data(contentsOf: fileURL)
+            let image = try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
+            await readGate.release()
+            return image
+        } catch {
+            await readGate.release()
+            throw error
+        }
     }
 }

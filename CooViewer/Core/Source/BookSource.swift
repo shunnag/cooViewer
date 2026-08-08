@@ -98,6 +98,12 @@ protocol BookSource: Sendable {
     /// ネストのパスワード入力コールバックを後付けする(準備済みソースの再利用時)
     /// EN: Attach a nested-password provider to a prepared source.
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async
+
+    /// 本の置き場所の速度プロファイルを適用する(読み取り並列度・スプール方針)。
+    /// beginBackgroundPreparation より前に呼ぶこと
+    /// EN: Apply the volume-speed profile (read concurrency, spool policy);
+    /// EN: call before beginBackgroundPreparation.
+    func applyMediaProfile(_ profile: MediaProfile) async
 }
 
 extension BookSource {
@@ -112,6 +118,7 @@ extension BookSource {
     func imageData(for entry: PageEntry) async -> Data? { nil }
     func hasSkippedLockedContent() async -> Bool { false }
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {}
+    func applyMediaProfile(_ profile: MediaProfile) async {}
 }
 
 enum BookSourceFactory {

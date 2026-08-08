@@ -26,6 +26,9 @@ final class ThumbnailOverlayModel: ObservableObject {
         /// EN: Inputs for the pairing decision (legacy isSmallImage rule).
         var marks = PageMarks()
         var singleSetting = PageLayout.defaultSingleSetting
+        /// 先読み並列度(本の置き場所の速度プロファイル由来)
+        /// EN: Prefetch concurrency from the book's volume-speed profile.
+        var prefetchConcurrency = MediaProfile.unknown.thumbnailPrefetchConcurrency
     }
 
     @Published private(set) var snapshot = Snapshot()
@@ -119,7 +122,8 @@ final class ThumbnailOverlayModel: ObservableObject {
             bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)),
             readsFromLeft: book.readMode.readsFromLeft,
             marks: book.marks,
-            singleSetting: book.singleSetting)
+            singleSetting: book.singleSetting,
+            prefetchConcurrency: book.mediaProfile.thumbnailPrefetchConcurrency)
         measuredAspects = [:]
         showScreenContainingCurrentPage()
         prefetchAroundScreen()
@@ -172,6 +176,16 @@ final class ThumbnailOverlayModel: ObservableObject {
         prefetchAroundScreen()
     }
 
+    /// 先読みだけを止める(オーバーレイを閉じたときに呼ぶ)。低速媒体で
+    /// 閉じた後もサムネイル読みがページ表示と帯域を奪い合うのを防ぐ。
+    /// 次に開いたときは present が先読みを再開する
+    /// EN: Stop prefetching when the overlay hides so background thumbnail
+    /// EN: reads stop competing with page loads; present() restarts it.
+    func pausePrefetch() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+    }
+
     /// スナップショットを空にして本への参照を解く。オーバーレイ非表示のまま
     /// 本が切り替わったときに呼ぶ: 古い Snapshot.source(ArchiveSource)を
     /// 持ち続けると、その本のスプール/ネスト展開の一時ファイル(数 GB になり得る)が
@@ -198,9 +212,6 @@ final class ThumbnailOverlayModel: ObservableObject {
     // MARK: - 先読み
 
     private static let prefetchScreenOffsets = [0, 1, -1, 2, -2, 3, -3]
-    /// 書庫ソースは actor で直列化されるため、過剰な同時要求は避ける
-    /// EN: Archive sources are actor-serialized, so keep concurrency modest.
-    private static let prefetchConcurrency = 3
 
     /// 現在±3 画面分のサムネイルを近い順に先読みする。
     /// キャッシュ経由なので生成済み分は即座に飛ばされ、画面が移れば
@@ -219,6 +230,11 @@ final class ThumbnailOverlayModel: ObservableObject {
                 }
             }
         let bookKey = snapshot.bookKey
+        // 並列度は本の置き場所の速度プロファイル由来(SSD=6 / HDD・NW=2)。
+        // 書庫ソースは actor で直列化されるため過剰要求にはならない
+        // EN: Concurrency follows the volume-speed profile; archive sources
+        // EN: are actor-serialized anyway.
+        let concurrency = max(1, snapshot.prefetchConcurrency)
         prefetchTask = Task {
             // 常時 prefetchConcurrency 本を維持しつつ 1 件ずつ流し込む。
             // 生成結果の寸法は見開きモードのペア判定へ反映する(旧 isSmallImage)
@@ -234,7 +250,7 @@ final class ThumbnailOverlayModel: ObservableObject {
                         bookKey: bookKey, index: target.index, entryID: target.entry.id,
                         size: CGSize(width: image.width, height: image.height))
                 }
-                for _ in 0..<Self.prefetchConcurrency {
+                for _ in 0..<concurrency {
                     guard let target = iterator.next() else { break }
                     group.addTask { await fetchOne(target) }
                 }
