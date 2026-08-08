@@ -1,5 +1,15 @@
 # cooViewer 2.0(macOS 26+ / Apple Silicon)
 
+> **Note(EN)**: This is an **unofficial fork** of cooViewer, maintained independently.
+> It is not affiliated with or endorsed by the original author (coo-ona) or the upstream
+> repository ([plife18/cooViewer](https://github.com/plife18/cooViewer)). Please report
+> issues with this fork here, not to the original author.
+>
+> **注意(日本語)**: 本リポジトリは cooViewer の**非公式フォーク**です。原作者
+> (coo-ona 氏)および上流リポジトリ([plife18/cooViewer](https://github.com/plife18/cooViewer))
+> とは無関係に独自に保守しています。本フォークに関する不具合報告等は原作者ではなく
+> 当リポジトリへお願いします。
+
 macOS 用の漫画・画像ビューア。フォルダ / zip / rar / 7z 等の書庫 / PDF を「本」として開き、
 右→左(右綴じ)・左→右の読み方向、単ページ/見開き表示で快適に読むことができます。
 
