@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import SwiftUI
 
 @MainActor
@@ -8,6 +9,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 検証用スナップショットの一時ウインドウ(設定ウインドウとは別管理)
     /// EN: Debug-only preview window; must never shadow the settings window.
     private var debugPreviewWindow: NSWindow?
+
+    /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
+    /// Info.plist(SUFeedURL / SUPublicEDKey)。初回は Sparkle 標準の
+    /// 許可ダイアログでユーザーが自動チェックを選ぶ。検証用スナップショット
+    /// 実行(--snapshot)ではダイアログが写り込まないよう起動しない
+    /// EN: Sparkle auto-update; feed URL and EdDSA key live in Info.plist,
+    /// EN: and Sparkle's standard permission prompt governs automatic checks.
+    /// EN: Snapshot verification runs keep the updater stopped.
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: !CommandLine.arguments.contains("--snapshot"),
+        updaterDelegate: nil, userDriverDelegate: nil)
+
+    /// メニュー「アップデートを確認…」(MainMenuBuilder から使用)
+    /// EN: Menu action for "Check for Updates…".
+    @objc func checkForUpdates(_ sender: Any?) {
+        updaterController.checkForUpdates(sender)
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         SettingsStore.shared.registerDefaults()
