@@ -171,11 +171,14 @@ private struct ThumbnailCell: View {
 }
 
 /// 1 ページ分のサムネイル画像(表示されたときに非同期ロード。キャッシュ経由)。
+/// ホバーでファイル名/相対パス(設定「ファイル名の表示」準拠)をツールチップ表示する。
 private struct ThumbnailPageImage: View {
     let entry: PageEntry
     let source: (any BookSource)?
     let bookKey: String
     let isBookmarked: Bool
+
+    @AppStorage("ShowRelativePaths") private var showRelativePaths = false
 
     /// 固定グリッドではセルのビュー実体がページめくり後も再利用されるため、
     /// 画像がどのエントリのものかを併せて保持し、表示時に必ず照合する
@@ -200,6 +203,7 @@ private struct ThumbnailPageImage: View {
                     .padding(4)
             }
         }
+        .help(entry.displayTitle(relativePath: showRelativePaths))
         .task(id: entry.id) {
             guard let source else { return }
             // 常に読み直す(キャッシュ命中は即時)。id を添えて保存するため、
