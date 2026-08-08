@@ -18,9 +18,15 @@ extension ReaderWindowController {
     /// オーバーレイの内容を book で組み直す(表示中の本の切替時にも使う)
     func presentThumbnailOverlay(for book: Book) {
         thumbnailOverlayModel.onJump = { [weak self, weak book] index in
-            self?.hideThumbnailOverlay()
-            book?.goTo(index: index)
-            self?.refreshAfterJump()
+            // 本の入替の最中(オーバーレイがまだ旧 Book の内容のうち)は
+            // クリックを無視する。入替完了時に openBookFlow 側が新しい本で
+            // 一覧を組み直すので、そこで正しいジャンプができるようになる
+            // EN: Ignore clicks while the reader is switching books (the overlay
+            // EN: still shows the old book); the open flow rebuilds it right after.
+            guard let self, let book, book === self.book else { return }
+            self.hideThumbnailOverlay()
+            book.goTo(index: index)
+            self.refreshAfterJump()
         }
         thumbnailOverlayModel.onClose = { [weak self] in
             self?.hideThumbnailOverlay()

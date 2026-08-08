@@ -336,12 +336,29 @@ final class ReaderWindowController: NSWindowController {
         do {
             let source: any BookSource
             if let prepared = preparedNextBook, prepared.path == bookURL.path {
-                // 事前スプール済みの本を再利用(切替を待ちなしに。設計書 §5)
-                source = prepared.source
                 preparedNextBook = nil
+                if await prepared.source.hasSkippedLockedContent() {
+                    // バックグラウンド準備(パスワード UI なし)がロック済みの
+                    // ネスト書庫を外して組んでいた場合は使い回さず、通常経路で
+                    // 開き直してダイアログを出す(ページの黙落ち防止)
+                    // EN: The prepared source silently dropped locked children;
+                    // EN: rebuild through the interactive path so prompts appear.
+                    source = try await BookSourceFactory.make(
+                        for: bookURL, readSubFolders: settings.readSubFolder,
+                        nestedPasswordProvider: nestedPasswordProvider())
+                } else {
+                    // 事前スプール済みの本を再利用(切替を待ちなしに。設計書 §5)。
+                    // まだ組んでいない場合に備えてパスワード UI を後付けする
+                    // EN: Reuse the prepared source; attach the password UI in
+                    // EN: case assembly has not run yet.
+                    await prepared.source.attachNestedPasswordProvider(
+                        nestedPasswordProvider())
+                    source = prepared.source
+                }
             } else {
                 source = try await BookSourceFactory.make(
-                    for: bookURL, readSubFolders: settings.readSubFolder)
+                    for: bookURL, readSubFolders: settings.readSubFolder,
+                    nestedPasswordProvider: nestedPasswordProvider())
             }
             switch await unlock(source) {
             case .unlocked:
@@ -369,10 +386,14 @@ final class ReaderWindowController: NSWindowController {
                                            cacheByteLimit: settings.pageCacheByteLimit)
             guard generation == openGeneration else { return }
             // 画像ゼロのフォルダ(コレクションフォルダ)は中の最初の本を開く
-            // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)
+            // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)。
+            // ただしパスワード入力のキャンセル等でネスト書庫を外した結果の
+            // 空ならそのまま(自動で開き直すと同じダイアログが即再表示される)
             // EN: A folder with no images but containing books opens its first
-            // EN: inner book instead of showing an empty placeholder.
+            // EN: inner book — unless it is empty because the user cancelled a
+            // EN: nested password prompt (auto-open would re-prompt instantly).
             if book.pageCount == 0, autoOpenDepth < 4,
+               await !source.hasSkippedLockedContent(),
                let inner = Self.firstInnerBook(in: bookURL) {
                 await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
                                    autoOpenDepth: autoOpenDepth + 1)
@@ -415,13 +436,16 @@ final class ReaderWindowController: NSWindowController {
             statusLabel.isHidden = true
             updateIndicatorVisibility()
             await refreshDisplay()
-            // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す
-            if isThumbnailOverlayVisible {
-                if book.pageCount > 0 {
-                    presentThumbnailOverlay(for: book)
-                } else {
-                    hideThumbnailOverlay()
-                }
+            // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す。
+            // 非表示中はスナップショットを空にして旧本のソース保持を解く
+            // (書庫のスプール/ネスト展開の一時ファイル回収のため)
+            // EN: Rebuild the visible overlay for the new book; when hidden,
+            // EN: clear the snapshot so the old source's temp files get reclaimed.
+            if isThumbnailOverlayVisible, book.pageCount > 0 {
+                presentThumbnailOverlay(for: book)
+            } else {
+                hideThumbnailOverlay()
+                thumbnailOverlayModel.clear()
             }
         } catch {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
@@ -440,6 +464,7 @@ final class ReaderWindowController: NSWindowController {
         let placeholder = Book(source: source, entries: [])
         book = placeholder
         hideThumbnailOverlay()
+        thumbnailOverlayModel.clear()
         lockedBookReason = reason
         window?.title = placeholder.displayName
         readerView.setPages([], readsFromLeft: false)
@@ -461,6 +486,38 @@ final class ReaderWindowController: NSWindowController {
         case unlocked
         case cancelled
         case attemptsExceeded
+    }
+
+    /// ネスト書庫/PDF 用のパスワード入力コールバック(仕様書 §4.1.3 のネスト版)。
+    /// 本を開くフロー(entries() 構築)中に呼ばれ、MainActor でダイアログを出す。
+    /// EN: Password callback for nested books; hops to MainActor and shows a
+    /// EN: dialog while the open flow is assembling entries().
+    func nestedPasswordProvider() -> NestedPasswordProvider {
+        { name, attempt in
+            await MainActor.run {
+                // UI 検証用の隠しフック(モーダルを出さずキャンセル扱い)
+                if ProcessInfo.processInfo.environment[
+                    "COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil {
+                    return nil
+                }
+                let alert = NSAlert()
+                alert.messageText = String(
+                    localized: "“\(name)” in this book is password-protected.")
+                // 2 回目以降は誤入力を伝える(外側書庫のダイアログと同じ書式)
+                // EN: Retries surface the wrong-password state, like the outer dialog.
+                alert.informativeText = attempt == 1
+                    ? String(localized: "Enter the password to include it.")
+                    : String(localized: "Wrong password. \(4 - attempt) attempts left.")
+                alert.addButton(withTitle: String(localized: "OK"))
+                alert.addButton(withTitle: String(localized: "Skip"))
+                let field = NSSecureTextField(
+                    frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+                alert.accessoryView = field
+                alert.window.initialFirstResponder = field
+                guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+                return field.stringValue
+            }
+        }
     }
 
     /// パスワード書庫のロック解除(仕様書 §4.1.3)。
@@ -566,11 +623,13 @@ final class ReaderWindowController: NSWindowController {
         }
         maybePrepareNextBook()
         startAnimationsIfNeeded(spread: spread)
-        // サムネイル表示中の本ページ移動(%ジャンプ・しおり移動等)に追従する
+        // サムネイル表示中は本の変化に追従する(%ジャンプ・しおり移動のほか、
+        // ソート変更等でエントリ列が変わった場合は一覧を組み直す)
+        // EN: Keep the visible overlay in sync: follow page jumps and rebuild
+        // EN: the grid when the entry order changed (sort / shuffle).
         lastSpreadIndices = spread.indices
         if isThumbnailOverlayVisible {
-            thumbnailOverlayModel.focusCurrentIndex(book.currentIndex,
-                                                    displayedIndices: spread.indices)
+            thumbnailOverlayModel.follow(book: book, displayedIndices: spread.indices)
         }
     }
 
