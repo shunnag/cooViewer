@@ -233,7 +233,8 @@ CooViewerTests/                     — ソート・ソース(スプール/暗�
 | ページキャッシュ | `PageCache`: デコード済み CGImage の**バイト基準** LRU。メモリ圧迫通知(DispatchSource)で半減トリム | 物理メモリの 15%(上限 6GB)。`PageCacheMegabytes` で明示指定可。旧 `ImageCache`(枚数)は廃止 |
 | 先読み | `Book.schedulePrefetch`: 進行方向 12 ページ+逆方向 3 ページ。ジャンプでキャンセル。`supportsParallelPageLoads` なソース(フォルダ)は 4 並列デコード | — |
 | 表示解像度キャップ | 表示用デコードは長辺 `displayPixelCap` に制限(縦横比不変のため見開き判定に影響なし)。原寸表示は `fullResolutionImage(at:)` でキャッシュ非経由のフル解像度 | 4096px |
-| サムネイル | `ThumbnailCache`: メモリ LRU(400 枚)+ディスク(`Caches/jp.coo.cooViewer/Thumbnails/<bookKey>/`)。bookKey は本のパス+更新日時+サイズ由来で、本の更新でキーごと無効化 | ディスクは 30 日でトリム |
+| サムネイル | `ThumbnailCache`: メモリ LRU(400 枚)+ディスク(`Caches/jp.coo.cooViewer/Thumbnails-v2/<bookKey>/<id>.heic`)。v2: PNG → **HEIC**(ハードウェアエンコード、約 1/5 サイズ)。旧 Thumbnails/ は起動時に削除して作り直し。bookKey は本のパス+更新日時+サイズ由来で、本の更新でキーごと無効化 | ディスクは 30 日でトリム |
+| 本の状態ストア v2 | `BookHistoryStore`: **1 冊 = 1 JSON**(パスの SHA-256 名)+ recents.json を Application Support に保存。パスから O(1) 参照・移動した本はミス時のみ URL ブックマークで再配置。旧形式(BookSettings/RecentItems/LastPages)は初回起動時に一括インポート変換(しおり 1 始まり文字列 → 0 始まり Int、保存ページは旧探索順を Recents 優先で再現)し、旧キーは 1.x 用に凍結保持。一覧外の本の復元可否は「閉じた時点」の AlwaysRememberLastPage を状態に固定保存(旧 LastPages の write-time 意味論)。消えた本は一覧から飛ばし(削除はしない)、移動した本はミス時のみ URL ブックマーク(マウント・UI 抑止)で再配置して一覧も付け替える | 旧形式の「表示名キー衝突解決+ブックマーク blob 逐次解決+配列全体の defaults 書き直し」を廃止 |
 
 後始末: スプールは ArchiveSource 解放時に削除し、起動時に**生存していない PID の
 残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策)。サムネイルの旧キー
