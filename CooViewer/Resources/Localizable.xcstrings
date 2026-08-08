@@ -352,6 +352,26 @@
         }
       }
     },
+    "File name display:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ファイル名の表示:"
+          }
+        }
+      }
+    },
+    "File name only": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ファイル名のみ"
+          }
+        }
+      }
+    },
     "First Page": {
       "localizations": {
         "ja": {
@@ -1218,6 +1238,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "表示モードを縮小方向へ"
+          }
+        }
+      }
+    },
+    "Relative path in book": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本の中の相対パス"
           }
         }
       }

@@ -260,3 +260,28 @@ final class AnimatedImageTests: XCTestCase {
         XCTAssertTrue(SupportedTypes.isImageFile("clip.avifs"))
     }
 }
+
+/// ページ名の表示(ファイル名のみ ⇔ 本の中の相対パス)
+final class PageEntryDisplayTitleTests: XCTestCase {
+    private func entry(name: String, path: String) -> PageEntry {
+        PageEntry(id: 0, name: name, pathInBook: path,
+                  fileURL: nil, creationDate: nil, modificationDate: nil)
+    }
+
+    func testRelativePathShownForSubfolderAndArchiveEntries() {
+        let sub = entry(name: "a.png", path: "chapter-1/a.png")
+        XCTAssertEqual(sub.displayTitle(relativePath: false), "a.png")
+        XCTAssertEqual(sub.displayTitle(relativePath: true), "chapter-1/a.png")
+    }
+
+    func testRootEntryFallsBackToName() {
+        let root = entry(name: "a.png", path: "a.png")
+        XCTAssertEqual(root.displayTitle(relativePath: true), "a.png")
+    }
+
+    func testPseudoPathSourceAlwaysShowsName() {
+        // PDF の擬似パス(0 埋めページ番号)はパス表示にしない
+        let pdf = entry(name: "3", path: "000002")
+        XCTAssertEqual(pdf.displayTitle(relativePath: true), "3")
+    }
+}

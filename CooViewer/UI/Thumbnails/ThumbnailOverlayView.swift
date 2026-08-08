@@ -7,6 +7,9 @@ import SwiftUI
 struct ThumbnailOverlayView: View {
     @ObservedObject var model: ThumbnailOverlayModel
 
+    /// フッターのファイル名をパス表示にするか(設定「ファイル名の表示」)
+    @AppStorage("ShowRelativePaths") private var showRelativePaths = false
+
     var body: some View {
         let layout = model.layout
         ZStack {
@@ -100,7 +103,8 @@ struct ThumbnailOverlayView: View {
             // いま表示中のファイル名(見開きは 2 つ併記)
             Text(verbatim: model.snapshot.displayedIndices.sorted().compactMap {
                 let entries = model.snapshot.entries
-                return entries.indices.contains($0) ? entries[$0].name : nil
+                return entries.indices.contains($0)
+                    ? entries[$0].displayTitle(relativePath: showRelativePaths) : nil
             }.joined(separator: "  "))
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.8))
