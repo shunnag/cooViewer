@@ -284,6 +284,13 @@ final class PageEntryDisplayTitleTests: XCTestCase {
         let pdf = entry(name: "3", path: "000002")
         XCTAssertEqual(pdf.displayTitle(relativePath: true), "3")
     }
+
+    func testNestedPDFKeepsContainerPath() {
+        // 書庫内 PDF のページは容器パスを残す(巻をまたいで区別できるように)
+        let nested = entry(name: "Page 4", path: "vol1.pdf/000003")
+        XCTAssertEqual(nested.displayTitle(relativePath: false), "Page 4")
+        XCTAssertEqual(nested.displayTitle(relativePath: true), "vol1.pdf/Page 4")
+    }
 }
 
 /// 分割書庫の拡張子判定(仕様書 §2.3 の番号系列)

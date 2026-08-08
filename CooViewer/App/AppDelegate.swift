@@ -53,7 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleDebugArguments() {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count {
-            readerWindowController?.openBook(at: URL(fileURLWithPath: arguments[index + 1]))
+            // --at-page <1 始まり> で開始ページも指定できる(検証用)
+            // EN: Optional --at-page <1-based> picks the starting page.
+            var page: Int?
+            if let pageIndex = arguments.firstIndex(of: "--at-page"),
+               pageIndex + 1 < arguments.count, let number = Int(arguments[pageIndex + 1]) {
+                page = number - 1
+            }
+            readerWindowController?.openBook(
+                at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
                   let recent = BookHistoryStore.shared.mostRecentBook() {
             // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
@@ -85,6 +93,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         onSave: { _ in }, onClose: {})))
                 window.makeKeyAndOrderFront(nil)
                 self.debugPreviewWindow = window
+            }
+        }
+        if let index = arguments.firstIndex(of: "--then-open"), index + 1 < arguments.count {
+            // 検証用: 最初の本(とサムネイル)を表示した後に別の本へ切り替える
+            // (本の切替をまたぐサムネイル一覧の描画確認のため)
+            // EN: Verification flag: switch to a second book after the first one
+            // EN: (and its thumbnail overlay) is up, to check cross-book rendering.
+            let path = arguments[index + 1]
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                self.readerWindowController?.openBook(at: URL(fileURLWithPath: path))
             }
         }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {

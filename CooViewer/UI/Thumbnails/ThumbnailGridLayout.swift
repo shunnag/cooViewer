@@ -30,22 +30,40 @@ struct ThumbnailGridLayout: Equatable {
     let columns: Int
     /// セル単位のページ組。単ページは [n]、見開きモードは読み順の [n, n+1]
     /// (仕様書 §4.8 mangaMode)。しおり絞り込みは組む前に適用する。
-    /// EN: Page groups per cell: [n] single, [n, n+1] paired in reading order;
-    /// EN: the bookmark filter is applied before pairing.
+    /// 旧 mangaMode 同様、横長と判明したページ(knownLargePages)はペアにせず
+    /// 単独セルにする。判明前(未生成)のページは縦長とみなして進歩的に直す。
+    /// EN: Page groups per cell: [n] single, [n, n+1] paired in reading order.
+    /// EN: Known-landscape pages stay single (legacy isSmallImage rule);
+    /// EN: not-yet-measured pages are assumed portrait and refined later.
     let cellGroups: [[Int]]
 
     init(entryCount: Int, bookmarkedPages: Set<Int>,
-         onlyBookmarks: Bool, comicMode: Bool, rows: Int, columns: Int) {
+         onlyBookmarks: Bool, comicMode: Bool, rows: Int, columns: Int,
+         knownLargePages: Set<Int> = []) {
         self.rows = max(1, rows)
         self.columns = comicMode ? max(1, columns / 2) : max(1, columns)
         let visible = onlyBookmarks
             ? (0..<entryCount).filter(bookmarkedPages.contains)
             : Array(0..<entryCount)
-        cellGroups = comicMode
-            ? stride(from: 0, to: visible.count, by: 2).map {
-                Array(visible[$0..<min($0 + 2, visible.count)])
+        if comicMode {
+            var groups: [[Int]] = []
+            var position = 0
+            while position < visible.count {
+                let first = visible[position]
+                if !knownLargePages.contains(first),
+                   position + 1 < visible.count,
+                   !knownLargePages.contains(visible[position + 1]) {
+                    groups.append([first, visible[position + 1]])
+                    position += 2
+                } else {
+                    groups.append([first])
+                    position += 1
+                }
             }
-            : visible.map { [$0] }
+            cellGroups = groups
+        } else {
+            cellGroups = visible.map { [$0] }
+        }
     }
 
     var cellsPerScreen: Int { rows * columns }
