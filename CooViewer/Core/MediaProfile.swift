@@ -23,12 +23,19 @@ struct MediaProfile: Sendable, Equatable {
     /// 実測スループット(MB/s)。ベンチを走らせた場合のみ
     /// EN: Measured throughput when the micro-benchmark ran.
     var measuredMBPerSec: Double?
+    /// スプール方針の明示上書き(設定「高度」の三択)。nil=自動。
+    /// 「明示は自動に勝つ」の整合規則(設計書 キャッシュ節)
+    /// EN: Explicit spool-policy override from Advanced settings; nil = auto.
+    /// EN: Explicit values always beat the automatic policy.
+    var spoolOverride: Bool?
 
     static let unknown = MediaProfile(mediaClass: .unknown)
 
-    init(mediaClass: MediaClass, measuredMBPerSec: Double? = nil) {
+    init(mediaClass: MediaClass, measuredMBPerSec: Double? = nil,
+         spoolOverride: Bool? = nil) {
         self.mediaClass = mediaClass
         self.measuredMBPerSec = measuredMBPerSec
+        self.spoolOverride = spoolOverride
     }
 
     // MARK: - ベンチマークのしきい値
@@ -50,6 +57,11 @@ struct MediaProfile: Sendable, Equatable {
     /// EN: Whether to spool an archive: fast local volumes skip zip-style
     /// EN: formats (cheap random access); solid-prone formats always spool.
     func shouldSpoolArchive(fileExtension: String) -> Bool {
+        // 高度設定の明示(常に行う/行わない)が最優先
+        // EN: An explicit Advanced-tab policy always wins.
+        if let spoolOverride {
+            return spoolOverride
+        }
         switch mediaClass {
         case .fastLocal:
             let solidProne: Set<String> = ["rar", "cbr", "7z", "lha", "lzh", "sit"]

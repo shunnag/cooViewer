@@ -49,6 +49,7 @@ struct SettingsView: View {
 
     // 高度な設定(SettingsStore.AdvancedDefault と同値の既定)
     @AppStorage("AdaptiveMediaTuning") private var adaptiveMediaTuning = true
+    @AppStorage("AdvancedSpoolPolicy") private var advSpoolPolicy = 0
     @AppStorage("AdvancedSettingsEnabled") private var advancedEnabled = false
     @AppStorage("AdvancedMemoryPercent") private var advMemoryPercent =
         SettingsStore.AdvancedDefault.memoryPercent
@@ -282,7 +283,7 @@ struct SettingsView: View {
                 Toggle(String(localized: "Adapt to media speed (SSD / HDD / network)"),
                        isOn: $adaptiveMediaTuning)
                 Text(String(localized:
-                    "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Takes effect when the next book is opened."))
+                    "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Explicit values below always take precedence. Takes effect when the next book is opened."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -297,8 +298,18 @@ struct SettingsView: View {
                     Text(String(localized: "Page cache memory:")
                          + " \(advMemoryPercent)% (\(advancedMemoryDisplay))")
                 }
+                Picker(String(localized: "Archive spooling:"), selection: $advSpoolPolicy) {
+                    Text(String(localized: "Automatic (by media speed)")).tag(0)
+                    // "Always"/"Never" は別文脈の既存訳と衝突するため独立キー
+                    // EN: Keyed separately; the bare words collide with other contexts.
+                    Text(String(localized: "spool.policy.always",
+                                defaultValue: "Always")).tag(1)
+                    Text(String(localized: "spool.policy.never",
+                                defaultValue: "Never")).tag(2)
+                }
                 Stepper(String(localized: "Archive spool limit: \(advSpoolLimitGB) GB"),
                         value: $advSpoolLimitGB, in: 1...64)
+                    .disabled(advSpoolPolicy == 2)
                 Stepper(String(localized: "Keep thumbnails for: \(advThumbnailDays) days"),
                         value: $advThumbnailDays, in: 1...365)
             }
@@ -311,6 +322,12 @@ struct SettingsView: View {
                 Stepper(String(localized:
                     "Prepare the next book in the last \(advPrepareNextBook) pages (0: off)"),
                         value: $advPrepareNextBook, in: 0...20)
+                if !advancedEnabled {
+                    Text(String(localized:
+                        "While advanced settings are off, prefetch depth follows the media speed: SSD 12/3, HDD 16/4, network 20/4."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .disabled(!advancedEnabled)
             Section {
@@ -353,6 +370,7 @@ struct SettingsView: View {
         advPrefetchBehind = SettingsStore.AdvancedDefault.prefetchBehind
         advDisplayPixelCap = SettingsStore.AdvancedDefault.displayPixelCap
         advSpoolLimitGB = SettingsStore.AdvancedDefault.spoolLimitGB
+        advSpoolPolicy = 0
         advPrepareNextBook = SettingsStore.AdvancedDefault.prepareNextBookPages
         advThumbnailDays = SettingsStore.AdvancedDefault.thumbnailCacheDays
     }

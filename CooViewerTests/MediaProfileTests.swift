@@ -79,6 +79,24 @@ final class MediaProfileTests: XCTestCase {
         }
     }
 
+    func testSpoolOverrideBeatsAutomaticPolicy() {
+        // 高度設定の明示(常に/しない)は自動判定より優先されること
+        var fast = MediaProfile(mediaClass: .fastLocal)
+        fast.spoolOverride = true
+        XCTAssertTrue(fast.shouldSpoolArchive(fileExtension: "zip"),
+                      "「常に行う」は高速ローカルの zip でも展開する")
+
+        var slow = MediaProfile(mediaClass: .slowLocal)
+        slow.spoolOverride = false
+        XCTAssertFalse(slow.shouldSpoolArchive(fileExtension: "rar"),
+                       "「行わない」は低速媒体の rar でも展開しない")
+
+        var network = MediaProfile(mediaClass: .network)
+        network.spoolOverride = nil
+        XCTAssertTrue(network.shouldSpoolArchive(fileExtension: "zip"),
+                      "nil(自動)はクラスの方針に従う")
+    }
+
     // MARK: - 読み取りゲート
 
     func testReadGateCapsConcurrency() async {
