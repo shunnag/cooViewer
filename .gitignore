@@ -78,3 +78,4 @@ iOSInjectionProject/
 
 # macOS noise
 .DS_Store
+build/
