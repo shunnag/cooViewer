@@ -187,3 +187,48 @@ final class BookTests: XCTestCase {
         XCTAssertNil(broken.images[0])                   // UI 側でプレースホルダ表示
     }
 }
+
+/// cacheKey: エントリ一覧ダイジェスト(フォルダの本の古いサムネイル防止)
+@MainActor
+final class BookCacheKeyTests: XCTestCase {
+    private func makeFolderBook(at root: URL, sortMode: SortMode = .name)
+        async throws -> Book {
+        let source = try FolderSource(url: root, readSubFolders: true)
+        return try await Book.open(source: source, sortMode: sortMode)
+    }
+
+    func testCacheKeyIgnoresSortOrder() async throws {
+        let root = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["a.png", "b.png", "c.png"] {
+            try TestFixtures.pngData(width: 10, height: 10)
+                .write(to: root.appendingPathComponent(name))
+        }
+        let byName = try await makeFolderBook(at: root, sortMode: .name)
+        let shuffled = try await makeFolderBook(at: root, sortMode: .shuffle)
+        XCTAssertEqual(byName.cacheKey, shuffled.cacheKey,
+                       "並び順が違っても同じ本なら同じキー")
+    }
+
+    func testCacheKeyChangesWhenSubfolderFileChanges() async throws {
+        // 親フォルダの更新日時が動かない「サブフォルダ内だけの変更」でも
+        // キーが変わること(旧実装の弱点の回帰テスト)
+        let root = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sub = root.appendingPathComponent("sub")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        let file = sub.appendingPathComponent("page.png")
+        try TestFixtures.pngData(width: 10, height: 10).write(to: file)
+
+        let before = try await makeFolderBook(at: root).cacheKey
+        // 親フォルダの mtime を固定したままサブフォルダ内のファイルだけ更新する
+        let parentAttributes = try FileManager.default.attributesOfItem(atPath: root.path)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 100)], ofItemAtPath: file.path)
+        try FileManager.default.setAttributes(
+            [.modificationDate: parentAttributes[.modificationDate]!],
+            ofItemAtPath: root.path)
+        let after = try await makeFolderBook(at: root).cacheKey
+        XCTAssertNotEqual(before, after, "サブフォルダ内の変更でキーが変わること")
+    }
+}

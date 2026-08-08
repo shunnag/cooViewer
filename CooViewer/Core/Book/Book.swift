@@ -54,7 +54,7 @@ final class Book {
         self.sortMode = sortMode
         self.entries = PageSorter.sorted(entries, mode: sortMode)
         self.cache = PageCache(byteLimit: cacheByteLimit)
-        self.cacheKey = Self.makeCacheKey(for: source.url)
+        self.cacheKey = Self.makeCacheKey(for: source.url, entries: entries)
     }
 
     static func open(source: any BookSource, sortMode: SortMode = .name,
@@ -64,7 +64,11 @@ final class Book {
                     cacheByteLimit: cacheByteLimit)
     }
 
-    private static func makeCacheKey(for url: URL) -> String {
+    /// 本の同一性キー。ファイル情報に加えて**エントリ一覧のダイジェスト**を
+    /// 混ぜる: フォルダの本はサブフォルダ内だけの変更や同名上書きで親の
+    /// 更新日時が変わらないため、ファイル情報だけでは古いサムネイルが残る。
+    /// エントリ側のダイジェストは順序非依存(ソート・シャッフルの影響なし)
+    private static func makeCacheKey(for url: URL, entries: [PageEntry]) -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let modified = (attributes?[.modificationDate] as? Date)?
             .timeIntervalSince1970 ?? 0
@@ -77,7 +81,20 @@ final class Book {
             hash1 = hash1 &* 33 &+ UInt64(byte)
             hash2 = hash2 &* 37 &+ UInt64(byte)
         }
-        return String(format: "%016llx%016llx", hash1, hash2)
+        var sum1: UInt64 = 0
+        var sum2: UInt64 = 0
+        for entry in entries {
+            let entrySeed = "\(entry.pathInBook)|\(entry.modificationDate?.timeIntervalSince1970 ?? 0)"
+            var entryHash1: UInt64 = 5381
+            var entryHash2: UInt64 = 52711
+            for byte in entrySeed.utf8 {
+                entryHash1 = entryHash1 &* 33 &+ UInt64(byte)
+                entryHash2 = entryHash2 &* 37 &+ UInt64(byte)
+            }
+            sum1 &+= entryHash1
+            sum2 &+= entryHash2
+        }
+        return String(format: "%016llx%016llx", hash1 ^ sum1, hash2 ^ sum2)
     }
 
     var pageCount: Int { entries.count }
