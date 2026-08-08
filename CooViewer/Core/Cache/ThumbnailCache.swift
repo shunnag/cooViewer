@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 /// ディスク側は Caches/jp.coo.cooViewer/Thumbnails/<bookKey>/<entryID>.png。
 /// bookKey は本のパス+更新日時+サイズ由来のため、本が更新されればキーごと変わる
 /// (旧キーのフォルダは起動時の trimDiskCache で回収する)。
+/// EN: Memory + disk thumbnail cache. bookKey derives from the book's
+/// EN: identity, so an updated book invalidates its whole key.
 actor ThumbnailCache {
     static let shared = ThumbnailCache()
     static let maxPixelSize = 200
@@ -14,6 +16,7 @@ actor ThumbnailCache {
     private var memory: [String: CGImage] = [:]
     private var order: [String] = []
     /// 200px サムネイル(1 枚 ≈ 160KB)換算で 64MB 相当
+    /// EN: About 64 MB worth of 200 px thumbnails.
     private let memoryCountLimit = 400
 
     private let diskRoot: URL
@@ -27,6 +30,9 @@ actor ThumbnailCache {
     /// 生成中の共有タスクと待ち手数(重複要求は同じ生成を待つ)。
     /// キャンセル/完了の通知は「自分の世代のタスク」に一致する場合のみ作用させ、
     /// キー再利用後の新しい生成を旧世代の遅延通知が壊さないようにする。
+    /// EN: One shared generation task per key plus a waiter count. Cancel and
+    /// EN: release notifications only apply when they match the registered
+    /// EN: task, so late notifications from an old generation are ignored.
     private struct InFlight {
         let task: Task<CGImage?, Never>
         var waiters: Int
@@ -35,6 +41,7 @@ actor ThumbnailCache {
     private var inFlight: [String: InFlight] = [:]
 
     /// メモリ → ディスク → 生成の順で取得する。
+    /// EN: Lookup order: memory cache, disk cache, then generate from source.
     func thumbnail(for entry: PageEntry, in source: any BookSource,
                    bookKey: String) async -> CGImage? {
         let key = bookKey + "/" + String(entry.id)
@@ -46,6 +53,7 @@ actor ThumbnailCache {
         let task: Task<CGImage?, Never>
         if let running = inFlight[key], !running.task.isCancelled {
             // 進行中の生成に合流(キャンセル済みには合流せず作り直す)
+            // EN: Join the running generation; never join a cancelled one.
             task = running.task
             inFlight[key]?.waiters += 1
         } else {
@@ -53,6 +61,7 @@ actor ThumbnailCache {
                 .appendingPathComponent("\(entry.id).png")
             // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
             // 文脈にも縛られない独立タスクとして生成する
+            // EN: Detached so a cancelled SwiftUI cell cannot kill the shared work.
             let generation = Task.detached(priority: .userInitiated) {
                 await Self.loadOrGenerate(entry: entry, source: source, fileURL: fileURL)
             }
@@ -66,6 +75,7 @@ actor ThumbnailCache {
             Task { await self.waiterCancelled(key: key, task: task) }
         }
         // キャンセルされた待ち手の分は waiterCancelled 側が処理済み
+        // EN: Cancelled waiters were already accounted for by waiterCancelled.
         if !Task.isCancelled {
             releaseWaiter(key: key, task: task)
         }
@@ -78,6 +88,8 @@ actor ThumbnailCache {
     /// 待ち手のキャンセル通知。同一世代のタスクで、かつ全員去っていたら
     /// 生成をキャンセルして登録を外す(実行前ならソース側の
     /// checkCancellation で脱落し、実行中なら完走してキャッシュに残る)。
+    /// EN: A waiter was cancelled; when the last one leaves, cancel the
+    /// EN: generation (not-yet-started work drops, running work completes).
     private func waiterCancelled(key: String, task: Task<CGImage?, Never>) {
         guard var entry = inFlight[key], entry.task == task else { return }
         entry.waiters -= 1
@@ -90,6 +102,7 @@ actor ThumbnailCache {
     }
 
     /// 通常完了した待ち手の登録解除(同一世代のタスクの場合のみ)
+    /// EN: Unregister a normally-completed waiter (same-generation task only).
     private func releaseWaiter(key: String, task: Task<CGImage?, Never>) {
         guard var entry = inFlight[key], entry.task == task else { return }
         entry.waiters -= 1
@@ -97,6 +110,7 @@ actor ThumbnailCache {
     }
 
     /// 古い本のディスクキャッシュを回収する(起動時に呼ぶ)。
+    /// EN: Reclaim disk thumbnails of books not opened recently (at launch).
     func trimDiskCache(olderThanDays days: Int) {
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
         guard let children = try? FileManager.default.contentsOfDirectory(
@@ -132,10 +146,14 @@ actor ThumbnailCache {
     }
 
     /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)
+    /// EN: Disk read, else generate from source and persist; touches no
+    /// EN: actor state so it can run detached.
     private static func loadOrGenerate(entry: PageEntry, source: any BookSource,
                                        fileURL: URL) async -> CGImage? {
         // 実行に入る前にキャンセル済みなら何もしない(遠いページの早期破棄)。
         // ソース呼び出しが始まった後は完走させてキャッシュに残す
+        // EN: Bail out only before starting; once source work begins, finish
+        // EN: and cache the result.
         guard !Task.isCancelled else { return nil }
         if let data = try? Data(contentsOf: fileURL),
            let image = try? ImageDecoding.decode(data) {

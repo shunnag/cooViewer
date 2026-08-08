@@ -3,6 +3,8 @@ import AppKit
 /// メニューバーをプログラムで構築する。
 /// 旧実装の xib 内メニュー(仕様書 §8)に相当するが、識別はローカライズ済み
 /// タイトル文字列の比較ではなくセレクタ/タグで行う。
+/// EN: Builds the menu bar in code. Items are identified by selector/tag,
+/// EN: never by comparing localized titles (a legacy fragility).
 @MainActor
 enum MainMenuBuilder {
     static func build() -> NSMenu {
@@ -74,6 +76,7 @@ enum MainMenuBuilder {
         let menu = NSMenu(title: String(localized: "View"))
 
         // 表示モード(仕様書 §3.2: ⌘1-4)
+        // EN: fit modes, bound to Cmd-1...4.
         let fitTitles: [(String, Int)] = [
             (String(localized: "Fit to Screen"), 0),
             (String(localized: "Fit to Screen Width"), 1),
@@ -89,6 +92,7 @@ enum MainMenuBuilder {
         menu.addItem(.separator())
 
         // 読み方向(仕様書 §4.4.1)
+        // EN: reading direction submenu.
         let readModeItem = menu.addItem(withTitle: String(localized: "Reading Direction"),
                                         action: nil, keyEquivalent: "")
         let readModeMenu = NSMenu()
@@ -108,6 +112,7 @@ enum MainMenuBuilder {
         readModeItem.submenu = readModeMenu
 
         // 補間(なし/低/既定/高。f キーの切替アクションもここから)
+        // EN: interpolation modes plus the toggle used by the default f key.
         let interpolationItem = menu.addItem(
             withTitle: String(localized: "Interpolation"), action: nil, keyEquivalent: "")
         let interpolationMenu = NSMenu()

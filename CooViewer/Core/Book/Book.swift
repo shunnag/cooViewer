@@ -6,6 +6,8 @@ import Foundation
 ///
 /// 旧実装の「nowPage の二重意味」(仕様書 §1.4)は持ち込まず、
 /// `currentIndex` は常に「表示中スプレッドの先頭ページ(読み順)」を指す。
+/// EN: One open book: sorted page list, current position, spread pairing,
+/// EN: page cache and prefetch. currentIndex is the first page of the spread.
 @MainActor
 final class Book {
     let source: any BookSource
@@ -19,9 +21,11 @@ final class Book {
 
     /// 表示用デコードの長辺上限(px)。原寸表示は fullResolutionImage(at:) を使う
     /// (設計書「キャッシュ・先読み設計」)。nil で無制限。
+    /// EN: Long-edge pixel cap for display decodes; nil means uncapped.
     var displayPixelCap: Int? = 4096
 
     /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)
+    /// EN: Identity key for disk caches; changes whenever the book content changes.
     let cacheKey: String
 
     private let cache: PageCache
@@ -31,11 +35,13 @@ final class Book {
 
     /// 先読みの幅(設計書「キャッシュ・先読み設計」)
     /// 先読み枚数(設定「高度」から注入される。既定は設計書 §3.1 の値)
+    /// EN: Prefetch window sizes, injected from the Advanced settings tab.
     var prefetchAhead = 12
     var prefetchBehind = 3
 
     /// 表示すべきページの組。images の nil は「読めないページ」
     /// (呼び出し側が壊れ画像プレースホルダを当てる。仕様書 §4.17)。
+    /// EN: Pages to show now; a nil image means the page failed to decode.
     struct Spread {
         let indices: [Int]
         let images: [CGImage?]
@@ -68,6 +74,8 @@ final class Book {
     /// 混ぜる: フォルダの本はサブフォルダ内だけの変更や同名上書きで親の
     /// 更新日時が変わらないため、ファイル情報だけでは古いサムネイルが残る。
     /// エントリ側のダイジェストは順序非依存(ソート・シャッフルの影響なし)
+    /// EN: Hash of file stat plus an order-independent digest of all entries,
+    /// EN: so folder books invalidate even when only subfolder contents change.
     private static func makeCacheKey(for url: URL, entries: [PageEntry]) -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let modified = (attributes?[.modificationDate] as? Date)?
@@ -115,6 +123,7 @@ final class Book {
     }
 
     /// 原寸表示・書き出し用: キャッシュと表示上限を介さずフル解像度でデコードする。
+    /// EN: Full-resolution decode that bypasses the cache and the display cap.
     func fullResolutionImage(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
         return try? await source.image(for: entries[index], maxPixelSize: nil)
@@ -129,6 +138,8 @@ final class Book {
     }
 
     /// 現在位置のスプレッドを確定する(仕様書 §4.2.4 の見開き判定を再現)。
+    /// EN: Builds the current 1- or 2-page spread: pair only when both pages
+    /// EN: are portrait-ish ("small") and spread mode is on.
     func currentSpread() async -> Spread {
         guard !entries.isEmpty else { return Spread(indices: [], images: []) }
         currentIndex = min(max(0, currentIndex), entries.count - 1)
@@ -200,6 +211,7 @@ final class Book {
     }
 
     /// 末尾へ。見開きなら最終 2 枚がペアになる場合 count-2 に着地(仕様書 §4.3.3)。
+    /// EN: Jump to the end; lands on count-2 when the last two pages pair up.
     func goToLast() async {
         guard !entries.isEmpty else { return }
         lastMoveForward = true
@@ -216,6 +228,7 @@ final class Book {
 
     /// パーセントジャンプ(旧 goToPar)。上限クランプなしの旧仕様を維持し、
     /// 100% 以上は hitEnd を返す(仕様書 §13.3)。
+    /// EN: Percent jump; values >= 100% report hitEnd (legacy behavior kept).
     func goToPercent(_ percent: Double) -> MoveResult {
         guard !entries.isEmpty else { return .hitEnd }
         let target = Int(Double(entries.count) * percent)
@@ -230,10 +243,18 @@ final class Book {
     }
 
     /// ソート変更。旧仕様通り先頭ページへ戻る(仕様書 §13.3 で「維持」判断)。
+    /// EN: Re-sorts the pages and resets to page 0, as the legacy app did.
     func setSortMode(_ mode: SortMode) {
         sortMode = mode
         entries = PageSorter.sorted(entries, mode: mode)
         currentIndex = 0
+    }
+
+    /// 先読みを打ち切る(本の切替時に旧本の I/O・デコードを止める)
+    /// EN: Cancel prefetch so a replaced book stops decoding in the background.
+    func cancelPrefetch() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
     }
 
     // MARK: - サブフォルダ移動(仕様書 §4.3.5: containerPath 単位で巡回)
@@ -256,6 +277,7 @@ final class Book {
             index = (index - 1 + entries.count) % entries.count
             if entries[index].containerPath != current {
                 // 前グループの先頭へ(仕様書 §4.3.5)
+                // EN: Walk back to the first page of the previous folder group.
                 let target = entries[index].containerPath
                 var first = index
                 while first > 0, entries[first - 1].containerPath == target { first -= 1 }
@@ -277,6 +299,8 @@ final class Book {
 
     // MARK: - 先読み(仕様書 §4.5 の置換。設計書 §3.1)
 
+    /// EN: Cancels the previous prefetch and warms the cache around the
+    /// EN: current position, direction-aware; parallel only for folder books.
     private func schedulePrefetch() {
         prefetchTask?.cancel()
         let ahead = (0..<max(0, prefetchAhead)).map { currentIndex + lastDisplayCount + $0 }

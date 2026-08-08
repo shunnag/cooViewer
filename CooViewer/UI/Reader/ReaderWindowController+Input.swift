@@ -2,6 +2,7 @@ import AppKit
 
 /// 入力イベント → バインディング解決 → アクション実行(仕様書 §5)。
 /// 旧 Controller (Input) カテゴリに相当する。
+/// EN: Input events -> binding resolution -> action dispatch.
 extension ReaderWindowController {
     private var fitModeNumber: Int { readerViewForInput.fitMode.rawValue }
     private var readsFromLeft: Bool { book?.readMode.readsFromLeft ?? false }
@@ -9,6 +10,7 @@ extension ReaderWindowController {
     // MARK: - キー(仕様書 §5.3, §5.5)
 
     /// 処理したら true。未割り当てなら false(ビープへ)。
+    /// EN: Returns true when handled; false falls through to the system beep.
     func handleKeyEvent(_ event: NSEvent) -> Bool {
         guard book != nil else { return false }
         guard !event.modifierFlags.contains(.command) else { return false }
@@ -40,6 +42,8 @@ extension ReaderWindowController {
         // 水平スワイプのページ送りはトグルで無効化できる。システム設定が
         // 「3 本指でスワイプ」の場合はスクロールではなく swipe イベントとして
         // この経路に届くため、2 本指(handleSwipeToTurn)と共通でここで見る
+        // EN: Swipe page-turn honors the toggle and optional direction flip;
+        // EN: three-finger system swipes arrive here as swipe events.
         var button = virtualButton
         if button == VirtualButton.swipeLeft || button == VirtualButton.swipeRight {
             guard settings.swipeToTurnPage else { return }
@@ -78,6 +82,7 @@ extension ReaderWindowController {
         if view.fitMode == .fitToScreen || mode == 3 {
             // 慣性スクロールでは連続でめくらない。閾値は旧実装同様
             // 行単位デルタ(deltaY)と比較する(仕様書 §4.16)
+            // EN: Ignore momentum so inertia never turns several pages at once.
             guard event.momentumPhase == [] else { return }
             wheelTurnPage(deltaY: event.deltaY)
             return
@@ -107,11 +112,25 @@ extension ReaderWindowController {
     /// ページを前後させる(既定オン。設定の「操作」でオフにできる)。
     /// 方向は既存のスワイプ仮想ボタン経由で解決するため、読み方向・カスタム
     /// バインディングに追従する。処理した(消費した)ら true。
+    /// EN: Two-finger horizontal scroll turns pages, mirroring the system
+    /// EN: page-swipe gesture; returns true when the event was consumed.
     private func handleSwipeToTurn(_ event: NSEvent) -> Bool {
         guard settings.swipeToTurnPage,
               NSEvent.isSwipeTrackingFromScrollEventsEnabled else { return false }
+        // 消費したスワイプの慣性イベントは、めくった後の新しいページを
+        // 揺らさないよう終端まで飲み込む
+        // EN: Swallow the consumed swipe's momentum so it doesn't scroll the
+        // EN: page we just turned to.
+        if event.momentumPhase != [] {
+            guard swipeConsumeMomentum else { return false }
+            if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
+                swipeConsumeMomentum = false
+            }
+            return true
+        }
         switch event.phase {
         case .began:
+            swipeConsumeMomentum = false
             swipeTrackingActive =
                 abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
             swipeTrackingDeltaX = event.scrollingDeltaX
@@ -123,6 +142,7 @@ extension ReaderWindowController {
         case .ended, .cancelled:
             guard swipeTrackingActive else { return false }
             swipeTrackingActive = false
+            swipeConsumeMomentum = true
             if abs(swipeTrackingDeltaX) > 60 {
                 let virtualButton = swipeTrackingDeltaX > 0
                     ? VirtualButton.swipeRight : VirtualButton.swipeLeft
@@ -148,12 +168,16 @@ extension ReaderWindowController {
     // MARK: - アクション実行
 
     /// leftHalf: 画面の左半分での操作か(positional 系のみ使用。nil=キー等)
+    /// EN: Dispatch one action; leftHalf tells positional actions which screen
+    /// EN: side was used (nil for keyboard input).
     func perform(_ action: ReaderAction, value: Double?, leftHalf: Bool?) {
         // 「left 側=次」は右→左読みのとき。左綴じでは鏡像(仕様書 §5.6)
         let isNextSide = (leftHalf ?? true) == !readsFromLeft
 
         // サムネイルオーバーレイ表示中はページ送りをサムネイルのめくりに転用
         // (旧来のページ単位閲覧 §4.8)。t(showThumbnail)は下でトグル=閉じる
+        // EN: While the thumbnail overlay is open, page-turn actions flip
+        // EN: thumbnail screens instead of book pages.
         if isThumbnailOverlayVisible {
             switch action {
             case .nextPage, .pageDownOrNextPage, .halfNextPage:
@@ -278,6 +302,7 @@ extension ReaderWindowController {
     }
 
     /// Go to Page(旧 pageMover の簡易版。完全版はマイルストーン 7)
+    /// EN: Simple page-number dialog (the in-view pageMover overlay is deferred).
     private func promptGoToPage() {
         guard let book else { return }
         let alert = NSAlert()

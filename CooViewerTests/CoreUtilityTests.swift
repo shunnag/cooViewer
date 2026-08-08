@@ -285,3 +285,15 @@ final class PageEntryDisplayTitleTests: XCTestCase {
         XCTAssertEqual(pdf.displayTitle(relativePath: true), "3")
     }
 }
+
+/// 分割書庫の拡張子判定(仕様書 §2.3 の番号系列)
+final class SplitVolumeExtensionTests: XCTestCase {
+    func testSplitVolumesAreArchives() {
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.r00")))
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.z01")))
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.7z.001")))
+        XCTAssertFalse(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.png")))
+        XCTAssertFalse(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.r1")))
+        XCTAssertFalse(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.abc")))
+    }
+}

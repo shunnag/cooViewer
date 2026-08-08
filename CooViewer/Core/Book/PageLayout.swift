@@ -3,6 +3,8 @@ import CoreGraphics
 /// 単ページ/見開きの強制指定(仕様書 §7.1 の marks)。
 /// 保存形式は旧実装と互換の 1 始まり文字列("N"=強制単ページ、"N-M"=強制見開き)。
 /// API は 0 始まりのページ index で受ける。
+/// EN: Forced single/pair page marks, stored as legacy 1-based strings
+/// EN: ("N" = force single, "N-M" = force pair); the API is 0-based.
 struct PageMarks: Sendable, Equatable {
     private(set) var raw: Set<String>
 
@@ -22,6 +24,7 @@ struct PageMarks: Sendable, Equatable {
     }
 
     /// index が強制ペアの一部か(仕様書 §4.2.1: "page-(page+1)" または "(page-1)-page")
+    /// EN: True when the page is either half of a forced pair mark.
     func forcesPairContaining(_ index: Int) -> Bool {
         raw.contains("\(index + 1)-\(index + 2)") || raw.contains("\(index)-\(index + 1)")
     }
@@ -42,6 +45,7 @@ struct PageMarks: Sendable, Equatable {
 }
 
 /// 見開き合成の判定ロジック(仕様書 §4.2.1)。
+/// EN: Decides whether a page is a spread candidate ("small").
 enum PageLayout {
     /// 既定のしきい値(SingleSetting = 740 → 縦横比 0.74)
     static let defaultSingleSetting = 740
@@ -49,6 +53,8 @@ enum PageLayout {
     /// ページが「小さい」=見開き候補か。
     /// 1. marks の強制指定が最優先
     /// 2. 幅/高さ が singleSetting/1000 以下(縦長)なら見開き候補
+    /// EN: Marks win first; otherwise portrait pages (aspect <= threshold)
+    /// EN: are pair candidates.
     static func isSmall(
         size: CGSize, index: Int, marks: PageMarks,
         singleSetting: Int = defaultSingleSetting

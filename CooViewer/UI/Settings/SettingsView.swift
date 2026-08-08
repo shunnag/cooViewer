@@ -3,6 +3,8 @@ import SwiftUI
 /// 設定画面(旧 PreferenceController の主要項目。仕様書 §6)。
 /// 旧実装の「Cancel で全ロールバック」方式と異なり即時反映(設計書 §2.4)。
 /// キー/マウス割り当てエディタは今後の課題(既定+旧設定の読み込みは動作する)。
+/// EN: Settings window. Unlike the legacy Cancel-rollback dialog, every change
+/// EN: applies immediately; the reader reacts via the defaults-change notification.
 struct SettingsView: View {
     @AppStorage("ReadMode") private var readMode = 0
     @AppStorage("SortMode") private var sortMode = 0
@@ -23,6 +25,7 @@ struct SettingsView: View {
     @State private var thumbnailColumns = ThumbnailGridSetting.read().columns
 
     // ページ番号/ページバー(仕様書 §3.4, §6.1。色と寸法は SettingsStore 経由)
+    // EN: page number / page bar options; colors and sizes go through SettingsStore.
     @AppStorage("ShowRelativePaths") private var showRelativePaths = false
     @AppStorage("PageNumPosition") private var pageNumPosition = 0
     @AppStorage("PageNumAutoHide") private var pageNumAutoHide = false
@@ -30,6 +33,12 @@ struct SettingsView: View {
     @AppStorage("PageNumFontSize") private var pageNumFontSize = 11.0
     @AppStorage("PageBarPosition") private var pageBarPosition = 0
     @AppStorage("PageBarAutoHide") private var pageBarAutoHide = false
+    // PageBarSize は辞書のため @AppStorage が使えない。@State を鏡にして
+    // onAppear で読み込み、変更時に SettingsStore へ書き戻す
+    // EN: Dict-backed PageBarSize can't use @AppStorage; mirror it in @State.
+    @State private var pageBarWidth = 200.0
+    @State private var pageBarHeight = 15.0
+    @State private var pageBarShowsThumbnail = true
 
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
@@ -56,6 +65,7 @@ struct SettingsView: View {
         SettingsStore.AdvancedDefault.thumbnailCacheDays
 
     /// 前回選択していたタブを記憶する(検証用に引数 -SettingsSelectedTab n でも指定可)
+    /// EN: Remembers the last tab; overridable with -SettingsSelectedTab for testing.
     @AppStorage("SettingsSelectedTab") private var selectedTab = 0
 
     var body: some View {
@@ -111,6 +121,7 @@ struct SettingsView: View {
                     Text(String(localized: "Never")).tag(2)
                 }
                 // 履歴から溢れた本のページも LastPages に残す(仕様書 §7.3)
+                // EN: keep last pages even for books that fell out of the history.
                 Toggle(String(localized: "Always remember the last page"),
                        isOn: $alwaysRememberLastPage)
                 Toggle(String(localized: "Open the last book at launch"), isOn: $openLastFolder)
@@ -133,6 +144,7 @@ struct SettingsView: View {
             Section(String(localized: "Page number")) {
                 Toggle(String(localized: "Show page number"), isOn: $showNumber)
                 // サムネイル一覧のフッターと原寸表示のタイトルにも効く
+                // EN: also affects the thumbnail footer and original-size title.
                 Picker(String(localized: "File name display:"),
                        selection: $showRelativePaths) {
                     Text(String(localized: "File name only")).tag(false)
@@ -173,7 +185,13 @@ struct SettingsView: View {
                             selection: colorBinding(\.pageBarReadColor),
                             supportsOpacity: true)
                 Toggle(String(localized: "Show a thumbnail while hovering"),
-                       isOn: pageBarShowThumbnailBinding)
+                       isOn: $pageBarShowsThumbnail)
+                    .onAppear {
+                        pageBarShowsThumbnail = SettingsStore.shared.pageBarShowThumbnail
+                    }
+                    .onChange(of: pageBarShowsThumbnail) {
+                        SettingsStore.shared.pageBarShowThumbnail = pageBarShowsThumbnail
+                    }
                 Toggle(String(localized: "Hide automatically (show on mouse move)"),
                        isOn: $pageBarAutoHide)
             }
@@ -255,6 +273,8 @@ struct SettingsView: View {
 
     /// 挙動チューニング(設計書 キャッシュ・先読み節)。マスタースイッチが
     /// OFF の間、SettingsStore 側は保存値を無視して既定値で動作する
+    /// EN: Behavior tuning. While the master switch is off, SettingsStore ignores
+    /// EN: the stored values and serves the built-in defaults.
     private var advancedPane: some View {
         Form {
             Section {
@@ -311,6 +331,7 @@ struct SettingsView: View {
     }
 
     /// 現在のパーセント指定が実メモリで何バイトになるかの表示
+    /// EN: Human-readable byte size for the selected memory percentage.
     private var advancedMemoryDisplay: String {
         let bytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
             / 100 * Int64(advMemoryPercent)
@@ -330,6 +351,7 @@ struct SettingsView: View {
     // MARK: - 部品
 
     /// ラベル+スライダー+現在値の 1 行(値は幅固定でガタつかないように)
+    /// EN: Label + slider + fixed-width value readout so the row doesn't jitter.
     private func sliderRow(
         label: String, value: Binding<Double>,
         range: ClosedRange<Double>, display: String
@@ -347,6 +369,7 @@ struct SettingsView: View {
     }
 
     /// 補間モードごとの処理内容(設計書 §5 描画品質)
+    /// EN: One-line explanation of what each interpolation mode does.
     private var interpolationDescription: String {
         switch interpolation {
         case 1: String(localized: "None: pixels are scaled as-is (for pixel art).")
@@ -359,6 +382,7 @@ struct SettingsView: View {
     }
 
     /// 4 隅の位置選択(仕様書 §6.1: 0=左上/1=右上/2=左下/3=右下)
+    /// EN: Four-corner position picker (0=TL / 1=TR / 2=BL / 3=BR).
     private func positionPicker(selection: Binding<Int>) -> some View {
         Picker(String(localized: "Position:"), selection: selection) {
             Text(String(localized: "Top left")).tag(0)
@@ -369,25 +393,24 @@ struct SettingsView: View {
     }
 
     private var pageBarSizeSteppers: some View {
-        let size = SettingsStore.shared.pageBarSize
-        return Group {
-            Stepper(String(localized: "Width: \(Int(size.width))"),
-                    value: pageBarSizeBinding(\.width), in: 50...1000, step: 25)
-            Stepper(String(localized: "Height: \(Int(size.height))"),
-                    value: pageBarSizeBinding(\.height), in: 6...40)
+        Group {
+            Stepper(String(localized: "Width: \(Int(pageBarWidth))"),
+                    value: $pageBarWidth, in: 50...1000, step: 25)
+                .onChange(of: pageBarWidth) { savePageBarSize() }
+            Stepper(String(localized: "Height: \(Int(pageBarHeight))"),
+                    value: $pageBarHeight, in: 6...40)
+                .onChange(of: pageBarHeight) { savePageBarSize() }
+        }
+        .onAppear {
+            let size = SettingsStore.shared.pageBarSize
+            pageBarWidth = Double(size.width)
+            pageBarHeight = Double(size.height)
         }
     }
 
-    private func pageBarSizeBinding(
-        _ keyPath: WritableKeyPath<CGSize, CGFloat>) -> Binding<Double> {
-        Binding(
-            get: { Double(SettingsStore.shared.pageBarSize[keyPath: keyPath]) },
-            set: {
-                var size = SettingsStore.shared.pageBarSize
-                size[keyPath: keyPath] = $0
-                SettingsStore.shared.pageBarSize = size
-            }
-        )
+    private func savePageBarSize() {
+        SettingsStore.shared.pageBarSize = CGSize(
+            width: pageBarWidth, height: pageBarHeight)
     }
 
     private func colorBinding(
@@ -395,13 +418,6 @@ struct SettingsView: View {
         Binding(
             get: { Color(nsColor: SettingsStore.shared[keyPath: keyPath]) },
             set: { SettingsStore.shared[keyPath: keyPath] = NSColor($0) }
-        )
-    }
-
-    private var pageBarShowThumbnailBinding: Binding<Bool> {
-        Binding(
-            get: { SettingsStore.shared.pageBarShowThumbnail },
-            set: { SettingsStore.shared.pageBarShowThumbnail = $0 }
         )
     }
 

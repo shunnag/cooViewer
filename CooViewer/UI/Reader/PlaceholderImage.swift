@@ -2,6 +2,7 @@ import AppKit
 
 /// 実行時に生成する多言語対応のプレースホルダ画像。
 /// 旧 broken.png(固定画像・文言なし)の置き換えで、理由をページ上に表示する。
+/// EN: Runtime-generated, localized placeholder page (replaces broken.png).
 @MainActor
 enum PlaceholderImage {
     /// 警告記号+メッセージ入りの縦長ページ画像を作る。

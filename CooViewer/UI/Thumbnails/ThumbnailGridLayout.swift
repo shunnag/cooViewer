@@ -1,6 +1,7 @@
 import Foundation
 
 /// 旧設定 Thumbnail{row, column} の読み書き(仕様書 §6.1)。1...8 に丸める
+/// EN: Reads/writes the legacy Thumbnail{row, column} dict, clamped to 1...8.
 enum ThumbnailGridSetting {
     static func read(from defaults: UserDefaults = .standard)
         -> (rows: Int, columns: Int) {
@@ -20,12 +21,17 @@ enum ThumbnailGridSetting {
 /// サムネイルグリッドの構成計算(仕様書 §4.8)。
 /// 「どのエントリをどのセルに束ね、何画面に分けるか」だけを扱う純粋な値型。
 /// 表示状態(現在画面・強調)はモデル側、描画はビュー側の責務。
+/// EN: Pure value type: decides how entries group into cells and split into
+/// EN: screens. Display state lives in the model, rendering in the view.
 struct ThumbnailGridLayout: Equatable {
     let rows: Int
     /// 実効列数(見開きモードでは設定値の半分。セルが 2 ページ幅になるため)
+    /// EN: Effective columns; halved in two-page mode since cells are twice as wide.
     let columns: Int
     /// セル単位のページ組。単ページは [n]、見開きモードは読み順の [n, n+1]
     /// (仕様書 §4.8 mangaMode)。しおり絞り込みは組む前に適用する。
+    /// EN: Page groups per cell: [n] single, [n, n+1] paired in reading order;
+    /// EN: the bookmark filter is applied before pairing.
     let cellGroups: [[Int]]
 
     init(entryCount: Int, bookmarkedPages: Set<Int>,
@@ -45,11 +51,13 @@ struct ThumbnailGridLayout: Equatable {
     var cellsPerScreen: Int { rows * columns }
 
     /// 総画面数(空の本でも 1 画面。ゼロ除算とページ送りの下限を単純化する)
+    /// EN: Total screens; at least 1 so paging math never divides by zero.
     var screenCount: Int {
         max(1, (cellGroups.count + cellsPerScreen - 1) / cellsPerScreen)
     }
 
     /// screen 画面目に載るセル組(範囲外は空)
+    /// EN: Cell groups shown on a screen; empty when out of range.
     func groups(onScreen screen: Int) -> [[Int]] {
         let start = screen * cellsPerScreen
         guard start >= 0, start < cellGroups.count else { return [] }
@@ -57,6 +65,7 @@ struct ThumbnailGridLayout: Equatable {
     }
 
     /// entryIndex のページを含む画面番号(絞り込みで非表示なら nil)
+    /// EN: Screen number containing the entry, or nil when filtered out.
     func screen(containing entryIndex: Int) -> Int? {
         guard let position = cellGroups.firstIndex(where: {
             $0.contains(entryIndex)
