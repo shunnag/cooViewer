@@ -38,6 +38,16 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   Xcode's Signing & Capabilities pane may inject this silently; remove it if it reappears.
 - Signing: Debug is ad-hoc (`CODE_SIGN_IDENTITY = "-"`), Release is manual Developer ID
   (team FQTM2788K5) with hardened runtime for notarized distribution.
+- Release & notarization (procedure verified for 2.0b1): bump `MARKETING_VERSION` /
+  `CURRENT_PROJECT_VERSION` in the pbxproj, then build with
+  `xcodebuild -configuration Release build CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
+  OTHER_CODE_SIGN_FLAGS="--timestamp"` — a plain Release build FAILS notarization
+  (no secure timestamp + leftover `get-task-allow` entitlement). Then:
+  `ditto -c -k --keepParent cooViewer.app out.zip` →
+  `xcrun notarytool submit out.zip --keychain-profile cooviewer --wait` →
+  `xcrun stapler staple cooViewer.app` → re-zip the STAPLED app for distribution →
+  verify `spctl -a -vv cooViewer.app` says "Notarized Developer ID". Tag `vX.YbN`
+  on master and publish via `gh release create` (beta = `--prerelease`).
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
   the PNG (add `--show-thumbnails` to capture the thumbnail overlay; `--show-bookmark-editor`
