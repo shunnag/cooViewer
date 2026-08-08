@@ -213,11 +213,19 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
-    /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)
-    /// EN: Push the Advanced-tab tunables into the open book.
+    /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)。
+    /// 高度設定 OFF のときの先読み深さは、置き場所の速度プロファイルの
+    /// 既定値(遅い媒体ほど深く)を使う。ON なら明示値を尊重する
+    /// EN: Push the Advanced-tab tunables into the open book. While the
+    /// EN: Advanced switch is off, prefetch depth follows the media profile.
     private func applyAdvancedSettings(to book: Book) {
-        book.prefetchAhead = settings.prefetchAheadCount
-        book.prefetchBehind = settings.prefetchBehindCount
+        if settings.advancedSettingsEnabled {
+            book.prefetchAhead = settings.prefetchAheadCount
+            book.prefetchBehind = settings.prefetchBehindCount
+        } else {
+            book.prefetchAhead = book.mediaProfile.defaultPrefetchAhead
+            book.prefetchBehind = book.mediaProfile.defaultPrefetchBehind
+        }
         book.displayPixelCap = settings.displayPixelCap
     }
 
@@ -382,8 +390,14 @@ final class ReaderWindowController: NSWindowController {
             self.book?.cancelPrefetch()  // 旧本のバックグラウンド I/O を止める
             saveCurrentBookState()
 
+            // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)
+            // EN: Probe the volume speed concurrently with opening the book.
+            async let mediaProfileTask = settings.adaptiveMediaTuning
+                ? MediaSpeedProbe.profile(for: bookURL)
+                : MediaProfile.unknown
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
                                            cacheByteLimit: settings.pageCacheByteLimit)
+            let mediaProfile = await mediaProfileTask
             guard generation == openGeneration else { return }
             // 画像ゼロのフォルダ(コレクションフォルダ)は中の最初の本を開く
             // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)。
@@ -401,6 +415,8 @@ final class ReaderWindowController: NSWindowController {
             }
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
+            book.mediaProfile = mediaProfile
+            await source.applyMediaProfile(mediaProfile)
             applyAdvancedSettings(to: book)
             self.book = book
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)

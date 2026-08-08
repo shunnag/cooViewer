@@ -37,6 +37,9 @@ extension ReaderWindowController {
 
     func hideThumbnailOverlay() {
         thumbnailHostingView?.isHidden = true
+        // 閉じた後のサムネイル先読みはページ表示と帯域を奪い合うだけなので止める
+        // EN: Stop the overlay prefetch; it would only compete with page loads.
+        thumbnailOverlayModel.pausePrefetch()
     }
 
     var isThumbnailOverlayVisible: Bool {

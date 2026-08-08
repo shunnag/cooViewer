@@ -48,6 +48,7 @@ struct SettingsView: View {
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
 
     // 高度な設定(SettingsStore.AdvancedDefault と同値の既定)
+    @AppStorage("AdaptiveMediaTuning") private var adaptiveMediaTuning = true
     @AppStorage("AdvancedSettingsEnabled") private var advancedEnabled = false
     @AppStorage("AdvancedMemoryPercent") private var advMemoryPercent =
         SettingsStore.AdvancedDefault.memoryPercent
@@ -277,6 +278,14 @@ struct SettingsView: View {
     /// EN: the stored values and serves the built-in defaults.
     private var advancedPane: some View {
         Form {
+            Section {
+                Toggle(String(localized: "Adapt to media speed (SSD / HDD / network)"),
+                       isOn: $adaptiveMediaTuning)
+                Text(String(localized:
+                    "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Takes effect when the next book is opened."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 Toggle(String(localized: "Use advanced settings"), isOn: $advancedEnabled)
                 Text(String(localized: "When off, the recommended defaults are used."))

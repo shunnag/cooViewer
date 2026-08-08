@@ -76,9 +76,13 @@ actor ThumbnailCache {
             let fileURL = diskRoot.appendingPathComponent(bookKey)
                 .appendingPathComponent("\(entry.id).png")
             // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
-            // 文脈にも縛られない独立タスクとして生成する
-            // EN: Detached so a cancelled SwiftUI cell cannot kill the shared work.
-            let generation = Task.detached(priority: .userInitiated) {
+            // 文脈にも縛られない独立タスクとして生成する。優先度は utility に
+            // 落とし、ソースの読み取りゲートで表示中ページの読み込み
+            // (userInitiated)に道を譲る(低速媒体でのページ表示停滞の防止)
+            // EN: Detached so a cancelled SwiftUI cell cannot kill the shared
+            // EN: work; utility priority yields the source read gate to
+            // EN: interactive page loads on slow media.
+            let generation = Task.detached(priority: .utility) {
                 await Self.loadOrGenerate(entry: entry, source: source, fileURL: fileURL)
             }
             task = generation
