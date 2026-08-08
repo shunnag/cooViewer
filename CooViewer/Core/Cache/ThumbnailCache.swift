@@ -4,11 +4,15 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// サムネイルのメモリ+ディスクキャッシュ(設計書「キャッシュ・先読み設計」)。
-/// ディスク側は Caches/jp.coo.cooViewer/Thumbnails/<bookKey>/<entryID>.png。
+/// ディスク側は Caches/jp.coo.cooViewer/Thumbnails-v2/<bookKey>/<entryID>.heic。
+/// v2: PNG → HEIC(Apple Silicon のハードウェアエンコード)で 1 枚あたり
+/// 約 1/5 のサイズになり、ディスク I/O と使用量を抑える。旧 Thumbnails/ は
+/// 起動時に丸ごと削除して作り直す(キャッシュは使い捨て可能なため)。
 /// bookKey は本のパス+更新日時+サイズ由来のため、本が更新されればキーごと変わる
 /// (旧キーのフォルダは起動時の trimDiskCache で回収する)。
-/// EN: Memory + disk thumbnail cache. bookKey derives from the book's
-/// EN: identity, so an updated book invalidates its whole key.
+/// EN: Memory + disk thumbnail cache, v2: HEIC (hardware-encoded, ~5x smaller
+/// EN: than PNG) under Thumbnails-v2; the legacy PNG cache is deleted at
+/// EN: startup and rebuilt. bookKey derives from the book's identity.
 actor ThumbnailCache {
     static let shared = ThumbnailCache()
     static let maxPixelSize = 200
@@ -35,7 +39,7 @@ actor ThumbnailCache {
     init(diskRoot: URL? = nil) {
         self.diskRoot = diskRoot ?? FileManager.default
             .urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("jp.coo.cooViewer/Thumbnails")
+            .appendingPathComponent("jp.coo.cooViewer/Thumbnails-v2")
     }
 
     /// 生成中の共有タスクと待ち手数(重複要求は同じ生成を待つ)。
@@ -74,7 +78,7 @@ actor ThumbnailCache {
             inFlight[key]?.waiters += 1
         } else {
             let fileURL = diskRoot.appendingPathComponent(bookKey)
-                .appendingPathComponent("\(entry.id).png")
+                .appendingPathComponent("\(entry.id).heic")
             // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
             // 文脈にも縛られない独立タスクとして生成する。優先度は utility に
             // 落とし、ソースの読み取りゲートで表示中ページの読み込み
@@ -132,6 +136,17 @@ actor ThumbnailCache {
         guard var entry = inFlight[key], entry.task == task else { return }
         entry.waiters -= 1
         inFlight[key] = entry.waiters <= 0 ? nil : entry
+    }
+
+    /// 旧形式(PNG)のキャッシュディレクトリを丸ごと削除する(起動時に一度)。
+    /// キャッシュは使い捨て可能なので変換はせず作り直す
+    /// EN: Delete the legacy PNG cache directory outright; caches are
+    /// EN: disposable, so we rebuild instead of converting.
+    nonisolated static func removeLegacyCacheDirectory() {
+        let legacy = FileManager.default
+            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("jp.coo.cooViewer/Thumbnails")
+        try? FileManager.default.removeItem(at: legacy)
     }
 
     /// 古い本のディスクキャッシュを回収する(起動時に呼ぶ)。
@@ -202,9 +217,12 @@ actor ThumbnailCache {
     private static func writeToDisk(_ image: CGImage, at fileURL: URL) {
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // HEIC(ハードウェアエンコード)。サムネイル画質は 0.75 で十分
+        // EN: HEIC hardware encode; 0.75 quality is plenty for thumbnails.
         guard let destination = CGImageDestinationCreateWithURL(
-            fileURL as CFURL, UTType.png.identifier as CFString, 1, nil) else { return }
-        CGImageDestinationAddImage(destination, image, nil)
+            fileURL as CFURL, UTType.heic.identifier as CFString, 1, nil) else { return }
+        let options = [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary
+        CGImageDestinationAddImage(destination, image, options)
         CGImageDestinationFinalize(destination)
     }
 }

@@ -213,6 +213,24 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
+    /// 実効メディアプロファイル: 自動調整の判定結果に、高度設定の明示値
+    /// (スプール方針の三択)を上書きしたもの。整合規則は「明示は自動に勝つ」。
+    /// 自動調整 OFF でも明示のスプール方針は効く
+    /// EN: Effective media profile: probe result (or unknown) with explicit
+    /// EN: Advanced-tab overrides applied. Explicit always beats automatic,
+    /// EN: and the spool policy works even with adaptive tuning off.
+    func effectiveMediaProfile(for url: URL) async -> MediaProfile {
+        var profile = settings.adaptiveMediaTuning
+            ? await MediaSpeedProbe.profile(for: url)
+            : MediaProfile.unknown
+        switch settings.archiveSpoolPolicy {
+        case .automatic: break
+        case .always: profile.spoolOverride = true
+        case .never: profile.spoolOverride = false
+        }
+        return profile
+    }
+
     /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)。
     /// 高度設定 OFF のときの先読み深さは、置き場所の速度プロファイルの
     /// 既定値(遅い媒体ほど深く)を使う。ON なら明示値を尊重する
@@ -392,9 +410,8 @@ final class ReaderWindowController: NSWindowController {
 
             // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)
             // EN: Probe the volume speed concurrently with opening the book.
-            async let mediaProfileTask = settings.adaptiveMediaTuning
-                ? MediaSpeedProbe.profile(for: bookURL)
-                : MediaProfile.unknown
+            let probeURL = bookURL
+            async let mediaProfileTask = effectiveMediaProfile(for: probeURL)
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
                                            cacheByteLimit: settings.pageCacheByteLimit)
             let mediaProfile = await mediaProfileTask
@@ -511,9 +528,9 @@ final class ReaderWindowController: NSWindowController {
     func nestedPasswordProvider() -> NestedPasswordProvider {
         { name, attempt in
             await MainActor.run {
-                // UI 検証用の隠しフック(モーダルを出さずキャンセル扱い)
+                // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱い)
                 if ProcessInfo.processInfo.environment[
-                    "COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil {
+                    "COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil || AutomatedRun.isXCTest {
                     return nil
                 }
                 let alert = NSAlert()
@@ -540,8 +557,9 @@ final class ReaderWindowController: NSWindowController {
     /// 旧実装の「正解かキャンセルまで無限に再表示」をやめ、3 回で打ち切る。
     /// EN: Password prompt with a 3-attempt limit (the legacy app retried forever).
     private func unlock(_ source: any BookSource) async -> UnlockResult {
-        // UI 検証用の隠しフック(モーダルを出さずキャンセル扱いにする)
-        if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil,
+        // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱いにする)
+        if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil
+            || AutomatedRun.isXCTest,
            await source.isEncrypted() {
             return .cancelled
         }
