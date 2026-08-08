@@ -1,3 +1,5 @@
+import AppKit
+import PDFKit
 import XCTest
 @testable import cooViewer
 
@@ -127,5 +129,100 @@ final class ArchiveSourceTests: XCTestCase {
             let entries = try await source.entries()
             XCTAssertEqual(entries.count, 0)
         }
+    }
+}
+
+/// 書庫内書庫・書庫内 PDF のネスト展開(仕様書 §2.4)
+final class NestedArchiveTests: XCTestCase {
+    private var tempDir: URL!
+
+    override func setUpWithError() throws {
+        tempDir = try TestFixtures.makeTempDir()
+    }
+
+    override func tearDownWithError() throws {
+        try FileManager.default.removeItem(at: tempDir)
+    }
+
+    private func writeZip(_ data: Data, name: String) throws -> URL {
+        let url = tempDir.appendingPathComponent(name)
+        try data.write(to: url)
+        return url
+    }
+
+    func testNestedArchivePagesJoinTheBook() async throws {
+        let png = TestFixtures.pngData(width: 10, height: 10)
+        let inner = TestFixtures.storedZip(entries: [
+            (Array("a.png".utf8), png),
+            (Array("b.png".utf8), png),
+        ])
+        let outer = TestFixtures.storedZip(entries: [
+            (Array("cover.png".utf8), png),
+            (Array("inner.zip".utf8), inner),
+        ])
+        let source = try ArchiveSource(url: writeZip(outer, name: "outer.zip"))
+        let entries = try await source.entries()
+
+        XCTAssertEqual(entries.map(\.pathInBook),
+                       ["cover.png", "inner.zip/a.png", "inner.zip/b.png"])
+        XCTAssertEqual(Set(entries.map(\.id)).count, entries.count, "id は一意")
+        // ネストしたページも展開・デコードできる
+        let image = try await source.image(for: entries[2], maxPixelSize: nil)
+        XCTAssertEqual(image.width, 10)
+    }
+
+    func testDoublyNestedArchiveIsExpanded() async throws {
+        let png = TestFixtures.pngData(width: 10, height: 10)
+        let innermost = TestFixtures.storedZip(entries: [(Array("deep.png".utf8), png)])
+        let middle = TestFixtures.storedZip(entries: [(Array("mid.zip".utf8), innermost)])
+        let outer = TestFixtures.storedZip(entries: [(Array("outer.zip".utf8), middle)])
+        let source = try ArchiveSource(url: writeZip(outer, name: "nested3.zip"))
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.map(\.pathInBook), ["outer.zip/mid.zip/deep.png"])
+        let image = try await source.image(for: entries[0], maxPixelSize: nil)
+        XCTAssertEqual(image.width, 10)
+    }
+
+    @MainActor
+    func testNestedPDFPagesJoinTheBook() async throws {
+        let png = TestFixtures.pngData(width: 40, height: 60)
+        guard let nsImage = NSImage(data: png),
+              let page = PDFPage(image: nsImage) else {
+            return XCTFail("PDF フィクスチャを生成できない")
+        }
+        let document = PDFDocument()
+        document.insert(page, at: 0)
+        guard let pdfData = document.dataRepresentation() else {
+            return XCTFail("PDF データ化に失敗")
+        }
+        let outer = TestFixtures.storedZip(entries: [
+            (Array("cover.png".utf8), TestFixtures.pngData(width: 10, height: 10)),
+            (Array("doc.pdf".utf8), pdfData),
+        ])
+        let source = try ArchiveSource(url: writeZip(outer, name: "withpdf.zip"))
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[1].pathInBook, "doc.pdf/000000")
+        let image = try await source.image(for: entries[1], maxPixelSize: nil)
+        XCTAssertGreaterThan(image.width, 0)
+    }
+
+    func testSpoolCoversOnlyOuterImages() async throws {
+        let png = TestFixtures.pngData(width: 10, height: 10)
+        let inner = TestFixtures.storedZip(entries: [(Array("a.png".utf8), png)])
+        let outer = TestFixtures.storedZip(entries: [
+            (Array("cover.png".utf8), png),
+            (Array("inner.zip".utf8), inner),
+        ])
+        let source = try ArchiveSource(url: writeZip(outer, name: "spool.zip"))
+        await source.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await source.waitForSpoolCompletion()
+        let spooled = await source.spooledEntryCount
+        XCTAssertEqual(spooled, 1, "ネスト分は展開済みなのでスプール対象は外側の画像のみ")
+        // スプール後もネストページは読める
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 2)
+        let image = try await source.image(for: entries[1], maxPixelSize: nil)
+        XCTAssertEqual(image.width, 10)
     }
 }
