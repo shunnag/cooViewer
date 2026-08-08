@@ -87,6 +87,27 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(image.width, 3)
     }
 
+    /// 画像も書庫/PDF もない暗号化書庫: 検証プローブがないので通す
+    /// (拒否すると正しいパスワードでも「試行超過」と誤表示されるため)
+    func testEncryptedZipWithNothingToVerifyAcceptsPassword() async throws {
+        let text = tempDir.appendingPathComponent("notes.txt")
+        try Data("hello".utf8).write(to: text)
+        let zipURL = tempDir.appendingPathComponent("textonly.zip")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.currentDirectoryURL = tempDir
+        process.arguments = ["-j", "-P", "hunter2", zipURL.path, text.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+
+        let source = try ArchiveSource(url: zipURL)
+        let accepted = await source.checkAndSetPassword("anything")
+        XCTAssertTrue(accepted)
+        let entries = try await source.entries()
+        XCTAssertTrue(entries.isEmpty, "本としては空(表示できる画像なし)")
+    }
+
     func testSpoolingServesPagesFromLocalFiles() async throws {
         let png = TestFixtures.pngData(width: 4, height: 6)
         let url = try writeZip(named: "book.zip", entries: [

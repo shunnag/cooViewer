@@ -92,6 +92,12 @@ struct ThumbnailOverlayView: View {
                     }
                 }
             }
+            // セル間の隙間クリックが背面の「クリックで閉じる」に抜けて、
+            // ジャンプせずオーバーレイだけ閉じる誤動作を防ぐ(グリッド内は不感帯)
+            // EN: Absorb clicks on the gaps between cells so a near-miss doesn't
+            // EN: fall through to the backdrop and close the overlay instead of jumping.
+            .contentShape(Rectangle())
+            .onTapGesture {}
         }
     }
 
@@ -141,8 +147,12 @@ private struct ThumbnailCell: View {
     }
 
     var body: some View {
-        VStack(spacing: 2) {
-            Button(action: onSelect) {
+        // 番号ラベルまで含めたセル全体を 1 つのボタンにする。番号や画像まわりの
+        // 余白をクリックしても確実にジャンプさせる(当たり判定の穴を作らない)
+        // EN: The whole cell — number label included — is one button, with an
+        // EN: explicit content shape so there are no dead spots inside the cell.
+        Button(action: onSelect) {
+            VStack(spacing: 2) {
                 HStack(spacing: 1) {
                     ForEach(pageIndices, id: \.self) { index in
                         if snapshot.entries.indices.contains(index) {
@@ -169,12 +179,13 @@ private struct ThumbnailCell: View {
                                                  : .clear,
                                 radius: 7)
                 }
+                Text(verbatim: pageIndices.map { String($0 + 1) }.joined(separator: "-"))
+                    .font(isCurrent ? .caption.bold() : .caption)
+                    .foregroundStyle(isCurrent ? Color.accentColor : .white.opacity(0.8))
             }
-            .buttonStyle(.plain)
-            Text(verbatim: pageIndices.map { String($0 + 1) }.joined(separator: "-"))
-                .font(isCurrent ? .caption.bold() : .caption)
-                .foregroundStyle(isCurrent ? Color.accentColor : .white.opacity(0.8))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -190,18 +201,27 @@ private struct ThumbnailPageImage: View {
 
     @AppStorage("ShowRelativePaths") private var showRelativePaths = false
 
-    /// 固定グリッドではセルのビュー実体がページめくり後も再利用されるため、
-    /// 画像がどのエントリのものかを併せて保持し、表示時に必ず照合する
-    /// (素早い往復でのキャンセル・遅延代入による空白/取り違えの防止)。
-    /// EN: Cells are structurally reused across screen flips, so remember which
-    /// EN: entry the image belongs to and verify the id before displaying it.
-    @State private var loaded: (id: Int, image: CGImage)?
+    /// 固定グリッドではセルのビュー実体がページめくり後も再利用され、
+    /// オーバーレイ自体も閉じても破棄されない(非表示になるだけ)ため、
+    /// 画像がどの本のどのエントリのものかを併せて保持し、表示時に必ず照合する。
+    /// キーは本の識別子込みにする: entry.id はどの本でも 0,1,2,… の連番で、
+    /// 本の切替後に同じマス目で衝突し、前の本のサムネイルが残ってしまうため
+    /// (素早い往復でのキャンセル・遅延代入による空白/取り違えの防止も兼ねる)。
+    /// EN: Cells are reused across screen flips AND across books (the overlay
+    /// EN: is only hidden, never torn down), so the identity must include the
+    /// EN: book key — bare entry ids are 0,1,2,… in every book and collide
+    /// EN: after a book switch, leaving the previous book's thumbnails on screen.
+    @State private var loaded: (key: String, image: CGImage)?
+
+    /// 本の識別子込みのページ識別キー(ThumbnailCache のキーと同じ形)
+    /// EN: Book-qualified page key (same shape as the ThumbnailCache key).
+    private var pageKey: String { bookKey + "/" + String(entry.id) }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 4)
                 .fill(.white.opacity(0.08))  // ロード中プレースホルダ
-            if let loaded, loaded.id == entry.id {
+            if let loaded, loaded.key == pageKey {
                 Image(decorative: loaded.image, scale: 1)
                     .resizable()
                     .scaledToFit()
@@ -216,16 +236,16 @@ private struct ThumbnailPageImage: View {
             }
         }
         .help(entry.displayTitle(relativePath: showRelativePaths))
-        .task(id: entry.id) {
+        .task(id: pageKey) {
             guard let source else { return }
-            // 常に読み直す(キャッシュ命中は即時)。id を添えて保存するため、
+            // 常に読み直す(キャッシュ命中は即時)。キーを添えて保存するため、
             // 旧タスクの遅延代入が現エントリの表示を汚すことはない
-            // EN: always reload (cache hits are instant); the stored id keeps a
+            // EN: always reload (cache hits are instant); the stored key keeps a
             // EN: late assignment from a stale task off the current entry.
-            let id = entry.id
+            let key = pageKey
             if let image = await ThumbnailCache.shared.thumbnail(
                 for: entry, in: source, bookKey: bookKey) {
-                loaded = (id, image)
+                loaded = (key, image)
             }
         }
     }

@@ -42,6 +42,23 @@ struct PageMarks: Sendable, Equatable {
         raw.remove("\(index + 1)-\(index + 2)")
         raw.remove("\(index)-\(index + 1)")
     }
+
+    /// 強制単ページの index 一覧(0 始まり。サムネイル一覧のペア判定用)
+    /// EN: 0-based indices forced single (thumbnail pairing).
+    var forcedSingleIndices: [Int] {
+        raw.compactMap { Int($0).map { $0 - 1 } }
+    }
+
+    /// 強制ペアに含まれる index 一覧(0 始まり、両片)
+    /// EN: 0-based indices that are either half of a forced pair.
+    var forcedPairMemberIndices: [Int] {
+        raw.flatMap { mark -> [Int] in
+            let parts = mark.split(separator: "-")
+            guard parts.count == 2,
+                  let first = Int(parts[0]), let second = Int(parts[1]) else { return [] }
+            return [first - 1, second - 1]
+        }
+    }
 }
 
 /// 見開き合成の判定ロジック(仕様書 §4.2.1)。

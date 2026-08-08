@@ -29,6 +29,16 @@ enum SupportedTypes {
         return ext.allSatisfy(\.isNumber)
     }
 
+    /// 分割書庫の「続き」ボリュームか(先頭巻 .001 以外の番号系列)。
+    /// フォルダ統合では先頭巻だけを本として扱い、続き巻は XADMaster の
+    /// スパン処理に任せる(続き巻を別の本として数えない)
+    /// EN: Continuation split volumes (anything but the leading .001); folder
+    /// EN: merging opens only the first volume and lets XADMaster span the rest.
+    static func isSplitVolumeContinuation(_ ext: String) -> Bool {
+        guard isSplitVolumeExtension(ext) else { return false }
+        return ext != "001"
+    }
+
     static func isPDF(_ url: URL) -> Bool {
         url.pathExtension.lowercased() == "pdf"
     }

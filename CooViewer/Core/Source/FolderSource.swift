@@ -9,6 +9,11 @@ import Foundation
 final class FolderSource: BookSource {
     let url: URL
     private let pageEntries: [PageEntry]
+    /// フォルダ内の書庫/PDF(旧実装はネスト COImageLoader として本に統合した。
+    /// 統合は NestedFolderSource が担い、本クラスは列挙のみ行う)
+    /// EN: Archives/PDFs inside the folder; NestedFolderSource merges their
+    /// EN: pages into the book (legacy nested-loader behavior).
+    let nestedBookCandidates: [(fileURL: URL, relativePath: String)]
 
     var supportsDateSort: Bool { true }
     var supportsParallelPageLoads: Bool { true }
@@ -67,8 +72,16 @@ final class FolderSource: BookSource {
 
         let basePath = url.standardizedFileURL.path
         var entries: [PageEntry] = []
+        var candidates: [(fileURL: URL, relativePath: String)] = []
         for fileURL in fileURLs {
-            guard SupportedTypes.isImageFile(fileURL.lastPathComponent) else { continue }
+            let isImage = SupportedTypes.isImageFile(fileURL.lastPathComponent)
+            // 分割書庫の続き巻(.002/.r00 等)は候補にしない(先頭巻から
+            // XADMaster がスパンする。続き巻を別の本として数えない)
+            // EN: Skip continuation split volumes; the first volume spans them.
+            let isBook = SupportedTypes.isBookFile(fileURL)
+                && !SupportedTypes.isSplitVolumeContinuation(
+                    fileURL.pathExtension.lowercased())
+            guard isImage || isBook else { continue }
             let values = try? fileURL.resourceValues(forKeys: Set(keys))
             if values?.isDirectory == true { continue }
 
@@ -77,16 +90,21 @@ final class FolderSource: BookSource {
                 ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
             if relativePath.hasPrefix("/") { relativePath.removeFirst() }
 
-            entries.append(PageEntry(
-                id: entries.count,
-                name: fileURL.lastPathComponent,
-                pathInBook: relativePath,
-                fileURL: fileURL,
-                creationDate: values?.creationDate,
-                modificationDate: values?.contentModificationDate
-            ))
+            if isImage {
+                entries.append(PageEntry(
+                    id: entries.count,
+                    name: fileURL.lastPathComponent,
+                    pathInBook: relativePath,
+                    fileURL: fileURL,
+                    creationDate: values?.creationDate,
+                    modificationDate: values?.contentModificationDate
+                ))
+            } else {
+                candidates.append((fileURL: fileURL, relativePath: relativePath))
+            }
         }
         self.pageEntries = entries
+        self.nestedBookCandidates = candidates
     }
 
     func entries() async throws -> [PageEntry] {

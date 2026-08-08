@@ -18,6 +18,31 @@ final class BookHistoryStore {
     struct Bookmark: Equatable, Sendable {
         var name: String
         var pageIndex: Int  // 0 始まり(保存形式は 1 始まり文字列。§7.1)
+        /// しおり先ページの本の中の相対パス(新規キー。旧アプリは無視する)。
+        /// エントリ列が変わったとき(ネスト展開の失敗・並び替え)の照合用
+        /// EN: In-book path of the target page (new key, ignored by the legacy
+        /// EN: app) used to re-resolve the index when the entry list changed.
+        var pagePath: String?
+
+        init(name: String, pageIndex: Int, pagePath: String? = nil) {
+            self.name = name
+            self.pageIndex = pageIndex
+            self.pagePath = pagePath
+        }
+    }
+
+    /// 保存済みインデックスを、保存時のページパスで照合し直す。
+    /// パスが一致すればそのまま、ずれていれば同じパスのページを探す。
+    /// 見つからなければ(パス未記録の旧データ含め)保存値をそのまま使う
+    /// EN: Re-resolve a saved index via its recorded in-book path; falls back
+    /// EN: to the raw index for legacy data without a path.
+    static func reconciledIndex(saved index: Int, pagePath: String?,
+                                entries: [PageEntry]) -> Int {
+        guard let pagePath else { return index }
+        if entries.indices.contains(index), entries[index].pathInBook == pagePath {
+            return index
+        }
+        return entries.firstIndex { $0.pathInBook == pagePath } ?? index
     }
 
     struct BookSettings {
@@ -57,12 +82,16 @@ final class BookHistoryStore {
         return entryPath(entry) == path
     }
 
-    private func makeEntry(path: String, page: Int?) -> [String: Any] {
+    private func makeEntry(path: String, page: Int?,
+                           pagePath: String? = nil) -> [String: Any] {
         var entry: [String: Any] = ["temppath": path]
         if let data = try? URL(fileURLWithPath: path).bookmarkData() {
             entry["bookmark"] = data
         }
         if let page { entry["page"] = page }
+        // ページ番号の照合用パス(新規キー "pagepath"。旧アプリは無視する)
+        // EN: In-book path hint for the page number (new key; legacy ignores it).
+        if let pagePath { entry["pagepath"] = pagePath }
         return entry
     }
 
@@ -97,40 +126,49 @@ final class BookHistoryStore {
         // 0 にリセットすると最終ページ復元が読み出す前に消えてしまう)
         // EN: Preserve the saved page; resetting to 0 here would destroy it
         // EN: before the restore logic gets a chance to read it.
-        let savedPage = recentItems.first { matches($0, path: path) }?["page"] as? Int
+        let existing = recentItems.first { matches($0, path: path) }
+        let savedPage = existing?["page"] as? Int
         var items = recentItems.filter { !matches($0, path: path) }
         while items.count >= limit { items.removeLast() }
-        items.insert(makeEntry(path: path, page: savedPage ?? 0), at: 0)
+        items.insert(makeEntry(path: path, page: savedPage ?? 0,
+                               pagePath: existing?["pagepath"] as? String), at: 0)
         recentItems = items
     }
 
-    /// 閉じる/切替時に表示中ページを記録(§7.2, §7.3)
-    /// EN: Records the current page on close/switch (recents + LastPages).
-    func noteClosed(path rawPath: String, pageIndex: Int) {
+    /// 閉じる/切替時に表示中ページを記録(§7.2, §7.3)。
+    /// pagePath はそのページの本の中の相対パス(照合用の新規キー)
+    /// EN: Records the current page on close/switch (recents + LastPages);
+    /// EN: pagePath is the page's in-book path used for re-resolution.
+    func noteClosed(path rawPath: String, pageIndex: Int, pagePath: String? = nil) {
         let path = normalize(rawPath)
         var items = recentItems.filter { !matches($0, path: path) }
-        items.insert(makeEntry(path: path, page: pageIndex), at: 0)
+        items.insert(makeEntry(path: path, page: pageIndex, pagePath: pagePath), at: 0)
         recentItems = items
 
         var lastPages = defaults.array(forKey: "LastPages") as? [[String: Any]] ?? []
         lastPages.removeAll { matches($0, path: path) }
         // page==0 は「復帰なし」と不可分のため保存しない(§7.3)
         if defaults.bool(forKey: "AlwaysRememberLastPage"), pageIndex > 0 {
-            lastPages.append(makeEntry(path: path, page: pageIndex))
+            lastPages.append(makeEntry(path: path, page: pageIndex, pagePath: pagePath))
         }
         defaults.set(lastPages, forKey: "LastPages")
     }
 
-    /// 保存ページの探索: RecentItems → LastPages の順(仕様書 §4.1.2 手順 7)
-    /// EN: Looks up the restore page: RecentItems first, then LastPages.
-    func savedPage(forPath rawPath: String) -> Int? {
+    /// 保存ページの探索: RecentItems → LastPages の順(仕様書 §4.1.2 手順 7)。
+    /// 照合用のページパス(あれば)も併せて返す
+    /// EN: Looks up the restore page (+ its path hint when recorded).
+    func savedPage(forPath rawPath: String) -> (page: Int, pagePath: String?)? {
         let path = normalize(rawPath)
         for entry in recentItems where entryPath(entry) == path {
-            if let page = entry["page"] as? Int, page > 0 { return page }
+            if let page = entry["page"] as? Int, page > 0 {
+                return (page, entry["pagepath"] as? String)
+            }
         }
         let lastPages = defaults.array(forKey: "LastPages") as? [[String: Any]] ?? []
         for entry in lastPages where entryPath(entry) == path {
-            if let page = entry["page"] as? Int, page > 0 { return page }
+            if let page = entry["page"] as? Int, page > 0 {
+                return (page, entry["pagepath"] as? String)
+            }
         }
         return nil
     }
@@ -163,7 +201,8 @@ final class BookHistoryStore {
         for dict in entry["bookmarks"] as? [[String: Any]] ?? [] {
             if let name = dict["name"] as? String,
                let pageString = dict["page"] as? String, let page = Int(pageString) {
-                bookmarks.append(Bookmark(name: name, pageIndex: page - 1))
+                bookmarks.append(Bookmark(name: name, pageIndex: page - 1,
+                                          pagePath: dict["path"] as? String))
             }
         }
         return BookSettings(
@@ -200,8 +239,15 @@ final class BookHistoryStore {
             if !settings.marks.legacyArray.isEmpty { entry["marks"] = settings.marks.legacyArray }
         }
         if !settings.bookmarks.isEmpty {
-            entry["bookmarks"] = settings.bookmarks.map {
-                ["name": $0.name, "page": String($0.pageIndex + 1)]  // 1 始まり文字列(§7.1)
+            entry["bookmarks"] = settings.bookmarks.map { bookmark in
+                var dict: [String: Any] = [
+                    "name": bookmark.name,
+                    "page": String(bookmark.pageIndex + 1),  // 1 始まり文字列(§7.1)
+                ]
+                // 照合用パス(新規キー "path"。旧アプリは無視する)
+                // EN: Path hint (new key; the legacy app ignores it).
+                if let pagePath = bookmark.pagePath { dict["path"] = pagePath }
+                return dict
             }
         }
         // alias+temppath 以外に何も無ければエントリごと削除(§7.1 の count>2 相当)
