@@ -161,3 +161,15 @@ extension BindingTests {
         XCTAssertEqual(encoded[0]["keyname"] as? String, "shift+tab")
     }
 }
+
+/// レビュー修正の回帰: 旧データの switchAction=0 は偽として読む
+final class LegacyFlagParsingTests: XCTestCase {
+    func testExplicitZeroSwitchActionIsFalse() {
+        let bindings = BindingConfiguration.keyBindings(fromLegacyArray: [
+            ["action": 0, "key": "j", "switchAction": 1],
+            ["action": 1, "key": "k", "switchAction": 0],
+            ["action": 2, "key": "l"],
+        ])
+        XCTAssertEqual(bindings.map(\.switchAction), [true, false, false])
+    }
+}

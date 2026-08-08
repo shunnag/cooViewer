@@ -3,6 +3,7 @@ import SwiftUI
 
 /// メインウインドウ。本のオープンフロー・表示更新・メニューアクションを担う。
 /// 旧 Controller の表示/ナビゲーション部分に相当する(仕様書 §4.1-4.3)。
+/// EN: Main window controller: opens books, drives display updates, handles menus.
 @MainActor
 final class ReaderWindowController: NSWindowController {
     private(set) var book: Book?
@@ -19,6 +20,8 @@ final class ReaderWindowController: NSWindowController {
     var readerViewForInput: ReaderView { readerView }
 
     private var cursorHideTimer: Timer?
+    /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
+    /// EN: Never removed; this controller lives for the app's lifetime.
     private var settingsObserver: (any NSObjectProtocol)?
     var slideshowTimer: Timer?
     /// 2 本指スワイプ(ページ間スワイプ)の追跡状態(+Input.swift)
@@ -52,6 +55,13 @@ final class ReaderWindowController: NSWindowController {
 
     /// 直近に表示したスプレッドのページ index 列(サムネイルの強調に使う)
     private(set) var lastSpreadIndices: [Int] = []
+
+    /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
+    /// EN: Generation counter for openBookFlow, mirroring displayGeneration.
+    private var openGeneration = 0
+    /// 消費したスワイプの慣性イベントを飲み込むあいだ true(+Input.swift)
+    /// EN: True while momentum events of a consumed swipe should be swallowed.
+    var swipeConsumeMomentum = false
 
     /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
     private var displayGeneration = 0
@@ -92,6 +102,8 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
+    /// EN: Apply settings immediately (no Cancel rollback), restyle indicators,
+    /// EN: and refresh the open book when relevant values changed.
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
         readerView.interpolation = settings.interpolation
@@ -115,11 +127,14 @@ final class ReaderWindowController: NSWindowController {
             }
             applyAdvancedSettings(to: book)
         }
+        readerView.singleSetting = settings.singleSetting
     }
 
     /// 位置(4 隅)と寸法の制約を設定から組み直す(仕様書 §6.1
     /// PageNumPosition/PageBarPosition: 0=左上/1=右上/2=左下/3=右下)。
     /// 同じ隅を指すときはページ番号とバーを縦に積む(旧既定の並び)
+    /// EN: Rebuild the corner/size constraints for the page number and page bar;
+    /// EN: when both share a corner they are stacked vertically.
     private func layoutPageIndicators() {
         guard let contentView = window?.contentView else { return }
         let numPosition = settings.pageNumPosition
@@ -170,6 +185,8 @@ final class ReaderWindowController: NSWindowController {
 
     /// ShowNumber/ShowPageBar と自動隠し状態から表示可否を決める
     /// (ページのない本では常に隠す)
+    /// EN: Resolve indicator visibility from the master toggles, auto-hide state,
+    /// EN: and whether the book has pages at all.
     private func updateIndicatorVisibility() {
         let hasPages = (book?.pageCount ?? 0) > 0
         pageLabel.isHidden = !hasPages || !settings.showNumber
@@ -179,6 +196,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 自動隠し: マウス移動で表示を復活させ、2 秒後に隠す(仕様書 §3.4)
+    /// EN: Auto-hide: reveal the indicators on mouse move, hide them 2 s later.
     func noteMouseMovedForIndicators() {
         guard settings.pageNumAutoHide || settings.pageBarAutoHide else { return }
         indicatorsTemporarilyVisible = true
@@ -196,6 +214,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)
+    /// EN: Push the Advanced-tab tunables into the open book.
     private func applyAdvancedSettings(to book: Book) {
         book.prefetchAhead = settings.prefetchAheadCount
         book.prefetchBehind = settings.prefetchBehindCount
@@ -285,6 +304,7 @@ final class ReaderWindowController: NSWindowController {
     // MARK: - 本を開く
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
+    /// EN: Open a book; a single image file opens its parent folder at that page.
     func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false) {
         Task {
             await openBookFlow(url: url, atPage: page, atLastPage: atLastPage)
@@ -296,9 +316,13 @@ final class ReaderWindowController: NSWindowController {
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
         showWindow(nil)
+        // 連打時は最後に要求された本だけを確定する(古いフローの巻き戻り防止)
+        // EN: Open-generation guard: only the newest open request may commit.
+        openGeneration += 1
+        let generation = openGeneration
 
         var bookURL = url
-        var initialPageName: String?
+        var initialPageURL: URL?
 
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
@@ -306,7 +330,7 @@ final class ReaderWindowController: NSWindowController {
         if !isDirectory.boolValue, !SupportedTypes.isBookFile(url),
            SupportedTypes.isImageFile(url.lastPathComponent) {
             bookURL = url.deletingLastPathComponent()
-            initialPageName = url.lastPathComponent
+            initialPageURL = url
         }
 
         do {
@@ -334,14 +358,20 @@ final class ReaderWindowController: NSWindowController {
                 return
             }
 
+            guard generation == openGeneration else { return }
+
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
             stopSlideshow()
+            self.book?.cancelPrefetch()  // 旧本のバックグラウンド I/O を止める
             saveCurrentBookState()
 
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
                                            cacheByteLimit: settings.pageCacheByteLimit)
+            guard generation == openGeneration else { return }
             // 画像ゼロのフォルダ(コレクションフォルダ)は中の最初の本を開く
             // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)
+            // EN: A folder with no images but containing books opens its first
+            // EN: inner book instead of showing an empty placeholder.
             if book.pageCount == 0, autoOpenDepth < 4,
                let inner = Self.firstInnerBook(in: bookURL) {
                 await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
@@ -352,17 +382,29 @@ final class ReaderWindowController: NSWindowController {
             book.singleSetting = settings.singleSetting
             applyAdvancedSettings(to: book)
             self.book = book
+            // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
+            // EN: Namespace the resample cache by book identity.
+            readerView.resampleKeyPrefix = book.cacheKey
 
             // 書庫のローカルスプール等を開始(パスワード解除後。設計書 キャッシュ節)
             await source.beginBackgroundPreparation(
                 spoolSizeLimit: settings.archiveSpoolSizeLimit)
 
-            let skipPageRestore = initialPageName != nil || atPage != nil || atLastPage
+            let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
             await restoreBookState(for: book, skipPageRestore: skipPageRestore)
 
-            if let initialPageName,
-               let index = book.entries.firstIndex(where: { $0.name == initialPageName }) {
-                book.goTo(index: index)
+            // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
+            // (サブフォルダ読み込みで同名ファイルがあっても正しいページへ)
+            // EN: Prefer matching by file URL; name is only the fallback.
+            if let initialPageURL {
+                let targetPath = initialPageURL.standardizedFileURL.path
+                if let index = book.entries.firstIndex(where: {
+                    $0.fileURL?.standardizedFileURL.path == targetPath
+                }) ?? book.entries.firstIndex(where: {
+                    $0.name == initialPageURL.lastPathComponent
+                }) {
+                    book.goTo(index: index)
+                }
             } else if let atPage {
                 book.goTo(index: atPage)
             } else if atLastPage {
@@ -390,6 +432,8 @@ final class ReaderWindowController: NSWindowController {
     /// 開けなかった本(パスワードのキャンセル/試行超過)を「現在の本」として
     /// 空の状態で表示する。これによりページ送りや「次の本」でこの本を
     /// 飛ばして先へ進める。履歴・設定には記録しない。
+    /// EN: Show a locked/unopenable book as an empty placeholder so navigation
+    /// EN: can still skip past it; nothing is recorded to history.
     private func presentLockedPlaceholder(source: any BookSource, reason: String) {
         stopSlideshow()
         saveCurrentBookState()
@@ -421,6 +465,7 @@ final class ReaderWindowController: NSWindowController {
 
     /// パスワード書庫のロック解除(仕様書 §4.1.3)。
     /// 旧実装の「正解かキャンセルまで無限に再表示」をやめ、3 回で打ち切る。
+    /// EN: Password prompt with a 3-attempt limit (the legacy app retried forever).
     private func unlock(_ source: any BookSource) async -> UnlockResult {
         // UI 検証用の隠しフック(モーダルを出さずキャンセル扱いにする)
         if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil,
@@ -451,6 +496,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 画像ゼロのフォルダ内にある最初の「本」(名前順)。フォルダ以外は nil
+    /// EN: First book-like item (by name) inside an image-less folder.
     private static func firstInnerBook(in url: URL) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
@@ -476,6 +522,7 @@ final class ReaderWindowController: NSWindowController {
         let generation = displayGeneration
         let spread = await book.currentSpread()
         // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
+        // EN: Drop this result if a newer refresh started while we awaited.
         guard generation == displayGeneration, book === self.book else { return }
 
         if spread.indices.isEmpty {
@@ -528,6 +575,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)
+    /// EN: Start GIF/WebP-style playback for animated pages in the spread.
     private func startAnimationsIfNeeded(spread: Book.Spread) {
         guard settings.playAnimatedImages, let book else { return }
         let animatable: Set<String> = ["gif", "png", "apng", "webp", "heics", "avif", "avifs"]
@@ -548,6 +596,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// ページバーホバー: ページ番号+サムネイルの吹き出し(仕様書 §3.4)
+    /// EN: Position the hover bubble and lazily load its page thumbnail.
     private func handlePageBarHover(_ info: (x: CGFloat, fraction: Double)?) {
         guard let info, let book, book.pageCount > 0,
               let contentView = window?.contentView else {
@@ -582,7 +631,7 @@ final class ReaderWindowController: NSWindowController {
             guard let self else { return }
             if let thumbnail = await ThumbnailCache.shared.thumbnail(
                 for: entry, in: book.source, bookKey: book.cacheKey),
-               self.bubbleHoverIndex == index {
+               self.bubbleHoverIndex == index, book === self.book {
                 self.bubbleImageView.image = NSImage(
                     cgImage: thumbnail,
                     size: NSSize(width: thumbnail.width, height: thumbnail.height))
@@ -591,6 +640,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する
+    /// EN: Centered explanation for empty/unopenable books, with a next-step hint.
     private func showBookStatusMessage(_ reason: String) {
         statusLabel.stringValue = reason + "\n"
             + String(localized: "Turn the page or use Next Book to continue.")
@@ -609,6 +659,7 @@ final class ReaderWindowController: NSWindowController {
         let numbers = shown.count == 2 ? "\(shown[0])-\(shown[1])" : (shown.first ?? "-")
         // 旧実装のページ番号表示は「#N-M/総数 (ファイル名 / ファイル名)」と
         // 表示中のファイル名を併記していた(仕様書 §3.4)。読み順に並べる
+        // EN: Legacy format: page numbers plus displayed file names in reading order.
         let relativePaths = settings.showRelativePaths
         let names = spread.indices.compactMap { index in
             book.entries.indices.contains(index)
@@ -651,6 +702,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 巻末超え(仕様書 §4.3.4)
+    /// EN: End-of-book behavior per the LoopCheck setting (loop / next book / stop).
     func handleEndOfBook() {
         guard let book else { return }
         // 開けなかった本(空)はループ設定に関わらずスキップして次へ

@@ -14,24 +14,33 @@ import XADMaster
 /// 書庫内の書庫/PDF は一時領域へ展開して**子ソース**(ArchiveSource/PDFSource)
 /// を生成し、そのページを同じ本に取り込む(仕様書 §2.4 のネスト COImageLoader
 /// 相当)。ページの相対パスは「書庫内パス/子の相対パス」になる。
+/// EN: Reads an archive as a book via XADMaster, serialized by this actor.
+/// EN: Pages are spooled to local temp storage in the background, and nested
+/// EN: archives/PDFs are expanded into child sources joined into the same book.
 actor ArchiveSource: BookSource {
     nonisolated let url: URL
     private let archive: XADArchive
     /// ネスト段数(0=最上位)。zip 爆弾対策で 3 段目以降は展開しない
+    /// EN: Nesting level (0 = top); expansion stops after three levels.
     private let nestingDepth: Int
 
     /// 最上位書庫の画像エントリ(id=書庫エントリ番号。init で確定)
+    /// EN: Image entries of this archive itself (id = archive entry index).
     private let outerImages: [PageEntry]
     /// ネスト候補(書庫/PDF エントリ。entries() で展開する)
+    /// EN: Archive/PDF entries to expand lazily in entries().
     private let nestedCandidates: [(index: Int32, path: String)]
 
     /// ページの所在: 最上位書庫のエントリ番号、または子ソースのページ
+    /// EN: Where a page lives: this archive, or a page of a child source.
     private enum PageLocation {
         case outer(entryIndex: Int32)
         case child(sourceIndex: Int, entry: PageEntry)
     }
 
-    private var built: [PageEntry]?
+    /// entries() の組み立て結果(actor 再入で二重構築しないよう Task で共有)
+    /// EN: Memoized build task so reentrant callers share one assembly pass.
+    private var buildTask: Task<[PageEntry], Never>?
     private var locations: [Int: PageLocation] = [:]
     private var children: [any BookSource] = []
     private var nestedRoot: URL?
@@ -42,15 +51,19 @@ actor ArchiveSource: BookSource {
     private var spoolTask: Task<Void, Never>?
 
     /// スプールする合計展開サイズの上限(これを超える書庫はオンデマンドのみ)
+    /// EN: Total-size cap for spooling; larger archives stay on-demand only.
     static let defaultSpoolSizeLimit: Int64 = 4 << 30
 
     /// ネストページの id 基数(最上位のエントリ番号と衝突しない大きさ)
+    /// EN: ID stride for nested pages, chosen to avoid outer-index collisions.
     private static let nestedIDStride = 1_000_000
 
     nonisolated var supportsDateSort: Bool { false }
 
     /// スプールの置き場所。<pid>-<uuid> のサブディレクトリを掘る
     /// (起動時掃除で生存プロセスのものを残すため。仕様書 §4.17 の残骸問題への対策)。
+    /// EN: Spool root; pid-tagged subdirectories let startup cleanup keep
+    /// EN: directories that belong to still-running processes.
     nonisolated static func spoolRoot() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("cooViewer-spool")
     }
@@ -65,6 +78,7 @@ actor ArchiveSource: BookSource {
 
         // 旧実装(XADWrapper)同様、ディレクトリとサイズ 0 のエントリを除外する。
         // 加えて画像以外のファイルと macOS メタデータ(__MACOSX/、._*)も除外する。
+        // EN: Skip directories, zero-size entries, non-images and macOS metadata.
         var images: [PageEntry] = []
         var candidates: [(index: Int32, path: String)] = []
         for index in 0..<archive.numberOfEntries() {
@@ -76,6 +90,11 @@ actor ArchiveSource: BookSource {
             guard !lastComponent.hasPrefix("."), !name.hasPrefix("__MACOSX") else {
                 continue
             }
+            // ネスト id 域(1M 刻み)との衝突を防ぐ。100 万エントリ超の書庫は
+            // 病的ケースなので以降を切り捨てる
+            // EN: Guard the nested-id ranges; archives with 1M+ entries are
+            // EN: pathological and get truncated here.
+            guard index < Int32(Self.nestedIDStride) else { break }
             if SupportedTypes.isImageFile(lastComponent) {
                 images.append(PageEntry(
                     id: Int(index),
@@ -110,10 +129,17 @@ actor ArchiveSource: BookSource {
         await buildIfNeeded()
     }
 
-    /// 最上位の画像とネスト展開したページを、書庫の列挙順で 1 つの本に組む
     @discardableResult
     private func buildIfNeeded() async -> [PageEntry] {
-        if let built { return built }
+        if let buildTask { return await buildTask.value }
+        let task = Task { await build() }
+        buildTask = task
+        return await task.value
+    }
+
+    /// 最上位の画像とネスト展開したページを、書庫の列挙順で 1 つの本に組む
+    /// EN: Assemble outer images and expanded nested pages in archive order.
+    private func build() async -> [PageEntry] {
         var result: [PageEntry] = []
         var imageIterator = outerImages.makeIterator()
         var pendingImage = imageIterator.next()
@@ -131,12 +157,13 @@ actor ArchiveSource: BookSource {
             candidateOrdinal += 1
             await appendNestedPages(of: candidate, ordinal: candidateOrdinal, into: &result)
         }
-        built = result
         return result
     }
 
     /// ネスト候補 1 つを一時領域へ展開し、子ソースのページを取り込む。
     /// 失敗(壊れた書庫等)はそのエントリを黙って飛ばす(§4.17 の方針)
+    /// EN: Extract one nested book and merge its pages; failures are skipped
+    /// EN: silently, matching the legacy error policy.
     private func appendNestedPages(of candidate: (index: Int32, path: String),
                                    ordinal: Int, into result: inout [PageEntry]) async {
         guard let fileURL = extractNestedFile(candidate) else { return }
@@ -173,6 +200,7 @@ actor ArchiveSource: BookSource {
     }
 
     /// ネスト候補のファイルを一時領域へ書き出す(<pid>-<uuid>-nested/)
+    /// EN: Write the nested archive/PDF out to local temp storage.
     private func extractNestedFile(_ candidate: (index: Int32, path: String)) -> URL? {
         if nestedRoot == nil {
             let directory = Self.spoolRoot().appendingPathComponent(
@@ -196,12 +224,14 @@ actor ArchiveSource: BookSource {
         case .outer(let index):
             return spooledData(for: entry.id) ?? archive.contents(ofEntry: index)
         case nil:
-            return spooledData(for: entry.id) ?? archive.contents(ofEntry: Int32(entry.id))
+            guard let index = Int32(exactly: entry.id) else { return nil }
+            return spooledData(for: entry.id) ?? archive.contents(ofEntry: index)
         }
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
+        // EN: Abandoned requests bail out here before touching the archive.
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return try await children[sourceIndex].image(
                 for: childEntry, maxPixelSize: maxPixelSize)
@@ -209,7 +239,8 @@ actor ArchiveSource: BookSource {
         let data: Data
         if let spooled = spooledData(for: entry.id) {
             data = spooled
-        } else if let extracted = archive.contents(ofEntry: Int32(entry.id)) {
+        } else if let index = Int32(exactly: entry.id),
+                  let extracted = archive.contents(ofEntry: index) {
             data = extracted
         } else {
             throw BookSourceError.pageLoadFailed(entry.name)
@@ -218,6 +249,7 @@ actor ArchiveSource: BookSource {
     }
 
     /// ルーペ用。ネストした PDF はベクトルから倍率連動で描き直せるよう子へ委譲する
+    /// EN: Loupe path; delegates to children so nested PDFs re-rasterize sharply.
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return try await children[sourceIndex].loupeImage(
@@ -232,6 +264,8 @@ actor ArchiveSource: BookSource {
 
     /// パスワードを設定し、先頭エントリの展開を試して検証する(仕様書 §4.1.3)。
     /// 画像がなくネスト書庫だけの本でも検証できるよう候補もプローブに使う。
+    /// EN: Set and verify the password by test-extracting the first entry;
+    /// EN: nested-only books probe the first nested candidate instead.
     func checkAndSetPassword(_ password: String) async -> Bool {
         let probe = outerImages.first.map { Int32($0.id) } ?? nestedCandidates.first?.index
         guard let probe else { return false }
@@ -247,8 +281,11 @@ actor ArchiveSource: BookSource {
     /// 書庫順=エントリ順の逐次展開なので、ネットワーク越しでも solid 書庫でも
     /// 最速のアクセスパターンになる。展開中のページ要求は従来経路で応える。
     /// ネスト分は展開時点でローカルファイルになっているため対象外。
+    /// EN: Start spooling all outer pages to local temp; sequential archive
+    /// EN: order is the fastest pattern for network drives and solid archives.
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
         await buildIfNeeded()  // ネスト展開もこの時点で済ませる
+        // EN: Nested expansion also happens here (already local afterwards).
         beginSpooling(sizeLimit: spoolSizeLimit)
     }
 
@@ -272,12 +309,14 @@ actor ArchiveSource: BookSource {
                 if Task.isCancelled { return }
                 await self?.spoolEntry(id)
                 // 表示中のページ要求が割り込めるよう 1 エントリごとに譲る
+                // EN: Yield after each entry so on-screen page loads can cut in.
                 await Task.yield()
             }
         }
     }
 
     /// スプール完了を待つ(テスト・診断用)
+    /// EN: Await spool completion (tests/diagnostics only).
     func waitForSpoolCompletion() async {
         await spoolTask?.value
     }

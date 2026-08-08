@@ -1,6 +1,7 @@
 /// 割り当て可能なアクション(仕様書 §5.5 キー 0-52 / §5.6 マウス 0-64)。
 /// 旧実装の整数は「移行用の対応表」としてのみ使い、内部では型で扱う。
 /// Apple Remote 専用の経路は近代化で削除(設計書 §2.2)。
+/// EN: Typed action catalog; the legacy integers exist only for migration.
 enum ReaderAction: Equatable, Sendable {
     case nextPage, previousPage, halfNextPage, halfPreviousPage
     case goToLastPage, goToFirstPage
@@ -46,6 +47,7 @@ enum ReaderAction: Equatable, Sendable {
 
 extension ReaderAction {
     /// 旧 KeyArray の action 番号 → アクション(仕様書 §5.5)
+    /// EN: Legacy KeyArray action number -> typed action.
     static func fromLegacyKeyNumber(_ number: Int) -> ReaderAction? {
         switch number {
         case 0: .nextPage
@@ -109,6 +111,8 @@ extension ReaderAction {
     /// 旧 MouseArray の action 番号 → アクション(仕様書 §5.6)。
     /// - 5 のフォールスルーバグは再現しない(§13.3 で「修正」判断)。
     /// - 28/29 は UI ラベルが実挙動と左右逆だったため、**実挙動**を正として読み替える(§13.3)。
+    /// EN: Legacy MouseArray number -> action; 28/29 follow the legacy app's
+    /// EN: actual behavior, not its mislabeled UI.
     static func fromLegacyMouseNumber(_ number: Int) -> ReaderAction? {
         switch number {
         case 0: .positionalNextPrevPage
@@ -181,6 +185,7 @@ extension ReaderAction {
     }
 
     /// switchAction の入替ペア(仕様書 §5.4)。左綴じ時に対称アクションへ入替える。
+    /// EN: Mirror-swap pairs applied when reading left-to-right.
     static func switchedLegacyKeyNumber(_ number: Int) -> Int {
         switch number {
         case 0: 1

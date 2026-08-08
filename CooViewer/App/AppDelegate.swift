@@ -5,6 +5,9 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var readerWindowController: ReaderWindowController?
     private var settingsWindow: NSWindow?
+    /// 検証用スナップショットの一時ウインドウ(設定ウインドウとは別管理)
+    /// EN: Debug-only preview window; must never shadow the settings window.
+    private var debugPreviewWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         SettingsStore.shared.registerDefaults()
@@ -21,6 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 起動時のキャッシュ掃除: 生存していないプロセスのスプール残骸
     /// (仕様書 §4.17 の temp 残り問題への対策)と古いサムネイルを回収する。
+    /// EN: Startup cleanup: delete spool leftovers of dead processes and trim
+    /// EN: thumbnails older than the configured retention.
     private func cleanUpCaches() {
         Task.detached(priority: .utility) {
             let root = ArchiveSource.spoolRoot()
@@ -29,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for child in children {
                     let pid = child.lastPathComponent.split(separator: "-").first
                         .flatMap { Int32($0) }
+                    // EN: keep directories owned by still-running processes.
                     if let pid, kill(pid, 0) == 0 { continue }  // 生存プロセスの分は残す
                     try? FileManager.default.removeItem(at: child)
                 }
@@ -41,6 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 動作検証用の隠し引数(スクリーンショット権限なしで描画結果を確認するため):
     /// --open <path> で本を開き、--snapshot <path> で 2 秒後に contentView を
     /// PNG 出力して終了する。
+    /// EN: Hidden verification flags (--open / --snapshot / --show-thumbnails /
+    /// EN: --show-bookmark-editor / --snapshot-settings) used to check rendering
+    /// EN: without screen-recording permission.
     private func handleDebugArguments() {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count {
@@ -48,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if SettingsStore.shared.openLastFolder,
                   let recent = BookHistoryStore.shared.mostRecentBook() {
             // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)
+            // EN: reopen the most recent book on launch (OpenLastFolder, default on).
             readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
         }
         if arguments.contains("--show-thumbnails") {
@@ -60,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if arguments.contains("--show-bookmark-editor") {
             // 検証用: シートではなく通常ウインドウで表示する(シートの
             // NSHostingView は layer.render/cacheDisplay のどちらでも写らないため)
+            // EN: preview in a plain window; sheet-hosted SwiftUI content does not
+            // EN: render into offline snapshots.
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))
                 guard let book = self.readerWindowController?.book else { return }
@@ -72,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         pageCount: book.pageCount,
                         onSave: { _ in }, onClose: {})))
                 window.makeKeyAndOrderFront(nil)
-                self.settingsWindow = window  // --snapshot-settings と同じ経路で撮る
+                self.debugPreviewWindow = window
             }
         }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
@@ -80,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
                 // しおり編集シートが開いていればそちらを撮る(NSHostingView は反転補正)
+                // EN: capture the bookmark sheet when open, else the reader view.
                 if let sheet = self.readerWindowController?.bookmarkEditorWindow {
                     self.writeCachedSnapshot(of: sheet.contentView, to: path)
                 } else {
@@ -95,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
                 // NSHostingView 配下は layer.render で上下反転するため補正する
+                // EN: layer.render draws NSHostingView trees upside down; compensate.
                 self.writeSnapshot(of: self.settingsWindow?.contentView, to: path,
                                    flipped: true)
                 NSApp.terminate(nil)
@@ -103,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// draw(_:) ベースのビュー(SwiftUI シート等)は cacheDisplay で撮る
+    /// EN: cacheDisplay-based capture for views that draw via draw(_:).
     private func writeCachedSnapshot(of targetView: NSView?, to path: String) {
         guard let view = targetView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
@@ -111,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .write(to: URL(fileURLWithPath: path))
     }
 
+    /// EN: Renders a view's layer tree into a 2x PNG (no screen recording needed).
     private func writeSnapshot(of targetView: NSView?, to path: String, flipped: Bool = false) {
         guard let view = targetView, let layer = view.layer else { return }
         let size = view.bounds.size
@@ -142,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Dock アイコンクリック等での再オープン(ウインドウを閉じた後の再表示)
+    /// EN: Re-show the reader window when the Dock icon is clicked after close.
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
         if !flag {

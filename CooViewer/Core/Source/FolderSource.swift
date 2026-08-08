@@ -4,6 +4,8 @@ import Foundation
 /// フォルダを本として読む(仕様書 §4.1)。
 /// 内容は初期化時に列挙して確定する。不変データのみ保持するため並列アクセス可能で、
 /// 画像デコードもページごとに並行実行できる。
+/// EN: Reads a folder as a book. The listing is fixed at init and immutable,
+/// EN: so pages can be decoded in parallel without locking.
 final class FolderSource: BookSource {
     let url: URL
     private let pageEntries: [PageEntry]
@@ -13,6 +15,7 @@ final class FolderSource: BookSource {
 
     /// サブフォルダのどこかに画像があるか(空フォルダ表示のヒント用)。
     /// 最初の 1 件で打ち切り、巨大ツリーでも走査を 2000 項目で止める
+    /// EN: Used by the empty-book hint; stops at the first image or 2000 items.
     static func subfoldersContainImages(at url: URL) -> Bool {
         guard let enumerator = FileManager.default.enumerator(
             at: url, includingPropertiesForKeys: [.isDirectoryKey],
@@ -56,6 +59,12 @@ final class FolderSource: BookSource {
             )
         }
 
+        // 列挙順は FS 依存(特にネットワークボリューム)。id はディスクの
+        // サムネイルキャッシュのキーになるため、パス順に固定して安定させる
+        // EN: Enumeration order is filesystem-dependent; sort by path so entry
+        // EN: ids (which key the disk thumbnail cache) are stable across opens.
+        fileURLs.sort { $0.path < $1.path }
+
         let basePath = url.standardizedFileURL.path
         var entries: [PageEntry] = []
         for fileURL in fileURLs {
@@ -91,6 +100,7 @@ final class FolderSource: BookSource {
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
+        // EN: Abandoned requests bail out here before doing any I/O.
         guard let fileURL = entry.fileURL else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }

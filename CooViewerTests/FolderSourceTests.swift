@@ -55,3 +55,21 @@ final class FolderSourceTests: XCTestCase {
         XCTAssertTrue((try! FolderSource(url: tempDir, readSubFolders: false)).supportsDateSort)
     }
 }
+
+/// レビュー修正の回帰: フォルダの id は列挙順ではなくパス順で安定させる
+/// (id はディスクのサムネイルキャッシュのキーになるため)
+final class FolderEntryIDStabilityTests: XCTestCase {
+    func testEntryIDsFollowPathOrder() async throws {
+        let root = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["c.png", "a.png", "b.png"] {
+            try TestFixtures.pngData(width: 8, height: 8)
+                .write(to: root.appendingPathComponent(name))
+        }
+        let source = try FolderSource(url: root, readSubFolders: false)
+        let entries = try await source.entries()
+        // パス昇順に 0,1,2 が振られる(列挙順に依存しない)
+        XCTAssertEqual(entries.map(\.name), ["a.png", "b.png", "c.png"])
+        XCTAssertEqual(entries.map(\.id), [0, 1, 2])
+    }
+}

@@ -2,6 +2,7 @@ import AppKit
 
 /// サムネイルオーバーレイとリーダーの配線(仕様書 §4.8)。
 /// 表示・非表示の切替と、表示中のページ送りキーの転用を担う。
+/// EN: Wires the in-window thumbnail overlay to the reader.
 extension ReaderWindowController {
     /// サムネイルオーバーレイのトグル。本が無ければ何もしない
     func showThumbnail() {
@@ -38,6 +39,7 @@ extension ReaderWindowController {
 
     /// オーバーレイ表示中のページ送りキーはサムネイル画面の送りに転用する
     /// (旧来のページ単位閲覧 §4.8)
+    /// EN: While the overlay is visible, page-turn keys move thumbnail screens.
     func thumbnailOverlayTurnPage(forward: Bool) {
         thumbnailOverlayModel.moveScreen(by: forward ? 1 : -1)
     }

@@ -4,8 +4,11 @@ import SwiftUI
 /// キー割り当ての編集タブ(仕様書 §5.1-5.5 の KeyArray/Mode2/Mode3 を編集)。
 /// 保存は旧互換形式でそのまま UserDefaults へ書き戻し、閲覧側は
 /// 設定変更通知で即座にリロードされる。
+/// EN: Key-binding editor. Saves straight back in the legacy array format; the
+/// EN: reader reloads immediately through the defaults-change notification.
 struct KeyBindingsPane: View {
     /// 編集対象: (defaults キー名, 表示名, fitScreenMode 対応)
+    /// EN: Editable arrays: (defaults key, tab label), one per fit-screen mode.
     private static let arrays: [(name: String, label: String)] = [
         ("KeyArray", String(localized: "Fit to Screen")),
         ("KeyArrayMode2", String(localized: "Fit to Screen Width")),
@@ -37,11 +40,14 @@ struct KeyBindingsPane: View {
             }
             // 配列切替時は List を作り直す(行数が減った直後に古い index の行が
             // 再評価されて範囲外参照になるのを防ぐ)
+            // EN: rebuild the List when switching arrays so stale rows can't
+            // EN: re-evaluate with an out-of-range index.
             .id(arrayIndex)
 
             HStack(spacing: 12) {
                 KeyCaptureField { character, modifiers in
                     // 同じキー+修飾の既存行は置き換える(重複防止)
+                    // EN: replace any existing row with the same key+modifiers.
                     bindings.removeAll { $0.key == character && $0.modifiers == modifiers }
                     bindings.append(KeyBinding(
                         legacyActionNumber: 0, key: character,
@@ -64,6 +70,7 @@ struct KeyBindingsPane: View {
     @ViewBuilder
     private func bindingRow(at index: Int) -> some View {
         // 削除・配列差し替えの過渡状態でも範囲外参照しない
+        // EN: guard against transient out-of-range access during deletes/reloads.
         if bindings.indices.contains(index) {
             bindingRowContent(at: index)
         }
@@ -158,6 +165,8 @@ struct KeyBindingsPane: View {
 
 /// キーの実押下を捕捉するフィールド(旧 COTextView 相当。仕様書 §3.1)。
 /// クリックでフォーカスし、次のキー押下 1 回を修飾込みで通知する。
+/// EN: Click-to-focus field that captures the next single key press (with
+/// EN: modifiers) and reports it to add a binding.
 private struct KeyCaptureField: NSViewRepresentable {
     let onCapture: (Character, Int) -> Void
 

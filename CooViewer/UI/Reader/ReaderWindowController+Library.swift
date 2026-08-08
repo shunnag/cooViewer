@@ -3,10 +3,13 @@ import SwiftUI
 
 /// 付随機能: しおり・本の状態保存/復元・同フォルダ移動・スライドショー・
 /// ゴミ箱・Finder 表示・原寸表示(仕様書 §4.7-§4.13, §7)。
+/// EN: Companion features: bookmarks, state save/restore, sibling books,
+/// EN: slideshow, trash, Show in Finder, and original-size view.
 extension ReaderWindowController {
     // MARK: - 状態の保存と復元(仕様書 §7)
 
     /// 現在の本の状態を保存する(切替時・クローズ時・終了時。§7.7 の穴も塞ぐ)
+    /// EN: Persist page position, per-book settings, and bookmarks.
     func saveCurrentBookState() {
         // 開けなかった本(空のプレースホルダ)は履歴・設定に記録しない
         guard let book, book.pageCount > 0 else { return }
@@ -19,6 +22,7 @@ extension ReaderWindowController {
     }
 
     /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)
+    /// EN: Apply saved per-book settings and optionally restore the last page.
     func restoreBookState(for book: Book, skipPageRestore: Bool) async {
         let store = BookHistoryStore.shared
         let path = book.source.url.path
@@ -64,9 +68,15 @@ extension ReaderWindowController {
             book.bookmarks.append(.init(name: name, pageIndex: page))
         }
         saveCurrentBookState()
+        // サムネイル表示中はしおりバッジ/絞り込みへ即時反映
+        // EN: Keep the visible thumbnail overlay's bookmark state in sync.
+        if isThumbnailOverlayVisible {
+            presentThumbnailOverlay(for: book)
+        }
     }
 
     /// しおり編集シート(§4.7.2。コピー編集のため Cancel が有効 §13.3)
+    /// EN: Bookmark editor sheet; edits a copy so Cancel really discards.
     func editBookmarks() {
         guard let book, book.pageCount > 0, let window,
               bookmarkEditorWindow == nil else { return }
@@ -74,8 +84,28 @@ extension ReaderWindowController {
             rootView: BookmarkEditorView(
                 bookmarks: book.bookmarks, pageCount: book.pageCount,
                 onSave: { [weak self, weak book] bookmarks in
-                    book?.bookmarks = bookmarks
-                    self?.saveCurrentBookState()
+                    guard let book else { return }
+                    book.bookmarks = bookmarks
+                    guard let self else { return }
+                    if book === self.book {
+                        self.saveCurrentBookState()
+                        // サムネイル表示中はしおりバッジへ即時反映
+                        // EN: Refresh the visible overlay's bookmark badges.
+                        if self.isThumbnailOverlayVisible {
+                            self.presentThumbnailOverlay(for: book)
+                        }
+                    } else {
+                        // シート中に本が切り替わっても編集対象の本へ保存する
+                        // EN: Persist to the edited book even if the current
+                        // EN: book changed while the sheet was open.
+                        BookHistoryStore.shared.save(
+                            displayName: book.displayName,
+                            path: book.source.url.path,
+                            settings: .init(readMode: book.readMode,
+                                            sortMode: book.sortMode,
+                                            marks: book.marks,
+                                            bookmarks: book.bookmarks))
+                    }
                 },
                 onClose: { [weak self] in
                     guard let self, let sheet = self.bookmarkEditorWindow else { return }
@@ -124,6 +154,7 @@ extension ReaderWindowController {
     // MARK: - 同フォルダの次/前の本(仕様書 §4.1.4, §4.3.4)
 
     /// 親フォルダ内の「本」一覧(名前順、隠しファイル除外)
+    /// EN: Book candidates in the parent folder, name-sorted.
     private func siblingBooks() -> [String] {
         guard let book else { return [] }
         let parent = book.source.url.deletingLastPathComponent()
@@ -191,6 +222,7 @@ extension ReaderWindowController {
     // MARK: - ゴミ箱(仕様書 §4.12。AppleScript フォールバックは廃止)
 
     /// 表示中ページをゴミ箱へ。side は画面の左右(readMode で実ページに解決)。
+    /// EN: Trash the displayed page (folder books only), then reopen in place.
     func trashDisplayedPage(leftSide: Bool) {
         guard let book else { return }
         Task {
@@ -260,6 +292,7 @@ extension ReaderWindowController {
     }
 
     /// 原寸表示パネル(旧 FullImagePanel §4.13 の簡易版。キーを失うと閉じる)
+    /// EN: Utility panel showing the page at full resolution in a scroll view.
     private func presentOriginalSizePanel(image: CGImage, title: String) {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
@@ -307,6 +340,8 @@ extension ReaderWindowController {
 
     /// 巻末が近づいたら同フォルダの次の書庫をバックグラウンドで開いて
     /// ローカル展開を始める。開く際に openBookFlow が再利用する。
+    /// EN: Near the end of a book, pre-open and spool the next sibling archive
+    /// EN: so switching to it is instant.
     func maybePrepareNextBook() {
         let threshold = settings.prepareNextBookPages  // 0 は無効(設定「高度」)
         guard threshold > 0, let book, book.pageCount > 0,
@@ -354,6 +389,7 @@ extension ReaderWindowController {
 }
 
 /// しおりサブメニューを開くたびに現在の本のしおりで再構築する(仕様書 §4.7.1)
+/// EN: Rebuilds the bookmark jump submenu from the current book on every open.
 @MainActor
 final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = BookmarkListMenuDelegate()
@@ -380,6 +416,7 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
 }
 
 /// Open Recent サブメニューを開くたびに履歴から再構築する(仕様書 §7.2)
+/// EN: Rebuilds the Open Recent submenu from history on every open.
 @MainActor
 final class RecentBooksMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = RecentBooksMenuDelegate()

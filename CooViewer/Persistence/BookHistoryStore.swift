@@ -4,6 +4,8 @@ import AppKit
 /// 旧スキーマと互換: BookSettings(表示名キー)/RecentItems(先頭最新)/LastPages。
 /// 旧 alias(Carbon)は廃止 API のため、新規書き込みは URL ブックマーク
 /// ("bookmark" キー)+ temppath。旧エントリは temppath 文字列で解決する(§13.5)。
+/// EN: Legacy-compatible per-book settings, recents and last pages; new
+/// EN: entries store a URL bookmark plus temppath instead of Carbon aliases.
 @MainActor
 final class BookHistoryStore {
     static let shared = BookHistoryStore()
@@ -28,6 +30,7 @@ final class BookHistoryStore {
     // MARK: - エントリ解決
 
     /// シンボリックリンク(/var → /private/var 等)を解決した正規形で比較する
+    /// EN: Canonical path form (symlinks resolved) used for all comparisons.
     private func normalize(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
@@ -44,6 +47,14 @@ final class BookHistoryStore {
             return normalize(path)
         }
         return nil
+    }
+
+    /// path(正規化済み)と同じ本を指すエントリか。temppath の文字列一致を
+    /// 早道に、ブックマーク解決経由の正規形でも照合する(§13.5)
+    /// EN: Entry-vs-path match: raw temppath fast path, then resolved+normalized.
+    private func matches(_ entry: [String: Any], path: String) -> Bool {
+        if entry["temppath"] as? String == path { return true }
+        return entryPath(entry) == path
     }
 
     private func makeEntry(path: String, page: Int?) -> [String: Any] {
@@ -84,22 +95,25 @@ final class BookHistoryStore {
         }
         // 既存エントリの保存ページを引き継ぐ(仕様書 §4.1.2 手順 8。
         // 0 にリセットすると最終ページ復元が読み出す前に消えてしまう)
-        let savedPage = recentItems.first { $0["temppath"] as? String == path }?["page"] as? Int
-        var items = recentItems.filter { $0["temppath"] as? String != path }
+        // EN: Preserve the saved page; resetting to 0 here would destroy it
+        // EN: before the restore logic gets a chance to read it.
+        let savedPage = recentItems.first { matches($0, path: path) }?["page"] as? Int
+        var items = recentItems.filter { !matches($0, path: path) }
         while items.count >= limit { items.removeLast() }
         items.insert(makeEntry(path: path, page: savedPage ?? 0), at: 0)
         recentItems = items
     }
 
     /// 閉じる/切替時に表示中ページを記録(§7.2, §7.3)
+    /// EN: Records the current page on close/switch (recents + LastPages).
     func noteClosed(path rawPath: String, pageIndex: Int) {
         let path = normalize(rawPath)
-        var items = recentItems.filter { $0["temppath"] as? String != path }
+        var items = recentItems.filter { !matches($0, path: path) }
         items.insert(makeEntry(path: path, page: pageIndex), at: 0)
         recentItems = items
 
         var lastPages = defaults.array(forKey: "LastPages") as? [[String: Any]] ?? []
-        lastPages.removeAll { $0["temppath"] as? String == path }
+        lastPages.removeAll { matches($0, path: path) }
         // page==0 は「復帰なし」と不可分のため保存しない(§7.3)
         if defaults.bool(forKey: "AlwaysRememberLastPage"), pageIndex > 0 {
             lastPages.append(makeEntry(path: path, page: pageIndex))
@@ -108,6 +122,7 @@ final class BookHistoryStore {
     }
 
     /// 保存ページの探索: RecentItems → LastPages の順(仕様書 §4.1.2 手順 7)
+    /// EN: Looks up the restore page: RecentItems first, then LastPages.
     func savedPage(forPath rawPath: String) -> Int? {
         let path = normalize(rawPath)
         for entry in recentItems where entryPath(entry) == path {
@@ -128,6 +143,8 @@ final class BookHistoryStore {
     }
 
     /// 表示名で探し、temppath/bookmark がパスと一致するエントリのキーを返す
+    /// EN: BookSettings keys are display names (with "#N" on collisions);
+    /// EN: the stored path decides which entry actually matches.
     private func settingsKey(displayName: String, path rawPath: String) -> String? {
         let path = normalize(rawPath)
         let all = bookSettingsDict
@@ -158,6 +175,8 @@ final class BookHistoryStore {
     }
 
     /// 保存。bookmarks は RememberBookSettings 無関係に保存される(§7.1)。
+    /// EN: Saves per-book state; bookmarks persist even when
+    /// EN: RememberBookSettings is off, matching the legacy app.
     func save(displayName: String, path: String, settings: BookSettings) {
         var all = bookSettingsDict
         var key = settingsKey(displayName: displayName, path: path)
@@ -186,6 +205,7 @@ final class BookHistoryStore {
             }
         }
         // alias+temppath 以外に何も無ければエントリごと削除(§7.1 の count>2 相当)
+        // EN: Drop the entry entirely when only path bookkeeping remains.
         if entry.keys.allSatisfy({ ["temppath", "bookmark"].contains($0) }) {
             all.removeValue(forKey: key)
         } else {

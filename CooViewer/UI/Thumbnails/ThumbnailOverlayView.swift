@@ -4,6 +4,8 @@ import SwiftUI
 /// 別ウインドウではなくリーダーウインドウ内の半透明オーバーレイとして表示し、
 /// 旧来どおり「行×列の固定グリッド+ページめくり」で閲覧する(§3.1, §4.8)。
 /// 状態はすべて ThumbnailOverlayModel が持ち、本ビューは描画と操作の転送に徹する。
+/// EN: In-window translucent overlay with a fixed rows×columns grid; all state
+/// EN: lives in ThumbnailOverlayModel, this view just renders and forwards input.
 struct ThumbnailOverlayView: View {
     @ObservedObject var model: ThumbnailOverlayModel
 
@@ -14,6 +16,7 @@ struct ThumbnailOverlayView: View {
         let layout = model.layout
         ZStack {
             // 半透明の背景(クリックで閉じる)
+            // EN: dimmed backdrop; clicking it closes the overlay.
             Color.black.opacity(0.6)
                 .contentShape(Rectangle())
                 .onTapGesture { model.onClose?() }
@@ -26,6 +29,7 @@ struct ThumbnailOverlayView: View {
             .padding(16)
         }
         // 右綴じでは右上から左へ並べる(グリッドごと反転させる)
+        // EN: right-to-left books mirror the whole grid via layoutDirection.
         .environment(\.layoutDirection,
                      model.snapshot.readsFromLeft ? .leftToRight : .rightToLeft)
     }
@@ -57,6 +61,7 @@ struct ThumbnailOverlayView: View {
             }
             .buttonStyle(.borderless)
         }
+        // EN: the header strip itself always reads left-to-right.
         .environment(\.layoutDirection, .leftToRight)  // 帯は常に左→右
     }
 
@@ -101,6 +106,7 @@ struct ThumbnailOverlayView: View {
             .disabled(model.screen == 0)
             Spacer()
             // いま表示中のファイル名(見開きは 2 つ併記)
+            // EN: names of the pages currently displayed (both pages of a spread).
             Text(verbatim: model.snapshot.displayedIndices.sorted().compactMap {
                 let entries = model.snapshot.entries
                 return entries.indices.contains($0)
@@ -123,6 +129,8 @@ struct ThumbnailOverlayView: View {
 
 /// 1 セル(単ページまたは見開き 2 ページ)。表示中のページを含むセルは
 /// アクセント色の塗り+発光枠+太字番号で強調する
+/// EN: One grid cell (single page or a two-page spread); cells containing the
+/// EN: displayed pages get an accent fill, glowing border and bold number.
 private struct ThumbnailCell: View {
     let pageIndices: [Int]  // 読み順
     let snapshot: ThumbnailOverlayModel.Snapshot
@@ -172,6 +180,8 @@ private struct ThumbnailCell: View {
 
 /// 1 ページ分のサムネイル画像(表示されたときに非同期ロード。キャッシュ経由)。
 /// ホバーでファイル名/相対パス(設定「ファイル名の表示」準拠)をツールチップ表示する。
+/// EN: One page's thumbnail, loaded lazily through ThumbnailCache; hovering
+/// EN: shows the file name or relative path as a tooltip.
 private struct ThumbnailPageImage: View {
     let entry: PageEntry
     let source: (any BookSource)?
@@ -183,6 +193,8 @@ private struct ThumbnailPageImage: View {
     /// 固定グリッドではセルのビュー実体がページめくり後も再利用されるため、
     /// 画像がどのエントリのものかを併せて保持し、表示時に必ず照合する
     /// (素早い往復でのキャンセル・遅延代入による空白/取り違えの防止)。
+    /// EN: Cells are structurally reused across screen flips, so remember which
+    /// EN: entry the image belongs to and verify the id before displaying it.
     @State private var loaded: (id: Int, image: CGImage)?
 
     var body: some View {
@@ -208,6 +220,8 @@ private struct ThumbnailPageImage: View {
             guard let source else { return }
             // 常に読み直す(キャッシュ命中は即時)。id を添えて保存するため、
             // 旧タスクの遅延代入が現エントリの表示を汚すことはない
+            // EN: always reload (cache hits are instant); the stored id keeps a
+            // EN: late assignment from a stale task off the current entry.
             let id = entry.id
             if let image = await ThumbnailCache.shared.thumbnail(
                 for: entry, in: source, bookKey: bookKey) {

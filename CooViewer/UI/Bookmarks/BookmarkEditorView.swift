@@ -4,11 +4,15 @@ import SwiftUI
 /// 並べ替え・追加ができる。**コピーを編集して OK で確定**するため
 /// Cancel が正しく効く(旧実装の「Cancel しても取り消されない」は
 /// §13.3 の方針どおり修正)。
+/// EN: Bookmark editor sheet: rename, change page, delete, reorder, add.
+/// EN: It edits a copy and commits on OK, so Cancel genuinely discards changes
+/// EN: (the legacy app's broken Cancel is deliberately fixed here).
 struct BookmarkEditorView: View {
     struct Item: Identifiable {
         let id = UUID()
         var name: String
         var pageNumber: Int  // 1 始まり(表示・入力用。保存時に 0 始まりへ戻す)
+        // EN: 1-based for display/input; converted back to 0-based when saved.
     }
 
     let pageCount: Int
@@ -46,6 +50,7 @@ struct BookmarkEditorView: View {
                     }
                     .tag(item.id)
                 }
+                // EN: drag to reorder / delete rows, mirroring the legacy sheet.
                 .onMove { items.move(fromOffsets: $0, toOffset: $1) }  // 並べ替え(§4.7.2)
                 .onDelete { items.remove(atOffsets: $0) }
             }
@@ -58,6 +63,7 @@ struct BookmarkEditorView: View {
             HStack(spacing: 8) {
                 Button {
                     // 名前は旧実装の自動命名に合わせ "bookmarkN"(§4.7.1)
+                    // EN: auto-name "bookmarkN" to match the legacy app.
                     items.append(Item(name: "bookmark\(items.count + 1)", pageNumber: 1))
                 } label: {
                     Image(systemName: "plus")
@@ -75,10 +81,14 @@ struct BookmarkEditorView: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Button(String(localized: "OK")) {
-                    onSave(items.map {
+                    // 空の名前と範囲外ページは保存時に補正する
+                    // EN: Normalize empty names and clamp pages on commit.
+                    onSave(items.enumerated().map { offset, item in
                         BookHistoryStore.Bookmark(
-                            name: $0.name,
-                            pageIndex: min(max(0, $0.pageNumber - 1), pageCount - 1))
+                            name: item.name.isEmpty
+                                ? "bookmark\(offset + 1)" : item.name,
+                            pageIndex: min(max(0, item.pageNumber - 1),
+                                           max(0, pageCount - 1)))
                     })
                     onClose()
                 }
