@@ -74,6 +74,38 @@ $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Relea
   本を開いていない時の全しおり編集ウインドウは未対応(将来課題)
 - 旧版の既知バグの扱いは仕様書 §13.3 の判断リストに従い、修正または意図的に維持しています
 
+## 謝辞 / Acknowledgments
+
+**日本語**
+
+本アプリの原作者である **coo-ona 氏**に、心より感謝申し上げます。2005 年から長年に
+わたって開発・公開されてきた cooViewer は、右綴じ・見開き表示や柔軟な操作割り当てを
+はじめ、漫画を快適に読むための工夫が隅々まで行き届いた素晴らしいアプリケーションでした。
+本フォークの 2.0 系はコードこそ全面的に書き直していますが、その設計・挙動・使い心地は
+すべて原作の丁寧な作り込みを土台にしており、原作なくして本フォークは存在しません。
+また、旧ソースコードと[操作説明](docs/)を公開し続けてくださっていることが、
+挙動の調査と互換性の維持を可能にしました。
+
+あわせて、現代の macOS でビルドできるよう旧版を保守してくださった
+[plife18 氏のフォーク](https://github.com/plife18/cooViewer)、および書庫展開と文字コード
+判定を支える [XADMaster / UniversalDetector](https://github.com/MacPaw/XADMaster)
+(MacPaw によるメンテナンス)の各開発者の皆さまに感謝します。
+
+**English**
+
+Our heartfelt thanks go to **coo-ona**, the original author of cooViewer. Developed and
+shared since 2005, the original app was a beautifully crafted comic reader — right-to-left
+spreads, flexible input bindings, and countless thoughtful touches for comfortable reading.
+Although the 2.0 line is a complete rewrite, its design, behavior, and feel are all built
+on the care that went into the original; this fork simply would not exist without it. The
+continued availability of the original source code and [manual](docs/) is what made the
+behavioral research and compatibility work possible.
+
+We also thank [plife18's fork](https://github.com/plife18/cooViewer) for keeping the
+legacy app buildable on modern macOS, and the maintainers of
+[XADMaster / UniversalDetector](https://github.com/MacPaw/XADMaster) (maintained by
+MacPaw), which power archive extraction and filename-encoding detection.
+
 ## ライセンス
 
 - cooViewer 本体: MIT ライセンス([Licence.txt](Licence.txt))。Copyright (c) 2005- coo.
