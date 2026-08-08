@@ -48,7 +48,12 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   `xcrun stapler staple cooViewer.app` → re-zip the STAPLED app for distribution →
   verify `spctl -a -vv cooViewer.app` says "Notarized Developer ID". Tag `vX.YbN`
   on master and publish via `gh release create` (beta = `--prerelease`).
-- Auto-update (Sparkle 2, since 2.0b3): after publishing the GitHub release, run
+- Auto-update (Sparkle 2, since 2.0b3): BEFORE the Release build, run
+  `Scripts/sign-sparkle-nested.sh` — it re-signs Sparkle's nested executables
+  (Updater.app/Autoupdate/XPC services) with Developer ID + timestamp + hardened
+  runtime; without this notarization returns Invalid (Xcode's CodeSignOnCopy only
+  re-signs the framework itself). Re-run it whenever `Frameworks/` is recreated.
+  After publishing the GitHub release, run
   `Scripts/make-appcast.sh <stapled-zip> <version> <build>` (signs the zip with the
   EdDSA key in the login keychain and inserts an `<item>` into `appcast.xml`), then
   commit & push `appcast.xml` to master — the feed URL is the raw master file.
