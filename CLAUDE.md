@@ -73,10 +73,16 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   non-thread-safe libraries (XADArchive, PDFDocument) are actors.
 - Comments in Japanese, citing the spec (`仕様書 §n`) or design doc (`設計書 §n`) for any
   behavior that mirrors or deliberately deviates from the legacy app.
-- Legacy compatibility is a hard constraint for persisted data: UserDefaults domain
-  `jp.coo.cooViewer`, binding array schema (`KeyArray*`/`MouseArray*`), BookSettings/
-  RecentItems/LastPages shapes, 0-based vs 1-based page numbers (§13.2). Never change
-  these without updating the migration mapping (§13.5).
+- Persisted-data compatibility (updated for 2.0b5): the UserDefaults domain
+  `jp.coo.cooViewer` and the binding array schema (`KeyArray*`/`MouseArray*`) remain
+  legacy-compatible (§13.2) — never change those without a migration mapping (§13.5).
+  Book state (bookmarks, per-book settings, last pages, recents) now lives in the
+  **v2 store**: one JSON per book (SHA-256 of the canonical path) plus recents.json
+  under `Application Support/jp.coo.cooViewer/BookStates/`. The legacy keys
+  (BookSettings/RecentItems/LastPages) are imported ONCE at launch
+  (`BookHistoryStore.migrateLegacyDataIfNeeded`, flag `BookStateStoreVersion`) and
+  then left frozen for the 1.x app; the new app no longer reads or writes them.
+  Bookmark pages are 0-based Ints in v2 (legacy 1-based strings are converted).
 - Every logic-level module (sources, sorting, layout, bindings, persistence) has XCTest
   coverage in `CooViewerTests/`; keep it that way for new logic.
 

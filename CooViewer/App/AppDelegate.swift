@@ -47,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         SettingsStore.shared.registerDefaults()
+        // 旧形式の本の状態(BookSettings/RecentItems/LastPages)を v2 へ
+        // 一括インポート(初回のみ。旧キーは 1.x 用に凍結保持)
+        // EN: One-time import of legacy book state into the v2 store.
+        BookHistoryStore.shared.migrateLegacyDataIfNeeded()
         NSApp.mainMenu = MainMenuBuilder.build()
     }
 
@@ -64,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// EN: thumbnails older than the configured retention.
     private func cleanUpCaches() {
         Task.detached(priority: .utility) {
+            // 旧 PNG サムネイルキャッシュは丸ごと削除(v2 HEIC で作り直す)
+            // EN: Drop the legacy PNG thumbnail cache; v2 rebuilds as HEIC.
+            ThumbnailCache.removeLegacyCacheDirectory()
             let root = ArchiveSource.spoolRoot()
             if let children = try? FileManager.default.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: nil) {
