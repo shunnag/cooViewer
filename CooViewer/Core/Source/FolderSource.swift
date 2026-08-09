@@ -120,6 +120,14 @@ final class FolderSource: BookSource {
         pageEntries
     }
 
+    func imageSize(for entry: PageEntry) async -> CGSize? {
+        // ヘッダ読みは数十 KB の小さな I/O なのでゲートを通さない
+        // (フルデコードの代替としては常に軽い)
+        // EN: Header reads are tiny; they bypass the gate.
+        guard let fileURL = entry.fileURL else { return nil }
+        return ImageDecoding.imageSize(at: fileURL)
+    }
+
     func imageData(for entry: PageEntry) async -> Data? {
         guard let fileURL = entry.fileURL else { return nil }
         // アニメーション用の生データ読みも同じゲートを通す(全読者を制御)
@@ -136,16 +144,20 @@ final class FolderSource: BookSource {
         guard let fileURL = entry.fileURL else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
+        // ゲートはディスク I/O のみを絞る。デコード(CPU)はゲート外で行い、
+        // 多コアの並列デコードを活かす(HDD でもゲート保持時間が短くなる)
+        // EN: The gate caps disk I/O only; decode runs outside so many-core
+        // EN: CPUs decode in parallel and the gate is held briefly.
         await readGate.acquire()
+        let data: Data
         do {
             try Task.checkCancellation()
-            let data = try Data(contentsOf: fileURL)
-            let image = try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
-            await readGate.release()
-            return image
+            data = try Data(contentsOf: fileURL)
         } catch {
             await readGate.release()
             throw error
         }
+        await readGate.release()
+        return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
     }
 }

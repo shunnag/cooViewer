@@ -22,6 +22,20 @@ enum AutomatedRun {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var readerWindowController: ReaderWindowController?
     private var settingsWindow: NSWindow?
+    /// 起動時に文書オープン(Finder ダブルクリック等)を受け取ったか。
+    /// 受け取っていたら「前回の本を開く」(§6.1)は行わない
+    /// EN: Whether a document open arrived during launch; suppresses the
+    /// EN: "reopen last book" path so it cannot clobber the requested book.
+    private var didOpenDocumentAtLaunch = false
+    /// ウインドウ生成前に届いた文書オープンの保留分(起動完了時に開く)
+    /// EN: Document open that arrived before the window existed; opened
+    /// EN: once launching finishes.
+    private var pendingLaunchOpenURL: URL?
+    /// --open 検証実行の起動直後だけ、AppKit が引数パスを文書として中継して
+    /// くる分を無視する(起動完了から猶予を置いて解除)
+    /// EN: Suppresses AppKit's launch-time argv-relay document opens in
+    /// EN: --open verification runs; cleared shortly after launch.
+    private var suppressRelayedDocumentOpens = CommandLine.arguments.contains("--open")
     /// 検証用スナップショットの一時ウインドウ(設定ウインドウとは別管理)
     /// EN: Debug-only preview window; must never shadow the settings window.
     private var debugPreviewWindow: NSWindow?
@@ -59,7 +73,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         readerWindowController = controller
         controller.showWindow(nil)
         cleanUpCaches()
-        handleDebugArguments()
+        if let pending = pendingLaunchOpenURL {
+            // 起動前に届いていた文書オープンを確定する(§6.1)
+            // EN: Commit the document open deferred from before launch.
+            pendingLaunchOpenURL = nil
+            controller.openBook(at: pending)
+        } else {
+            handleDebugArguments()
+        }
+        if suppressRelayedDocumentOpens {
+            // AppKit の引数中継は起動シーケンス内で届く。猶予を置いて解除し、
+            // 以後の(本物の)文書オープンは通常どおり受け付ける
+            // EN: The argv relay arrives within the launch sequence; lift the
+            // EN: suppression after a grace period.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                self.suppressRelayedDocumentOpens = false
+            }
+        }
     }
 
     /// 起動時のキャッシュ掃除: 生存していないプロセスのスプール残骸
@@ -106,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             readerWindowController?.openBook(
                 at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
-                  !AutomatedRun.isXCTest,
+                  !AutomatedRun.isXCTest, !didOpenDocumentAtLaunch,
                   let recent = BookHistoryStore.shared.mostRecentBook() {
             // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)。
             // XCTest のホストとしての起動では開かない: ユーザーの実データに
@@ -216,8 +247,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        // 検証実行(--open)では AppKit が起動時に引数パスを文書として渡して
+        // くることがあり、--at-page 指定なしの open が後追いで発行されて開始
+        // ページ指定を上書きしてしまうため、起動直後の分だけ無視する
+        // (恒久ガードにすると、その後の Finder からのオープンまで捨ててしまう)
+        // EN: At launch AppKit may relay argument paths as document opens,
+        // EN: which would re-open the book without --at-page. Suppress only
+        // EN: the launch window — a permanent guard would also swallow later
+        // EN: genuine Finder opens sent to the running instance.
+        guard !suppressRelayedDocumentOpens else { return }
         guard let url = urls.first else { return }
-        readerWindowController?.openBook(at: url)
+        // 起動時のダブルクリック起動では didFinishLaunching(前回の本の
+        // 自動オープン)より先に届くことがある。後から前回の本で上書き
+        // されないよう記録する(仕様書 §6.1)
+        // EN: Launch-by-document can arrive before didFinishLaunching; record
+        // EN: it so the "reopen last book" path does not clobber this open.
+        didOpenDocumentAtLaunch = true
+        if let controller = readerWindowController {
+            controller.openBook(at: url)
+        } else {
+            // didFinishLaunching より先に届いた場合はウインドウがまだ無い。
+            // 落とさず保留し、起動完了時に開く
+            // EN: Arrived before the window exists; defer instead of dropping.
+            pendingLaunchOpenURL = url
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
