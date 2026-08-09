@@ -224,7 +224,11 @@ extension ReaderWindowController {
         guard !siblings.isEmpty,
               let current = siblings.firstIndex(of: book.source.url.path) else { return }
         let target = (current + (forward ? 1 : -1) + siblings.count) % siblings.count
-        openBook(at: URL(fileURLWithPath: siblings[target]), atLastPage: openLast)
+        // 後方移動でコレクションフォルダに入る場合は最後の内側の本へ
+        // (最初の本に飛ぶと階層の読書順が壊れる)
+        // EN: Backward arrival drills to the LAST inner book of a collection.
+        openBook(at: URL(fileURLWithPath: siblings[target]), atLastPage: openLast,
+                 preferLastInnerBook: !forward)
     }
 
     // MARK: - スライドショー(仕様書 §4.9)
