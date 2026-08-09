@@ -39,6 +39,9 @@ final class ReaderWindowController: NSWindowController {
     /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
     var preparedNextBook: (path: String, source: any BookSource)?
     var preparingNextBookPath: String?
+    /// 同フォルダの本一覧のキャッシュ(+Library。巻末付近の毎ページ走査対策)
+    /// EN: Sibling-book list cache (see +Library).
+    var cachedSiblings: (parent: String, paths: [String], timestamp: Double)?
 
     /// ページバーホバーのサムネイルバブル(仕様書 §3.4)
     private let pageBarBubble = NSView()
@@ -72,6 +75,9 @@ final class ReaderWindowController: NSWindowController {
     /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
     private var indicatorHideTimer: Timer?
     private var indicatorsTemporarilyVisible = true
+    /// applySettings の一括化フラグ(defaults 連続書込対策)
+    /// EN: Coalescing flag for applySettings bursts.
+    private var applySettingsScheduled = false
 
     convenience init() {
         let window = NSWindow(
@@ -96,7 +102,15 @@ final class ReaderWindowController: NSWindowController {
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySettings()
+                // 1 runloop 内の連続書込(スライダー操作・ウインドウ枠保存等)を
+                // 1 回の適用にまとめる(バインディング再読込を含む全再適用のため)
+                // EN: Coalesce bursts of defaults writes into one apply pass.
+                guard let self, !self.applySettingsScheduled else { return }
+                self.applySettingsScheduled = true
+                DispatchQueue.main.async {
+                    self.applySettingsScheduled = false
+                    self.applySettings()
+                }
             }
         }
     }
@@ -675,15 +689,29 @@ final class ReaderWindowController: NSWindowController {
         for (position, index) in spread.indices.enumerated() {
             guard book.entries.indices.contains(index) else { continue }
             let entry = book.entries[index]
+            // 一度「静止画」と判定したページは再判定しない(PNG が大半の本で
+            // 表示のたびに生データを読み直す無駄の防止)
+            // EN: Skip pages already probed static; without this every PNG
+            // EN: page re-reads its raw bytes on every redisplay.
+            guard !book.probedStaticAnimationIDs.contains(entry.id) else { continue }
             let ext = (entry.name as NSString).pathExtension.lowercased()
             guard animatable.contains(ext) else { continue }
-            Task { [weak self] in
-                guard let self,
-                      let data = await book.source.imageData(for: entry),
-                      let animation = AnimatedImage.load(from: data) else { return }
-                self.readerViewForInput.applyAnimation(
-                    frames: animation.frames, delays: animation.delays,
-                    forPageAt: position, id: entry.id)
+            // デコード(最大 120 フレーム)はメインアクターの外で行う
+            // EN: Frame decoding runs off the main actor.
+            let source = book.source
+            Task.detached(priority: .userInitiated) { [weak self, weak book] in
+                guard let data = await source.imageData(for: entry) else { return }
+                let animation = AnimatedImage.load(from: data)
+                await MainActor.run {
+                    guard let self, let book, book === self.book else { return }
+                    guard let animation else {
+                        book.probedStaticAnimationIDs.insert(entry.id)
+                        return
+                    }
+                    self.readerViewForInput.applyAnimation(
+                        frames: animation.frames, delays: animation.delays,
+                        forPageAt: position, id: entry.id)
+                }
             }
         }
     }

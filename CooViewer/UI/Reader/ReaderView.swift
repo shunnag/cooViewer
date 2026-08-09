@@ -262,30 +262,47 @@ final class ReaderView: NSView {
                 return (index, images[index], pixelSize,
                         "\(resampleKeyPrefix)#\(pageIDs[index])")
             }
-        guard !requests.isEmpty else { return }
-
+        // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
+        // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
+        // スプレッドのスロットを汚す穴の修正)
+        // EN: Cancel the previous in-flight resample even when this spread has
+        // EN: no targets; otherwise its late write lands in the new spread.
         resampleTask?.cancel()
         resampleGeneration += 1
+        guard !requests.isEmpty else { return }
+
         let generation = resampleGeneration
         let useMetalFX = interpolation == .high
+        // デバウンスはライブリサイズ中の洪水対策。ページ送りでは待たずに
+        // 即リサンプルして、最初の描画から等倍のシャープな画像に近づける
+        // EN: Debounce only during live resize; page turns resample
+        // EN: immediately so the crisp 1:1 image lands as soon as possible.
+        let debounce: Bool = inLiveResize
         resampleTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled else { return }
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+            }
             for request in requests {
                 guard let resampled = await ImageResampler.shared.resample(
                     request.image, to: request.pixelSize,
                     cacheKey: request.key, upscaleWithMetalFX: useMetalFX) else { continue }
                 guard let self, !Task.isCancelled else { return }
                 self.applyResampled(resampled, size: request.pixelSize,
-                                    at: request.index, generation: generation)
+                                    at: request.index, generation: generation,
+                                    key: request.key)
             }
         }
     }
 
     private func applyResampled(_ image: CGImage, size: CGSize,
-                                at index: Int, generation: Int) {
+                                at index: Int, generation: Int, key: String) {
+        // 世代に加えてページの同一性(キャッシュキー)も照合する(遅延書込対策)
+        // EN: Verify the page identity (cache key) besides the generation.
         guard generation == resampleGeneration,
-              resampledPages.indices.contains(index) else { return }
+              resampledPages.indices.contains(index),
+              pageIDs.indices.contains(index),
+              key == "\(resampleKeyPrefix)#\(pageIDs[index])" else { return }
         resampledPages[index] = (size, image)
         needsLayout = true
     }

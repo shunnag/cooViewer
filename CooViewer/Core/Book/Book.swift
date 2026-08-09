@@ -33,6 +33,12 @@ final class Book {
     private var lastDisplayCount = 1
     private var lastMoveForward = true
 
+    /// アニメーション判定で「静止画」と分かったページ(entry.id)。
+    /// 表示のたびに生データを読み直して判定し直すのを防ぐ
+    /// EN: Entry ids probed as NOT animated, so redisplays skip the raw
+    /// EN: re-read + re-parse of the animation probe.
+    var probedStaticAnimationIDs: Set<Int> = []
+
     /// 先読みの幅(設計書「キャッシュ・先読み設計」)
     /// 先読み枚数(設定「高度」から注入される。既定は設計書 §3.1 の値)
     /// EN: Prefetch window sizes, injected from the Advanced settings tab.
@@ -113,15 +119,36 @@ final class Book {
 
     // MARK: - 画像ロード
 
+    /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
+    /// デコードに合流し、同じページを二重にデコードしないための単一飛行
+    /// EN: In-flight decodes keyed by entry id: the display request joins the
+    /// EN: prefetch decode instead of duplicating it (single-flight).
+    private var inFlightLoads: [Int: Task<CGImage?, Never>] = [:]
+
     func image(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
         let key = entries[index].id
         if let hit = await cache.image(for: key) { return hit }
-        guard let image = try? await source.image(
-            for: entries[index], maxPixelSize: displayPixelCap) else {
-            return nil
+        if let running = inFlightLoads[key] {
+            return await running.value
         }
-        await cache.insert(image, for: key)
+        // detached: 先読みのキャンセルが、合流している表示要求まで
+        // 巻き込まないように独立タスクで走らせる
+        // EN: Detached so cancelling the prefetch never kills a decode the
+        // EN: on-screen request has joined.
+        let source = source
+        let entry = entries[index]
+        let cap = displayPixelCap
+        let cache = cache
+        let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
+            guard let image = try? await source.image(
+                for: entry, maxPixelSize: cap) else { return nil }
+            await cache.insert(image, for: key)
+            return image
+        }
+        inFlightLoads[key] = task
+        let image = await task.value
+        inFlightLoads[key] = nil
         return image
     }
 

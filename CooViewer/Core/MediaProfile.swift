@@ -84,11 +84,14 @@ struct MediaProfile: Sendable, Equatable {
         }
     }
 
-    /// Book 先読みの並列幅(並列ロード可能なソースのみ)
-    /// EN: Prefetch width used by Book for parallel-capable sources.
+    /// Book 先読みの並列幅(並列ロード可能なソースのみ)。
+    /// fastLocal は読み取りゲート(6)と揃え、多コアの並列デコードを活かす
+    /// EN: Prefetch width used by Book for parallel-capable sources;
+    /// EN: fastLocal matches the read gate so decodes pipeline fully.
     var bookPrefetchConcurrency: Int {
         switch mediaClass {
-        case .fastLocal, .unknown: 4  // unknown は従来の固定値
+        case .fastLocal: 6
+        case .unknown: 4  // 従来の固定値
         case .slowLocal: 1
         case .network: 2
         }

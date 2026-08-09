@@ -188,14 +188,22 @@ extension ReaderWindowController {
 
     // MARK: - 同フォルダの次/前の本(仕様書 §4.1.4, §4.3.4)
 
-    /// 親フォルダ内の「本」一覧(名前順、隠しファイル除外)
-    /// EN: Book candidates in the parent folder, name-sorted.
+    /// 親フォルダ内の「本」一覧(名前順、隠しファイル除外)。
+    /// 巻末付近では毎ページ表示ごとに呼ばれる(次の本の事前準備)ため、
+    /// 5 秒間キャッシュしてメインスレッドのディレクトリ走査を抑える
+    /// (NAS/HDD の大きなフォルダで毎ページ数十 ms 止まるのを防ぐ)
+    /// EN: Cached for 5s — near the end of a book this runs per page turn,
+    /// EN: and a large NAS folder scan on the main thread stalls page turns.
     private func siblingBooks() -> [String] {
         guard let book else { return [] }
         let parent = book.source.url.deletingLastPathComponent()
+        if let cached = cachedSiblings, cached.parent == parent.path,
+           Date().timeIntervalSince1970 - cached.timestamp < 5 {
+            return cached.paths
+        }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: parent.path)
         else { return [] }
-        return names
+        let paths = names
             .filter { !$0.hasPrefix(".") }
             .filter { name in
                 let url = parent.appendingPathComponent(name)
@@ -205,6 +213,8 @@ extension ReaderWindowController {
             }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { parent.appendingPathComponent($0).path }
+        cachedSiblings = (parent.path, paths, Date().timeIntervalSince1970)
+        return paths
     }
 
     /// 次/前の本へ(端でラップアラウンド。§4.3.4)。openLast=前の本を末尾から開く。
