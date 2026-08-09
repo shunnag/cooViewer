@@ -74,6 +74,26 @@ $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Relea
   本を開いていない時の全しおり編集ウインドウは未対応(将来課題)
 - 旧版の既知バグの扱いは仕様書 §13.3 の判断リストに従い、修正または意図的に維持しています
 
+## 1.x に戻す場合 / Reverting to 1.x
+
+2.0 は初回起動時に 1.x の設定・履歴・しおりを新形式へ変換します。旧データは
+**変換時点の内容のまま残す**ため、2.0 を一度使っても 1.x はそのまま起動できます。
+ただし 2.0 で進めた読書位置や新しく付けたしおりは 1.x には反映されません。
+
+2.0 のデータを完全に消して初期状態へ戻したい場合は、アプリ終了後に
+ターミナルで次を実行してください(1.x のデータも消えます):
+
+```
+defaults delete jp.coo.cooViewer
+rm -rf ~/Library/Application\ Support/jp.coo.cooViewer
+rm -rf ~/Library/Caches/jp.coo.cooViewer
+```
+
+EN: 2.0 imports 1.x data once at first launch and leaves the legacy data
+frozen, so 1.x still runs after using 2.0 — but reading positions and
+bookmarks made in 2.0 do not flow back. To reset everything, quit the app
+and run the commands above (this also erases 1.x data).
+
 ## 謝辞 / Acknowledgments
 
 **日本語**

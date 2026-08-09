@@ -250,23 +250,40 @@ actor ArchiveSource: BookSource {
         }
     }
 
-    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+    nonisolated func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
         // EN: Abandoned requests bail out here before touching the archive.
+        switch try await pageContent(for: entry) {
+        case .child(let child, let childEntry):
+            return try await child.image(for: childEntry, maxPixelSize: maxPixelSize)
+        case .data(let data):
+            // nonisolated async はグローバル実行系で走るため、このデコードは
+            // actor の外。展開・スプールと画像デコードが並行できる
+            // EN: This decode runs OFF the actor (nonisolated async), so
+            // EN: extraction/spooling and CPU decode overlap.
+            return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
+        }
+    }
+
+    /// ページの中身: 子ソースへの委譲か、生データ(actor 内で取り出す)
+    /// EN: Page content resolved inside the actor: child delegation or raw data.
+    private enum PageContent {
+        case data(Data)
+        case child(any BookSource, PageEntry)
+    }
+
+    private func pageContent(for entry: PageEntry) throws -> PageContent {
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
-            return try await children[sourceIndex].image(
-                for: childEntry, maxPixelSize: maxPixelSize)
+            return .child(children[sourceIndex], childEntry)
         }
-        let data: Data
         if let spooled = spooledData(for: entry.id) {
-            data = spooled
-        } else if let index = Int32(exactly: entry.id),
-                  let extracted = archive.contents(ofEntry: index) {
-            data = extracted
-        } else {
-            throw BookSourceError.pageLoadFailed(entry.name)
+            return .data(spooled)
         }
-        return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
+        if let index = Int32(exactly: entry.id),
+           let extracted = archive.contents(ofEntry: index) {
+            return .data(extracted)
+        }
+        throw BookSourceError.pageLoadFailed(entry.name)
     }
 
     /// ルーペ用。ネストした PDF はベクトルから倍率連動で描き直せるよう子へ委譲する
@@ -380,6 +397,11 @@ actor ArchiveSource: BookSource {
 
     private func spooledData(for id: Int) -> Data? {
         guard spooledIDs.contains(id), let directory = spoolDirectory else { return nil }
-        return try? Data(contentsOf: directory.appendingPathComponent(String(id)))
+        // スプールファイルは書き切り後は不変(アプリ所有)なのでマップ読みが安全。
+        // 大きなページのコピーを 1 回分省く
+        // EN: Spool files are app-owned and immutable once written, so a
+        // EN: memory-mapped read safely saves a full copy for large pages.
+        return try? Data(contentsOf: directory.appendingPathComponent(String(id)),
+                         options: .mappedIfSafe)
     }
 }

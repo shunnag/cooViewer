@@ -136,16 +136,20 @@ final class FolderSource: BookSource {
         guard let fileURL = entry.fileURL else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
+        // ゲートはディスク I/O のみを絞る。デコード(CPU)はゲート外で行い、
+        // 多コアの並列デコードを活かす(HDD でもゲート保持時間が短くなる)
+        // EN: The gate caps disk I/O only; decode runs outside so many-core
+        // EN: CPUs decode in parallel and the gate is held briefly.
         await readGate.acquire()
+        let data: Data
         do {
             try Task.checkCancellation()
-            let data = try Data(contentsOf: fileURL)
-            let image = try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
-            await readGate.release()
-            return image
+            data = try Data(contentsOf: fileURL)
         } catch {
             await readGate.release()
             throw error
         }
+        await readGate.release()
+        return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
     }
 }

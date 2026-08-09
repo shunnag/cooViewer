@@ -17,8 +17,13 @@ if [[ ! -d XADMaster/XADMaster.xcodeproj ]]; then
     exit 1
 fi
 
+# ビルドフラグの版。変えたら既存の Frameworks/ でも再ビルドされる
+# EN: Build-flags stamp; bumping it forces a rebuild of existing Frameworks/.
+BUILD_FLAGS_STAMP="O2-thinlto-target26-v1"
+
 if [[ -e "$FW_DIR/XADMaster.framework/Versions/A/XADMaster" && \
-      -e "$FW_DIR/UniversalDetector.framework/Versions/A/UniversalDetector" ]]; then
+      -e "$FW_DIR/UniversalDetector.framework/Versions/A/UniversalDetector" && \
+      "$(cat "$FW_DIR/.buildflags" 2>/dev/null)" == "$BUILD_FLAGS_STAMP" ]]; then
     if [[ -z "$(find XADMaster UniversalDetector -type f \
             \( -name '*.m' -o -name '*.h' -o -name '*.c' -o -name '*.cpp' -o -name '*.pbxproj' \) \
             -newer "$FW_DIR/XADMaster.framework/Versions/A/XADMaster" -print -quit)" ]]; then
@@ -38,5 +43,9 @@ env -i \
     -scheme XADMaster \
     -configuration Release \
     ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+    GCC_OPTIMIZATION_LEVEL=2 LLVM_LTO=YES_THIN \
+    MACOSX_DEPLOYMENT_TARGET=26.0 \
     CONFIGURATION_BUILD_DIR="$FW_DIR" \
     build
+
+echo "$BUILD_FLAGS_STAMP" > "$FW_DIR/.buildflags"
