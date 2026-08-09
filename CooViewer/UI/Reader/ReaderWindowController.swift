@@ -377,13 +377,20 @@ final class ReaderWindowController: NSWindowController {
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
     /// EN: Open a book; a single image file opens its parent folder at that page.
-    func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false) {
+    /// preferLastInnerBook: 後方移動(前の本)でコレクションフォルダに入る
+    /// とき、名前順で最後の内側の本へドリルダウンする(読書順の平坦化)
+    /// EN: preferLastInnerBook drills into the LAST inner book when arriving
+    /// EN: backwards, keeping the flattened reading order coherent.
+    func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false,
+                  preferLastInnerBook: Bool = false) {
         Task {
-            await openBookFlow(url: url, atPage: page, atLastPage: atLastPage)
+            await openBookFlow(url: url, atPage: page, atLastPage: atLastPage,
+                               preferLastInnerBook: preferLastInnerBook)
         }
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
+                              preferLastInnerBook: Bool = false,
                               autoOpenDepth: Int = 0) async {
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
@@ -469,10 +476,20 @@ final class ReaderWindowController: NSWindowController {
             // EN: A folder with no images but containing books opens its first
             // EN: inner book — unless it is empty because the user cancelled a
             // EN: nested password prompt (auto-open would re-prompt instantly).
+            // 統合ソース(フォルダ内書庫/PDF の合本)が 0 ページなのは組み立て
+            // 失敗(壊れ書庫の黙殺 §4.17 等)であり、ドリルダウンすると中の
+            // 書庫を「単体の本」として開いてしまい階層がずれる。ドリルは
+            // 純粋なコレクション(直下も配下も画像・書庫なし=FolderSource)のみ
+            // EN: A 0-page merged source means assembly failed; drilling would
+            // EN: open an inner archive standalone at the wrong depth. Only
+            // EN: drill into pure collections (plain FolderSource, no books).
             if book.pageCount == 0, autoOpenDepth < 4,
+               !(source is NestedFolderSource),
                await !source.hasSkippedLockedContent(),
-               let inner = Self.firstInnerBook(in: bookURL) {
+               let inner = Self.innerBook(in: bookURL,
+                                          preferLast: preferLastInnerBook) {
                 await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
+                                   preferLastInnerBook: preferLastInnerBook,
                                    autoOpenDepth: autoOpenDepth + 1)
                 return
             }
@@ -663,23 +680,27 @@ final class ReaderWindowController: NSWindowController {
         return .unlocked
     }
 
-    /// 画像ゼロのフォルダ内にある最初の「本」(名前順)。フォルダ以外は nil
-    /// EN: First book-like item (by name) inside an image-less folder.
-    private static func firstInnerBook(in url: URL) -> URL? {
+    /// 画像ゼロのフォルダ内にある「本」(名前順の最初、preferLast なら最後)。
+    /// フォルダ以外は nil。前の本への移動で入ったときに最初の本へ飛ぶと
+    /// 読書順が壊れるため、到着方向で選ぶ(仕様書 §4.3.4 の拡張)
+    /// EN: First (or last, for backward arrival) book-like item inside an
+    /// EN: image-less folder; direction keeps the reading order coherent.
+    static func innerBook(in url: URL, preferLast: Bool) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue,
               let names = try? FileManager.default.contentsOfDirectory(atPath: url.path)
         else { return nil }
-        return names
+        let candidates = names
             .filter { !$0.hasPrefix(".") }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { url.appendingPathComponent($0) }
-            .first { candidate in
+            .filter { candidate in
                 var isDir: ObjCBool = false
                 FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir)
                 return isDir.boolValue || SupportedTypes.isBookFile(candidate)
             }
+        return preferLast ? candidates.last : candidates.first
     }
 
     // MARK: - 表示更新
