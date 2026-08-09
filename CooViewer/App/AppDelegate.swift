@@ -174,6 +174,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.debugPreviewWindow = window
             }
         }
+        if arguments.contains("--then-previous-book") || arguments.contains("--then-next-book") {
+            // 検証用: 最初の本を表示した後に前/次の本へ移動する(Ctrl+D 相当。
+            // 階層ナビゲーションのスナップショット検証のため)
+            // EN: Verification flags driving previous/next-book navigation.
+            let forward = arguments.contains("--then-next-book")
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.openAdjacentBook(forward: forward)
+            }
+        }
         if let index = arguments.firstIndex(of: "--then-open"), index + 1 < arguments.count {
             // 検証用: 最初の本(とサムネイル)を表示した後に別の本へ切り替える
             // (本の切替をまたぐサムネイル一覧の描画確認のため)

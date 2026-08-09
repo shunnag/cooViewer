@@ -304,3 +304,33 @@ final class SplitVolumeExtensionTests: XCTestCase {
         XCTAssertFalse(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.abc")))
     }
 }
+
+/// コレクションフォルダのドリルダウン先選択(§2.4 の設計変更+方向対応)
+/// EN: Direction-aware inner-book pick for collection folders.
+@MainActor
+final class InnerBookSelectionTests: XCTestCase {
+    func testInnerBookPicksFirstOrLastByDirection() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data([0x50, 0x4B]).write(to: dir.appendingPathComponent("01_first.zip"))
+        try Data([0x50, 0x4B]).write(to: dir.appendingPathComponent("02_mid.zip"))
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("03_last"), withIntermediateDirectories: false)
+        try Data("x".utf8).write(to: dir.appendingPathComponent("note.txt"))
+
+        XCTAssertEqual(
+            ReaderWindowController.innerBook(in: dir, preferLast: false)?.lastPathComponent,
+            "01_first.zip", "前方到着は名前順の最初の本")
+        XCTAssertEqual(
+            ReaderWindowController.innerBook(in: dir, preferLast: true)?.lastPathComponent,
+            "03_last", "後方到着(前の本)は名前順の最後の本")
+    }
+
+    func testInnerBookIgnoresNonBooks() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("x".utf8).write(to: dir.appendingPathComponent("note.txt"))
+        XCTAssertNil(ReaderWindowController.innerBook(in: dir, preferLast: false))
+        XCTAssertNil(ReaderWindowController.innerBook(in: dir, preferLast: true))
+    }
+}
