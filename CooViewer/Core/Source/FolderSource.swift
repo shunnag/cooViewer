@@ -120,6 +120,14 @@ final class FolderSource: BookSource {
         pageEntries
     }
 
+    func imageSize(for entry: PageEntry) async -> CGSize? {
+        // ヘッダ読みは数十 KB の小さな I/O なのでゲートを通さない
+        // (フルデコードの代替としては常に軽い)
+        // EN: Header reads are tiny; they bypass the gate.
+        guard let fileURL = entry.fileURL else { return nil }
+        return ImageDecoding.imageSize(at: fileURL)
+    }
+
     func imageData(for entry: PageEntry) async -> Data? {
         guard let fileURL = entry.fileURL else { return nil }
         // アニメーション用の生データ読みも同じゲートを通す(全読者を制御)

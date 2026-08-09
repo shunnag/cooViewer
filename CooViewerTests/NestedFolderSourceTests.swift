@@ -1,4 +1,5 @@
 import PDFKit
+import os
 import XCTest
 
 @testable import cooViewer
@@ -96,6 +97,33 @@ final class NestedFolderSourceTests: XCTestCase {
             for: tempDir, readSubFolders: false)
         let entries = try await source.entries()
         XCTAssertEqual(entries.map(\.pathInBook), ["00.png"])
+    }
+
+    /// 並列の子構築でも解錠は直列化され、同じパスワードの 2 冊目は
+    /// 入力を再利用してダイアログが 1 回で済むこと(多重プロンプト防止)
+    func testParallelChildBuildSerializesUnlockPrompts() async throws {
+        let prompts = OSAllocatedUnfairLock(initialState: 0)
+        for name in ["lockedA.zip", "lockedB.zip"] {
+            let plain = tempDir.appendingPathComponent("p-\(name).png")
+            try png(width: 41).write(to: plain)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.arguments = ["-j", "-P", "sesame",
+                                 tempDir.appendingPathComponent(name).path, plain.path]
+            try process.run()
+            process.waitUntilExit()
+            try FileManager.default.removeItem(at: plain)
+        }
+        let source = try await BookSourceFactory.make(
+            for: tempDir, readSubFolders: false,
+            nestedPasswordProvider: { _, _ in
+                prompts.withLock { $0 += 1 }
+                return "sesame"
+            })
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(prompts.withLock { $0 }, 1,
+                       "並列構築でもプロンプトは 1 回(直列化+既知パスワード再利用)")
     }
 
     /// 分割書庫の続き巻(.002 等)は候補にしない(画像だけなら FolderSource のまま)

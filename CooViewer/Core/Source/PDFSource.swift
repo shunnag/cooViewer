@@ -39,6 +39,18 @@ actor PDFSource: BookSource {
         }
     }
 
+    /// ページ寸法(ポイント。回転適用後)。見開き判定は縦横比だけを使うので
+    /// ピクセルでなくポイントで十分
+    /// EN: Page bounds in points (rotation applied); pairing only needs the
+    /// EN: aspect ratio, so points are fine.
+    func imageSize(for entry: PageEntry) async -> CGSize? {
+        guard let page = document.page(at: entry.id) else { return nil }
+        let bounds = page.bounds(for: .mediaBox)
+        let rotated = page.rotation % 180 != 0
+        return CGSize(width: rotated ? bounds.height : bounds.width,
+                      height: rotated ? bounds.width : bounds.height)
+    }
+
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
         return try render(entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)

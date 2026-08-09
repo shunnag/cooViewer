@@ -44,10 +44,27 @@ actor NestedUnlocker {
         knownPasswords.append(password)
     }
 
+    /// 直列化用の末尾タスク(並列の子構築から呼ばれても、解錠処理と
+    /// ダイアログは 1 つずつ順番に行う。actor 再入での多重プロンプト防止)
+    /// EN: Serialization tail so concurrent child builds never interleave
+    /// EN: unlock bodies or show overlapping prompts (actor reentrancy guard).
+    private var serialTail: Task<Bool, Never>?
+
     /// child のロック解除を試みる。成功で true、失敗/キャンセルで false
-    /// (呼び出し側はその子を本から外す。仕様書 §4.17 の黙殺方針)
-    /// EN: Try to unlock the child; false means the caller should skip it.
+    /// (呼び出し側はその子を本から外す。仕様書 §4.17 の黙殺方針)。
+    /// 呼び出しは到着順に直列実行される
+    /// EN: Try to unlock the child; calls run strictly one at a time.
     func unlock(_ child: any BookSource, name: String) async -> Bool {
+        let previous = serialTail
+        let task = Task { [previous] in
+            _ = await previous?.value
+            return await self.performUnlock(child, name: name)
+        }
+        serialTail = task
+        return await task.value
+    }
+
+    private func performUnlock(_ child: any BookSource, name: String) async -> Bool {
         for password in knownPasswords {
             if await child.checkAndSetPassword(password) { return true }
         }
