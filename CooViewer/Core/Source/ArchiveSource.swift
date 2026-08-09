@@ -75,7 +75,11 @@ actor ArchiveSource: BookSource {
     /// ストリームが巻き戻るため、未スプールの間は従来どおり直列
     /// EN: Parallel only when fully spooled or a non-solid format; unspooled
     /// EN: solid archives stay sequential.
-    func currentlySupportsParallelPageLoads() -> Bool {
+    /// 宣言は要件と同じ async(同期宣言だと async 文脈の直接呼び出しが
+    /// プロトコル拡張の既定実装に解決される罠がある。PDFSource 参照)
+    /// EN: Declared async to match the requirement (see PDFSource for the
+    /// EN: direct-call overload-resolution trap with a sync declaration).
+    func currentlySupportsParallelPageLoads() async -> Bool {
         if !outerImages.isEmpty, spooledIDs.count >= outerImages.count {
             return true
         }

@@ -54,6 +54,23 @@ enum ImageDecoding {
         if let cap = maxPixelSize, cap >= 2048,
            CGImageSourceCopyAuxiliaryDataInfoAtIndex(
                source, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil {
+            // まず表示キャップを適用した HDR デコードを試す(8K の半精度
+            // フル解像度がキャッシュを食い潰すのを防ぐ)。結果が HDR
+            // (>8bit)でなければ従来のフル解像度 HDR デコードへ
+            // EN: Try a capped HDR decode first; fall back to the legacy
+            // EN: full-resolution HDR decode when the result is not HDR.
+            let cappedOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: cap,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+            ]
+            if let capped = CGImageSourceCreateThumbnailAtIndex(
+                source, 0, cappedOptions as CFDictionary),
+               capped.bitsPerComponent > 8 {
+                return capped
+            }
             let hdrOptions: [CFString: Any] = [
                 kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
                 kCGImageSourceShouldCacheImmediately: true,

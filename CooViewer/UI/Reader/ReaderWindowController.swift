@@ -58,6 +58,10 @@ final class ReaderWindowController: NSWindowController {
 
     /// 直近に表示したスプレッドのページ index 列(サムネイルの強調に使う)
     private(set) var lastSpreadIndices: [Int] = []
+    /// アニメページの読み込み時実効キャップ(entry.id → px)。ウインドウ拡大
+    /// での再デコード判定に使う(本切替時にリセット)
+    /// EN: Effective decode cap per animated page id; drives grow-and-redecode.
+    var loadedAnimationFrameCaps: [Int: Int] = [:]
 
     /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
     /// EN: Generation counter for openBookFlow, mirroring displayGeneration.
@@ -478,6 +482,7 @@ final class ReaderWindowController: NSWindowController {
             await source.applyMediaProfile(mediaProfile)
             applyAdvancedSettings(to: book)
             self.book = book
+            loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
             // EN: Namespace the resample cache by book identity.
             readerView.resampleKeyPrefix = book.cacheKey
@@ -554,7 +559,11 @@ final class ReaderWindowController: NSWindowController {
         Task { [weak self] in
             guard let self, let book = self.book else { return }
             if await book.updateDisplayPixelCap(self.currentDisplayPixelCap()) {
-                await self.refreshDisplay()
+                await self.refreshDisplay()  // 再表示がアニメも再デコードする
+            } else {
+                // バケット内のリサイズでもアニメの表示枠は伸び得る
+                // EN: Same-bucket resizes can still outgrow animation frames.
+                self.restartAnimationsIfFrameGrew()
             }
         }
     }
@@ -753,12 +762,22 @@ final class ReaderWindowController: NSWindowController {
             guard !book.probedStaticAnimationIDs.contains(entry.id) else { continue }
             let ext = (entry.name as NSString).pathExtension.lowercased()
             guard animatable.contains(ext) else { continue }
-            // デコード(最大 120 フレーム)はメインアクターの外で行う
-            // EN: Frame decoding runs off the main actor.
+            // デコード(最大 120 フレーム)はメインアクターの外で行う。
+            // 解像度はページレイヤの実ピクセルに合わせる(全フレーム常駐のため、
+            // 一律 2048px より大幅に省メモリ)
+            // EN: Frame decoding runs off the main actor, capped at the page
+            // EN: layer's actual pixel size (all frames stay resident).
             let source = book.source
+            let frameCap: Int? = readerViewForInput.pageFramePixelSize(at: position)
+                .map { Int(max($0.width, $0.height).rounded(.up)) }
+                .flatMap { $0 > 0 ? $0 : nil }
+            // 実効キャップ(AnimatedImage 側の上限 2048 を反映)を記録し、
+            // ウインドウ拡大時の再デコード要否判定(下記)に使う
+            // EN: Record the effective cap for the grow-and-redecode check.
+            loadedAnimationFrameCaps[entry.id] = min(frameCap ?? 2048, 2048)
             Task.detached(priority: .userInitiated) { [weak self, weak book] in
                 guard let data = await source.imageData(for: entry) else { return }
-                let animation = AnimatedImage.load(from: data)
+                let animation = AnimatedImage.load(from: data, maxPixelSize: frameCap)
                 await MainActor.run {
                     guard let self, let book, book === self.book else { return }
                     guard let animation else {
@@ -769,6 +788,30 @@ final class ReaderWindowController: NSWindowController {
                         frames: animation.frames, delays: animation.delays,
                         forPageAt: position, id: entry.id)
                 }
+            }
+        }
+    }
+
+    /// ウインドウ拡大でアニメページの表示枠が読み込み時キャップを超えたら
+    /// 再デコードする。表示キャップのバケット(1024 刻み・最低 2048)が
+    /// 変わらないリサイズでは refreshDisplay が走らないため、ここで補う
+    /// EN: Re-decode animated pages when the frame outgrew the loaded cap —
+    /// EN: needed because same-bucket resizes never trigger refreshDisplay.
+    func restartAnimationsIfFrameGrew() {
+        guard settings.playAnimatedImages, let book else { return }
+        for (position, index) in lastSpreadIndices.enumerated() {
+            guard book.entries.indices.contains(index) else { continue }
+            let id = book.entries[index].id
+            guard let loaded = loadedAnimationFrameCaps[id], loaded < 2048,
+                  let size = readerViewForInput.pageFramePixelSize(at: position)
+            else { continue }
+            let needed = min(Int(max(size.width, size.height).rounded(.up)), 2048)
+            // 1.25 倍以上の拡大でだけ再デコード(微小リサイズの連発を防ぐ)
+            // EN: Only re-decode on >=1.25x growth to avoid churn.
+            if needed > loaded + loaded / 4 {
+                startAnimationsIfNeeded(
+                    spread: .init(indices: lastSpreadIndices, images: []))
+                return
             }
         }
     }
