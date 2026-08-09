@@ -39,11 +39,24 @@ final class MetalFXUpscaler {
 
         // MTKTextureLoader は premultipliedFirst(BGRA 系)の CGImage
         // (ImageIO のサムネイルデコード経路など)でバイト順を誤読するため、
-        // 既知の RGBA 形式へ正規化してから渡す(回帰テストあり)
-        // EN: MTKTextureLoader misreads premultipliedFirst (BGRA) images, so
-        // EN: always normalize to RGBA first (regression-tested).
-        guard let normalized = ImageResampler.cgResample(
-            image, width: image.width, height: image.height) else { return nil }
+        // 既知の RGBA8 形式へ正規化してから渡す(回帰テストあり)。
+        // 既に RGBA8/premultipliedLast/既定バイト順ならフル再描画を省く
+        // EN: Normalize BGRA-style images (regression-tested); skip the
+        // EN: full redraw when the image is already plain RGBA8.
+        let alreadyRGBA8 = image.bitsPerComponent == 8
+            && image.bitsPerPixel == 32
+            && image.alphaInfo == .premultipliedLast
+            && image.bitmapInfo.intersection(.byteOrderMask) == []
+            && image.colorSpace?.model == .rgb
+        let normalized: CGImage
+        if alreadyRGBA8 {
+            normalized = image
+        } else if let redrawn = ImageResampler.cgResample(
+            image, width: image.width, height: image.height) {
+            normalized = redrawn
+        } else {
+            return nil
+        }
         guard var current = try? loader.newTexture(cgImage: normalized, options: [
             .textureUsage: NSNumber(value: MTLTextureUsage.shaderRead.rawValue),
             .textureStorageMode: NSNumber(value: MTLStorageMode.private.rawValue),
@@ -76,13 +89,24 @@ final class MetalFXUpscaler {
         // 明示的に RGBA8 としてレンダリングして CGImage を組み立てる
         // EN: Render explicitly as RGBA8 instead of createCGImage, which can
         // EN: misinterpret the texture's pixel format.
+        // 出力バッファは malloc 領域へ直接レンダリングし、CGImage に所有権ごと
+        // 渡す(従来は [UInt8] → Data → CFData で全画素を 2 回コピーしていた)
+        // EN: Render straight into a malloc'd buffer handed to CGImage,
+        // EN: avoiding two full-frame copies.
         let bytesPerRow = outWidth * 4
-        var buffer = [UInt8](repeating: 0, count: bytesPerRow * outHeight)
+        let byteCount = bytesPerRow * outHeight
+        let bufferPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount, alignment: 16)
         ciContext.render(
-            ciImage, toBitmap: &buffer, rowBytes: bytesPerRow,
+            ciImage, toBitmap: bufferPointer, rowBytes: bytesPerRow,
             bounds: CGRect(x: 0, y: 0, width: CGFloat(outWidth), height: CGFloat(outHeight)),
             format: .RGBA8, colorSpace: colorSpace)
-        guard let provider = CGDataProvider(data: Data(buffer) as CFData) else { return nil }
+        guard let provider = CGDataProvider(
+            dataInfo: nil, data: bufferPointer, size: byteCount,
+            releaseData: { _, data, _ in data.deallocate() }) else {
+            bufferPointer.deallocate()
+            return nil
+        }
         return CGImage(
             width: outWidth, height: outHeight,
             bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
