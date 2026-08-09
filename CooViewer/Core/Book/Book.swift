@@ -123,14 +123,15 @@ final class Book {
     /// デコードに合流し、同じページを二重にデコードしないための単一飛行
     /// EN: In-flight decodes keyed by entry id: the display request joins the
     /// EN: prefetch decode instead of duplicating it (single-flight).
-    private var inFlightLoads: [Int: Task<CGImage?, Never>] = [:]
+    private var inFlightLoads: [Int: (token: Int, task: Task<CGImage?, Never>)] = [:]
+    private var inFlightToken = 0
 
     func image(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
         let key = entries[index].id
         if let hit = await cache.image(for: key) { return hit }
         if let running = inFlightLoads[key] {
-            return await running.value
+            return await running.task.value
         }
         // detached: 先読みのキャンセルが、合流している表示要求まで
         // 巻き込まないように独立タスクで走らせる
@@ -141,14 +142,30 @@ final class Book {
         let cap = displayPixelCap
         let cache = cache
         let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
-            guard let image = try? await source.image(
-                for: entry, maxPixelSize: cap) else { return nil }
-            await cache.insert(image, for: key)
-            return image
+            try? await source.image(for: entry, maxPixelSize: cap)
         }
-        inFlightLoads[key] = task
+        inFlightToken += 1
+        let token = inFlightToken
+        inFlightLoads[key] = (token, task)
         let image = await task.value
-        inFlightLoads[key] = nil
+        if inFlightLoads[key]?.token == token {
+            inFlightLoads[key] = nil
+        }
+        if let image {
+            // キャッシュへの登録はキャップが変わっていない場合のみ
+            // (拡大後に旧キャップの低解像度が居座るのを防ぐ。表示自体は返し、
+            //  直後の再表示が新キャップで再デコードする)
+            // EN: Insert only if the cap is unchanged, so a raise never gets
+            // EN: repopulated with stale low-res decodes.
+            if cap == displayPixelCap {
+                await cache.insert(image, for: key)
+            }
+            if pageSizeCache[key] == nil {
+                // キャップ付きデコードでも縦横比は保たれるため判定に使える
+                // EN: Capped decodes preserve the aspect ratio, fine for pairing.
+                pageSizeCache[key] = CGSize(width: image.width, height: image.height)
+            }
+        }
         return image
     }
 
@@ -157,6 +174,54 @@ final class Book {
     func fullResolutionImage(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
         return try? await source.image(for: entries[index], maxPixelSize: nil)
+    }
+
+    /// ページ寸法の索引(entry.id → 寸法)。ヘッダ読みやデコード結果から
+    /// 埋まり、見開き判定(縦横比)をデコードなしで行えるようにする
+    /// EN: Page-size index (header reads + decode results) so spread pairing
+    /// EN: needs no decode.
+    private var pageSizeCache: [Int: CGSize] = [:]
+
+    private func pageSize(at index: Int) async -> CGSize? {
+        guard entries.indices.contains(index) else { return nil }
+        let key = entries[index].id
+        if let cached = pageSizeCache[key] { return cached }
+        if let hit = await cache.image(for: key) {
+            let size = CGSize(width: hit.width, height: hit.height)
+            pageSizeCache[key] = size
+            return size
+        }
+        if let size = await source.imageSize(for: entries[index]) {
+            pageSizeCache[key] = size
+            return size
+        }
+        return nil
+    }
+
+    /// サイズ索引による見開き候補判定。寸法が取れなければ nil(従来判定へ)
+    /// EN: Size-index pairing check; nil falls back to the decode-based test.
+    private func isSmallFromIndex(at index: Int) async -> Bool? {
+        guard let size = await pageSize(at: index) else { return nil }
+        return PageLayout.isSmall(size: size, index: index,
+                                  marks: marks, singleSetting: singleSetting)
+    }
+
+    /// 表示デコード上限の更新。上げた場合は低解像度の既存キャッシュを破棄する
+    /// (ウインドウ拡大・原寸表示切替時。下げた場合は大きい画像を使い続ける)
+    /// EN: Update the decode cap; raising it drops the lower-res cache.
+    func updateDisplayPixelCap(_ cap: Int) async -> Bool {
+        guard cap != displayPixelCap else { return false }
+        let raised = cap > (displayPixelCap ?? Int.max)
+        displayPixelCap = cap
+        if raised {
+            await cache.removeAll()
+            // 旧キャップで進行中のデコードには合流させない(新規要求は
+            // 新キャップで作り直す。旧タスクの結果はキャップ照合で捨てられる)
+            // EN: Detach in-flight old-cap decodes; new requests re-decode at
+            // EN: the new cap and stale results fail the cap check.
+            inFlightLoads.removeAll()
+        }
+        return raised
     }
 
     private func isSmall(_ image: CGImage?, at index: Int) -> Bool {
@@ -173,6 +238,33 @@ final class Book {
     func currentSpread() async -> Spread {
         guard !entries.isEmpty else { return Spread(indices: [], images: []) }
         currentIndex = min(max(0, currentIndex), entries.count - 1)
+
+        // サイズ索引(ヘッダ寸法)でペアが確定するなら、両ページを並列取得する
+        // (従来はまず 1 枚目をデコードしないと 2 枚目に着手できなかった)。
+        // 壊れページ(デコード失敗)は従来どおり単ページへ落とす
+        // EN: When the size index settles the pairing, fetch both halves in
+        // EN: parallel; broken pages still collapse to a single page.
+        if readMode.isSpread, currentIndex + 1 < entries.count,
+           let firstSmall = await isSmallFromIndex(at: currentIndex),
+           firstSmall,
+           let secondSmall = await isSmallFromIndex(at: currentIndex + 1) {
+            if secondSmall {
+                async let firstTask = image(at: currentIndex)
+                async let secondTask = image(at: currentIndex + 1)
+                let (first, second) = await (firstTask, secondTask)
+                if first != nil, second != nil {
+                    lastDisplayCount = 2
+                    schedulePrefetch()
+                    return Spread(indices: [currentIndex, currentIndex + 1],
+                                  images: [first, second])
+                }
+                // 片方が壊れていたら従来規則(単ページ)へ
+                // EN: A broken half collapses to a single page (legacy rule).
+                lastDisplayCount = 1
+                schedulePrefetch()
+                return Spread(indices: [currentIndex], images: [first])
+            }
+        }
 
         let first = await image(at: currentIndex)
         var indices = [currentIndex]
@@ -204,11 +296,24 @@ final class Book {
         guard !entries.isEmpty, currentIndex > 0 else { return .hitStart }
         lastMoveForward = false
         if readMode.isSpread, currentIndex >= 2 {
-            let first = await image(at: currentIndex - 2)
-            let second = await image(at: currentIndex - 1)
-            if isSmall(first, at: currentIndex - 2), isSmall(second, at: currentIndex - 1) {
-                currentIndex -= 2
-                return .moved
+            // サイズ索引が両ページ分あればデコードなしで判定(後方めくりの
+            // 逐次 2 デコード待ちを解消)。無ければ従来のデコード判定
+            // EN: Judge from the size index when both sizes are known —
+            // EN: no decodes on the backward turn; else the legacy path.
+            if let firstSmall = await isSmallFromIndex(at: currentIndex - 2),
+               let secondSmall = await isSmallFromIndex(at: currentIndex - 1) {
+                if firstSmall, secondSmall {
+                    currentIndex -= 2
+                    return .moved
+                }
+            } else {
+                let first = await image(at: currentIndex - 2)
+                let second = await image(at: currentIndex - 1)
+                if isSmall(first, at: currentIndex - 2),
+                   isSmall(second, at: currentIndex - 1) {
+                    currentIndex -= 2
+                    return .moved
+                }
             }
         }
         currentIndex -= 1
@@ -246,11 +351,20 @@ final class Book {
         guard !entries.isEmpty else { return }
         lastMoveForward = true
         if readMode.isSpread, entries.count >= 2 {
-            let first = await image(at: entries.count - 2)
-            let second = await image(at: entries.count - 1)
-            if isSmall(first, at: entries.count - 2), isSmall(second, at: entries.count - 1) {
-                currentIndex = entries.count - 2
-                return
+            if let firstSmall = await isSmallFromIndex(at: entries.count - 2),
+               let secondSmall = await isSmallFromIndex(at: entries.count - 1) {
+                if firstSmall, secondSmall {
+                    currentIndex = entries.count - 2
+                    return
+                }
+            } else {
+                let first = await image(at: entries.count - 2)
+                let second = await image(at: entries.count - 1)
+                if isSmall(first, at: entries.count - 2),
+                   isSmall(second, at: entries.count - 1) {
+                    currentIndex = entries.count - 2
+                    return
+                }
             }
         }
         currentIndex = entries.count - 1
@@ -338,13 +452,18 @@ final class Book {
             ? (1...prefetchBehind).map { currentIndex - $0 } : []
         let targets = (lastMoveForward ? ahead + behind : behind + ahead)
             .filter { entries.indices.contains($0) }
-        let parallel = source.supportsParallelPageLoads
-        // 並列幅は置き場所の速度で決める(SSD=4 / HDD=1 / ネットワーク=2)
+        // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)
         // EN: Prefetch width follows the volume-speed profile.
         let width = max(1, mediaProfile.bookPrefetchConcurrency)
+        let source = source
 
         prefetchTask = Task { [weak self] in
             guard let self else { return }
+            // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
+            // ソースの「現在の状態」(スプール完了・形式)で判断する
+            // EN: Parallel-ness is decided from the source's CURRENT state so
+            // EN: solid archives never extract out of order.
+            let parallel = await source.currentlySupportsParallelPageLoads()
             if parallel {
                 await withTaskGroup(of: Void.self) { group in
                     var iterator = targets.makeIterator()

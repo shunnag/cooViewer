@@ -74,6 +74,12 @@ protocol BookSource: Sendable {
     /// image(for:) を並列に呼んでよいか(actor 直列化が不要なソースのみ true)
     var supportsParallelPageLoads: Bool { get }
 
+    /// いまの状態での並列可否(書庫: 全スプール済み or 非 solid 形式のみ true。
+    /// solid 書庫の順不同展開によるストリーム巻き戻しを避ける)
+    /// EN: Current parallel-load capability (archives: only when fully
+    /// EN: spooled or a non-solid format, avoiding solid-stream restarts).
+    func currentlySupportsParallelPageLoads() async -> Bool
+
     /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
     /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
     /// spoolSizeLimit: ローカル一時展開に使ってよい合計バイト数
@@ -95,6 +101,13 @@ protocol BookSource: Sendable {
     /// EN: Whether locked nested children were skipped during assembly.
     func hasSkippedLockedContent() async -> Bool
 
+    /// ページのピクセル寸法をヘッダ情報だけから返す(EXIF 回転適用後)。
+    /// デコードなしで見開き判定(縦横比)を行うため。取れないソースは nil を
+    /// 返し、呼び出し側は従来のデコード判定へフォールバックする
+    /// EN: Pixel size from header metadata only (EXIF rotation applied), so
+    /// EN: spread pairing needs no decode; nil falls back to decoding.
+    func imageSize(for entry: PageEntry) async -> CGSize?
+
     /// ネストのパスワード入力コールバックを後付けする(準備済みソースの再利用時)
     /// EN: Attach a nested-password provider to a prepared source.
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async
@@ -111,11 +124,13 @@ extension BookSource {
     func isEncrypted() async -> Bool { false }
     func checkAndSetPassword(_ password: String) async -> Bool { true }
     var supportsParallelPageLoads: Bool { false }
+    func currentlySupportsParallelPageLoads() async -> Bool { supportsParallelPageLoads }
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {}
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         try await image(for: entry, maxPixelSize: nil)
     }
     func imageData(for entry: PageEntry) async -> Data? { nil }
+    func imageSize(for entry: PageEntry) async -> CGSize? { nil }
     func hasSkippedLockedContent() async -> Bool { false }
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {}
     func applyMediaProfile(_ profile: MediaProfile) async {}

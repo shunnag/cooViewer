@@ -258,7 +258,35 @@ final class ReaderWindowController: NSWindowController {
             book.prefetchAhead = book.mediaProfile.defaultPrefetchAhead
             book.prefetchBehind = book.mediaProfile.defaultPrefetchBehind
         }
-        book.displayPixelCap = settings.displayPixelCap
+        // キャップは raise 時のクリアを通して反映(設定の上限引き上げにも追従)
+        // EN: Route through the raise-aware update (covers Settings changes).
+        refreshDisplayIfCapRaised()
+    }
+
+    /// いまのウインドウ実寸・原寸表示設定から適切なデコード上限を求める
+    /// EN: Decode cap for the current window pixels and fit mode.
+    private func currentDisplayPixelCap() -> Int {
+        let scale = window?.backingScaleFactor ?? 2
+        let size = window?.contentView?.bounds.size ?? .zero
+        let edge = Int((max(size.width, size.height) * scale).rounded(.up))
+        // ウインドウに収まらない描画をするモードは従来のユーザー上限のまま
+        // EN: Modes rendering beyond the window keep the user cap.
+        let usesUserCap = switch readerView.fitMode {
+        case .noScale, .fitWidth, .fitWidthDivide: true
+        default: false
+        }
+        return DisplayCapPolicy.cap(
+            windowLongEdgePixels: edge,
+            userCap: settings.displayPixelCap,
+            usesUserCap: usesUserCap)
+    }
+
+    /// キャップの再評価。上がった(ウインドウ拡大・原寸表示切替)なら
+    /// 低解像度キャッシュを捨てて現スプレッドを再デコードする
+    /// EN: Re-evaluate the cap; a raise drops the low-res cache and refreshes.
+    func updateDisplayPixelCapIfNeeded() async {
+        guard let book else { return }
+        _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
     }
 
     private func setUpContentViews(in window: NSWindow) {
@@ -520,6 +548,32 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
 
+    /// キャップが上がる変化(ウインドウ拡大・原寸表示切替)なら再デコード
+    /// EN: Redecode when the change raised the cap (bigger window, noScale).
+    func refreshDisplayIfCapRaised() {
+        Task { [weak self] in
+            guard let self, let book = self.book else { return }
+            if await book.updateDisplayPixelCap(self.currentDisplayPixelCap()) {
+                await self.refreshDisplay()
+            }
+        }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        refreshDisplayIfCapRaised()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
+        // EN: Non-live resizes such as zoom; live resizes handled at end.
+        guard window?.inLiveResize == false else { return }
+        refreshDisplayIfCapRaised()
+    }
+
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        refreshDisplayIfCapRaised()  // 別解像度のディスプレイへ移動した場合
+    }
+
     func windowWillClose(_ notification: Notification) {
         stopSlideshow()
         saveCurrentBookState()
@@ -623,6 +677,9 @@ final class ReaderWindowController: NSWindowController {
 
     func refreshDisplay() async {
         guard let book else { return }
+        // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
+        // EN: Self-healing decode cap on every display pass.
+        _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
         let generation = displayGeneration
         let spread = await book.currentSpread()
@@ -923,6 +980,7 @@ final class ReaderWindowController: NSWindowController {
     @objc func changeFitMode(_ sender: NSMenuItem) {
         guard let mode = ReaderView.FitMode(rawValue: sender.tag) else { return }
         readerView.fitMode = mode
+        refreshDisplayIfCapRaised()
     }
 
     @objc func changeReadMode(_ sender: NSMenuItem) {
@@ -979,6 +1037,7 @@ final class ReaderWindowController: NSWindowController {
 
     func windowDidEnterFullScreen(_ notification: Notification) {
         scheduleCursorHide()
+        refreshDisplayIfCapRaised()
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {

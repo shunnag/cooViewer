@@ -65,6 +65,22 @@ actor ArchiveSource: BookSource {
     private static let nestedIDStride = 1_000_000
 
     nonisolated var supportsDateSort: Bool { false }
+    /// エントリ独立圧縮の形式(並列展開しても solid ストリームの巻き戻しがない)
+    /// EN: Formats with independently-compressed entries (safe to extract
+    /// EN: out of order).
+    private static let nonSolidExtensions: Set<String> = ["zip", "cbz"]
+
+    /// いまの状態での並列可否: 全ページスプール済み(ローカル読みのみ)か、
+    /// エントリ独立圧縮の形式のみ true。solid 書庫(rar/7z 等)は順不同展開で
+    /// ストリームが巻き戻るため、未スプールの間は従来どおり直列
+    /// EN: Parallel only when fully spooled or a non-solid format; unspooled
+    /// EN: solid archives stay sequential.
+    func currentlySupportsParallelPageLoads() -> Bool {
+        if !outerImages.isEmpty, spooledIDs.count >= outerImages.count {
+            return true
+        }
+        return Self.nonSolidExtensions.contains(url.pathExtension.lowercased())
+    }
 
     /// スプールの置き場所。<pid>-<uuid> のサブディレクトリを掘る
     /// (起動時掃除で生存プロセスのものを残すため。仕様書 §4.17 の残骸問題への対策)。
@@ -263,6 +279,21 @@ actor ArchiveSource: BookSource {
             // EN: extraction/spooling and CPU decode overlap.
             return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
         }
+    }
+
+    /// ページ寸法: スプール済みならヘッダ読み、子は委譲。未スプールの書庫
+    /// エントリは全展開が必要なので nil(呼び出し側がデコード判定へ)
+    /// EN: Size via spooled-file header or child delegation; unspooled archive
+    /// EN: entries would need full extraction, so nil.
+    func imageSize(for entry: PageEntry) async -> CGSize? {
+        if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
+            return await children[sourceIndex].imageSize(for: childEntry)
+        }
+        guard spooledIDs.contains(entry.id), let directory = spoolDirectory else {
+            return nil
+        }
+        return ImageDecoding.imageSize(
+            at: directory.appendingPathComponent(String(entry.id)))
     }
 
     /// ページの中身: 子ソースへの委譲か、生データ(actor 内で取り出す)
