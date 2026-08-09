@@ -2,61 +2,86 @@ import CoreGraphics
 
 /// 単ページ/見開きの強制指定(仕様書 §7.1 の marks)。
 /// 保存形式は旧実装と互換の 1 始まり文字列("N"=強制単ページ、"N-M"=強制見開き)。
-/// API は 0 始まりのページ index で受ける。
-/// EN: Forced single/pair page marks, stored as legacy 1-based strings
-/// EN: ("N" = force single, "N-M" = force pair); the API is 0-based.
+/// API は 0 始まりのページ index で受ける。判定はページ送り・見開き合成・
+/// サムネイルのペア判定などホットパスから毎回呼ばれるため、文字列生成を
+/// 避けて Int 集合を導出キャッシュとして持つ(raw が正で、変更時に再構築)。
+/// EN: Forced single/pair page marks, stored as legacy 1-based strings; hot
+/// EN: lookups use derived Int sets rebuilt on mutation (raw is authoritative).
 struct PageMarks: Sendable, Equatable {
     private(set) var raw: Set<String>
+    /// 導出キャッシュ(0 始まり)。raw から一意に決まるため同値比較は raw のみ
+    /// EN: Derived caches (0-based); equality uses raw alone.
+    private var singleIndices: Set<Int> = []
+    private var pairMemberIndices: Set<Int> = []
 
     init(raw: Set<String> = []) {
         self.raw = raw
+        rebuildDerived()
     }
 
     init(legacyArray: [String]) {
         self.raw = Set(legacyArray)
+        rebuildDerived()
+    }
+
+    static func == (lhs: PageMarks, rhs: PageMarks) -> Bool {
+        lhs.raw == rhs.raw
     }
 
     var legacyArray: [String] { Array(raw).sorted() }
 
     /// index を単ページ強制するか
     func forcesSingle(_ index: Int) -> Bool {
-        raw.contains(String(index + 1))
+        singleIndices.contains(index)
     }
 
     /// index が強制ペアの一部か(仕様書 §4.2.1: "page-(page+1)" または "(page-1)-page")
     /// EN: True when the page is either half of a forced pair mark.
     func forcesPairContaining(_ index: Int) -> Bool {
-        raw.contains("\(index + 1)-\(index + 2)") || raw.contains("\(index)-\(index + 1)")
+        pairMemberIndices.contains(index)
     }
 
     mutating func setForcedSingle(_ index: Int) {
         raw.insert(String(index + 1))
+        rebuildDerived()
     }
 
     mutating func setForcedPair(firstIndex: Int) {
         raw.insert("\(firstIndex + 1)-\(firstIndex + 2)")
+        rebuildDerived()
     }
 
     mutating func removeMark(containing index: Int) {
         raw.remove(String(index + 1))
         raw.remove("\(index + 1)-\(index + 2)")
         raw.remove("\(index)-\(index + 1)")
+        rebuildDerived()
     }
 
     /// 強制単ページの index 一覧(0 始まり。サムネイル一覧のペア判定用)
     /// EN: 0-based indices forced single (thumbnail pairing).
-    var forcedSingleIndices: [Int] {
-        raw.compactMap { Int($0).map { $0 - 1 } }
-    }
+    var forcedSingleIndices: [Int] { Array(singleIndices) }
 
     /// 強制ペアに含まれる index 一覧(0 始まり、両片)
     /// EN: 0-based indices that are either half of a forced pair.
-    var forcedPairMemberIndices: [Int] {
-        raw.flatMap { mark -> [Int] in
+    var forcedPairMemberIndices: [Int] { Array(pairMemberIndices) }
+
+    /// raw(1 始まり文字列)から Int 集合を組み直す。marks は高々数十個
+    /// EN: Rebuild the Int sets from raw; marks stay tiny.
+    private mutating func rebuildDerived() {
+        singleIndices = []
+        pairMemberIndices = []
+        for mark in raw {
+            if let single = Int(mark) {
+                singleIndices.insert(single - 1)
+                continue
+            }
             let parts = mark.split(separator: "-")
-            guard parts.count == 2,
-                  let first = Int(parts[0]), let second = Int(parts[1]) else { return [] }
-            return [first - 1, second - 1]
+            if parts.count == 2,
+               let first = Int(parts[0]), let second = Int(parts[1]) {
+                pairMemberIndices.insert(first - 1)
+                pairMemberIndices.insert(second - 1)
+            }
         }
     }
 }

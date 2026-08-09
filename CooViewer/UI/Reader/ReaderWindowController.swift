@@ -39,6 +39,9 @@ final class ReaderWindowController: NSWindowController {
     /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
     var preparedNextBook: (path: String, source: any BookSource)?
     var preparingNextBookPath: String?
+    /// 同フォルダの本一覧のキャッシュ(+Library。巻末付近の毎ページ走査対策)
+    /// EN: Sibling-book list cache (see +Library).
+    var cachedSiblings: (parent: String, paths: [String], timestamp: Double)?
 
     /// ページバーホバーのサムネイルバブル(仕様書 §3.4)
     private let pageBarBubble = NSView()
@@ -55,6 +58,10 @@ final class ReaderWindowController: NSWindowController {
 
     /// 直近に表示したスプレッドのページ index 列(サムネイルの強調に使う)
     private(set) var lastSpreadIndices: [Int] = []
+    /// アニメページの読み込み時実効キャップ(entry.id → px)。ウインドウ拡大
+    /// での再デコード判定に使う(本切替時にリセット)
+    /// EN: Effective decode cap per animated page id; drives grow-and-redecode.
+    var loadedAnimationFrameCaps: [Int: Int] = [:]
 
     /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
     /// EN: Generation counter for openBookFlow, mirroring displayGeneration.
@@ -72,6 +79,9 @@ final class ReaderWindowController: NSWindowController {
     /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
     private var indicatorHideTimer: Timer?
     private var indicatorsTemporarilyVisible = true
+    /// applySettings の一括化フラグ(defaults 連続書込対策)
+    /// EN: Coalescing flag for applySettings bursts.
+    private var applySettingsScheduled = false
 
     convenience init() {
         let window = NSWindow(
@@ -96,7 +106,15 @@ final class ReaderWindowController: NSWindowController {
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applySettings()
+                // 1 runloop 内の連続書込(スライダー操作・ウインドウ枠保存等)を
+                // 1 回の適用にまとめる(バインディング再読込を含む全再適用のため)
+                // EN: Coalesce bursts of defaults writes into one apply pass.
+                guard let self, !self.applySettingsScheduled else { return }
+                self.applySettingsScheduled = true
+                DispatchQueue.main.async {
+                    self.applySettingsScheduled = false
+                    self.applySettings()
+                }
             }
         }
     }
@@ -244,7 +262,35 @@ final class ReaderWindowController: NSWindowController {
             book.prefetchAhead = book.mediaProfile.defaultPrefetchAhead
             book.prefetchBehind = book.mediaProfile.defaultPrefetchBehind
         }
-        book.displayPixelCap = settings.displayPixelCap
+        // キャップは raise 時のクリアを通して反映(設定の上限引き上げにも追従)
+        // EN: Route through the raise-aware update (covers Settings changes).
+        refreshDisplayIfCapRaised()
+    }
+
+    /// いまのウインドウ実寸・原寸表示設定から適切なデコード上限を求める
+    /// EN: Decode cap for the current window pixels and fit mode.
+    private func currentDisplayPixelCap() -> Int {
+        let scale = window?.backingScaleFactor ?? 2
+        let size = window?.contentView?.bounds.size ?? .zero
+        let edge = Int((max(size.width, size.height) * scale).rounded(.up))
+        // ウインドウに収まらない描画をするモードは従来のユーザー上限のまま
+        // EN: Modes rendering beyond the window keep the user cap.
+        let usesUserCap = switch readerView.fitMode {
+        case .noScale, .fitWidth, .fitWidthDivide: true
+        default: false
+        }
+        return DisplayCapPolicy.cap(
+            windowLongEdgePixels: edge,
+            userCap: settings.displayPixelCap,
+            usesUserCap: usesUserCap)
+    }
+
+    /// キャップの再評価。上がった(ウインドウ拡大・原寸表示切替)なら
+    /// 低解像度キャッシュを捨てて現スプレッドを再デコードする
+    /// EN: Re-evaluate the cap; a raise drops the low-res cache and refreshes.
+    func updateDisplayPixelCapIfNeeded() async {
+        guard let book else { return }
+        _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
     }
 
     private func setUpContentViews(in window: NSWindow) {
@@ -436,6 +482,7 @@ final class ReaderWindowController: NSWindowController {
             await source.applyMediaProfile(mediaProfile)
             applyAdvancedSettings(to: book)
             self.book = book
+            loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
             // EN: Namespace the resample cache by book identity.
             readerView.resampleKeyPrefix = book.cacheKey
@@ -505,6 +552,36 @@ final class ReaderWindowController: NSWindowController {
     }
 
     // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
+
+    /// キャップが上がる変化(ウインドウ拡大・原寸表示切替)なら再デコード
+    /// EN: Redecode when the change raised the cap (bigger window, noScale).
+    func refreshDisplayIfCapRaised() {
+        Task { [weak self] in
+            guard let self, let book = self.book else { return }
+            if await book.updateDisplayPixelCap(self.currentDisplayPixelCap()) {
+                await self.refreshDisplay()  // 再表示がアニメも再デコードする
+            } else {
+                // バケット内のリサイズでもアニメの表示枠は伸び得る
+                // EN: Same-bucket resizes can still outgrow animation frames.
+                self.restartAnimationsIfFrameGrew()
+            }
+        }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        refreshDisplayIfCapRaised()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
+        // EN: Non-live resizes such as zoom; live resizes handled at end.
+        guard window?.inLiveResize == false else { return }
+        refreshDisplayIfCapRaised()
+    }
+
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        refreshDisplayIfCapRaised()  // 別解像度のディスプレイへ移動した場合
+    }
 
     func windowWillClose(_ notification: Notification) {
         stopSlideshow()
@@ -609,6 +686,9 @@ final class ReaderWindowController: NSWindowController {
 
     func refreshDisplay() async {
         guard let book else { return }
+        // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
+        // EN: Self-healing decode cap on every display pass.
+        _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
         let generation = displayGeneration
         let spread = await book.currentSpread()
@@ -675,15 +755,63 @@ final class ReaderWindowController: NSWindowController {
         for (position, index) in spread.indices.enumerated() {
             guard book.entries.indices.contains(index) else { continue }
             let entry = book.entries[index]
+            // 一度「静止画」と判定したページは再判定しない(PNG が大半の本で
+            // 表示のたびに生データを読み直す無駄の防止)
+            // EN: Skip pages already probed static; without this every PNG
+            // EN: page re-reads its raw bytes on every redisplay.
+            guard !book.probedStaticAnimationIDs.contains(entry.id) else { continue }
             let ext = (entry.name as NSString).pathExtension.lowercased()
             guard animatable.contains(ext) else { continue }
-            Task { [weak self] in
-                guard let self,
-                      let data = await book.source.imageData(for: entry),
-                      let animation = AnimatedImage.load(from: data) else { return }
-                self.readerViewForInput.applyAnimation(
-                    frames: animation.frames, delays: animation.delays,
-                    forPageAt: position, id: entry.id)
+            // デコード(最大 120 フレーム)はメインアクターの外で行う。
+            // 解像度はページレイヤの実ピクセルに合わせる(全フレーム常駐のため、
+            // 一律 2048px より大幅に省メモリ)
+            // EN: Frame decoding runs off the main actor, capped at the page
+            // EN: layer's actual pixel size (all frames stay resident).
+            let source = book.source
+            let frameCap: Int? = readerViewForInput.pageFramePixelSize(at: position)
+                .map { Int(max($0.width, $0.height).rounded(.up)) }
+                .flatMap { $0 > 0 ? $0 : nil }
+            // 実効キャップ(AnimatedImage 側の上限 2048 を反映)を記録し、
+            // ウインドウ拡大時の再デコード要否判定(下記)に使う
+            // EN: Record the effective cap for the grow-and-redecode check.
+            loadedAnimationFrameCaps[entry.id] = min(frameCap ?? 2048, 2048)
+            Task.detached(priority: .userInitiated) { [weak self, weak book] in
+                guard let data = await source.imageData(for: entry) else { return }
+                let animation = AnimatedImage.load(from: data, maxPixelSize: frameCap)
+                await MainActor.run {
+                    guard let self, let book, book === self.book else { return }
+                    guard let animation else {
+                        book.probedStaticAnimationIDs.insert(entry.id)
+                        return
+                    }
+                    self.readerViewForInput.applyAnimation(
+                        frames: animation.frames, delays: animation.delays,
+                        forPageAt: position, id: entry.id)
+                }
+            }
+        }
+    }
+
+    /// ウインドウ拡大でアニメページの表示枠が読み込み時キャップを超えたら
+    /// 再デコードする。表示キャップのバケット(1024 刻み・最低 2048)が
+    /// 変わらないリサイズでは refreshDisplay が走らないため、ここで補う
+    /// EN: Re-decode animated pages when the frame outgrew the loaded cap —
+    /// EN: needed because same-bucket resizes never trigger refreshDisplay.
+    func restartAnimationsIfFrameGrew() {
+        guard settings.playAnimatedImages, let book else { return }
+        for (position, index) in lastSpreadIndices.enumerated() {
+            guard book.entries.indices.contains(index) else { continue }
+            let id = book.entries[index].id
+            guard let loaded = loadedAnimationFrameCaps[id], loaded < 2048,
+                  let size = readerViewForInput.pageFramePixelSize(at: position)
+            else { continue }
+            let needed = min(Int(max(size.width, size.height).rounded(.up)), 2048)
+            // 1.25 倍以上の拡大でだけ再デコード(微小リサイズの連発を防ぐ)
+            // EN: Only re-decode on >=1.25x growth to avoid churn.
+            if needed > loaded + loaded / 4 {
+                startAnimationsIfNeeded(
+                    spread: .init(indices: lastSpreadIndices, images: []))
+                return
             }
         }
     }
@@ -895,6 +1023,7 @@ final class ReaderWindowController: NSWindowController {
     @objc func changeFitMode(_ sender: NSMenuItem) {
         guard let mode = ReaderView.FitMode(rawValue: sender.tag) else { return }
         readerView.fitMode = mode
+        refreshDisplayIfCapRaised()
     }
 
     @objc func changeReadMode(_ sender: NSMenuItem) {
@@ -951,6 +1080,7 @@ final class ReaderWindowController: NSWindowController {
 
     func windowDidEnterFullScreen(_ notification: Notification) {
         scheduleCursorHide()
+        refreshDisplayIfCapRaised()
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {

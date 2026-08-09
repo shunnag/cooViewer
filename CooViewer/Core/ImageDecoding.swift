@@ -6,6 +6,38 @@ import ImageIO
 /// 画像データ → CGImage のデコード。
 /// EN: Data -> CGImage decoding via ImageIO, with AppKit/SVG fallback.
 enum ImageDecoding {
+    /// ヘッダ情報だけからピクセル寸法を読む(EXIF 回転適用後)。デコードなし。
+    /// 見開き判定(縦横比)のための軽量経路。読めない形式は nil
+    /// EN: Pixel size from header metadata only (EXIF rotation applied);
+    /// EN: no decode. Used for spread pairing.
+    static func imageSize(at url: URL) -> CGSize? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            return nil
+        }
+        return imageSize(from: source)
+    }
+
+    static func imageSize(from data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+        return imageSize(from: source)
+    }
+
+    private static func imageSize(from source: CGImageSource) -> CGSize? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+            as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? Int,
+            let height = properties[kCGImagePropertyPixelHeight] as? Int,
+            width > 0, height > 0 else { return nil }
+        // EXIF 5-8 は 90 度系の回転(デコード時の transform 適用後に合わせる)
+        // EN: EXIF orientations 5-8 swap the axes after the decode transform.
+        let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
+        if (5...8).contains(orientation) {
+            return CGSize(width: height, height: width)
+        }
+        return CGSize(width: width, height: height)
+    }
     /// data をデコードする。maxPixelSize を指定すると長辺がその値以下になるよう
     /// 縮小した画像を返す(EXIF の回転は適用済み)。
     /// EN: Decodes data; maxPixelSize caps the long edge (EXIF rotation applied).
@@ -22,6 +54,23 @@ enum ImageDecoding {
         if let cap = maxPixelSize, cap >= 2048,
            CGImageSourceCopyAuxiliaryDataInfoAtIndex(
                source, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil {
+            // まず表示キャップを適用した HDR デコードを試す(8K の半精度
+            // フル解像度がキャッシュを食い潰すのを防ぐ)。結果が HDR
+            // (>8bit)でなければ従来のフル解像度 HDR デコードへ
+            // EN: Try a capped HDR decode first; fall back to the legacy
+            // EN: full-resolution HDR decode when the result is not HDR.
+            let cappedOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: cap,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+            ]
+            if let capped = CGImageSourceCreateThumbnailAtIndex(
+                source, 0, cappedOptions as CFDictionary),
+               capped.bitsPerComponent > 8 {
+                return capped
+            }
             let hdrOptions: [CFString: Any] = [
                 kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
                 kCGImageSourceShouldCacheImmediately: true,

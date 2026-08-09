@@ -16,6 +16,17 @@ actor NestedFolderSource: BookSource {
     private let unlocker: NestedUnlocker
 
     nonisolated var supportsDateSort: Bool { false }
+    /// フォルダ画像はゲート制御下で並列。子(書庫/PDF)が全員「いまの状態で
+    /// 並列可」のときのみ本全体を並列にする(solid 書庫の巻き戻し防止)
+    /// EN: Parallel only while every child currently supports it.
+    func currentlySupportsParallelPageLoads() async -> Bool {
+        for child in children {
+            if await !child.currentlySupportsParallelPageLoads() {
+                return false
+            }
+        }
+        return true
+    }
 
     /// ページの所在: フォルダ直下の画像、または子ソースのページ
     /// EN: Where a page lives: the folder itself, or a child source.
@@ -55,26 +66,82 @@ actor NestedFolderSource: BookSource {
 
     /// フォルダの画像と子の本のページを、パス単純順(FolderSource の列挙順)で
     /// 1 冊に組む。ArchiveSource.build と同じ方針。
-    /// EN: Assemble folder images and child pages in path order.
+    /// 子の本(書庫/PDF)のオープンと一覧取得は**並列**(幅 4)で行い、
+    /// 大量の書庫を含むフォルダのオープン時間を線形から短縮する。
+    /// 登録(id 割当・locations)は従来どおり候補順に直列で行う
+    /// EN: Child books open and list in parallel (width 4); registration
+    /// EN: stays sequential in candidate order, so ids are unchanged.
     private func build() async -> [PageEntry] {
         let images = (try? await folder.entries()) ?? []
+        let candidates = folder.nestedBookCandidates
+        let unlocker = unlocker
+        let profile = mediaProfile
+        var prepared: [Int: (any BookSource, [PageEntry])] = [:]
+        await withTaskGroup(of: (Int, (any BookSource, [PageEntry])?).self) { group in
+            var next = 0
+            func addTask() {
+                guard next < candidates.count else { return }
+                let ordinal = next
+                let candidate = candidates[ordinal]
+                next += 1
+                group.addTask {
+                    (ordinal, await Self.prepareChild(
+                        candidate: candidate, unlocker: unlocker, profile: profile))
+                }
+            }
+            for _ in 0..<4 { addTask() }
+            while let (ordinal, result) = await group.next() {
+                prepared[ordinal] = result
+                addTask()
+            }
+        }
+
         var result: [PageEntry] = []
         var imageIterator = images.makeIterator()
         var pending = imageIterator.next()
-        var ordinal = 0
-        for candidate in folder.nestedBookCandidates {
+        for (position, candidate) in candidates.enumerated() {
             while let image = pending, image.pathInBook < candidate.relativePath {
                 appendFolderImage(image, into: &result)
                 pending = imageIterator.next()
             }
-            ordinal += 1
-            await appendChildPages(of: candidate, ordinal: ordinal, into: &result)
+            if let (child, childEntries) = prepared[position] {
+                register(child: child, childEntries: childEntries,
+                         candidate: candidate, ordinal: position + 1, into: &result)
+            }
         }
         while let image = pending {
             appendFolderImage(image, into: &result)
             pending = imageIterator.next()
         }
         return result
+    }
+
+    /// 子の本 1 つを開いて一覧まで取得する(actor 外で並列実行される部分)。
+    /// 壊れた子・解除できない子は nil(従来どおり黙って飛ばす)
+    /// EN: Open one child and fetch its entries (runs off-actor, in parallel).
+    private static func prepareChild(
+        candidate: (fileURL: URL, relativePath: String),
+        unlocker: NestedUnlocker, profile: MediaProfile
+    ) async -> (any BookSource, [PageEntry])? {
+        let child: any BookSource
+        if SupportedTypes.isPDF(candidate.fileURL) {
+            guard let pdf = try? PDFSource(url: candidate.fileURL) else { return nil }
+            child = pdf
+        } else {
+            guard let nested = try? ArchiveSource(
+                url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker) else {
+                return nil
+            }
+            child = nested
+        }
+        if await child.isEncrypted() {
+            let name = (candidate.relativePath as NSString).lastPathComponent
+            guard await unlocker.unlock(child, name: name) else { return nil }
+        }
+        guard let childEntries = try? await child.entries(),
+              !childEntries.isEmpty else { return nil }
+        await child.applyMediaProfile(profile)
+        return (child, childEntries)
     }
 
     private func appendFolderImage(_ image: PageEntry, into result: inout [PageEntry]) {
@@ -85,28 +152,11 @@ actor NestedFolderSource: BookSource {
         result.append(image)
     }
 
-    /// 子の本(書庫/PDF)1 つのページを取り込む。壊れた子・解除できない子は
-    /// 黙って飛ばす(仕様書 §4.17 の方針)
-    /// EN: Merge one child book; corrupt or still-locked children are skipped.
-    private func appendChildPages(of candidate: (fileURL: URL, relativePath: String),
-                                  ordinal: Int, into result: inout [PageEntry]) async {
-        let child: any BookSource
-        if SupportedTypes.isPDF(candidate.fileURL) {
-            guard let pdf = try? PDFSource(url: candidate.fileURL) else { return }
-            child = pdf
-        } else {
-            guard let nested = try? ArchiveSource(
-                url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker) else { return }
-            child = nested
-        }
-        if await child.isEncrypted() {
-            let name = (candidate.relativePath as NSString).lastPathComponent
-            guard await unlocker.unlock(child, name: name) else { return }
-        }
-        guard let childEntries = try? await child.entries(), !childEntries.isEmpty else {
-            return
-        }
-        await child.applyMediaProfile(mediaProfile)
+    /// 準備済みの子を候補順に登録する(id 割当は従来と同一)
+    /// EN: Register a prepared child in candidate order (ids unchanged).
+    private func register(child: any BookSource, childEntries: [PageEntry],
+                          candidate: (fileURL: URL, relativePath: String),
+                          ordinal: Int, into result: inout [PageEntry]) {
         children.append(child)
         let sourceIndex = children.count - 1
         let idBase = ordinal * Self.nestedIDStride
@@ -144,6 +194,17 @@ actor NestedFolderSource: BookSource {
                 for: childEntry, pixelScale: pixelScale)
         }
         return try await image(for: entry, maxPixelSize: nil)
+    }
+
+    func imageSize(for entry: PageEntry) async -> CGSize? {
+        switch locations[entry.id] {
+        case .child(let sourceIndex, let childEntry):
+            return await children[sourceIndex].imageSize(for: childEntry)
+        case .folder(let folderEntry):
+            return await folder.imageSize(for: folderEntry)
+        case nil:
+            return nil
+        }
     }
 
     func imageData(for entry: PageEntry) async -> Data? {
