@@ -13,6 +13,18 @@ final class ReaderWindowController: NSWindowController {
     /// 開けなかった本の理由等をウインドウ中央に表示するラベル
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
+    /// オープン進捗 HUD(大書庫入りフォルダの統合など、開くのに時間が
+    /// かかるときだけ中央に表示。設計書 §2.4 補)
+    /// EN: Opening-progress HUD, shown only when the open takes noticeable time.
+    private let openingProgressBox = NSView()
+    private let openingProgressSpinner = NSProgressIndicator()
+    private let openingProgressLabel = NSTextField(labelWithString: "")
+    /// 進捗表示を所有しているオープン処理の世代(nil = 進行中なし)
+    /// EN: Generation of the open flow that owns the HUD (nil = none in flight).
+    private var openingFlowGeneration: Int?
+    private var openingProgressName = ""
+    private var openingProgressCounts: (done: Int, total: Int)?
+
     let settings = SettingsStore.shared
     var bindings = BindingConfiguration.load()
 
@@ -28,6 +40,13 @@ final class ReaderWindowController: NSWindowController {
     var swipeTrackingActive = false
     var swipeTrackingDeltaX: CGFloat = 0
     var originalSizePanel: NSPanel?
+    /// ファイル情報パネル(File > ファイル情報を表示)
+    /// EN: File Info utility panel.
+    var fileInfoPanel: NSPanel?
+    /// 検証用: 最後に表示したファイル情報(--show-file-info のスナップショット。
+    /// ヘッドレス実行ではパネルのレイヤーが描画されないため ImageRenderer で描く)
+    /// EN: Last presented File Info details, for headless snapshot rendering.
+    var fileInfoDebugDetails: PageFileInfo.Details?
 
     /// サムネイルオーバーレイ(ウインドウ内表示。仕様書 §4.8)
     let thumbnailOverlayModel = ThumbnailOverlayModel()
@@ -321,6 +340,26 @@ final class ReaderWindowController: NSWindowController {
         statusLabel.isHidden = true
         contentView.addSubview(statusLabel)
 
+        openingProgressBox.translatesAutoresizingMaskIntoConstraints = false
+        openingProgressBox.wantsLayer = true
+        openingProgressBox.layer?.backgroundColor =
+            NSColor.black.withAlphaComponent(0.78).cgColor
+        openingProgressBox.layer?.cornerRadius = 10
+        openingProgressBox.isHidden = true
+        openingProgressSpinner.translatesAutoresizingMaskIntoConstraints = false
+        openingProgressSpinner.style = .spinning
+        openingProgressSpinner.controlSize = .small
+        openingProgressSpinner.isIndeterminate = true
+        openingProgressSpinner.appearance = NSAppearance(named: .darkAqua)
+        openingProgressLabel.translatesAutoresizingMaskIntoConstraints = false
+        openingProgressLabel.font = .monospacedDigitSystemFont(ofSize: 13,
+                                                               weight: .regular)
+        openingProgressLabel.textColor = .white
+        openingProgressLabel.lineBreakMode = .byTruncatingMiddle
+        openingProgressBox.addSubview(openingProgressSpinner)
+        openingProgressBox.addSubview(openingProgressLabel)
+        contentView.addSubview(openingProgressBox)
+
         NSLayoutConstraint.activate([
             readerView.topAnchor.constraint(equalTo: contentView.topAnchor),
             readerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -330,6 +369,24 @@ final class ReaderWindowController: NSWindowController {
             statusLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+
+            openingProgressBox.centerXAnchor.constraint(
+                equalTo: contentView.centerXAnchor),
+            openingProgressBox.centerYAnchor.constraint(
+                equalTo: contentView.centerYAnchor),
+            openingProgressBox.widthAnchor.constraint(lessThanOrEqualToConstant: 480),
+            openingProgressSpinner.leadingAnchor.constraint(
+                equalTo: openingProgressBox.leadingAnchor, constant: 14),
+            openingProgressSpinner.centerYAnchor.constraint(
+                equalTo: openingProgressBox.centerYAnchor),
+            openingProgressLabel.leadingAnchor.constraint(
+                equalTo: openingProgressSpinner.trailingAnchor, constant: 8),
+            openingProgressLabel.trailingAnchor.constraint(
+                equalTo: openingProgressBox.trailingAnchor, constant: -16),
+            openingProgressLabel.topAnchor.constraint(
+                equalTo: openingProgressBox.topAnchor, constant: 12),
+            openingProgressLabel.bottomAnchor.constraint(
+                equalTo: openingProgressBox.bottomAnchor, constant: -12),
         ])
 
         // ホバーバブル(フレームベース配置。ホバー中のみ表示)
@@ -377,20 +434,23 @@ final class ReaderWindowController: NSWindowController {
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
     /// EN: Open a book; a single image file opens its parent folder at that page.
-    /// preferLastInnerBook: 後方移動(前の本)でコレクションフォルダに入る
-    /// とき、名前順で最後の内側の本へドリルダウンする(読書順の平坦化)
-    /// EN: preferLastInnerBook drills into the LAST inner book when arriving
-    /// EN: backwards, keeping the flattened reading order coherent.
+    /// allowCollectionDrill: 画像ゼロのコレクションフォルダで中の本へ自動で
+    /// 潜るか(設計書 §2.4)。Finder/ダイアログ等の明示オープンのみ true。
+    /// 次/前の本ナビゲーションは false — フォルダ自身に着地して階層を保つ
+    /// (潜ると以後の兄弟走査が別の深さで行われ、元の階層に戻れなくなる)
+    /// EN: allowCollectionDrill is true only for explicit opens; next/previous
+    /// EN: navigation lands on the folder itself so the sibling scan keeps
+    /// EN: operating at the same depth of the hierarchy.
     func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false,
-                  preferLastInnerBook: Bool = false) {
+                  allowCollectionDrill: Bool = true) {
         Task {
             await openBookFlow(url: url, atPage: page, atLastPage: atLastPage,
-                               preferLastInnerBook: preferLastInnerBook)
+                               allowCollectionDrill: allowCollectionDrill)
         }
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
-                              preferLastInnerBook: Bool = false,
+                              allowCollectionDrill: Bool = true,
                               autoOpenDepth: Int = 0) async {
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
@@ -405,12 +465,21 @@ final class ReaderWindowController: NSWindowController {
 
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        guard exists else { return }
+        guard exists else {
+            // ドリルダウンから引き継いだ HUD が残らないように畳む
+            // EN: Fold up a HUD inherited from a drill step; no successor follows.
+            endAnyOpeningProgress()
+            return
+        }
         if !isDirectory.boolValue, !SupportedTypes.isBookFile(url),
            SupportedTypes.isImageFile(url.lastPathComponent) {
             bookURL = url.deletingLastPathComponent()
             initialPageURL = url
         }
+
+        // 時間のかかるオープン(大書庫入りフォルダの統合等)の進捗表示を武装
+        // EN: Arm the opening-progress HUD for slow opens.
+        beginOpeningProgress(generation: generation, name: bookURL.lastPathComponent)
 
         do {
             let source: any BookSource
@@ -443,11 +512,13 @@ final class ReaderWindowController: NSWindowController {
             case .unlocked:
                 break
             case .cancelled:
+                endOpeningProgress(generation: generation)
                 presentLockedPlaceholder(
                     source: source,
                     reason: String(localized: "Password entry was canceled."))
                 return
             case .attemptsExceeded:
+                endOpeningProgress(generation: generation)
                 presentLockedPlaceholder(
                     source: source,
                     reason: String(localized: "Too many failed password attempts."))
@@ -455,6 +526,15 @@ final class ReaderWindowController: NSWindowController {
             }
 
             guard generation == openGeneration else { return }
+
+            // 統合ソースの組み立て(全書庫の一覧取得)の進捗を HUD へ流す
+            // EN: Route merged-source assembly progress into the HUD.
+            await source.setAssemblyProgressHandler { [weak self] done, total in
+                Task { @MainActor [weak self] in
+                    self?.noteOpeningProgress(generation: generation,
+                                              done: done, total: total)
+                }
+            }
 
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
             stopSlideshow()
@@ -483,16 +563,29 @@ final class ReaderWindowController: NSWindowController {
             // EN: A 0-page merged source means assembly failed; drilling would
             // EN: open an inner archive standalone at the wrong depth. Only
             // EN: drill into pure collections (plain FolderSource, no books).
-            if book.pageCount == 0, autoOpenDepth < 4,
+            if book.pageCount == 0, allowCollectionDrill, autoOpenDepth < 4,
                !(source is NestedFolderSource),
-               await !source.hasSkippedLockedContent(),
-               let inner = Self.innerBook(in: bookURL,
-                                          preferLast: preferLastInnerBook) {
-                await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
-                                   preferLastInnerBook: preferLastInnerBook,
-                                   autoOpenDepth: autoOpenDepth + 1)
-                return
+               await !source.hasSkippedLockedContent() {
+                // 候補選定は再帰走査を含むためメインスレッドから外す
+                // (NAS/HDD でのビーチボール防止。走査があるので非同期)
+                // EN: The candidate scan recurses into subfolders; run it off
+                // EN: the main thread so slow volumes cannot beachball the UI.
+                let scanURL = bookURL
+                let inner = await Task.detached(priority: .userInitiated) {
+                    Self.innerBook(in: scanURL)
+                }.value
+                guard generation == openGeneration else { return }
+                if let inner {
+                    // HUD は畳まない: 再帰側の beginOpeningProgress が
+                    // 新しい世代で引き継ぐ(走査〜内側の本のオープンまで連続表示)
+                    // EN: Keep the HUD up; the recursive open re-arms it.
+                    await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
+                                       allowCollectionDrill: true,
+                                       autoOpenDepth: autoOpenDepth + 1)
+                    return
+                }
             }
+            endOpeningProgress(generation: generation)
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
             book.mediaProfile = mediaProfile
@@ -547,6 +640,7 @@ final class ReaderWindowController: NSWindowController {
         } catch {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
             NSSound.beep()
+            endOpeningProgress(generation: generation)
         }
     }
 
@@ -680,27 +774,61 @@ final class ReaderWindowController: NSWindowController {
         return .unlocked
     }
 
-    /// 画像ゼロのフォルダ内にある「本」(名前順の最初、preferLast なら最後)。
-    /// フォルダ以外は nil。前の本への移動で入ったときに最初の本へ飛ぶと
-    /// 読書順が壊れるため、到着方向で選ぶ(仕様書 §4.3.4 の拡張)
-    /// EN: First (or last, for backward arrival) book-like item inside an
-    /// EN: image-less folder; direction keeps the reading order coherent.
-    static func innerBook(in url: URL, preferLast: Bool) -> URL? {
+    /// 画像ゼロのフォルダ内にある「本」(名前順の最初)。フォルダ以外は nil。
+    /// サブフォルダは中のどこかに画像か本があるものだけを候補にする
+    /// (.app 等のパッケージや無関係なディレクトリへ潜って、行き止まりの
+    /// 深い階層に置き去りになるのを防ぐ)
+    /// EN: First book-like item inside an image-less folder. Subfolders count
+    /// EN: only when they actually lead to book content; packages (.app etc.)
+    /// EN: and dead-end directories are skipped so the drill never strands the
+    /// EN: reader deep inside an unrelated tree.
+    nonisolated static func innerBook(in url: URL) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue,
               let names = try? FileManager.default.contentsOfDirectory(atPath: url.path)
         else { return nil }
-        let candidates = names
+        return names
             .filter { !$0.hasPrefix(".") }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { url.appendingPathComponent($0) }
-            .filter { candidate in
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir)
-                return isDir.boolValue || SupportedTypes.isBookFile(candidate)
+            .first { candidate in
+                let values = try? candidate.resourceValues(
+                    forKeys: [.isDirectoryKey, .isPackageKey])
+                if values?.isPackage == true { return false }
+                if values?.isDirectory == true {
+                    return folderLeadsToBookContent(at: candidate)
+                }
+                return SupportedTypes.isBookFile(candidate)
             }
-        return preferLast ? candidates.last : candidates.first
+    }
+
+    /// フォルダのどこかに画像か本(書庫/PDF)があるか。最初の 1 件で打ち切る。
+    /// 巨大ツリーは 2000 項目で走査をやめ **true**(=候補として許容)を返す:
+    /// ここでの誤判定はドリル先の選択を左右するため、「大きすぎて判定不能」は
+    /// 実際に開いてみる側へ倒す(false だと本のある巨大フォルダを不当に飛ばす)
+    /// EN: Whether the folder eventually contains an image or a book file;
+    /// EN: stops at the first hit. Gives up after 2000 items and returns TRUE —
+    /// EN: an unscannable-huge folder must stay a candidate (skipping it would
+    /// EN: wrongly reject legitimate large series folders); the real open decides.
+    nonisolated static func folderLeadsToBookContent(at url: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return false }
+        var visited = 0
+        for case let fileURL as URL in enumerator {
+            visited += 1
+            if visited > 2000 { return true }
+            let isDirectory = (try? fileURL.resourceValues(
+                forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard !isDirectory else { continue }
+            if SupportedTypes.isImageFile(fileURL.lastPathComponent)
+                || SupportedTypes.isBookFile(fileURL) {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - 表示更新
@@ -879,6 +1007,82 @@ final class ReaderWindowController: NSWindowController {
                     size: NSSize(width: thumbnail.width, height: thumbnail.height))
             }
         }
+    }
+
+    // MARK: - オープン進捗 HUD
+
+    /// オープン処理の開始を記録し、0.35 秒経っても終わらなければ HUD を出す
+    /// (即終わる本でのちらつき防止)。大書庫入りフォルダの統合は全書庫の
+    /// 一覧取得を伴い数十秒かかり得るため、無反応に見えるのを防ぐ
+    /// EN: Arm the opening HUD; it appears only if the open outlives 0.35 s,
+    /// EN: so fast opens never flicker. Folder merges (listing every archive)
+    /// EN: can take tens of seconds and looked unresponsive without this.
+    func beginOpeningProgress(generation: Int, name: String) {
+        openingFlowGeneration = generation
+        openingProgressName = name
+        openingProgressCounts = nil
+        // ドリルダウンからの引き継ぎで既に表示中なら名前だけ差し替える
+        // EN: If inherited from a drill step the HUD is already up; retitle it.
+        if !openingProgressBox.isHidden {
+            updateOpeningProgressText()
+            return
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, self.openingFlowGeneration == generation,
+                  self.openingProgressBox.isHidden else { return }
+            self.revealOpeningProgress()
+        }
+    }
+
+    /// 統合ソースの組み立て進捗(完了書庫数/総数)を反映する
+    /// EN: Update the HUD with assembly progress (books done / total).
+    func noteOpeningProgress(generation: Int, done: Int, total: Int) {
+        guard openingFlowGeneration == generation else { return }
+        openingProgressCounts = (done, total)
+        if !openingProgressBox.isHidden {
+            updateOpeningProgressText()
+        }
+    }
+
+    /// オープン処理の終了(成功・失敗・ドリル前とも)。HUD を畳む
+    /// EN: The open flow ended (success, failure or before drilling); hide the HUD.
+    func endOpeningProgress(generation: Int) {
+        guard openingFlowGeneration == generation else { return }
+        endAnyOpeningProgress()
+    }
+
+    /// 世代を問わず HUD を畳む(ドリル先の消失など、引き継ぎ先のない失敗用)
+    /// EN: Unconditionally hide the HUD (failures with no successor flow).
+    private func endAnyOpeningProgress() {
+        openingFlowGeneration = nil
+        openingProgressBox.isHidden = true
+        openingProgressSpinner.stopAnimation(nil)
+    }
+
+    private func revealOpeningProgress() {
+        updateOpeningProgressText()
+        openingProgressBox.isHidden = false
+        openingProgressSpinner.startAnimation(nil)
+    }
+
+    private func updateOpeningProgressText() {
+        let name = openingProgressName
+        if let counts = openingProgressCounts, counts.total > 0 {
+            openingProgressLabel.stringValue = String(
+                localized: "Opening “\(name)”… \(counts.done)/\(counts.total) books")
+        } else {
+            openingProgressLabel.stringValue = String(localized: "Opening “\(name)”…")
+        }
+    }
+
+    /// 検証用: HUD を固定内容で表示する(--show-opening-progress)
+    /// EN: Verification hook: show the HUD with fixed contents.
+    func debugShowOpeningProgress() {
+        openingFlowGeneration = -1
+        openingProgressName = "サンプルシリーズ"
+        openingProgressCounts = (done: 12, total: 34)
+        revealOpeningProgress()
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する

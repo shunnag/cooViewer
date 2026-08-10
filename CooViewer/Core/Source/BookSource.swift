@@ -112,6 +112,19 @@ protocol BookSource: Sendable {
     /// EN: Attach a nested-password provider to a prepared source.
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async
 
+    /// 統合ソースの組み立て進捗(完了した子の数, 子の総数)の通知先を設定する。
+    /// 子の本を持たないソースは何もしない
+    /// EN: Set the assembly-progress callback (children done, total);
+    /// EN: no-op for sources without child books.
+    func setAssemblyProgressHandler(_ handler: (@Sendable (Int, Int) -> Void)?) async
+
+    /// このページをディスク上で代表する実体ファイル(仕様書 §4.13 Finder 表示、
+    /// ファイル情報)。フォルダの単体画像はその画像ファイル、書庫/PDF 内の
+    /// ページは書庫/PDF 本体
+    /// EN: The on-disk file representing this page: the image file itself for
+    /// EN: folder pages, the containing archive/PDF for nested pages.
+    func containerFileURL(for entry: PageEntry) async -> URL
+
     /// 本の置き場所の速度プロファイルを適用する(読み取り並列度・スプール方針)。
     /// beginBackgroundPreparation より前に呼ぶこと
     /// EN: Apply the volume-speed profile (read concurrency, spool policy);
@@ -133,6 +146,11 @@ extension BookSource {
     func imageSize(for entry: PageEntry) async -> CGSize? { nil }
     func hasSkippedLockedContent() async -> Bool { false }
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {}
+    func setAssemblyProgressHandler(
+        _ handler: (@Sendable (Int, Int) -> Void)?) async {}
+    func containerFileURL(for entry: PageEntry) async -> URL {
+        entry.fileURL ?? url
+    }
     func applyMediaProfile(_ profile: MediaProfile) async {}
 }
 
