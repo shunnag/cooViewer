@@ -224,11 +224,14 @@ extension ReaderWindowController {
         guard !siblings.isEmpty,
               let current = siblings.firstIndex(of: book.source.url.path) else { return }
         let target = (current + (forward ? 1 : -1) + siblings.count) % siblings.count
-        // 後方移動でコレクションフォルダに入る場合は最後の内側の本へ
-        // (最初の本に飛ぶと階層の読書順が壊れる)
-        // EN: Backward arrival drills to the LAST inner book of a collection.
+        // ナビゲーションではコレクションフォルダへ潜らない: フォルダ自身に
+        // 着地して階層を保つ(潜ると以後の次/前の本が中の階層の兄弟を走査し、
+        // 元の階層へ戻れなくなる)。画像ゼロなら「画像がありません」を表示
+        // EN: Never drill on navigation — land on the folder itself so the
+        // EN: sibling scan stays at this depth; an image-less folder just
+        // EN: shows the no-images message.
         openBook(at: URL(fileURLWithPath: siblings[target]), atLastPage: openLast,
-                 preferLastInnerBook: !forward)
+                 allowCollectionDrill: false)
     }
 
     // MARK: - スライドショー(仕様書 §4.9)
