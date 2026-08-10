@@ -15,12 +15,20 @@ enum RetroImageDecoding {
     private static let magMagic = Array("MAKI02  ".utf8)
     private static let makiMagicA = Array("MAKI01A ".utf8)
     private static let makiMagicB = Array("MAKI01B ".utf8)
+    private static let picMagic = Array("PIC".utf8)
+    private static let piMagic = Array("Pi".utf8)
 
-    /// 先頭マジックによる形式判定(拡張子は一切見ない)
-    /// EN: Magic-based detection; extensions are never consulted.
+    /// 先頭マジックによる形式判定(拡張子は一切見ない)。
+    /// Pi/PIC はマジックが短いため、ヘッダ全体の妥当性検証も判定に含める
+    /// EN: Magic-based detection; Pi/PIC also require a parseable header
+    /// EN: because their signatures are short.
     static func isRetroImage(_ data: Data) -> Bool {
         let head = [UInt8](data.prefix(8))
-        return head == magMagic || head == makiMagicA || head == makiMagicB
+        if head == magMagic || head == makiMagicA || head == makiMagicB {
+            return true
+        }
+        let bytes = [UInt8](data.prefix(65536))
+        return parsePiHeader(bytes) != nil || parsePicHeader(bytes) != nil
     }
 
     /// ヘッダのみからピクセル寸法を返す(縦横比 1:2 の伸長込み)
@@ -30,15 +38,24 @@ enum RetroImageDecoding {
         if let header = parseMagHeader(bytes) {
             let height = (header.bottom - header.top + 1)
                 * (header.doubleHeight ? 2 : 1)
+            if header.isYJK {
+                return CGSize(width: header.yjkWidth, height: height)
+            }
             return CGSize(width: header.right - header.left + 1, height: height)
         }
         if let maki = parseMakiHeader(bytes) {
             return CGSize(width: 640, height: maki.doubleHeight ? 800 : 400)
         }
+        if let pi = parsePiHeader(bytes) {
+            return CGSize(width: pi.width, height: pi.height)
+        }
+        if let pic = parsePicHeader(bytes) {
+            return CGSize(width: pic.width, height: pic.height)
+        }
         return nil
     }
 
-    /// フルデコード。対応外(MSX YJK モード等)や壊れたデータは nil
+    /// フルデコード。対応外の変種や壊れたデータは nil
     /// EN: Full decode; nil for unsupported variants or corrupt data.
     static func decode(_ data: Data) -> CGImage? {
         let bytes = [UInt8](data)
@@ -49,7 +66,46 @@ enum RetroImageDecoding {
             || bytes.prefix(8).elementsEqual(makiMagicB) {
             return decodeMaki(bytes, variantB: bytes.prefix(8).elementsEqual(makiMagicB))
         }
+        if parsePiHeader(bytes) != nil {
+            return decodePi(bytes)
+        }
+        if parsePicHeader(bytes) != nil {
+            return decodePic(bytes)
+        }
         return nil
+    }
+
+    /// MSB ファーストのビットリーダ(Pi / PIC 共通)
+    /// EN: MSB-first bit reader shared by the Pi and PIC decoders.
+    private struct BitReader {
+        let data: [UInt8]
+        var position: Int
+        var bit = 0
+
+        init(_ data: [UInt8], at offset: Int) {
+            self.data = data
+            position = offset
+        }
+
+        mutating func readBit() -> Int? {
+            guard position < data.count else { return nil }
+            let value = (data[position] >> (7 - bit)) & 1
+            bit += 1
+            if bit == 8 {
+                bit = 0
+                position += 1
+            }
+            return Int(value)
+        }
+
+        mutating func readBits(_ count: Int) -> Int? {
+            var value = 0
+            for _ in 0..<count {
+                guard let b = readBit() else { return nil }
+                value = value << 1 | b
+            }
+            return value
+        }
     }
 
     // MARK: - MAG (MAKI02)
@@ -63,10 +119,23 @@ enum RetroImageDecoding {
         let offsetA: Int, offsetB: Int, offsetPix: Int  // ファイル先頭からの絶対位置
         var is256: Bool { mode & 0x80 != 0 }
         /// 1:2 アスペクト(最終段で縦 2 倍に伸長)。仕様: 非 MSX は
-        /// 「256 色でなく mode bit0」、MSX(0x03) は flag == 4
+        /// 「256 色でなく mode bit0」、MSX(0x03) は flag(下位 2 ビットは
+        /// 水平アラインメントなのでマスク)== 4
         var doubleHeight: Bool {
-            if modelCode == 0x03 { return modelFlag == 0x04 }
+            if modelCode == 0x03 { return (modelFlag & 0xFC) == 0x04 }
             return !is256 && (mode & 0x01) != 0
+        }
+        /// MSX2+ の YJK スクリーンモード(10/11 = パレット混在、12 = 純 YJK)
+        /// EN: MSX2+ YJK screen modes (0x24/0x34 mix palette, 0x44 pure YJK).
+        var isYJK: Bool {
+            modelCode == 0x03 && [0x24, 0x34, 0x44].contains(modelFlag & 0xFC)
+        }
+        /// YJK ではパレット混在(YAE)モード。Y の最下位ビットでパレット参照
+        var yjkUsesPalette: Bool { (modelFlag & 0xFC) != 0x44 }
+        /// YJK の最終ピクセル幅(1 バイト = 1 サンプル。4bpp 記録なら半分)
+        var yjkWidth: Int {
+            let nominal = right - left + 1
+            return is256 ? nominal : (nominal + 1) / 2
         }
     }
 
@@ -110,11 +179,6 @@ enum RetroImageDecoding {
 
     private static func decodeMag(_ d: [UInt8]) -> CGImage? {
         guard let h = parseMagHeader(d) else { return nil }
-        // MSX2+ の YJK モードは色変換が別物なので対応外(誤描画を避けて nil)
-        // EN: MSX2+ YJK modes need a different color pipeline; bail out.
-        if h.modelCode == 0x03, [0x24, 0x34, 0x44].contains(h.modelFlag) {
-            return nil
-        }
 
         // 左右端を 4 バイト境界へパディング(仕様の式のとおり)
         let pixelsPerByte = h.is256 ? 1 : 2
@@ -190,6 +254,16 @@ enum RetroImageDecoding {
             }
         }
 
+        // MSX2+ YJK モード: バイト列を YJK サンプルとして RGB 変換する
+        // EN: MSX2+ YJK modes convert the byte buffer through YJK->RGB.
+        if h.isYJK {
+            let cropLeftBytes = h.left / pixelsPerByte - paddedLeft
+            return renderMagYJK(out: out, byteWidth: byteWidth, height: height,
+                                cropLeftBytes: cropLeftBytes, width: h.yjkWidth,
+                                usePalette: h.yjkUsesPalette, palette: palette,
+                                doubleHeight: h.doubleHeight)
+        }
+
         // パディングの切り落とし+RGBA 化(16 色は上位ニブルが左ピクセル)
         let cropLeftPixels = h.left - paddedLeft * pixelsPerByte
         let width = h.right - h.left + 1
@@ -205,6 +279,47 @@ enum RetroImageDecoding {
             let byte = out[row + px / 2]
             return px % 2 == 0 ? Int(byte >> 4) : Int(byte & 0x0F)
         }
+    }
+
+    /// YJK バッファの RGB 変換(仕様: 4 バイト = 4 ピクセルで J/K を共有。
+    /// YAE モードでは Y の最下位ビットが 1 のピクセルはパレット参照)
+    /// EN: YJK conversion: groups of 4 bytes share J/K; in YAE modes an odd
+    /// EN: Y selects a palette color instead.
+    private static func renderMagYJK(
+        out: [UInt8], byteWidth: Int, height: Int, cropLeftBytes: Int,
+        width: Int, usePalette: Bool,
+        palette: [(r: UInt8, g: UInt8, b: UInt8)],
+        doubleHeight: Bool) -> CGImage? {
+        guard width > 0, cropLeftBytes >= 0,
+              cropLeftBytes + width <= byteWidth else { return nil }
+        var rgb = [(r: UInt8, g: UInt8, b: UInt8)](
+            repeating: (0, 0, 0), count: width * height)
+        for y in 0..<height {
+            let row = y * byteWidth
+            for x in 0..<width {
+                let index = cropLeftBytes + x
+                let luma = Int(out[row + index]) >> 3
+                if usePalette, luma & 1 != 0 {
+                    rgb[y * width + x] = palette[luma >> 1]
+                    continue
+                }
+                // グループ境界はバッファ内の 4 バイト単位(行頭基準)
+                let group = row + (index & ~3)
+                guard group + 3 < out.count else { continue }
+                var k = Int(out[group] & 7) | Int(out[group + 1] & 7) << 3
+                var j = Int(out[group + 2] & 7) | Int(out[group + 3] & 7) << 3
+                k -= (k & 0x20) << 1
+                j -= (j & 0x20) << 1
+                func clamp5(_ v: Int) -> Int { min(31, max(0, v)) }
+                let r = clamp5(luma + j)
+                let g = clamp5(luma + k)
+                let b = clamp5((((5 * luma - k) >> 1) - j) >> 1)
+                func scale(_ v: Int) -> UInt8 { UInt8(v << 3 | v >> 2) }
+                rgb[y * width + x] = (scale(r), scale(g), scale(b))
+            }
+        }
+        return renderRGB(width: width, height: height,
+                         doubleHeight: doubleHeight) { x, y in rgb[y * width + x] }
     }
 
     /// パレット成分の有効ビット数(仕様の機種別規則)。
@@ -345,6 +460,465 @@ enum RetroImageDecoding {
         }
     }
 
+    // MARK: - Pi(柳沢氏の PC-98 系フォーマット)
+
+    fileprivate struct PiHeader {
+        let mode: UInt8
+        let depth: Int          // 4 または 8
+        let width: Int
+        let height: Int
+        let paletteOffset: Int  // RGB 三つ組の開始位置
+        let streamOffset: Int   // 圧縮ビットストリームの開始位置
+        var colors: Int { 1 << depth }
+    }
+
+    fileprivate static func parsePiHeader(_ d: [UInt8]) -> PiHeader? {
+        // マジック "Pi"(仕様上は省略もあり得るが、拡張子衝突対策として必須にする)
+        // EN: Require the "Pi" magic; headerless variants are rejected on purpose.
+        guard d.count > 24, d[0] == 0x50, d[1] == 0x69,
+              let escape = d[2...].firstIndex(of: 0x1A),
+              let base = d[escape...].firstIndex(of: 0x00) else { return nil }
+        // base+0: 0x00 / +1: mode / +2,3: アスペクト比 / +4: ビット深度 /
+        // +5..8: 圧縮器シグネチャ / +9,10: 付加データ長(BE) / 付加データ /
+        // 幅(BE 2) / 高さ(BE 2) / パレット(RGB)
+        guard base + 15 <= d.count else { return nil }
+        let mode = d[base + 1]
+        guard mode == 0 || mode == 0xFF else { return nil }
+        var depth = Int(d[base + 4])
+        if depth == 0xFF { depth = 4 }
+        guard depth == 4 || depth == 8 else { return nil }
+        let extraLength = Int(d[base + 9]) << 8 | Int(d[base + 10])
+        guard extraLength <= 16 else { return nil }
+        let sizeOffset = base + 11 + extraLength
+        guard sizeOffset + 4 <= d.count else { return nil }
+        let width = Int(d[sizeOffset]) << 8 | Int(d[sizeOffset + 1])
+        let height = Int(d[sizeOffset + 2]) << 8 | Int(d[sizeOffset + 3])
+        guard width > 0, height > 0, width <= 8192, height <= 8192,
+              width * height <= 64 * 1024 * 1024 else { return nil }
+        let paletteOffset = sizeOffset + 4
+        let streamOffset = paletteOffset + (1 << depth) * 3
+        guard streamOffset < d.count else { return nil }
+        return PiHeader(mode: mode, depth: depth, width: width, height: height,
+                        paletteOffset: paletteOffset, streamOffset: streamOffset)
+    }
+
+    private static func decodePi(_ d: [UInt8]) -> CGImage? {
+        guard let h = parsePiHeader(d) else { return nil }
+        let colors = h.colors
+        var palette = [(r: UInt8, g: UInt8, b: UInt8)](
+            repeating: (0, 0, 0), count: colors)
+        for i in 0..<colors {
+            let p = h.paletteOffset + i * 3
+            // Pi のパレットは RGB 順(MAG の GRB と異なる)。有効ビットは
+            // PC-98 の 4bit を既定とし、MAG と同じ複製拡張を行う
+            palette[i] = (r: expandComponent(d[p], bits: 4),
+                          g: expandComponent(d[p + 1], bits: 4),
+                          b: expandComponent(d[p + 2], bits: 4))
+        }
+
+        guard let indices = unpackPi(d, header: h) else { return nil }
+        return renderIndexed(width: h.width, height: h.height,
+                             doubleHeight: false, palette: palette) { x, y in
+            Int(indices[y * h.width + x])
+        }
+    }
+
+    /// Pi 展開本体(デルタ符号+繰り返し列。仕様と作者実装 pi.pas に準拠)
+    /// EN: Pi decompression core (delta codes + repetition commands).
+    private static func unpackPi(_ d: [UInt8], header h: PiHeader) -> [UInt8]? {
+        let total = h.width * h.height
+        var out = [UInt8](repeating: 0, count: total)
+        var position = 0
+        var reader = BitReader(d, at: h.streamOffset)
+        let colors = h.colors
+
+        // デルタ表: table[a][b] = (colors + a - b) % colors
+        var table = [UInt8](repeating: 0, count: colors * colors)
+        for a in 0..<colors {
+            for b in 0..<colors {
+                table[a * colors + b] = UInt8((colors + a - b) % colors)
+            }
+        }
+        var lastByte = 0
+
+        /// 可変長デルタ符号(16 色: 最大 011xxx、256 色: 0111111x^7 まで)
+        func readDeltaIndex() -> Int? {
+            guard let first = reader.readBit() else { return nil }
+            if first == 1 {
+                guard let x = reader.readBit() else { return nil }
+                return x
+            }
+            guard let second = reader.readBit() else { return nil }
+            if second == 0 {
+                guard let x = reader.readBit() else { return nil }
+                return 2 + x
+            }
+            // "01" のあと: 0 -> 010xx、1 -> 011…
+            guard let third = reader.readBit() else { return nil }
+            if third == 0 {
+                guard let x = reader.readBits(2) else { return nil }
+                return 4 + x
+            }
+            if colors == 16 {
+                guard let x = reader.readBits(3) else { return nil }
+                return 8 + x
+            }
+            // 256 色: 0111…: プレフィクスの 1 の数で桁が伸びる
+            var ones = 0
+            while ones < 4 {
+                guard let bit = reader.readBit() else { return nil }
+                if bit == 0 { break }
+                ones += 1
+            }
+            switch ones {
+            case 0:
+                guard let x = reader.readBits(3) else { return nil }
+                return 8 + x
+            case 1:
+                guard let x = reader.readBits(4) else { return nil }
+                return 16 + x
+            case 2:
+                guard let x = reader.readBits(5) else { return nil }
+                return 32 + x
+            case 3:
+                guard let x = reader.readBits(6) else { return nil }
+                return 64 + x
+            default:
+                guard let x = reader.readBits(7) else { return nil }
+                return 128 + x
+            }
+        }
+
+        func processDelta() -> Bool {
+            // 満杯なら何も読まずに成功扱い(参照実装と同じ)
+            guard position < total else { return true }
+            guard let index = readDeltaIndex() else { return false }
+            let rowBase = lastByte * colors
+            let color = table[rowBase + index]
+            // Move-to-front(行内で先頭へ)
+            var i = index
+            while i > 0 {
+                table[rowBase + i] = table[rowBase + i - 1]
+                i -= 1
+            }
+            table[rowBase] = color
+            out[position] = color
+            position += 1
+            lastByte = Int(color)
+            return true
+        }
+
+        /// 繰り返し長(1 のプレフィクス k 個 + k ビット → 2^k + bits)
+        func readLengthCode() -> Int? {
+            var ones = 0
+            while ones < 24 {
+                guard let bit = reader.readBit() else { return nil }
+                if bit == 0 { break }
+                ones += 1
+            }
+            guard ones < 24 else { return nil }
+            guard let extra = ones == 0 ? 0 : reader.readBits(ones) else { return nil }
+            return (1 << ones) + extra
+        }
+
+        /// 位置コード(00 / 01 / 10 / 110 / 111)
+        func readRepetitionType() -> Int? {
+            guard let first = reader.readBit() else { return nil }
+            if first == 0 {
+                guard let second = reader.readBit() else { return nil }
+                return second  // 0 or 1
+            }
+            guard let second = reader.readBit() else { return nil }
+            if second == 0 { return 2 }
+            guard let third = reader.readBit() else { return nil }
+            return third == 0 ? 3 : 4
+        }
+
+        /// 前方コピー(重なり可)。コピー元が先頭より前の間は先頭 2 バイトで埋める
+        func copyBytes(_ length: Int, offset: Int, fillerSwapped: Bool) {
+            var remaining = min(length, total - position)
+            var outOfBounds = offset - position
+            if outOfBounds > 0 {
+                let fill = min(outOfBounds, remaining)
+                let b0 = fillerSwapped ? out[1] : out[0]
+                let b1 = fillerSwapped ? out[0] : out[1]
+                for i in 0..<fill {
+                    out[position + i] = i % 2 == 0 ? b0 : b1
+                }
+                position += fill
+                remaining -= fill
+                outOfBounds = 0
+            }
+            for _ in 0..<remaining {
+                out[position] = out[position - offset]
+                position += 1
+            }
+        }
+
+        var lastRepetitionType = -1
+        var doingRepetition = true
+
+        /// 繰り返しコマンド 1 つ。直前と同じ位置コードなら繰り返し終了の印
+        func processRepetition(minusReps: Int) -> Bool {
+            guard let type = readRepetitionType() else { return false }
+            if type == lastRepetitionType {
+                doingRepetition = false
+                if position > 0 { lastByte = Int(out[position - 1]) }
+                return true
+            }
+            lastRepetitionType = type
+            guard let lengthCode = readLengthCode() else { return false }
+            let length = (lengthCode - minusReps) * 2
+            guard length > 0 else { return true }
+            switch type {
+            case 0:
+                // 直前 4 バイトの繰り返し(先頭付近/直前 2 バイトが同値なら 2 バイト)
+                let offset: Int
+                if position < 4 || (position >= 2
+                    && out[position - 2] == out[position - 1]) {
+                    offset = 2
+                } else {
+                    offset = 4
+                }
+                guard position >= offset else { return false }
+                copyBytes(length, offset: offset, fillerSwapped: false)
+            case 1:
+                copyBytes(length, offset: h.width, fillerSwapped: false)
+            case 2:
+                copyBytes(length, offset: h.width * 2, fillerSwapped: false)
+            case 3:
+                copyBytes(length, offset: h.width - 1, fillerSwapped: true)
+            case 4:
+                copyBytes(length, offset: h.width + 1, fillerSwapped: true)
+            default:
+                return false
+            }
+            return true
+        }
+
+        // 先頭: デルタ 2 つ → 長さ -1(ペア単位)の強制繰り返し
+        guard processDelta(), processDelta(),
+              processRepetition(minusReps: 1) else { return nil }
+        while position < total {
+            if doingRepetition {
+                guard processRepetition(minusReps: 0) else { return nil }
+            } else {
+                guard processDelta(), processDelta() else { return nil }
+                guard position < total else { break }
+                guard let bit = reader.readBit() else { return nil }
+                if bit == 0 {
+                    doingRepetition = true
+                    lastRepetitionType = -1
+                }
+            }
+        }
+        return out
+    }
+
+    // MARK: - PIC(柳沢氏の X68000 系フォーマット)
+
+    fileprivate struct PicHeader {
+        let platform: Int   // 0=X68k, 2=FM-Towns, 0x1F=汎用(モード 1)
+        let depth: Int      // 4/8(パレット)、15/16(ダイレクトカラー)
+        let width: Int
+        let height: Int
+        let streamOffset: Int  // platform/depth/width/height 直後のバイト位置
+    }
+
+    fileprivate static func parsePicHeader(_ d: [UInt8]) -> PicHeader? {
+        guard d.count > 16, d.prefix(3).elementsEqual(picMagic),
+              let escape = d[3...].firstIndex(of: 0x1A) else { return nil }
+        // コメント終端 0x1A の後、最初の 0x00 までダミーを読み飛ばす
+        var cursor = escape + 1
+        while cursor < d.count, d[cursor] != 0 { cursor += 1 }
+        cursor += 1  // 0x00 を消費
+        guard cursor + 8 <= d.count else { return nil }
+        func word(_ offset: Int) -> Int { Int(d[offset]) << 8 | Int(d[offset + 1]) }
+        let platform = word(cursor)
+        let depth = word(cursor + 2)
+        let width = word(cursor + 4)
+        let height = word(cursor + 6)
+        var streamOffset = cursor + 8
+        switch platform {
+        case 0:
+            break
+        case 2, 0x1F:
+            // FM-Towns / 汎用モード 1 は拡張ヘッダ 6 バイトを読み飛ばす
+            streamOffset += 6
+        default:
+            return nil  // PC-88VA 等は未対応(誤描画を避ける)
+        }
+        guard depth == 4 || depth == 8 || depth == 15 || depth == 16
+        else { return nil }
+        let paletteBytes = depth <= 8 ? (1 << depth) * 2 : 0
+        guard width > 0, height > 0, width <= 8192, height <= 8192,
+              width * height <= 64 * 1024 * 1024,
+              streamOffset + paletteBytes < d.count else { return nil }
+        return PicHeader(platform: platform, depth: depth,
+                         width: width, height: height, streamOffset: streamOffset)
+    }
+
+    /// X68k の 16bit 色 GGGGGRRRRRBBBBBI → 8bit RGB
+    /// EN: X68k GGGGGRRRRRBBBBBI to 8-bit RGB.
+    private static func x68kColor(_ color: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
+        let intensity = color & 1
+        func channel(_ five: Int) -> UInt8 {
+            let v = five << 3 | intensity << 2
+            return UInt8(v | v >> 6)
+        }
+        return (r: channel(color >> 6 & 31),
+                g: channel(color >> 11 & 31),
+                b: channel(color >> 1 & 31))
+    }
+
+    /// 直近 128 色のキャッシュ(双方向リンクリングの LRU。7bit 符号は
+    /// スロット番号を指す — 参照実装と同一の構造)
+    /// EN: 128-entry LRU ring; the 7-bit code addresses slots directly.
+    private struct PicColorCache {
+        var values = [Int](repeating: 0, count: 128)
+        var previous = [Int](repeating: 0, count: 128)
+        var next = [Int](repeating: 0, count: 128)
+        var head = 0
+
+        init() {
+            for i in 0..<128 {
+                previous[i] = (i + 1) & 127
+                next[i] = (i - 1) & 127
+            }
+        }
+
+        mutating func add(_ value: Int) {
+            head = previous[head]
+            values[head] = value
+        }
+
+        mutating func get(_ key: Int) -> Int {
+            if key != head {
+                let p = previous[key]
+                let n = next[key]
+                next[p] = n
+                previous[n] = p
+                let tail = previous[head]
+                next[tail] = key
+                previous[key] = tail
+                previous[head] = key
+                next[key] = head
+                head = key
+            }
+            return values[key]
+        }
+    }
+
+    private static func decodePic(_ d: [UInt8]) -> CGImage? {
+        guard let h = parsePicHeader(d) else { return nil }
+        var reader = BitReader(d, at: h.streamOffset)
+        // パレット(16bit GGGGGRRRRRBBBBBI x 色数)に続けて圧縮ビット列
+        var palette = [(r: UInt8, g: UInt8, b: UInt8)]()
+        if h.depth <= 8 {
+            for _ in 0..<(1 << h.depth) {
+                guard let value = reader.readBits(16) else { return nil }
+                palette.append(x68kColor(value))
+            }
+        }
+
+        let total = h.width * h.height
+        // -1 = 未確定。チェーンが先のピクセルへ色を植える
+        var pixels = [Int32](repeating: -1, count: total)
+        var cache = PicColorCache()
+        var color: Int32 = 0
+        var position = -1
+
+        /// 長さ符号(0 のプレフィクスまで 1 を数える PIC 形式)
+        func readLength() -> Int? {
+            for bits in 1...21 {
+                guard let bit = reader.readBit() else { return nil }
+                if bit == 0 {
+                    guard let value = reader.readBits(bits) else { return nil }
+                    return value + (1 << bits) - 1
+                }
+            }
+            return nil
+        }
+
+        /// チェーン追跡: 下の行の変化点へ色を植えていく
+        func decodeChain(from offset: Int) -> Bool {
+            var offset = offset
+            while true {
+                guard let code = reader.readBits(2) else { return false }
+                switch code {
+                case 0:
+                    guard let more = reader.readBit() else { return false }
+                    if more == 0 { return true }
+                    guard let side = reader.readBit() else { return false }
+                    offset += side == 0 ? -2 : 2
+                case 1:
+                    offset -= 1
+                case 2:
+                    break
+                default:
+                    offset += 1
+                }
+                offset += h.width
+                guard offset >= 0 else { return false }
+                if offset >= total { return false }
+                pixels[offset] = color
+            }
+        }
+
+        decodeLoop: while true {
+            guard var length = readLength() else { return nil }
+            while length > 1 {
+                length -= 1
+                position += 1
+                let existing = pixels[position]
+                if existing < 0 {
+                    pixels[position] = color
+                } else {
+                    color = existing
+                }
+                if position >= total - 1 { break decodeLoop }
+            }
+
+            // 新しい色を読む
+            if h.depth <= 8 {
+                guard let index = reader.readBits(h.depth) else { return nil }
+                color = Int32(index)
+            } else {
+                guard let flag = reader.readBit() else { return nil }
+                if flag == 0 {
+                    guard var value = reader.readBits(h.depth) else { return nil }
+                    if h.depth == 15 { value <<= 1 }
+                    cache.add(value)
+                    color = Int32(value)
+                } else {
+                    guard let key = reader.readBits(7) else { return nil }
+                    color = Int32(cache.get(key))
+                }
+            }
+            position += 1
+            pixels[position] = color
+            if position >= total - 1 { break }
+
+            guard let hasChain = reader.readBit() else { return nil }
+            if hasChain == 1 {
+                guard decodeChain(from: position) else { return nil }
+            }
+        }
+
+        if h.depth <= 8 {
+            return renderIndexed(width: h.width, height: h.height,
+                                 doubleHeight: false, palette: palette) { x, y in
+                let v = pixels[y * h.width + x]
+                return v < 0 ? 0 : Int(v)
+            }
+        }
+        return renderRGB(width: h.width, height: h.height,
+                         doubleHeight: false) { x, y in
+            let v = pixels[y * h.width + x]
+            return v < 0 ? (0, 0, 0) : x68kColor(Int(v))
+        }
+    }
+
     /// MAKI のパレット拡張は MAG の繰り返し複製と異なり、仕様で明記された
     /// 「上位ニブルが 0 なら 0x00、それ以外は下位ニブルを 0xF にする」規則
     /// (公式レンダリングと照合して確認済み)
@@ -365,6 +939,18 @@ enum RetroImageDecoding {
         width: Int, height: Int, doubleHeight: Bool,
         palette: [(r: UInt8, g: UInt8, b: UInt8)],
         pixelIndex: (Int, Int) -> Int) -> CGImage? {
+        guard !palette.isEmpty else { return nil }
+        return renderRGB(width: width, height: height,
+                         doubleHeight: doubleHeight) { x, y in
+            palette[pixelIndex(x, y) % palette.count]
+        }
+    }
+
+    /// RGB クロージャから CGImage を作る(全レトロ形式の最終段)
+    /// EN: Rasterize via an RGB-per-pixel closure (final stage for all formats).
+    private static func renderRGB(
+        width: Int, height: Int, doubleHeight: Bool,
+        pixel: (Int, Int) -> (r: UInt8, g: UInt8, b: UInt8)) -> CGImage? {
         guard width > 0, height > 0 else { return nil }
         let rowRepeat = doubleHeight ? 2 : 1
         let outHeight = height * rowRepeat
@@ -373,7 +959,7 @@ enum RetroImageDecoding {
         for y in 0..<height {
             let base = y * rowRepeat * rowBytes
             for x in 0..<width {
-                let color = palette[pixelIndex(x, y) % palette.count]
+                let color = pixel(x, y)
                 rgba[base + x * 4] = color.r
                 rgba[base + x * 4 + 1] = color.g
                 rgba[base + x * 4 + 2] = color.b
