@@ -305,32 +305,54 @@ final class SplitVolumeExtensionTests: XCTestCase {
     }
 }
 
-/// コレクションフォルダのドリルダウン先選択(§2.4 の設計変更+方向対応)
-/// EN: Direction-aware inner-book pick for collection folders.
+/// コレクションフォルダのドリルダウン先選択(§2.4 の設計変更。
+/// 明示オープン時のみ使われる — ナビゲーションはドリルしない)
+/// EN: Inner-book pick for collection folders (explicit opens only).
 @MainActor
 final class InnerBookSelectionTests: XCTestCase {
-    func testInnerBookPicksFirstOrLastByDirection() throws {
+    func testInnerBookPicksFirstBookByName() throws {
         let dir = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data([0x50, 0x4B]).write(to: dir.appendingPathComponent("01_first.zip"))
         try Data([0x50, 0x4B]).write(to: dir.appendingPathComponent("02_mid.zip"))
-        try FileManager.default.createDirectory(
-            at: dir.appendingPathComponent("03_last"), withIntermediateDirectories: false)
+        let sub = dir.appendingPathComponent("03_last")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: false)
+        try Data([0x89]).write(to: sub.appendingPathComponent("page.png"))
         try Data("x".utf8).write(to: dir.appendingPathComponent("note.txt"))
 
         XCTAssertEqual(
-            ReaderWindowController.innerBook(in: dir, preferLast: false)?.lastPathComponent,
-            "01_first.zip", "前方到着は名前順の最初の本")
+            ReaderWindowController.innerBook(in: dir)?.lastPathComponent,
+            "01_first.zip", "名前順の最初の本を選ぶ")
+    }
+
+    func testInnerBookSkipsFoldersWithoutBookContent() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // 画像も本も含まないフォルダ(.app 内部のような行き止まり)は飛ばす
+        let junk = dir.appendingPathComponent("00_junk")
+        try FileManager.default.createDirectory(
+            at: junk.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(
+            to: junk.appendingPathComponent("Contents/Info.plist"))
+        // パッケージ(.app)は中に画像があっても候補にしない
+        let app = dir.appendingPathComponent("01_tool.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: false)
+        try Data([0x89]).write(to: app.appendingPathComponent("icon.png"))
+        // 深くに画像を含むフォルダは候補になる
+        let real = dir.appendingPathComponent("02_series")
+        try FileManager.default.createDirectory(
+            at: real.appendingPathComponent("vol1"), withIntermediateDirectories: true)
+        try Data([0x89]).write(to: real.appendingPathComponent("vol1/p1.png"))
+
         XCTAssertEqual(
-            ReaderWindowController.innerBook(in: dir, preferLast: true)?.lastPathComponent,
-            "03_last", "後方到着(前の本)は名前順の最後の本")
+            ReaderWindowController.innerBook(in: dir)?.lastPathComponent,
+            "02_series", "行き止まりフォルダとパッケージを飛ばして本のあるフォルダへ")
     }
 
     func testInnerBookIgnoresNonBooks() throws {
         let dir = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("x".utf8).write(to: dir.appendingPathComponent("note.txt"))
-        XCTAssertNil(ReaderWindowController.innerBook(in: dir, preferLast: false))
-        XCTAssertNil(ReaderWindowController.innerBook(in: dir, preferLast: true))
+        XCTAssertNil(ReaderWindowController.innerBook(in: dir))
     }
 }

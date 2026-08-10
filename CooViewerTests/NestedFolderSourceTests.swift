@@ -159,4 +159,70 @@ final class NestedFolderSourceTests: XCTestCase {
         let image = try await source.image(for: entries[0], maxPixelSize: nil)
         XCTAssertEqual(image.width, 41)
     }
+
+    /// ページの実体ファイル: フォルダ直下の画像はその画像、子の本のページは
+    /// 子の書庫ファイル(Finder 表示・ファイル情報の対象)
+    func testContainerFileURLMapsPagesToTheirFiles() async throws {
+        let image = tempDir.appendingPathComponent("00.png")
+        try png(width: 40).write(to: image)
+        let archive = tempDir.appendingPathComponent("10_inner.zip")
+        try zipData([("p1.png", png(width: 41))]).write(to: archive)
+
+        let source = try await BookSourceFactory.make(
+            for: tempDir, readSubFolders: false)
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 2)
+
+        // /var と /private/var の違いを吸収するため解決済みパスで比較する
+        let imageURL = await source.containerFileURL(for: entries[0])
+        XCTAssertEqual(imageURL.resolvingSymlinksInPath().path,
+                       image.resolvingSymlinksInPath().path,
+                       "単体画像はその画像ファイル")
+        let nestedURL = await source.containerFileURL(for: entries[1])
+        XCTAssertEqual(nestedURL.resolvingSymlinksInPath().path,
+                       archive.resolvingSymlinksInPath().path,
+                       "書庫内ページは書庫本体")
+    }
+
+    /// 組み立て進捗が (0,総数)→…→(総数,総数) で単調に通知されること
+    /// (オープン進捗 HUD の情報源)
+    func testAssemblyProgressReportsMonotonicCounts() async throws {
+        for name in ["a.zip", "b.zip", "c.zip"] {
+            try zipData([("p1.png", png(width: 40))])
+                .write(to: tempDir.appendingPathComponent(name))
+        }
+        let source = try await BookSourceFactory.make(
+            for: tempDir, readSubFolders: false)
+        let collector = ProgressCollector()
+        await source.setAssemblyProgressHandler { done, total in
+            collector.append(done: done, total: total)
+        }
+        _ = try await source.entries()
+
+        let events = collector.events
+        XCTAssertEqual(events.first?.done, 0, "開始時に 0/総数 を通知")
+        XCTAssertEqual(events.last?.done, 3)
+        XCTAssertTrue(events.allSatisfy { $0.total == 3 })
+        XCTAssertEqual(events.map(\.done), events.map(\.done).sorted(),
+                       "完了数は単調増加")
+    }
+}
+
+/// 進捗コールバックの記録(actor 外から呼ばれるためロックで保護)
+/// EN: Thread-safe collector for progress callback events.
+private final class ProgressCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [(done: Int, total: Int)] = []
+
+    func append(done: Int, total: Int) {
+        lock.lock()
+        stored.append((done, total))
+        lock.unlock()
+    }
+
+    var events: [(done: Int, total: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
 }

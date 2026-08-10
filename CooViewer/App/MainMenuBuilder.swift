@@ -68,6 +68,23 @@ enum MainMenuBuilder {
                      action: #selector(ReaderWindowController.openLastBookMenu(_:)),
                      keyEquivalent: "")
         menu.addItem(.separator())
+        // 現在ページの実体ファイル(単体画像/書庫/PDF)を Finder で選択表示
+        // EN: Reveal the page's on-disk file in the Finder.
+        menu.addItem(withTitle: String(localized: "Show in Finder"),
+                     action: #selector(ReaderWindowController.showInFinderMenu(_:)),
+                     keyEquivalent: "R")  // ⇧⌘R
+        // Option 押下で現れる代替項目: 見開きのもう一方のページを表示
+        // EN: Option-modified alternate: reveal the spread's other page.
+        let otherPage = menu.addItem(
+            withTitle: String(localized: "Show the Other Page in Finder"),
+            action: #selector(ReaderWindowController.showOtherPageInFinderMenu(_:)),
+            keyEquivalent: "R")
+        otherPage.keyEquivalentModifierMask = [.command, .shift, .option]
+        otherPage.isAlternate = true
+        menu.addItem(withTitle: String(localized: "Show File Info"),
+                     action: #selector(ReaderWindowController.showFileInfoMenu(_:)),
+                     keyEquivalent: "i")  // ⌘I(Finder の「情報を見る」に合わせる)
+        menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Close"),
                      action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
 
