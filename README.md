@@ -84,7 +84,9 @@ macOS 26 時点で動作を確認している主な形式:
 | RAW | DNG と各社 RAW(CR2 / CR3 / NEF / ARW / RAF / ORF / RW2 ほか ImageIO 対応機種) |
 | ベクトル | SVG (.svg) — 表示サイズに合わせてラスタライズ |
 | レトロ日本形式 | **MAG (.mag / .max)**(MSX2+ の YJK スクリーンモード 10-12 含む)、**MAKI (.mki)**、**Pi (.pi)**、**PIC (.pic)**(X68000 15/16bit・16/256 色、FM-Towns/汎用ヘッダ)— PC-98 / X68000 / MSX 時代の形式を独自デコーダで表示。先頭マジックで判定するため、同じ拡張子の別形式ファイル(3ds Max の .max、Softimage の .pic 等)を誤描画することはありません |
-| その他 | PSD、TGA、ICO / ICNS、DDS / KTX / ASTC(テクスチャ)、SGI、PICT、PPM / PGM / PBM |
+| その他 | PSD、TGA、ICO / ICNS、DDS / KTX / ASTC(テクスチャ)、SGI、PICT、pbmplus 全種(PPM / PGM / PBM の ASCII・バイナリ両方と .pnm) |
+
+独自デコーダの形式(MAG / MAKI / Pi / PIC / PBM P4)は設定の「高度」タブで個別に無効化できます。
 
 非対応: Adobe Illustrator (.ai)、DjVu、PCX、PIC2 (.p2)、PC-88VA の PIC など。
 

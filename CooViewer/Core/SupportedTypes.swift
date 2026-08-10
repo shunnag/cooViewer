@@ -48,17 +48,34 @@ enum SupportedTypes {
     /// EN: Extensions that claim to be images but cannot actually be displayed.
     static let undisplayableImageExtensions: Set<String> = ["ai"]
 
-    /// UTType 解決できないが表示できる拡張子。
+    /// UTType 解決できないが表示できる拡張子か。
     /// avifs: アニメ AVIF(ImageIO がデコード)。
-    /// mag / max / mki: レトロ日本形式(MAG / MAKI。RetroImageDecoding が
-    /// デコード)。.max は 3ds Max 等とも衝突するが、デコードは先頭マジックで
-    /// ゲートするため別形式のファイルを誤描画することはない(壊れページ表示)
-    /// EN: Extensions UTType cannot resolve but we can display. The retro
-    /// EN: extensions collide with unrelated formats; decoding is magic-gated,
-    /// EN: so foreign files never get misrendered (they show the broken page).
-    static let extraImageExtensions: Set<String> = [
-        "avifs", "mag", "max", "mki", "pi", "pic",
-    ]
+    /// mag / max / mki / pi / pic / pnm: 独自デコーダの形式(高度設定の
+    /// トグルで個別に無効化できる)。.max は 3ds Max、.pic は Softimage 等と
+    /// 衝突するが、デコードは先頭マジックでゲートするため別形式のファイルを
+    /// 誤描画することはない(壊れページ表示)
+    /// EN: Extensions UTType cannot resolve but we can display. The custom
+    /// EN: decoder formats honor the per-format toggles in Advanced settings;
+    /// EN: decoding stays magic-gated, so colliding foreign files never get
+    /// EN: misrendered.
+    static func isExtraImageExtension(_ ext: String) -> Bool {
+        switch ext {
+        case "avifs":
+            return true
+        case "mag", "max":
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.magKey)
+        case "mki":
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.makiKey)
+        case "pi":
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.piKey)
+        case "pic":
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.picKey)
+        case "pnm":
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.pnmKey)
+        default:
+            return false
+        }
+    }
 
     /// ページとして表示できる画像ファイルか(拡張子ベース)。
     /// 旧実装の [NSImage imageFileTypes] 判定に相当。
@@ -66,7 +83,7 @@ enum SupportedTypes {
     static func isImageFile(_ name: String) -> Bool {
         let ext = (name as NSString).pathExtension.lowercased()
         guard !ext.isEmpty, !undisplayableImageExtensions.contains(ext) else { return false }
-        if extraImageExtensions.contains(ext) { return true }
+        if isExtraImageExtension(ext) { return true }
         guard let type = UTType(filenameExtension: ext) else { return false }
         return type.conforms(to: .image)
     }
