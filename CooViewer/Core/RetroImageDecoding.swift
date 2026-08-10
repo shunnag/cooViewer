@@ -11,6 +11,23 @@ import Foundation
 /// EN: Maki-chan graphics format document. Dispatch is strictly magic-based —
 /// EN: the extensions collide with unrelated formats — and runs only as a
 /// EN: fallback when ImageIO cannot read the data.
+/// 独自デコーダ形式の個別有効化(高度設定タブのトグル。未設定は有効)。
+/// リスト作成(SupportedTypes)とデコードの両方で参照する
+/// EN: Per-format toggles for the built-in decoders (default on), consulted
+/// EN: by both the file-listing check and the decode dispatch.
+enum RetroFormatToggle {
+    static let magKey = "RetroDecodeMAG"
+    static let makiKey = "RetroDecodeMAKI"
+    static let piKey = "RetroDecodePi"
+    static let picKey = "RetroDecodePIC"
+    static let pnmKey = "RetroDecodePNM"
+
+    static func isEnabled(_ key: String) -> Bool {
+        let defaults = UserDefaults.standard
+        return defaults.object(forKey: key) == nil || defaults.bool(forKey: key)
+    }
+}
+
 enum RetroImageDecoding {
     private static let magMagic = Array("MAKI02  ".utf8)
     private static let makiMagicA = Array("MAKI01A ".utf8)
@@ -24,18 +41,31 @@ enum RetroImageDecoding {
     /// EN: because their signatures are short.
     static func isRetroImage(_ data: Data) -> Bool {
         let head = [UInt8](data.prefix(8))
-        if head == magMagic || head == makiMagicA || head == makiMagicB {
-            return true
+        if head == magMagic {
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.magKey)
+        }
+        if head == makiMagicA || head == makiMagicB {
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.makiKey)
         }
         let bytes = [UInt8](data.prefix(65536))
-        return parsePiHeader(bytes) != nil || parsePicHeader(bytes) != nil
+        if parsePiHeader(bytes) != nil {
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.piKey)
+        }
+        if parsePicHeader(bytes) != nil {
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.picKey)
+        }
+        if parseP4Header(bytes) != nil {
+            return RetroFormatToggle.isEnabled(RetroFormatToggle.pnmKey)
+        }
+        return false
     }
 
     /// ヘッダのみからピクセル寸法を返す(縦横比 1:2 の伸長込み)
     /// EN: Header-only pixel size (aspect doubling applied).
     static func imageSize(_ data: Data) -> CGSize? {
         let bytes = [UInt8](data.prefix(65536))
-        if let header = parseMagHeader(bytes) {
+        if let header = parseMagHeader(bytes),
+           RetroFormatToggle.isEnabled(RetroFormatToggle.magKey) {
             let height = (header.bottom - header.top + 1)
                 * (header.doubleHeight ? 2 : 1)
             if header.isYJK {
@@ -43,14 +73,21 @@ enum RetroImageDecoding {
             }
             return CGSize(width: header.right - header.left + 1, height: height)
         }
-        if let maki = parseMakiHeader(bytes) {
+        if let maki = parseMakiHeader(bytes),
+           RetroFormatToggle.isEnabled(RetroFormatToggle.makiKey) {
             return CGSize(width: 640, height: maki.doubleHeight ? 800 : 400)
         }
-        if let pi = parsePiHeader(bytes) {
+        if let pi = parsePiHeader(bytes),
+           RetroFormatToggle.isEnabled(RetroFormatToggle.piKey) {
             return CGSize(width: pi.width, height: pi.height)
         }
-        if let pic = parsePicHeader(bytes) {
+        if let pic = parsePicHeader(bytes),
+           RetroFormatToggle.isEnabled(RetroFormatToggle.picKey) {
             return CGSize(width: pic.width, height: pic.height)
+        }
+        if let pnm = parseP4Header(bytes),
+           RetroFormatToggle.isEnabled(RetroFormatToggle.pnmKey) {
+            return CGSize(width: pnm.width, height: pnm.height)
         }
         return nil
     }
@@ -60,17 +97,35 @@ enum RetroImageDecoding {
     static func decode(_ data: Data) -> CGImage? {
         let bytes = [UInt8](data)
         if bytes.prefix(8).elementsEqual(magMagic) {
+            guard RetroFormatToggle.isEnabled(RetroFormatToggle.magKey) else {
+                return nil
+            }
             return decodeMag(bytes)
         }
         if bytes.prefix(8).elementsEqual(makiMagicA)
             || bytes.prefix(8).elementsEqual(makiMagicB) {
+            guard RetroFormatToggle.isEnabled(RetroFormatToggle.makiKey) else {
+                return nil
+            }
             return decodeMaki(bytes, variantB: bytes.prefix(8).elementsEqual(makiMagicB))
         }
         if parsePiHeader(bytes) != nil {
+            guard RetroFormatToggle.isEnabled(RetroFormatToggle.piKey) else {
+                return nil
+            }
             return decodePi(bytes)
         }
         if parsePicHeader(bytes) != nil {
+            guard RetroFormatToggle.isEnabled(RetroFormatToggle.picKey) else {
+                return nil
+            }
             return decodePic(bytes)
+        }
+        if parseP4Header(bytes) != nil {
+            guard RetroFormatToggle.isEnabled(RetroFormatToggle.pnmKey) else {
+                return nil
+            }
+            return decodeP4(bytes)
         }
         return nil
     }
@@ -916,6 +971,68 @@ enum RetroImageDecoding {
                          doubleHeight: false) { x, y in
             let v = pixels[y * h.width + x]
             return v < 0 ? (0, 0, 0) : x68kColor(Int(v))
+        }
+    }
+
+    // MARK: - PBM P4(pbmplus のバイナリ 1bit 形式。ImageIO は P4 のみ非対応)
+
+    fileprivate struct P4Header {
+        let width: Int
+        let height: Int
+        let dataOffset: Int
+    }
+
+    private static func isPNMWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+            || byte == 0x0B || byte == 0x0C
+    }
+
+    fileprivate static func parseP4Header(_ d: [UInt8]) -> P4Header? {
+        guard d.count > 6, d[0] == 0x50, d[1] == 0x34,
+              isPNMWhitespace(d[2]) else { return nil }
+        var cursor = 2
+        func skipSpacesAndComments() {
+            while cursor < d.count {
+                if isPNMWhitespace(d[cursor]) {
+                    cursor += 1
+                } else if d[cursor] == 0x23 {  // '#' コメントは行末まで
+                    while cursor < d.count, d[cursor] != 0x0A { cursor += 1 }
+                } else {
+                    break
+                }
+            }
+        }
+        func readNumber() -> Int? {
+            skipSpacesAndComments()
+            var value = 0
+            var digits = 0
+            while cursor < d.count, (0x30...0x39).contains(d[cursor]) {
+                value = value * 10 + Int(d[cursor] - 0x30)
+                cursor += 1
+                digits += 1
+                guard value <= 1_000_000 else { return nil }
+            }
+            return digits > 0 ? value : nil
+        }
+        guard let width = readNumber(), let height = readNumber(),
+              width > 0, height > 0, width <= 65535, height <= 65535,
+              width * height <= 64 * 1024 * 1024,
+              cursor < d.count, isPNMWhitespace(d[cursor]) else { return nil }
+        cursor += 1  // 高さ直後の空白 1 文字(仕様)
+        return P4Header(width: width, height: height, dataOffset: cursor)
+    }
+
+    private static func decodeP4(_ d: [UInt8]) -> CGImage? {
+        guard let h = parseP4Header(d) else { return nil }
+        let rowBytes = (h.width + 7) / 8
+        guard h.dataOffset + rowBytes * h.height <= d.count else { return nil }
+        // PBM は 1 = 黒、0 = 白。MSB が左
+        // EN: PBM: 1 = black, 0 = white, MSB leftmost.
+        return renderRGB(width: h.width, height: h.height,
+                         doubleHeight: false) { x, y in
+            let byte = d[h.dataOffset + y * rowBytes + x / 8]
+            let bit = (byte >> (7 - x % 8)) & 1
+            return bit == 1 ? (0, 0, 0) : (255, 255, 255)
         }
     }
 
