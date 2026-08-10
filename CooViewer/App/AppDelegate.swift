@@ -191,6 +191,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if arguments.contains("--show-file-info") {
+            // 検証用: ファイル情報パネルを開く(--snapshot はパネルを撮る)
+            // EN: Verification flag: open the File Info panel for the snapshot.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.showFileInfo()
+            }
+        }
         if arguments.contains("--show-opening-progress") {
             // 検証用: オープン進捗 HUD を固定内容で表示(スナップショット撮影)
             // EN: Verification flag: show the opening-progress HUD with fixed text.
@@ -219,10 +227,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }.count
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2 + Double(max(0, navSteps - 1))))
-                // しおり編集シートが開いていればそちらを撮る(NSHostingView は反転補正)
-                // EN: capture the bookmark sheet when open, else the reader view.
+                // しおり編集シート/ファイル情報パネルが開いていればそちらを撮る
+                // (NSHostingView は反転補正)
+                // EN: capture the bookmark sheet or File Info panel when open,
+                // EN: else the reader view.
                 if let sheet = self.readerWindowController?.bookmarkEditorWindow {
                     self.writeCachedSnapshot(of: sheet.contentView, to: path)
+                } else if let rows = self.readerWindowController?.fileInfoDebugRows {
+                    // パネルはヘッドレスでは表示パスを通らずレイヤーが空のため、
+                    // 内容ビューを ImageRenderer で直接描画する
+                    // EN: Headless panels never hit a display pass, so render
+                    // EN: the SwiftUI content directly instead.
+                    let renderer = ImageRenderer(content: FileInfoGrid(rows: rows)
+                        .frame(width: 480)
+                        .background(Color(nsColor: .windowBackgroundColor)))
+                    renderer.scale = 2
+                    if let cgImage = renderer.cgImage {
+                        let rep = NSBitmapImageRep(cgImage: cgImage)
+                        try? rep.representation(using: .png, properties: [:])?
+                            .write(to: URL(fileURLWithPath: path))
+                    }
                 } else {
                     self.writeSnapshot(of: self.readerWindowController?.window?.contentView,
                                        to: path)
@@ -247,8 +271,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// draw(_:) ベースのビュー(SwiftUI シート等)は cacheDisplay で撮る
     /// EN: cacheDisplay-based capture for views that draw via draw(_:).
     private func writeCachedSnapshot(of targetView: NSView?, to path: String) {
-        guard let view = targetView,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        guard let view = targetView else { return }
+        // ヘッドレス実行ではパネルが描画前のことがあるためレイアウトを確定させる
+        // EN: Headless runs may capture before layout; force it first.
+        view.layoutSubtreeIfNeeded()
+        view.displayIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?
             .write(to: URL(fileURLWithPath: path))

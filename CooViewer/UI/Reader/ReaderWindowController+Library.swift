@@ -316,10 +316,68 @@ extension ReaderWindowController {
         guard let book else { return }
         Task {
             let spread = await book.currentSpread()
-            let index = displayedIndex(in: spread, leftSide: leftSide)
-            let url = index.flatMap { book.entries[$0].fileURL } ?? book.source.url
+            // ページの実体ファイルを選択表示: 単体画像はその画像、
+            // 書庫/PDF 内のページは書庫/PDF 本体(仕様書 §4.13)
+            // EN: Select the page's on-disk file: the image itself for folder
+            // EN: pages, the containing archive/PDF for nested pages.
+            let url: URL
+            if let index = displayedIndex(in: spread, leftSide: leftSide) {
+                url = await book.source.containerFileURL(for: book.entries[index])
+            } else {
+                url = book.source.url
+            }
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
+    }
+
+    /// 現在のページのファイル情報パネルを表示する(新規機能。開いていれば
+    /// 内容を現在ページで更新する)
+    /// EN: Show (or refresh) the File Info panel for the current page.
+    func showFileInfo() {
+        guard let book else { return }
+        Task {
+            let spread = await book.currentSpread()
+            guard let index = displayedIndex(in: spread, leftSide: nil),
+                  book.entries.indices.contains(index) else {
+                NSSound.beep()
+                return
+            }
+            let entry = book.entries[index]
+            let containerURL = await book.source.containerFileURL(for: entry)
+            let data = await book.source.imageData(for: entry)
+            let fallback = data == nil
+                ? await book.source.imageSize(for: entry) : nil
+            let rows = PageFileInfo.rows(
+                entryName: entry.name,
+                pathInBook: entry.pathInBook,
+                containerURL: containerURL,
+                pageNumber: index + 1,
+                pageCount: book.pageCount,
+                imageData: data,
+                fallbackPixelSize: fallback)
+            presentFileInfoPanel(title: entry.name, rows: rows)
+        }
+    }
+
+    private func presentFileInfoPanel(title: String, rows: [PageFileInfo.Row]) {
+        fileInfoDebugRows = rows
+        let hosting = NSHostingController(rootView: FileInfoView(rows: rows))
+        if let panel = fileInfoPanel {
+            // 開いたまま再実行されたら内容だけ差し替える(パネルは 1 枚)
+            // EN: Re-invocations refresh the single panel in place.
+            panel.title = title
+            panel.contentViewController = hosting
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        let panel = NSPanel(contentViewController: hosting)
+        panel.styleMask = [.titled, .closable, .utilityWindow]
+        panel.title = title
+        panel.hidesOnDeactivate = true
+        panel.isReleasedWhenClosed = false
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        fileInfoPanel = panel
     }
 
     func viewOriginal(leftSide: Bool?) {
@@ -443,6 +501,8 @@ extension ReaderWindowController {
     @objc func nextBookMenu(_ sender: Any?) { openAdjacentBook(forward: true) }
     @objc func previousBookMenu(_ sender: Any?) { openAdjacentBook(forward: false) }
     @objc func openLastBookMenu(_ sender: Any?) { openTheLastBook() }
+    @objc func showInFinderMenu(_ sender: Any?) { showInFinder(leftSide: nil) }
+    @objc func showFileInfoMenu(_ sender: Any?) { showFileInfo() }
     @objc func toggleSlideshowMenu(_ sender: Any?) { toggleSlideshow() }
 }
 

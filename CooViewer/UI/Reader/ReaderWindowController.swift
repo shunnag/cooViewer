@@ -40,6 +40,13 @@ final class ReaderWindowController: NSWindowController {
     var swipeTrackingActive = false
     var swipeTrackingDeltaX: CGFloat = 0
     var originalSizePanel: NSPanel?
+    /// ファイル情報パネル(File > ファイル情報を表示)
+    /// EN: File Info utility panel.
+    var fileInfoPanel: NSPanel?
+    /// 検証用: 最後に表示したファイル情報の行(--show-file-info のスナップショット。
+    /// ヘッドレス実行ではパネルのレイヤーが描画されないため ImageRenderer で描く)
+    /// EN: Last presented File Info rows, for headless snapshot rendering.
+    var fileInfoDebugRows: [PageFileInfo.Row]?
 
     /// サムネイルオーバーレイ(ウインドウ内表示。仕様書 §4.8)
     let thumbnailOverlayModel = ThumbnailOverlayModel()

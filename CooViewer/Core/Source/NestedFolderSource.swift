@@ -256,6 +256,22 @@ actor NestedFolderSource: BookSource {
         assemblyProgress = handler
     }
 
+    /// ページの実体ファイル: フォルダ直下の画像はその画像、子の本のページは
+    /// その書庫/PDF ファイル(Finder 表示・ファイル情報用)
+    /// EN: Folder pages map to their image file, child pages to the child
+    /// EN: archive/PDF file (used by Show in Finder / File Info).
+    func containerFileURL(for entry: PageEntry) async -> URL {
+        await buildIfNeeded()
+        switch locations[entry.id] {
+        case .child(let sourceIndex, _):
+            return children[sourceIndex].url
+        case .folder(let folderEntry):
+            return folderEntry.fileURL ?? url
+        case nil:
+            return url
+        }
+    }
+
     /// プロファイルはフォルダ(読み取りゲート)と、生成済み/今後生成される
     /// 子ソース(書庫のスプール方針)の両方へ配る
     /// EN: Forward the profile to the folder gate and to all children,
