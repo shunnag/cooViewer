@@ -129,5 +129,10 @@ struct FileInfoContent: View {
         }
         .frame(height: 230)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        // initialPosition は「初期値」なので、左右切替(別ページの座標)では
+        // カメラが動かない。座標を id にして地図ごと作り直す
+        // EN: initialPosition only seeds the camera; keying the view identity
+        // EN: on the coordinate recreates the map when the page switches.
+        .id("map:\(latitude),\(longitude)")
     }
 }
