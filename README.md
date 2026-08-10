@@ -56,6 +56,36 @@ $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Relea
   ルーペ(全表示モード・回転対応)
 - ネイティブフルスクリーン(カーソル自動非表示)
 
+## 対応形式
+
+### 本(コンテナ)
+
+| 種類 | 形式 |
+|---|---|
+| フォルダ | 画像入りフォルダ(サブフォルダ読み込みは設定で切替)、旧 cooViewer バンドル(.cvbdl) |
+| 書庫 | zip / cbz / rar / cbr / lzh / lha / 7z / sit |
+| 分割書庫 | .001〜 / .r00〜 / .z01〜 系(先頭巻を開くと続き巻へ自動スパン) |
+| PDF | ページをベクトルのまま表示サイズに合わせてレンダリング |
+| ネスト | フォルダ内・書庫内の書庫/PDF を同じ本に統合(例: フォルダ内の zip 群を 1 冊として読む) |
+
+パスワード付きの zip / rar / PDF に対応(ネストされた暗号化書庫も解除ダイアログを表示)。
+書庫内ファイル名の文字コードは自動判定します(Shift-JIS の zip も文字化けしません)。
+
+### ページ画像
+
+判定は拡張子ベースで、**macOS の ImageIO が読める形式はそのまま表示できます**。
+macOS 26 時点で動作を確認している主な形式:
+
+| 分類 | 形式 |
+|---|---|
+| 一般 | JPEG、PNG、GIF、TIFF、BMP、WebP、HEIC / HEIF(.hif 含む)、AVIF、**JPEG XL (.jxl)**、JPEG 2000 (.jp2/.j2k)、MPO |
+| アニメーション | GIF、APNG(.png)、WebP、AVIF (.avifs)、HEIC (.heics) — インライン再生 |
+| HDR | ゲインマップ付き JPEG/HEIC の HDR 表示、OpenEXR (.exr)、Radiance (.hdr) |
+| RAW | DNG と各社 RAW(CR2 / CR3 / NEF / ARW / RAF / ORF / RW2 ほか ImageIO 対応機種) |
+| その他 | PSD、TGA、ICO / ICNS、DDS / KTX / ASTC(テクスチャ)、SGI、PICT、PPM / PGM / PBM |
+
+非対応: SVG、Adobe Illustrator (.ai)、DjVu、PCX などの ImageIO が読めない形式。
+
 ### 旧版ユーザーへ: 設定の引き継ぎ
 
 設定ドメインは旧版と同じ `jp.coo.cooViewer` を使い続けます。
