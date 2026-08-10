@@ -12,14 +12,18 @@ enum ImageDecoding {
     /// EN: no decode. Used for spread pairing.
     static func imageSize(at url: URL) -> CGSize? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
+            // ImageIO が知らない形式はレトロ形式(MAG/MAKI)のヘッダを試す
+            // EN: Fall back to the retro-format header parser.
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe)
+            else { return nil }
+            return RetroImageDecoding.imageSize(data)
         }
         return imageSize(from: source)
     }
 
     static func imageSize(from data: Data) -> CGSize? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return nil
+            return RetroImageDecoding.imageSize(data)
         }
         return imageSize(from: source)
     }
@@ -108,6 +112,12 @@ enum ImageDecoding {
     /// EN: AppKit fallback for formats ImageIO cannot handle (e.g. SVG);
     /// EN: vectors are rasterized at the requested resolution.
     private static func decodeWithAppKit(_ data: Data, maxPixelSize: Int?) throws -> CGImage {
+        // レトロ日本形式(MAG/MAKI)は先頭マジックで判定して専用デコード
+        // EN: Magic-gated retro-format decode before the AppKit fallback.
+        if RetroImageDecoding.isRetroImage(data),
+           let retro = RetroImageDecoding.decode(data) {
+            return downscaled(retro, maxPixelSize: maxPixelSize)
+        }
         guard let image = loadAppKitImage(data),
               image.size.width > 0, image.size.height > 0 else {
             throw BookSourceError.pageLoadFailed("undecodable image data")
@@ -138,6 +148,25 @@ enum ImageDecoding {
             throw BookSourceError.pageLoadFailed("undecodable image data")
         }
         return result
+    }
+
+    /// maxPixelSize を超える画像を縮小する(レトロ形式のサムネイル用)
+    /// EN: Downscale to the pixel cap (used for retro-format thumbnails).
+    private static func downscaled(_ image: CGImage, maxPixelSize: Int?) -> CGImage {
+        guard let maxPixelSize, max(image.width, image.height) > maxPixelSize
+        else { return image }
+        let scale = CGFloat(maxPixelSize) / CGFloat(max(image.width, image.height))
+        let width = max(1, Int(CGFloat(image.width) * scale))
+        let height = max(1, Int(CGFloat(image.height) * scale))
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage() ?? image
     }
 
     /// NSImage(data:) は拡張子ヒントなしでは SVG を判別できないため、

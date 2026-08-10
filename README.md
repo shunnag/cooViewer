@@ -82,9 +82,11 @@ macOS 26 時点で動作を確認している主な形式:
 | アニメーション | GIF、APNG(.png)、WebP、AVIF (.avifs)、HEIC (.heics) — インライン再生 |
 | HDR | ゲインマップ付き JPEG/HEIC の HDR 表示、OpenEXR (.exr)、Radiance (.hdr) |
 | RAW | DNG と各社 RAW(CR2 / CR3 / NEF / ARW / RAF / ORF / RW2 ほか ImageIO 対応機種) |
+| ベクトル | SVG (.svg) — 表示サイズに合わせてラスタライズ |
+| レトロ日本形式 | **MAG (.mag / .max)**、**MAKI (.mki)** — PC-98 / X68000 / MSX 時代の形式を独自デコーダで表示(先頭マジックで判定するため、同じ拡張子の別形式ファイルを誤描画することはありません) |
 | その他 | PSD、TGA、ICO / ICNS、DDS / KTX / ASTC(テクスチャ)、SGI、PICT、PPM / PGM / PBM |
 
-非対応: SVG、Adobe Illustrator (.ai)、DjVu、PCX などの ImageIO が読めない形式。
+非対応: Adobe Illustrator (.ai)、DjVu、PI / PIC(X68000 系)、PCX、MSX2+ の YJK モード(スクリーン 10-12)の MAG など。
 
 ### 旧版ユーザーへ: 設定の引き継ぎ
 
