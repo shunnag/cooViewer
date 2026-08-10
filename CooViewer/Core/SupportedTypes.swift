@@ -56,7 +56,9 @@ enum SupportedTypes {
     /// EN: Extensions UTType cannot resolve but we can display. The retro
     /// EN: extensions collide with unrelated formats; decoding is magic-gated,
     /// EN: so foreign files never get misrendered (they show the broken page).
-    static let extraImageExtensions: Set<String> = ["avifs", "mag", "max", "mki"]
+    static let extraImageExtensions: Set<String> = [
+        "avifs", "mag", "max", "mki", "pi", "pic",
+    ]
 
     /// ページとして表示できる画像ファイルか(拡張子ベース)。
     /// 旧実装の [NSImage imageFileTypes] 判定に相当。
