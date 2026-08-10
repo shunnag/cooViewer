@@ -279,6 +279,62 @@ final class RetroImageDecodingTests: XCTestCase {
         }
     }
 
+    // MARK: - PBM P4(バイナリ 1bit)
+
+    func testP4DecodesBinaryBitmap() throws {
+        // "P4\n# comment\n4 2\n" + 2 行(0101 / 1010)
+        var bytes = Array("P4\n# c\n4 2\n".utf8)
+        bytes += [0b0101_0000, 0b1010_0000]
+        let data = Data(bytes)
+        XCTAssertTrue(RetroImageDecoding.isRetroImage(data))
+        XCTAssertEqual(RetroImageDecoding.imageSize(data),
+                       CGSize(width: 4, height: 2))
+        let image = try XCTUnwrap(RetroImageDecoding.decode(data))
+        let px = rgbaPixels(image)
+        let expectedRow0: [UInt8] = [255, 0, 255, 0]  // 1 = 黒
+        let expectedRow1: [UInt8] = [0, 255, 0, 255]
+        for x in 0..<4 {
+            XCTAssertEqual(pixel(px, width: 4, x: x, y: 0).r, expectedRow0[x])
+            XCTAssertEqual(pixel(px, width: 4, x: x, y: 1).r, expectedRow1[x])
+        }
+        // ASCII 版(P1)は ImageIO が担当するので独自デコーダは反応しない
+        XCTAssertNil(RetroImageDecoding.decode(Data("P1\n1 1\n0\n".utf8)))
+        // データ不足は nil
+        XCTAssertNil(RetroImageDecoding.decode(Data("P4\n8 8\n\u{01}".utf8)))
+    }
+
+    // MARK: - 形式トグル(高度設定)
+
+    func testFormatTogglesDisableListingAndDecoding() throws {
+        let defaults = UserDefaults.standard
+        defer {
+            defaults.removeObject(forKey: RetroFormatToggle.magKey)
+            defaults.removeObject(forKey: RetroFormatToggle.pnmKey)
+        }
+        // 既定(未設定)は有効
+        XCTAssertTrue(SupportedTypes.isImageFile("a.mag"))
+        XCTAssertTrue(SupportedTypes.isImageFile("a.pnm"))
+
+        defaults.set(false, forKey: RetroFormatToggle.magKey)
+        defaults.set(false, forKey: RetroFormatToggle.pnmKey)
+        XCTAssertFalse(SupportedTypes.isImageFile("a.mag"),
+                       "OFF の形式は一覧に載らない")
+        XCTAssertFalse(SupportedTypes.isImageFile("a.pnm"))
+        // .pbm は UTType 上は画像のまま(ImageIO が P1-P3/P5-P6 を担当)
+        XCTAssertTrue(SupportedTypes.isImageFile("a.pbm"))
+
+        let mag = makeMag(right: 7, bottom: 1, flagA: [0x00], flagB: [],
+                          colors: [0x01, 0x23, 0x45, 0x67,
+                                   0x89, 0xAB, 0xCD, 0xEF])
+        XCTAssertNil(RetroImageDecoding.decode(mag), "OFF の形式はデコードしない")
+        XCTAssertFalse(RetroImageDecoding.isRetroImage(mag))
+        XCTAssertNil(RetroImageDecoding.decode(
+            Data(Array("P4\n1 1\n".utf8) + [0x80])))
+
+        defaults.set(true, forKey: RetroFormatToggle.magKey)
+        XCTAssertNotNil(RetroImageDecoding.decode(mag), "ON に戻せば復活")
+    }
+
     // MARK: - 判定の安全性(拡張子衝突対策)
 
     func testDetectionRejectsForeignData() {

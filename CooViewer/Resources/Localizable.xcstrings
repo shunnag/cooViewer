@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Built-in image decoders" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "独自デコーダの対応形式"
+          }
+        }
+      }
+    },
+    "Formats decoded by cooViewer itself rather than macOS. Changes apply when the next book is opened." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS ではなく cooViewer 自身がデコードする形式です。変更は次に本を開いたときから適用されます。"
+          }
+        }
+      }
+    },
     "Left Page" : {
       "localizations" : {
         "ja" : {

@@ -66,6 +66,13 @@ struct SettingsView: View {
     @AppStorage("AdvancedThumbnailCacheDays") private var advThumbnailDays =
         SettingsStore.AdvancedDefault.thumbnailCacheDays
 
+    // 独自デコーダの形式トグル(RetroFormatToggle と同じキー。既定は有効)
+    @AppStorage("RetroDecodeMAG") private var retroDecodeMAG = true
+    @AppStorage("RetroDecodeMAKI") private var retroDecodeMAKI = true
+    @AppStorage("RetroDecodePi") private var retroDecodePi = true
+    @AppStorage("RetroDecodePIC") private var retroDecodePIC = true
+    @AppStorage("RetroDecodePNM") private var retroDecodePNM = true
+
     /// 前回選択していたタブを記憶する(検証用に引数 -SettingsSelectedTab n でも指定可)
     /// EN: Remembers the last tab; overridable with -SettingsSelectedTab for testing.
     @AppStorage("SettingsSelectedTab") private var selectedTab = 0
@@ -339,6 +346,21 @@ struct SettingsView: View {
                 }
             }
             .disabled(!advancedEnabled)
+            // 独自デコーダの形式(マスタースイッチとは独立。判定は先頭
+            // マジックなので OFF にした形式は壊れページ表示になるだけ)
+            // EN: Per-format toggles for the built-in decoders; independent of
+            // EN: the advanced-settings master switch.
+            Section(String(localized: "Built-in image decoders")) {
+                Toggle(isOn: $retroDecodeMAG) { Text(verbatim: "MAG (.mag / .max)") }
+                Toggle(isOn: $retroDecodeMAKI) { Text(verbatim: "MAKI (.mki)") }
+                Toggle(isOn: $retroDecodePi) { Text(verbatim: "Pi (.pi)") }
+                Toggle(isOn: $retroDecodePIC) { Text(verbatim: "PIC (.pic)") }
+                Toggle(isOn: $retroDecodePNM) { Text(verbatim: "PBM P4 (.pbm / .pnm)") }
+                Text(String(localized:
+                    "Formats decoded by cooViewer itself rather than macOS. Changes apply when the next book is opened."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 LabeledContent {
                     Button(String(localized: "Restore Defaults")) {
