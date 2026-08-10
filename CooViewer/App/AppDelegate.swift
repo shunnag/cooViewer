@@ -233,14 +233,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // EN: else the reader view.
                 if let sheet = self.readerWindowController?.bookmarkEditorWindow {
                     self.writeCachedSnapshot(of: sheet.contentView, to: path)
-                } else if let rows = self.readerWindowController?.fileInfoDebugRows {
+                } else if let details = self.readerWindowController?
+                    .fileInfoDebugDetails {
                     // パネルはヘッドレスでは表示パスを通らずレイヤーが空のため、
                     // 内容ビューを ImageRenderer で直接描画する
                     // EN: Headless panels never hit a display pass, so render
                     // EN: the SwiftUI content directly instead.
-                    let renderer = ImageRenderer(content: FileInfoGrid(rows: rows)
-                        .frame(width: 480)
-                        .background(Color(nsColor: .windowBackgroundColor)))
+                    let renderer = ImageRenderer(
+                        content: FileInfoContent(details: details)
+                            .frame(width: FileInfoView.contentWidth)
+                            .background(Color(nsColor: .windowBackgroundColor)))
                     renderer.scale = 2
                     if let cgImage = renderer.cgImage {
                         let rep = NSBitmapImageRep(cgImage: cgImage)
