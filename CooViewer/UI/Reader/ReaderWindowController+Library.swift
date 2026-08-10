@@ -347,7 +347,7 @@ extension ReaderWindowController {
             let data = await book.source.imageData(for: entry)
             let fallback = data == nil
                 ? await book.source.imageSize(for: entry) : nil
-            let rows = PageFileInfo.rows(
+            let details = PageFileInfo.details(
                 entryName: entry.name,
                 pathInBook: entry.pathInBook,
                 containerURL: containerURL,
@@ -355,26 +355,41 @@ extension ReaderWindowController {
                 pageCount: book.pageCount,
                 imageData: data,
                 fallbackPixelSize: fallback)
-            presentFileInfoPanel(title: entry.name, rows: rows)
+            presentFileInfoPanel(title: entry.name, details: details)
         }
     }
 
-    private func presentFileInfoPanel(title: String, rows: [PageFileInfo.Row]) {
-        fileInfoDebugRows = rows
-        let hosting = NSHostingController(rootView: FileInfoView(rows: rows))
+    private func presentFileInfoPanel(title: String,
+                                      details: PageFileInfo.Details) {
+        fileInfoDebugDetails = details
+        let hosting = NSHostingController(rootView: FileInfoView(details: details))
+        // パネルの高さは内容の自然サイズに合わせる(画面の 85% まで。
+        // スクロールは内容が収まらないときだけ生きる)
+        // EN: Size the panel to the content's natural height, capped to 85%
+        // EN: of the screen; scrolling only engages beyond that.
+        let measuring = NSHostingView(
+            rootView: FileInfoContent(details: details)
+                .frame(width: FileInfoView.contentWidth))
+        let contentHeight = measuring.fittingSize.height
+        let heightLimit = (NSScreen.main?.visibleFrame.height ?? 900) * 0.85
+        let size = NSSize(width: FileInfoView.contentWidth,
+                          height: min(contentHeight, heightLimit))
+
         if let panel = fileInfoPanel {
             // 開いたまま再実行されたら内容だけ差し替える(パネルは 1 枚)
             // EN: Re-invocations refresh the single panel in place.
             panel.title = title
             panel.contentViewController = hosting
+            panel.setContentSize(size)
             panel.makeKeyAndOrderFront(nil)
             return
         }
         let panel = NSPanel(contentViewController: hosting)
-        panel.styleMask = [.titled, .closable, .utilityWindow]
+        panel.styleMask = [.titled, .closable, .resizable, .utilityWindow]
         panel.title = title
         panel.hidesOnDeactivate = true
         panel.isReleasedWhenClosed = false
+        panel.setContentSize(size)
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         fileInfoPanel = panel
