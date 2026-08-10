@@ -477,6 +477,25 @@ final class ReaderWindowController: NSWindowController {
             initialPageURL = url
         }
 
+        // ドロップ/関連付けで開いた画像が**現在の本のページ**なら、本を
+        // 開き直さずそのページへジャンプする(大量の書庫を含むフォルダの
+        // 統合を再構築しない)。サブフォルダ読み込みの下層画像も実ファイル
+        // URL の照合で拾う。一覧に無い(=開いた後に追加された)場合は
+        // 従来どおり開き直され、結果として一覧も更新される
+        // EN: If the dropped image is a page of the CURRENT book, just jump —
+        // EN: never rebuild a large folder merge. Files not in the listing
+        // EN: (added after opening) fall through to the normal reopen path.
+        if let initialPageURL, let book {
+            let targetPath = initialPageURL.standardizedFileURL.path
+            if let index = book.entries.firstIndex(where: {
+                $0.fileURL?.standardizedFileURL.path == targetPath
+            }) {
+                book.goTo(index: index)
+                await refreshDisplay()
+                return
+            }
+        }
+
         // 時間のかかるオープン(大書庫入りフォルダの統合等)の進捗表示を武装
         // EN: Arm the opening-progress HUD for slow opens.
         beginOpeningProgress(generation: generation, name: bookURL.lastPathComponent)
