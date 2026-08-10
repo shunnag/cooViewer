@@ -13,6 +13,18 @@ final class ReaderWindowController: NSWindowController {
     /// 開けなかった本の理由等をウインドウ中央に表示するラベル
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
+    /// オープン進捗 HUD(大書庫入りフォルダの統合など、開くのに時間が
+    /// かかるときだけ中央に表示。設計書 §2.4 補)
+    /// EN: Opening-progress HUD, shown only when the open takes noticeable time.
+    private let openingProgressBox = NSView()
+    private let openingProgressSpinner = NSProgressIndicator()
+    private let openingProgressLabel = NSTextField(labelWithString: "")
+    /// 進捗表示を所有しているオープン処理の世代(nil = 進行中なし)
+    /// EN: Generation of the open flow that owns the HUD (nil = none in flight).
+    private var openingFlowGeneration: Int?
+    private var openingProgressName = ""
+    private var openingProgressCounts: (done: Int, total: Int)?
+
     let settings = SettingsStore.shared
     var bindings = BindingConfiguration.load()
 
@@ -321,6 +333,26 @@ final class ReaderWindowController: NSWindowController {
         statusLabel.isHidden = true
         contentView.addSubview(statusLabel)
 
+        openingProgressBox.translatesAutoresizingMaskIntoConstraints = false
+        openingProgressBox.wantsLayer = true
+        openingProgressBox.layer?.backgroundColor =
+            NSColor.black.withAlphaComponent(0.78).cgColor
+        openingProgressBox.layer?.cornerRadius = 10
+        openingProgressBox.isHidden = true
+        openingProgressSpinner.translatesAutoresizingMaskIntoConstraints = false
+        openingProgressSpinner.style = .spinning
+        openingProgressSpinner.controlSize = .small
+        openingProgressSpinner.isIndeterminate = true
+        openingProgressSpinner.appearance = NSAppearance(named: .darkAqua)
+        openingProgressLabel.translatesAutoresizingMaskIntoConstraints = false
+        openingProgressLabel.font = .monospacedDigitSystemFont(ofSize: 13,
+                                                               weight: .regular)
+        openingProgressLabel.textColor = .white
+        openingProgressLabel.lineBreakMode = .byTruncatingMiddle
+        openingProgressBox.addSubview(openingProgressSpinner)
+        openingProgressBox.addSubview(openingProgressLabel)
+        contentView.addSubview(openingProgressBox)
+
         NSLayoutConstraint.activate([
             readerView.topAnchor.constraint(equalTo: contentView.topAnchor),
             readerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -330,6 +362,24 @@ final class ReaderWindowController: NSWindowController {
             statusLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+
+            openingProgressBox.centerXAnchor.constraint(
+                equalTo: contentView.centerXAnchor),
+            openingProgressBox.centerYAnchor.constraint(
+                equalTo: contentView.centerYAnchor),
+            openingProgressBox.widthAnchor.constraint(lessThanOrEqualToConstant: 480),
+            openingProgressSpinner.leadingAnchor.constraint(
+                equalTo: openingProgressBox.leadingAnchor, constant: 14),
+            openingProgressSpinner.centerYAnchor.constraint(
+                equalTo: openingProgressBox.centerYAnchor),
+            openingProgressLabel.leadingAnchor.constraint(
+                equalTo: openingProgressSpinner.trailingAnchor, constant: 8),
+            openingProgressLabel.trailingAnchor.constraint(
+                equalTo: openingProgressBox.trailingAnchor, constant: -16),
+            openingProgressLabel.topAnchor.constraint(
+                equalTo: openingProgressBox.topAnchor, constant: 12),
+            openingProgressLabel.bottomAnchor.constraint(
+                equalTo: openingProgressBox.bottomAnchor, constant: -12),
         ])
 
         // ホバーバブル(フレームベース配置。ホバー中のみ表示)
@@ -408,12 +458,21 @@ final class ReaderWindowController: NSWindowController {
 
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        guard exists else { return }
+        guard exists else {
+            // ドリルダウンから引き継いだ HUD が残らないように畳む
+            // EN: Fold up a HUD inherited from a drill step; no successor follows.
+            endAnyOpeningProgress()
+            return
+        }
         if !isDirectory.boolValue, !SupportedTypes.isBookFile(url),
            SupportedTypes.isImageFile(url.lastPathComponent) {
             bookURL = url.deletingLastPathComponent()
             initialPageURL = url
         }
+
+        // 時間のかかるオープン(大書庫入りフォルダの統合等)の進捗表示を武装
+        // EN: Arm the opening-progress HUD for slow opens.
+        beginOpeningProgress(generation: generation, name: bookURL.lastPathComponent)
 
         do {
             let source: any BookSource
@@ -446,11 +505,13 @@ final class ReaderWindowController: NSWindowController {
             case .unlocked:
                 break
             case .cancelled:
+                endOpeningProgress(generation: generation)
                 presentLockedPlaceholder(
                     source: source,
                     reason: String(localized: "Password entry was canceled."))
                 return
             case .attemptsExceeded:
+                endOpeningProgress(generation: generation)
                 presentLockedPlaceholder(
                     source: source,
                     reason: String(localized: "Too many failed password attempts."))
@@ -458,6 +519,15 @@ final class ReaderWindowController: NSWindowController {
             }
 
             guard generation == openGeneration else { return }
+
+            // 統合ソースの組み立て(全書庫の一覧取得)の進捗を HUD へ流す
+            // EN: Route merged-source assembly progress into the HUD.
+            await source.setAssemblyProgressHandler { [weak self] done, total in
+                Task { @MainActor [weak self] in
+                    self?.noteOpeningProgress(generation: generation,
+                                              done: done, total: total)
+                }
+            }
 
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
             stopSlideshow()
@@ -499,12 +569,16 @@ final class ReaderWindowController: NSWindowController {
                 }.value
                 guard generation == openGeneration else { return }
                 if let inner {
+                    // HUD は畳まない: 再帰側の beginOpeningProgress が
+                    // 新しい世代で引き継ぐ(走査〜内側の本のオープンまで連続表示)
+                    // EN: Keep the HUD up; the recursive open re-arms it.
                     await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
                                        allowCollectionDrill: true,
                                        autoOpenDepth: autoOpenDepth + 1)
                     return
                 }
             }
+            endOpeningProgress(generation: generation)
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
             book.mediaProfile = mediaProfile
@@ -559,6 +633,7 @@ final class ReaderWindowController: NSWindowController {
         } catch {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
             NSSound.beep()
+            endOpeningProgress(generation: generation)
         }
     }
 
@@ -925,6 +1000,82 @@ final class ReaderWindowController: NSWindowController {
                     size: NSSize(width: thumbnail.width, height: thumbnail.height))
             }
         }
+    }
+
+    // MARK: - オープン進捗 HUD
+
+    /// オープン処理の開始を記録し、0.35 秒経っても終わらなければ HUD を出す
+    /// (即終わる本でのちらつき防止)。大書庫入りフォルダの統合は全書庫の
+    /// 一覧取得を伴い数十秒かかり得るため、無反応に見えるのを防ぐ
+    /// EN: Arm the opening HUD; it appears only if the open outlives 0.35 s,
+    /// EN: so fast opens never flicker. Folder merges (listing every archive)
+    /// EN: can take tens of seconds and looked unresponsive without this.
+    func beginOpeningProgress(generation: Int, name: String) {
+        openingFlowGeneration = generation
+        openingProgressName = name
+        openingProgressCounts = nil
+        // ドリルダウンからの引き継ぎで既に表示中なら名前だけ差し替える
+        // EN: If inherited from a drill step the HUD is already up; retitle it.
+        if !openingProgressBox.isHidden {
+            updateOpeningProgressText()
+            return
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, self.openingFlowGeneration == generation,
+                  self.openingProgressBox.isHidden else { return }
+            self.revealOpeningProgress()
+        }
+    }
+
+    /// 統合ソースの組み立て進捗(完了書庫数/総数)を反映する
+    /// EN: Update the HUD with assembly progress (books done / total).
+    func noteOpeningProgress(generation: Int, done: Int, total: Int) {
+        guard openingFlowGeneration == generation else { return }
+        openingProgressCounts = (done, total)
+        if !openingProgressBox.isHidden {
+            updateOpeningProgressText()
+        }
+    }
+
+    /// オープン処理の終了(成功・失敗・ドリル前とも)。HUD を畳む
+    /// EN: The open flow ended (success, failure or before drilling); hide the HUD.
+    func endOpeningProgress(generation: Int) {
+        guard openingFlowGeneration == generation else { return }
+        endAnyOpeningProgress()
+    }
+
+    /// 世代を問わず HUD を畳む(ドリル先の消失など、引き継ぎ先のない失敗用)
+    /// EN: Unconditionally hide the HUD (failures with no successor flow).
+    private func endAnyOpeningProgress() {
+        openingFlowGeneration = nil
+        openingProgressBox.isHidden = true
+        openingProgressSpinner.stopAnimation(nil)
+    }
+
+    private func revealOpeningProgress() {
+        updateOpeningProgressText()
+        openingProgressBox.isHidden = false
+        openingProgressSpinner.startAnimation(nil)
+    }
+
+    private func updateOpeningProgressText() {
+        let name = openingProgressName
+        if let counts = openingProgressCounts, counts.total > 0 {
+            openingProgressLabel.stringValue = String(
+                localized: "Opening “\(name)”… \(counts.done)/\(counts.total) books")
+        } else {
+            openingProgressLabel.stringValue = String(localized: "Opening “\(name)”…")
+        }
+    }
+
+    /// 検証用: HUD を固定内容で表示する(--show-opening-progress)
+    /// EN: Verification hook: show the HUD with fixed contents.
+    func debugShowOpeningProgress() {
+        openingFlowGeneration = -1
+        openingProgressName = "サンプルシリーズ"
+        openingProgressCounts = (done: 12, total: 34)
+        revealOpeningProgress()
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する

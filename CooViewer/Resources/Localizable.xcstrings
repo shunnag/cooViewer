@@ -1056,6 +1056,26 @@
         }
       }
     },
+    "Opening “%@”…" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” を開いています…"
+          }
+        }
+      }
+    },
+    "Opening “%@”… %lld/%lld books" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” を開いています… 書庫 %lld/%lld"
+          }
+        }
+      }
+    },
     "Open the next book (backward: last page)" : {
       "localizations" : {
         "ja" : {
