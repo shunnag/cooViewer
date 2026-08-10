@@ -73,6 +73,14 @@ enum MainMenuBuilder {
         menu.addItem(withTitle: String(localized: "Show in Finder"),
                      action: #selector(ReaderWindowController.showInFinderMenu(_:)),
                      keyEquivalent: "R")  // ⇧⌘R
+        // Option 押下で現れる代替項目: 見開きのもう一方のページを表示
+        // EN: Option-modified alternate: reveal the spread's other page.
+        let otherPage = menu.addItem(
+            withTitle: String(localized: "Show the Other Page in Finder"),
+            action: #selector(ReaderWindowController.showOtherPageInFinderMenu(_:)),
+            keyEquivalent: "R")
+        otherPage.keyEquivalentModifierMask = [.command, .shift, .option]
+        otherPage.isAlternate = true
         menu.addItem(withTitle: String(localized: "Show File Info"),
                      action: #selector(ReaderWindowController.showFileInfoMenu(_:)),
                      keyEquivalent: "i")  // ⌘I(Finder の「情報を見る」に合わせる)

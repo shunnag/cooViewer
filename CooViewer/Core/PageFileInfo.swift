@@ -261,4 +261,21 @@ enum PageFileInfo {
     private static func formatNumber(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(0...2)))
     }
+
+    /// 見開きの読み順インデックス列を**画面上の左→右**の並びに直し、
+    /// 既定選択(読み順の先頭ページ)の位置を返す(セグメント表示用)。
+    /// 右→左読みでは読み順先頭が右ページになるため並びが反転する
+    /// EN: Reorder reading-order spread indices into physical left→right and
+    /// EN: return the position of the reading-first page (segment default).
+    static func physicalOrder(readingOrderIndices: [Int], readsFromLeft: Bool)
+        -> (ordered: [Int], initialPosition: Int) {
+        guard readingOrderIndices.count == 2 else {
+            return (readingOrderIndices, 0)
+        }
+        let ordered = readsFromLeft
+            ? readingOrderIndices
+            : [readingOrderIndices[1], readingOrderIndices[0]]
+        let initial = ordered.firstIndex(of: readingOrderIndices[0]) ?? 0
+        return (ordered, initial)
+    }
 }

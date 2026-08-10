@@ -1,6 +1,36 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Left Page" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "左ページ"
+          }
+        }
+      }
+    },
+    "Right Page" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右ページ"
+          }
+        }
+      }
+    },
+    "Show the Other Page in Finder" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "もう一方のページを Finder で表示"
+          }
+        }
+      }
+    },
     "Image" : {
       "localizations" : {
         "ja" : {
