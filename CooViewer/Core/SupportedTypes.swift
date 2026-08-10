@@ -48,8 +48,15 @@ enum SupportedTypes {
     /// EN: Extensions that claim to be images but cannot actually be displayed.
     static let undisplayableImageExtensions: Set<String> = ["ai"]
 
-    /// UTType 解決できないが ImageIO はデコードできる拡張子(アニメ AVIF)
-    static let extraImageExtensions: Set<String> = ["avifs"]
+    /// UTType 解決できないが表示できる拡張子。
+    /// avifs: アニメ AVIF(ImageIO がデコード)。
+    /// mag / max / mki: レトロ日本形式(MAG / MAKI。RetroImageDecoding が
+    /// デコード)。.max は 3ds Max 等とも衝突するが、デコードは先頭マジックで
+    /// ゲートするため別形式のファイルを誤描画することはない(壊れページ表示)
+    /// EN: Extensions UTType cannot resolve but we can display. The retro
+    /// EN: extensions collide with unrelated formats; decoding is magic-gated,
+    /// EN: so foreign files never get misrendered (they show the broken page).
+    static let extraImageExtensions: Set<String> = ["avifs", "mag", "max", "mki"]
 
     /// ページとして表示できる画像ファイルか(拡張子ベース)。
     /// 旧実装の [NSImage imageFileTypes] 判定に相当。
