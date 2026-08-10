@@ -114,6 +114,27 @@ final class PageFileInfoTests: XCTestCase {
         }, "高度行を含む GPS セクション")
     }
 
+    /// 見開きの左右並び: 右→左読みでは読み順先頭が右ページになる
+    func testPhysicalOrderForSpreads() {
+        // 右→左読み(既定): 読み順 [4,5] → 画面は左=5, 右=4。既定選択は右(位置1)
+        let rightToLeft = PageFileInfo.physicalOrder(
+            readingOrderIndices: [4, 5], readsFromLeft: false)
+        XCTAssertEqual(rightToLeft.ordered, [5, 4])
+        XCTAssertEqual(rightToLeft.initialPosition, 1, "読み順先頭(4)は右=位置1")
+
+        // 左→右読み: 並びそのまま。既定選択は左(位置0)
+        let leftToRight = PageFileInfo.physicalOrder(
+            readingOrderIndices: [4, 5], readsFromLeft: true)
+        XCTAssertEqual(leftToRight.ordered, [4, 5])
+        XCTAssertEqual(leftToRight.initialPosition, 0)
+
+        // 単ページはそのまま
+        let single = PageFileInfo.physicalOrder(
+            readingOrderIndices: [7], readsFromLeft: false)
+        XCTAssertEqual(single.ordered, [7])
+        XCTAssertEqual(single.initialPosition, 0)
+    }
+
     /// 南緯・西経は負の座標になること
     func testGPSSouthWestAreNegative() throws {
         let base = TestFixtures.pngData(width: 8, height: 8)

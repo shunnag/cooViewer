@@ -1,26 +1,73 @@
 import MapKit
 import SwiftUI
 
-/// ファイル情報パネルの中身。セクション見出し付きの 2 列グリッドで、
-/// GPS 座標があれば撮影地点の地図を末尾に表示する(ピン付き・操作可)。
+/// ファイル情報パネルの 1 ページ分(タイトル・セグメント表示名・内容)
+/// EN: One page's worth of File Info panel content.
+struct FileInfoPage {
+    /// パネルのウインドウタイトル(ページのファイル名)
+    let title: String
+    /// セグメントの表示名(見開き時のみ使用: 「左ページ」「右ページ」)
+    let sideLabel: String
+    let details: PageFileInfo.Details
+}
+
+/// ファイル情報パネルの中身。見開き時は上部のセグメントで左右のページを
+/// 切り替える。各ページはセクション見出し付きの 2 列グリッドで、GPS 座標が
+/// あれば撮影地点の地図を末尾に表示する(ピン付き・操作可)。
 /// 内容の組み立ては PageFileInfo(純ロジック)が担い、本ビューは描画のみ。
-/// EN: File Info panel content: sectioned label/value grid, plus an
-/// EN: interactive map pinned at the EXIF GPS location when present.
+/// EN: File Info panel content: a left/right segmented switcher for spreads,
+/// EN: then a sectioned label/value grid plus an interactive map pinned at
+/// EN: the EXIF GPS location when present.
 struct FileInfoView: View {
     /// パネルの固定幅(高さは内容に合わせて呼び出し側が決める)
     /// EN: Fixed content width; the caller sizes the panel height to fit.
     static let contentWidth: CGFloat = 520
+    /// セグメント行の高さぶん(パネルの高さ計算用)
+    /// EN: Extra height the segmented switcher adds.
+    static let segmentHeight: CGFloat = 46
 
-    let details: PageFileInfo.Details
+    let pages: [FileInfoPage]
+    /// 開いた時点で選択するページ(読み順の先頭)
+    /// EN: Initially selected page (reading-order first).
+    let initialIndex: Int
+    /// 切替時にパネルのタイトルを差し替えるためのコールバック
+    /// EN: Lets the panel retitle itself when the selection changes.
+    var onPageChange: ((FileInfoPage) -> Void)?
+
+    @State private var selected: Int
+
+    init(pages: [FileInfoPage], initialIndex: Int,
+         onPageChange: ((FileInfoPage) -> Void)? = nil) {
+        self.pages = pages
+        self.initialIndex = initialIndex
+        self.onPageChange = onPageChange
+        _selected = State(initialValue: initialIndex)
+    }
 
     var body: some View {
-        // 内容が画面に収まる高さならスクロールは実質無効(パネル側が
-        // 内容の自然サイズに合わせる)。巨大なときだけスクロールが生きる
-        // EN: The panel is sized to the content, so scrolling only matters
-        // EN: when the content outgrows the screen.
-        ScrollView {
-            FileInfoContent(details: details)
-                .frame(width: Self.contentWidth)
+        VStack(spacing: 0) {
+            if pages.count > 1 {
+                Picker("", selection: $selected) {
+                    ForEach(pages.indices, id: \.self) { index in
+                        Text(pages[index].sideLabel).tag(index)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .onChange(of: selected) { _, newValue in
+                    onPageChange?(pages[newValue])
+                }
+            }
+            // 内容が画面に収まる高さならスクロールは実質無効(パネル側が
+            // 内容の自然サイズに合わせる)。巨大なときだけスクロールが生きる
+            // EN: The panel is sized to the content, so scrolling only matters
+            // EN: when the content outgrows the screen.
+            ScrollView {
+                FileInfoContent(details: pages[selected].details)
+                    .frame(width: Self.contentWidth)
+            }
         }
     }
 }

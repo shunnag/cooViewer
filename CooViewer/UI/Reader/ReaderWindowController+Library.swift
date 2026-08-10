@@ -330,55 +330,106 @@ extension ReaderWindowController {
         }
     }
 
+    /// 見開きのもう一方(読み順で 2 枚目)のページを Finder で表示する
+    /// (File メニューで Option を押すと現れる代替項目。単ページ表示では
+    /// 「もう一方」が無いのでビープ)
+    /// EN: Reveal the spread's second page (the Option-modified alternate
+    /// EN: menu item); beeps in single-page display.
+    func showOtherPageInFinder() {
+        guard let book else { return }
+        Task {
+            let spread = await book.currentSpread()
+            guard spread.indices.count >= 2,
+                  book.entries.indices.contains(spread.indices[1]) else {
+                NSSound.beep()
+                return
+            }
+            let url = await book.source.containerFileURL(
+                for: book.entries[spread.indices[1]])
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
     /// 現在のページのファイル情報パネルを表示する(新規機能。開いていれば
-    /// 内容を現在ページで更新する)
-    /// EN: Show (or refresh) the File Info panel for the current page.
+    /// 内容を現在ページで更新する)。見開き時は両ページ分を用意し、
+    /// パネル上部のセグメントで左右を切り替える(既定は読み順の先頭)
+    /// EN: Show (or refresh) the File Info panel. Spreads prepare both pages
+    /// EN: and switch via a segmented control (reading-first preselected).
     func showFileInfo() {
         guard let book else { return }
         Task {
             let spread = await book.currentSpread()
-            guard let index = displayedIndex(in: spread, leftSide: nil),
-                  book.entries.indices.contains(index) else {
+            let readingOrder = spread.indices.filter {
+                book.entries.indices.contains($0)
+            }
+            guard !readingOrder.isEmpty else {
                 NSSound.beep()
                 return
             }
-            let entry = book.entries[index]
-            let containerURL = await book.source.containerFileURL(for: entry)
-            let data = await book.source.imageData(for: entry)
-            let fallback = data == nil
-                ? await book.source.imageSize(for: entry) : nil
-            let details = PageFileInfo.details(
-                entryName: entry.name,
-                pathInBook: entry.pathInBook,
-                containerURL: containerURL,
-                pageNumber: index + 1,
-                pageCount: book.pageCount,
-                imageData: data,
-                fallbackPixelSize: fallback)
-            presentFileInfoPanel(title: entry.name, details: details)
+            // 画面上の左→右の並びに直す(右→左読みでは読み順が反転する)
+            let (ordered, initialPosition) = PageFileInfo.physicalOrder(
+                readingOrderIndices: readingOrder,
+                readsFromLeft: book.readMode.readsFromLeft)
+            let sideLabels = ordered.count == 2
+                ? [String(localized: "Left Page"), String(localized: "Right Page")]
+                : [""]
+            var pages: [FileInfoPage] = []
+            for (position, index) in ordered.enumerated() {
+                pages.append(await fileInfoPage(
+                    for: index, in: book, sideLabel: sideLabels[position]))
+            }
+            presentFileInfoPanel(pages: pages, initialIndex: initialPosition)
         }
     }
 
-    private func presentFileInfoPanel(title: String,
-                                      details: PageFileInfo.Details) {
-        fileInfoDebugDetails = details
-        let hosting = NSHostingController(rootView: FileInfoView(details: details))
+    /// 1 ページ分のファイル情報を収集する
+    /// EN: Collect one page's File Info content.
+    private func fileInfoPage(for index: Int, in book: Book,
+                              sideLabel: String) async -> FileInfoPage {
+        let entry = book.entries[index]
+        let containerURL = await book.source.containerFileURL(for: entry)
+        let data = await book.source.imageData(for: entry)
+        let fallback = data == nil ? await book.source.imageSize(for: entry) : nil
+        let details = PageFileInfo.details(
+            entryName: entry.name,
+            pathInBook: entry.pathInBook,
+            containerURL: containerURL,
+            pageNumber: index + 1,
+            pageCount: book.pageCount,
+            imageData: data,
+            fallbackPixelSize: fallback)
+        return FileInfoPage(title: entry.name, sideLabel: sideLabel,
+                            details: details)
+    }
+
+    private func presentFileInfoPanel(pages: [FileInfoPage], initialIndex: Int) {
+        guard pages.indices.contains(initialIndex) else { return }
+        fileInfoDebugDetails = pages[initialIndex].details
         // パネルの高さは内容の自然サイズに合わせる(画面の 85% まで。
-        // スクロールは内容が収まらないときだけ生きる)
-        // EN: Size the panel to the content's natural height, capped to 85%
-        // EN: of the screen; scrolling only engages beyond that.
-        let measuring = NSHostingView(
-            rootView: FileInfoContent(details: details)
-                .frame(width: FileInfoView.contentWidth))
-        let contentHeight = measuring.fittingSize.height
+        // スクロールは内容が収まらないときだけ生きる)。見開きは左右の
+        // 切替でパネルが伸縮しないよう、大きい方のページに合わせる
+        // EN: Size the panel to the content's natural height (capped at 85%
+        // EN: of the screen). Spreads use the taller page so switching sides
+        // EN: never resizes the panel.
+        let contentHeight = pages.map { page in
+            NSHostingView(rootView: FileInfoContent(details: page.details)
+                .frame(width: FileInfoView.contentWidth)).fittingSize.height
+        }.max() ?? 300
+        let segmentHeight = pages.count > 1 ? FileInfoView.segmentHeight : 0
         let heightLimit = (NSScreen.main?.visibleFrame.height ?? 900) * 0.85
         let size = NSSize(width: FileInfoView.contentWidth,
-                          height: min(contentHeight, heightLimit))
+                          height: min(contentHeight + segmentHeight, heightLimit))
+
+        let view = FileInfoView(pages: pages, initialIndex: initialIndex) {
+            [weak self] page in
+            self?.fileInfoPanel?.title = page.title
+        }
+        let hosting = NSHostingController(rootView: view)
 
         if let panel = fileInfoPanel {
             // 開いたまま再実行されたら内容だけ差し替える(パネルは 1 枚)
             // EN: Re-invocations refresh the single panel in place.
-            panel.title = title
+            panel.title = pages[initialIndex].title
             panel.contentViewController = hosting
             panel.setContentSize(size)
             panel.makeKeyAndOrderFront(nil)
@@ -386,7 +437,7 @@ extension ReaderWindowController {
         }
         let panel = NSPanel(contentViewController: hosting)
         panel.styleMask = [.titled, .closable, .resizable, .utilityWindow]
-        panel.title = title
+        panel.title = pages[initialIndex].title
         panel.hidesOnDeactivate = true
         panel.isReleasedWhenClosed = false
         panel.setContentSize(size)
@@ -517,6 +568,7 @@ extension ReaderWindowController {
     @objc func previousBookMenu(_ sender: Any?) { openAdjacentBook(forward: false) }
     @objc func openLastBookMenu(_ sender: Any?) { openTheLastBook() }
     @objc func showInFinderMenu(_ sender: Any?) { showInFinder(leftSide: nil) }
+    @objc func showOtherPageInFinderMenu(_ sender: Any?) { showOtherPageInFinder() }
     @objc func showFileInfoMenu(_ sender: Any?) { showFileInfo() }
     @objc func toggleSlideshowMenu(_ sender: Any?) { toggleSlideshow() }
 }
