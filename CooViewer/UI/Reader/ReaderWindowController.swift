@@ -377,20 +377,23 @@ final class ReaderWindowController: NSWindowController {
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
     /// EN: Open a book; a single image file opens its parent folder at that page.
-    /// preferLastInnerBook: 後方移動(前の本)でコレクションフォルダに入る
-    /// とき、名前順で最後の内側の本へドリルダウンする(読書順の平坦化)
-    /// EN: preferLastInnerBook drills into the LAST inner book when arriving
-    /// EN: backwards, keeping the flattened reading order coherent.
+    /// allowCollectionDrill: 画像ゼロのコレクションフォルダで中の本へ自動で
+    /// 潜るか(設計書 §2.4)。Finder/ダイアログ等の明示オープンのみ true。
+    /// 次/前の本ナビゲーションは false — フォルダ自身に着地して階層を保つ
+    /// (潜ると以後の兄弟走査が別の深さで行われ、元の階層に戻れなくなる)
+    /// EN: allowCollectionDrill is true only for explicit opens; next/previous
+    /// EN: navigation lands on the folder itself so the sibling scan keeps
+    /// EN: operating at the same depth of the hierarchy.
     func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false,
-                  preferLastInnerBook: Bool = false) {
+                  allowCollectionDrill: Bool = true) {
         Task {
             await openBookFlow(url: url, atPage: page, atLastPage: atLastPage,
-                               preferLastInnerBook: preferLastInnerBook)
+                               allowCollectionDrill: allowCollectionDrill)
         }
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
-                              preferLastInnerBook: Bool = false,
+                              allowCollectionDrill: Bool = true,
                               autoOpenDepth: Int = 0) async {
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
@@ -483,15 +486,24 @@ final class ReaderWindowController: NSWindowController {
             // EN: A 0-page merged source means assembly failed; drilling would
             // EN: open an inner archive standalone at the wrong depth. Only
             // EN: drill into pure collections (plain FolderSource, no books).
-            if book.pageCount == 0, autoOpenDepth < 4,
+            if book.pageCount == 0, allowCollectionDrill, autoOpenDepth < 4,
                !(source is NestedFolderSource),
-               await !source.hasSkippedLockedContent(),
-               let inner = Self.innerBook(in: bookURL,
-                                          preferLast: preferLastInnerBook) {
-                await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
-                                   preferLastInnerBook: preferLastInnerBook,
-                                   autoOpenDepth: autoOpenDepth + 1)
-                return
+               await !source.hasSkippedLockedContent() {
+                // 候補選定は再帰走査を含むためメインスレッドから外す
+                // (NAS/HDD でのビーチボール防止。走査があるので非同期)
+                // EN: The candidate scan recurses into subfolders; run it off
+                // EN: the main thread so slow volumes cannot beachball the UI.
+                let scanURL = bookURL
+                let inner = await Task.detached(priority: .userInitiated) {
+                    Self.innerBook(in: scanURL)
+                }.value
+                guard generation == openGeneration else { return }
+                if let inner {
+                    await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
+                                       allowCollectionDrill: true,
+                                       autoOpenDepth: autoOpenDepth + 1)
+                    return
+                }
             }
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
@@ -680,27 +692,61 @@ final class ReaderWindowController: NSWindowController {
         return .unlocked
     }
 
-    /// 画像ゼロのフォルダ内にある「本」(名前順の最初、preferLast なら最後)。
-    /// フォルダ以外は nil。前の本への移動で入ったときに最初の本へ飛ぶと
-    /// 読書順が壊れるため、到着方向で選ぶ(仕様書 §4.3.4 の拡張)
-    /// EN: First (or last, for backward arrival) book-like item inside an
-    /// EN: image-less folder; direction keeps the reading order coherent.
-    static func innerBook(in url: URL, preferLast: Bool) -> URL? {
+    /// 画像ゼロのフォルダ内にある「本」(名前順の最初)。フォルダ以外は nil。
+    /// サブフォルダは中のどこかに画像か本があるものだけを候補にする
+    /// (.app 等のパッケージや無関係なディレクトリへ潜って、行き止まりの
+    /// 深い階層に置き去りになるのを防ぐ)
+    /// EN: First book-like item inside an image-less folder. Subfolders count
+    /// EN: only when they actually lead to book content; packages (.app etc.)
+    /// EN: and dead-end directories are skipped so the drill never strands the
+    /// EN: reader deep inside an unrelated tree.
+    nonisolated static func innerBook(in url: URL) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue,
               let names = try? FileManager.default.contentsOfDirectory(atPath: url.path)
         else { return nil }
-        let candidates = names
+        return names
             .filter { !$0.hasPrefix(".") }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { url.appendingPathComponent($0) }
-            .filter { candidate in
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir)
-                return isDir.boolValue || SupportedTypes.isBookFile(candidate)
+            .first { candidate in
+                let values = try? candidate.resourceValues(
+                    forKeys: [.isDirectoryKey, .isPackageKey])
+                if values?.isPackage == true { return false }
+                if values?.isDirectory == true {
+                    return folderLeadsToBookContent(at: candidate)
+                }
+                return SupportedTypes.isBookFile(candidate)
             }
-        return preferLast ? candidates.last : candidates.first
+    }
+
+    /// フォルダのどこかに画像か本(書庫/PDF)があるか。最初の 1 件で打ち切る。
+    /// 巨大ツリーは 2000 項目で走査をやめ **true**(=候補として許容)を返す:
+    /// ここでの誤判定はドリル先の選択を左右するため、「大きすぎて判定不能」は
+    /// 実際に開いてみる側へ倒す(false だと本のある巨大フォルダを不当に飛ばす)
+    /// EN: Whether the folder eventually contains an image or a book file;
+    /// EN: stops at the first hit. Gives up after 2000 items and returns TRUE —
+    /// EN: an unscannable-huge folder must stay a candidate (skipping it would
+    /// EN: wrongly reject legitimate large series folders); the real open decides.
+    nonisolated static func folderLeadsToBookContent(at url: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return false }
+        var visited = 0
+        for case let fileURL as URL in enumerator {
+            visited += 1
+            if visited > 2000 { return true }
+            let isDirectory = (try? fileURL.resourceValues(
+                forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard !isDirectory else { continue }
+            if SupportedTypes.isImageFile(fileURL.lastPathComponent)
+                || SupportedTypes.isBookFile(fileURL) {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - 表示更新

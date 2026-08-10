@@ -147,45 +147,68 @@ private struct ThumbnailCell: View {
     }
 
     var body: some View {
-        // 番号ラベルまで含めたセル全体を 1 つのボタンにする。番号や画像まわりの
-        // 余白をクリックしても確実にジャンプさせる(当たり判定の穴を作らない)
-        // EN: The whole cell — number label included — is one button, with an
-        // EN: explicit content shape so there are no dead spots inside the cell.
-        Button(action: onSelect) {
-            VStack(spacing: 2) {
-                HStack(spacing: 1) {
-                    ForEach(pageIndices, id: \.self) { index in
-                        if snapshot.entries.indices.contains(index) {
-                            ThumbnailPageImage(
-                                entry: snapshot.entries[index],
-                                source: snapshot.source,
-                                bookKey: snapshot.bookKey,
-                                isBookmarked: snapshot.bookmarkedPages.contains(index))
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background {
-                    if isCurrent {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.accentColor.opacity(0.22))
-                    }
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isCurrent ? Color.accentColor : Color.clear,
-                                lineWidth: 3)
-                        .shadow(color: isCurrent ? Color.accentColor.opacity(0.9)
-                                                 : .clear,
-                                radius: 7)
-                }
-                Text(verbatim: pageIndices.map { String($0 + 1) }.joined(separator: "-"))
-                    .font(isCurrent ? .caption.bold() : .caption)
-                    .foregroundStyle(isCurrent ? Color.accentColor : .white.opacity(0.8))
-            }
+        // 番号ラベルまで含めたセル全体を 1 つの当たり判定にする(穴を作らない)。
+        // Button ではなく「押した瞬間に確定」のジェスチャを使う: サムネイル
+        // 読み込み中は見開きペアの判明でセル組みが流動し(§4.8 mangaMode の
+        // 漸進収束)、Button だと押下〜リリース間の組み替えで押下が取り消され、
+        // 未生成プレースホルダのクリックが無反応(キャンセル扱い)になるため。
+        // 押下時点でそのマスに表示されているページへ飛ぶ
+        // EN: One hit area for the whole cell, committing on mouse-DOWN. While
+        // EN: thumbnails are still loading, comic-mode pairing reflows the grid
+        // EN: and a Button press gets cancelled by the reflow before mouse-up,
+        // EN: so clicks on unloaded placeholders went dead. Committing at press
+        // EN: time jumps to whatever page the cell showed when aimed at.
+        cellContent
             .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                // 最初のイベント(押下)のみ発火。移動が始まったら何もしない
+                // EN: Fire on the press itself; ignore once movement starts.
+                guard abs(value.translation.width) < 1,
+                      abs(value.translation.height) < 1 else { return }
+                onSelect()
+            })
+            // ジェスチャは支援技術に公開されないため、AXPress 相当を明示提供
+            // (VoiceOver の VO+Space / フルキーボードアクセスでの起動)
+            // EN: Gestures are invisible to assistive tech; provide an explicit
+            // EN: action so VoiceOver / Full Keyboard Access can still activate.
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(Text(verbatim:
+                pageIndices.map { String($0 + 1) }.joined(separator: "-")))
+            .accessibilityAction { onSelect() }
+    }
+
+    private var cellContent: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 1) {
+                ForEach(pageIndices, id: \.self) { index in
+                    if snapshot.entries.indices.contains(index) {
+                        ThumbnailPageImage(
+                            entry: snapshot.entries[index],
+                            source: snapshot.source,
+                            bookKey: snapshot.bookKey,
+                            isBookmarked: snapshot.bookmarkedPages.contains(index))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                if isCurrent {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.accentColor.opacity(0.22))
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isCurrent ? Color.accentColor : Color.clear,
+                            lineWidth: 3)
+                    .shadow(color: isCurrent ? Color.accentColor.opacity(0.9)
+                                             : .clear,
+                            radius: 7)
+            }
+            Text(verbatim: pageIndices.map { String($0 + 1) }.joined(separator: "-"))
+                .font(isCurrent ? .caption.bold() : .caption)
+                .foregroundStyle(isCurrent ? Color.accentColor : .white.opacity(0.8))
         }
-        .buttonStyle(.plain)
     }
 }
 

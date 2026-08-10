@@ -176,12 +176,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if arguments.contains("--then-previous-book") || arguments.contains("--then-next-book") {
             // 検証用: 最初の本を表示した後に前/次の本へ移動する(Ctrl+D 相当。
-            // 階層ナビゲーションのスナップショット検証のため)
-            // EN: Verification flags driving previous/next-book navigation.
-            let forward = arguments.contains("--then-next-book")
+            // 階層ナビゲーションのスナップショット検証のため)。フラグを複数
+            // 並べると回数分繰り返す(多段ナビゲーションの着地確認用)
+            // EN: Verification flags driving previous/next-book navigation;
+            // EN: repeat the flag to navigate multiple times.
+            let steps = arguments.filter {
+                $0 == "--then-previous-book" || $0 == "--then-next-book"
+            }
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                self.readerWindowController?.openAdjacentBook(forward: forward)
+                for step in steps {
+                    try? await Task.sleep(for: .seconds(1))
+                    self.readerWindowController?.openAdjacentBook(
+                        forward: step == "--then-next-book")
+                }
             }
         }
         if let index = arguments.firstIndex(of: "--then-open"), index + 1 < arguments.count {
@@ -197,8 +204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
+            // 多段ナビゲーション指定時は 1 段ごとに 1 秒待ちを足す
+            // EN: Add a second per extra navigation step before capturing.
+            let navSteps = arguments.filter {
+                $0 == "--then-previous-book" || $0 == "--then-next-book"
+            }.count
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(2 + Double(max(0, navSteps - 1))))
                 // しおり編集シートが開いていればそちらを撮る(NSHostingView は反転補正)
                 // EN: capture the bookmark sheet when open, else the reader view.
                 if let sheet = self.readerWindowController?.bookmarkEditorWindow {
