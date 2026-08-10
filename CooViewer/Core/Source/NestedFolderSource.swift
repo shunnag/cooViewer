@@ -38,6 +38,12 @@ actor NestedFolderSource: BookSource {
     private var buildTask: Task<[PageEntry], Never>?
     private var locations: [Int: PageLocation] = [:]
     private var children: [any BookSource] = []
+    /// 組み立て進捗(完了した子の数, 子の総数)の通知先。対話的なオープンのみ
+    /// 設定される(次の本のバックグラウンド準備では nil のまま)。build は
+    /// actor 上で走るため、組み立て途中に後付けされても以降の子から反映される
+    /// EN: Assembly-progress callback; only the interactive open sets it, and
+    /// EN: build() reads it per child so a mid-build attach takes effect.
+    private var assemblyProgress: (@Sendable (Int, Int) -> Void)?
     /// 置き場所の速度プロファイル(フォルダと全子ソースへ配る)
     /// EN: Volume-speed profile propagated to the folder and every child.
     private var mediaProfile: MediaProfile = .unknown
@@ -77,6 +83,9 @@ actor NestedFolderSource: BookSource {
         let unlocker = unlocker
         let profile = mediaProfile
         var prepared: [Int: (any BookSource, [PageEntry])] = [:]
+        if !candidates.isEmpty {
+            assemblyProgress?(0, candidates.count)
+        }
         await withTaskGroup(of: (Int, (any BookSource, [PageEntry])?).self) { group in
             var next = 0
             func addTask() {
@@ -92,6 +101,7 @@ actor NestedFolderSource: BookSource {
             for _ in 0..<4 { addTask() }
             while let (ordinal, result) = await group.next() {
                 prepared[ordinal] = result
+                assemblyProgress?(prepared.count, candidates.count)
                 addTask()
             }
         }
@@ -239,6 +249,11 @@ actor NestedFolderSource: BookSource {
 
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {
         await unlocker.setProvider(provider)
+    }
+
+    func setAssemblyProgressHandler(
+        _ handler: (@Sendable (Int, Int) -> Void)?) {
+        assemblyProgress = handler
     }
 
     /// プロファイルはフォルダ(読み取りゲート)と、生成済み/今後生成される

@@ -191,6 +191,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if arguments.contains("--show-opening-progress") {
+            // 検証用: オープン進捗 HUD を固定内容で表示(スナップショット撮影)
+            // EN: Verification flag: show the opening-progress HUD with fixed text.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.debugShowOpeningProgress()
+            }
+        }
         if let index = arguments.firstIndex(of: "--then-open"), index + 1 < arguments.count {
             // 検証用: 最初の本(とサムネイル)を表示した後に別の本へ切り替える
             // (本の切替をまたぐサムネイル一覧の描画確認のため)

@@ -159,4 +159,46 @@ final class NestedFolderSourceTests: XCTestCase {
         let image = try await source.image(for: entries[0], maxPixelSize: nil)
         XCTAssertEqual(image.width, 41)
     }
+
+    /// 組み立て進捗が (0,総数)→…→(総数,総数) で単調に通知されること
+    /// (オープン進捗 HUD の情報源)
+    func testAssemblyProgressReportsMonotonicCounts() async throws {
+        for name in ["a.zip", "b.zip", "c.zip"] {
+            try zipData([("p1.png", png(width: 40))])
+                .write(to: tempDir.appendingPathComponent(name))
+        }
+        let source = try await BookSourceFactory.make(
+            for: tempDir, readSubFolders: false)
+        let collector = ProgressCollector()
+        await source.setAssemblyProgressHandler { done, total in
+            collector.append(done: done, total: total)
+        }
+        _ = try await source.entries()
+
+        let events = collector.events
+        XCTAssertEqual(events.first?.done, 0, "開始時に 0/総数 を通知")
+        XCTAssertEqual(events.last?.done, 3)
+        XCTAssertTrue(events.allSatisfy { $0.total == 3 })
+        XCTAssertEqual(events.map(\.done), events.map(\.done).sorted(),
+                       "完了数は単調増加")
+    }
+}
+
+/// 進捗コールバックの記録(actor 外から呼ばれるためロックで保護)
+/// EN: Thread-safe collector for progress callback events.
+private final class ProgressCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [(done: Int, total: Int)] = []
+
+    func append(done: Int, total: Int) {
+        lock.lock()
+        stored.append((done, total))
+        lock.unlock()
+    }
+
+    var events: [(done: Int, total: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
 }
