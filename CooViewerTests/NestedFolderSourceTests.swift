@@ -5,7 +5,6 @@ import XCTest
 @testable import cooViewer
 
 /// フォルダ内の書庫/PDF の統合(旧ネスト COImageLoader のフォルダ版)のテスト。
-/// EN: Folder books that merge archives/PDFs inside the folder.
 final class NestedFolderSourceTests: XCTestCase {
     private var tempDir: URL!
 
@@ -209,7 +208,6 @@ final class NestedFolderSourceTests: XCTestCase {
 }
 
 /// 進捗コールバックの記録(actor 外から呼ばれるためロックで保護)
-/// EN: Thread-safe collector for progress callback events.
 private final class ProgressCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [(done: Int, total: Int)] = []

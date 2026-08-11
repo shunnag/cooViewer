@@ -3,7 +3,6 @@ import Foundation
 /// ページのソート(仕様書 §4.4.2)。
 /// 旧実装の値をそのまま使う: 0=名前 / 1=シャッフル / 2=作成日 / 3=変更日。
 /// 4=名前(単純)は新実装で追加した値(旧データと衝突しない)。
-/// EN: Sort modes; raw values match the legacy integers (4 is new).
 enum SortMode: Int, Sendable, CaseIterable {
     /// Finder 互換の自然順。数値部分は数値の大小で比較する
     /// (hoge-2 < hoge-03 < hoge-4 < hoge-006)
@@ -20,8 +19,6 @@ enum PageSorter {
     /// まず名前順(Finder 互換自然順)に正規化してから適用する。
     /// シャッフルは旧実装の「非決定的比較器によるソート」を廃し
     /// Fisher-Yates で行う(設計書 §2.4)。
-    /// EN: Sorts pages: Finder-like natural name order first, then the mode
-    /// EN: (shuffle uses Fisher-Yates; date sorts are stabilized).
     static func sorted(
         _ entries: [PageEntry],
         mode: SortMode,
@@ -55,7 +52,6 @@ enum PageSorter {
 
     /// 日付なしエントリは末尾(名前順維持)。Swift の sorted は安定ソートではないため
     /// インデックスを添えて安定化する。
-    /// EN: Stable date sort; entries without a date keep name order at the end.
     private static func stableSort(
         _ entries: [PageEntry],
         by key: (PageEntry) -> Date?

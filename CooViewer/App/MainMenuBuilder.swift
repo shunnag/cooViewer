@@ -3,8 +3,6 @@ import AppKit
 /// メニューバーをプログラムで構築する。
 /// 旧実装の xib 内メニュー(仕様書 §8)に相当するが、識別はローカライズ済み
 /// タイトル文字列の比較ではなくセレクタ/タグで行う。
-/// EN: Builds the menu bar in code. Items are identified by selector/tag,
-/// EN: never by comparing localized titles (a legacy fragility).
 @MainActor
 enum MainMenuBuilder {
     static func build() -> NSMenu {
@@ -69,12 +67,10 @@ enum MainMenuBuilder {
                      keyEquivalent: "")
         menu.addItem(.separator())
         // 現在ページの実体ファイル(単体画像/書庫/PDF)を Finder で選択表示
-        // EN: Reveal the page's on-disk file in the Finder.
         menu.addItem(withTitle: String(localized: "Show in Finder"),
                      action: #selector(ReaderWindowController.showInFinderMenu(_:)),
                      keyEquivalent: "R")  // ⇧⌘R
         // Option 押下で現れる代替項目: 見開きのもう一方のページを表示
-        // EN: Option-modified alternate: reveal the spread's other page.
         let otherPage = menu.addItem(
             withTitle: String(localized: "Show the Other Page in Finder"),
             action: #selector(ReaderWindowController.showOtherPageInFinderMenu(_:)),
@@ -97,7 +93,6 @@ enum MainMenuBuilder {
         let menu = NSMenu(title: String(localized: "View"))
 
         // 表示モード(仕様書 §3.2: ⌘1-4)
-        // EN: fit modes, bound to Cmd-1...4.
         let fitTitles: [(String, Int)] = [
             (String(localized: "Fit to Screen"), 0),
             (String(localized: "Fit to Screen Width"), 1),
@@ -113,7 +108,6 @@ enum MainMenuBuilder {
         menu.addItem(.separator())
 
         // 読み方向(仕様書 §4.4.1)
-        // EN: reading direction submenu.
         let readModeItem = menu.addItem(withTitle: String(localized: "Reading Direction"),
                                         action: nil, keyEquivalent: "")
         let readModeMenu = NSMenu()
@@ -131,7 +125,6 @@ enum MainMenuBuilder {
             item.tag = tag
         }
         // 表紙(先頭ページ)を単ページで表示(新機能・既定オフ。見開き時のみ効果)
-        // EN: Cover page stays single in spread modes (new; default off).
         readModeMenu.addItem(.separator())
         readModeMenu.addItem(
             withTitle: String(localized: "Show the Cover Page Alone"),
@@ -140,7 +133,6 @@ enum MainMenuBuilder {
         readModeItem.submenu = readModeMenu
 
         // 補間(なし/低/既定/高。f キーの切替アクションもここから)
-        // EN: interpolation modes plus the toggle used by the default f key.
         let interpolationItem = menu.addItem(
             withTitle: String(localized: "Interpolation"), action: nil, keyEquivalent: "")
         let interpolationMenu = NSMenu()

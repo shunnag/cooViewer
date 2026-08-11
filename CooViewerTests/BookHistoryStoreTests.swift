@@ -4,8 +4,6 @@ import XCTest
 
 /// 本ごとの状態ストア v2(1 冊 = 1 JSON + recents.json)のテスト。
 /// 旧仕様(§7)の挙動互換と、旧形式からの一括インポート変換を確認する。
-/// EN: v2 per-book state store: legacy behavior parity plus the one-time
-/// EN: import from the legacy defaults keys.
 @MainActor
 final class BookHistoryStoreTests: XCTestCase {
     private var defaults: UserDefaults!

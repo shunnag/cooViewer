@@ -307,7 +307,6 @@ final class SplitVolumeExtensionTests: XCTestCase {
 
 /// コレクションフォルダのドリルダウン先選択(§2.4 の設計変更。
 /// 明示オープン時のみ使われる — ナビゲーションはドリルしない)
-/// EN: Inner-book pick for collection folders (explicit opens only).
 @MainActor
 final class InnerBookSelectionTests: XCTestCase {
     func testInnerBookPicksFirstBookByName() throws {

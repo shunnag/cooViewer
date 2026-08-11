@@ -5,12 +5,9 @@ import XCTest
 /// サムネイルオーバーレイモデルのスナップショット同期のテスト。
 /// 表示中にソート変更等で本のエントリ列が変わった場合、follow がスナップショットを
 /// 組み直し、一覧の表示とクリックのジャンプ先が実際の本とずれないことを確認する。
-/// EN: Verifies that follow(book:) rebuilds the overlay snapshot when the
-/// EN: book's entry order changes underneath the visible overlay.
 @MainActor
 final class ThumbnailOverlayModelTests: XCTestCase {
     /// 名前(自然順)と名前(単純)で並びが変わるエントリ名を持つスタブソース
-    /// EN: Stub whose entry names order differently in natural vs literal sort.
     private final class NamedStubSource: BookSource, @unchecked Sendable {
         let url = URL(fileURLWithPath: "/stub/named-book")
         let names: [String]
@@ -42,7 +39,6 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         defaults.removePersistentDomain(forName: "ThumbnailOverlayModelTests")
         let model = ThumbnailOverlayModel(defaults: defaults)
         // しおりのみ表示にして先読みを空にする(テストからの実 I/O を避ける)
-        // EN: Bookmark-only filter empties prefetch targets (no disk I/O in tests).
         model.onlyBookmarks = true
         return model
     }

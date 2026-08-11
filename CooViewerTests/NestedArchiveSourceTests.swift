@@ -7,8 +7,6 @@ import XCTest
 /// 書庫内書庫(ネスト書庫。仕様書 §2.4)のテスト。
 /// ページ列の組み立て順・id 空間・開き直しでの安定性・深さ上限・壊れ書庫の
 /// スキップと、サムネイルキャッシュのキー衝突がないことを確認する。
-/// EN: Nested-archive coverage: assembly order, id space, reopen stability,
-/// EN: depth cap, corrupt-child skipping, and thumbnail-cache key isolation.
 final class NestedArchiveSourceTests: XCTestCase {
     private var tempDir: URL!
 
@@ -21,7 +19,6 @@ final class NestedArchiveSourceTests: XCTestCase {
     }
 
     /// 幅をページの「内容マーカー」に使う(width が一致すれば正しい画像)
-    /// EN: Page width doubles as a content marker for identity assertions.
     private func png(width: Int) -> Data {
         TestFixtures.pngData(width: width, height: 60)
     }

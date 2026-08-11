@@ -21,12 +21,9 @@ protocol ReaderViewDelegate: AnyObject {
 /// 旧 CustomImageView の BufferingMode=New 相当: 1/2 ページを CALayer で並置描画する。
 /// スクロールは NSScrollView を使わず内部オフセットで管理する
 /// (端到達判定 §4.16 をページ送りに使うため)。
-/// EN: Layer-backed page view: renders 1-2 pages side by side and manages
-/// EN: fit modes, rotation, and internal scrolling with edge detection.
 @MainActor
 final class ReaderView: NSView {
     /// 表示モード(仕様書 §3.2)。旧 fitScreenMode の整数値を維持。
-    /// EN: Fit modes; raw values match the legacy integers.
     enum FitMode: Int, CaseIterable {
         case fitToScreen = 0      // 全体フィット・スクロールなし
         case fitWidth = 1         // 幅フィット・縦スクロール
@@ -59,10 +56,8 @@ final class ReaderView: NSView {
     private(set) var images: [CGImage] = []
     private(set) var pageIDs: [Int] = []
     /// リサンプルキャッシュの名前空間(本の cacheKey。本切替時の取り違え防止)
-    /// EN: Cache namespace (book cacheKey) so ids never collide across books.
     var resampleKeyPrefix = ""
     /// 見開きしきい値(横長判定。fitWidthDivide 用。設定から注入される)
-    /// EN: Spread threshold used by the divide fit mode; injected from settings.
     var singleSetting = PageLayout.defaultSingleSetting
     private(set) var readsFromLeft = false
 
@@ -137,7 +132,6 @@ final class ReaderView: NSView {
 
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
-    /// EN: Show the given pages in reading order; ids key the resample cache.
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool) {
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
@@ -206,13 +200,10 @@ final class ReaderView: NSView {
         )
 
         // 画面上の並び: 読み順先頭ページは、左綴じなら左、右綴じなら右(仕様書 §4.2.5)
-        // EN: The first page in reading order sits on the right for
-        // EN: right-to-left books.
         let backingScale = window?.backingScaleFactor ?? 2
         let screenOrder = readsFromLeft ? Array(scaled.indices) : scaled.indices.reversed()
         var x = pad.x - scrollOffset.x
-        for (position, imageIndex) in screenOrder.enumerated() {
-            _ = position
+        for imageIndex in screenOrder {
             let size = scaled[imageIndex]
             let layer = pageLayers[imageIndex]
             layer.isHidden = false
@@ -243,8 +234,6 @@ final class ReaderView: NSView {
     /// 予約する(縮小=CG Lanczos 相当、「高」は拡大に MetalFX)。
     /// ライブリサイズ中の洪水を避けるため短いデバウンスを挟み、
     /// 完成したページから順に等倍画像へ差し替える。
-    /// EN: Debounced pre-resample to exact display pixels (high-quality CG for
-    /// EN: downscale, MetalFX for upscale); finished pages swap in 1:1.
     private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
         guard interpolation == .systemDefault || interpolation == .high,
               !images.isEmpty else { return }
@@ -265,8 +254,6 @@ final class ReaderView: NSView {
         // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
         // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
         // スプレッドのスロットを汚す穴の修正)
-        // EN: Cancel the previous in-flight resample even when this spread has
-        // EN: no targets; otherwise its late write lands in the new spread.
         resampleTask?.cancel()
         resampleGeneration += 1
         guard !requests.isEmpty else { return }
@@ -275,8 +262,6 @@ final class ReaderView: NSView {
         let useMetalFX = interpolation == .high
         // デバウンスはライブリサイズ中の洪水対策。ページ送りでは待たずに
         // 即リサンプルして、最初の描画から等倍のシャープな画像に近づける
-        // EN: Debounce only during live resize; page turns resample
-        // EN: immediately so the crisp 1:1 image lands as soon as possible.
         let debounce: Bool = inLiveResize
         resampleTask = Task { [weak self] in
             if debounce {
@@ -298,7 +283,6 @@ final class ReaderView: NSView {
     private func applyResampled(_ image: CGImage, size: CGSize,
                                 at index: Int, generation: Int, key: String) {
         // 世代に加えてページの同一性(キャッシュキー)も照合する(遅延書込対策)
-        // EN: Verify the page identity (cache key) besides the generation.
         guard generation == resampleGeneration,
               resampledPages.indices.contains(index),
               pageIDs.indices.contains(index),
@@ -308,7 +292,6 @@ final class ReaderView: NSView {
     }
 
     /// ページ毎のスケール(仕様書 §4.2.3, §3.2)
-    /// EN: Per-page scale factors for the current fit mode.
     private func pageScales(for sizes: [CGSize], available: CGSize) -> [CGFloat] {
         let pageCount = CGFloat(sizes.count)
         switch fitMode {
@@ -345,7 +328,6 @@ final class ReaderView: NSView {
     }
 
     /// delta 分スクロールする。1px も動けなかったら false(端到達。仕様書 §4.16)。
-    /// EN: Returns false when already at the edge (used to trigger page turns).
     @discardableResult
     func scroll(by delta: CGPoint) -> Bool {
         let before = scrollOffset
@@ -402,8 +384,6 @@ final class ReaderView: NSView {
 
     /// アニメーション画像の再生(設計書 §5)。CAKeyframeAnimation の discrete
     /// 補間でフレームを切り替える。ページが替わっていたら無視する。
-    /// EN: Play animated frames via a discrete keyframe animation; the id check
-    /// EN: ignores results that arrive after the page changed.
     func applyAnimation(frames: [CGImage], delays: [Double],
                         forPageAt index: Int, id: Int) {
         guard pageIDs.indices.contains(index), pageIDs[index] == id,
@@ -439,10 +419,8 @@ final class ReaderView: NSView {
     /// ルーペにだけ高解像度画像を差し込む(通常表示・先読みには影響しない)。
     /// 表示中の画像より低解像度なら採用しない(SVG のフォールバック既定
     /// 2048px が表示用 4096px を下回るケースの逆転防止)。
-    /// EN: Inject a loupe-only high-res image without touching normal display.
     func setLoupeHighResImage(_ image: CGImage, forPageAt index: Int, entryID: Int) {
         // ページめくり直後に届いた古いページの結果は捨てる(id 照合)
-        // EN: Drop stale results delivered after a page turn (id check).
         guard pageIDs.indices.contains(index), pageIDs[index] == entryID else { return }
         if images.indices.contains(index),
            image.width * image.height < images[index].width * images[index].height {
@@ -512,8 +490,6 @@ final class ReaderView: NSView {
 
         if max(abs(dx), abs(dy)) >= 30 {
             // ドラッグジェスチャ(±30px。仕様書 §5.9)。isFlipped のため dy>0 は下方向
-            // EN: Drags of 30 px or more become directional gestures;
-            // EN: shorter ones are treated as clicks.
             let direction: Int
             if abs(dx) >= abs(dy) {
                 direction = dx < 0 ? LegacyModifier.dragLeft : LegacyModifier.dragRight
@@ -566,7 +542,6 @@ final class ReaderView: NSView {
 
     override func magnify(with event: NSEvent) {
         // キャンセルされたジェスチャの残滓が次回に混ざらないよう開始時に捨てる
-        // EN: Reset on .began so a cancelled gesture's residue never carries over.
         if event.phase == .began { magnificationSum = 0 }
         magnificationSum += event.magnification
         guard event.phase == .ended else { return }

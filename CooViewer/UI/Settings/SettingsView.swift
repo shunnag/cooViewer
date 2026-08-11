@@ -4,8 +4,6 @@ import SwiftUI
 /// rawValue は保存キー SettingsSelectedTab の値。旧 TabView 時代の 0-4 の
 /// 意味(0=一般/1=表示/2=操作/3=キー割り当て/4=高度)を維持したまま、
 /// 新設ペインを 5 以降に追加している。表示順は sidebarOrder が決める。
-/// EN: Settings panes. rawValue is the persisted SettingsSelectedTab value;
-/// EN: the legacy 0-4 meanings are preserved and new panes append from 5.
 enum SettingsPane: Int, CaseIterable, Identifiable {
     case general = 0
     case display = 1
@@ -20,7 +18,6 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
     var id: Int { rawValue }
 
     /// サイドバーの表示順(rawValue の並びとは独立)
-    /// EN: Sidebar order, independent of the persisted raw values.
     static let sidebarOrder: [SettingsPane] = [
         .general, .books, .display, .pageNumber, .pageBar,
         .control, .keyBindings, .decoders, .advanced,
@@ -73,9 +70,6 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
 /// システム設定(macOS 26)風の「サイドバー+検索+詳細」構成。検索語は
 /// 各ペインの索引(SettingsSearch)でサイドバーを絞り込む。
 /// 旧実装の「Cancel で全ロールバック」方式と異なり即時反映(設計書 §2.4)。
-/// EN: Settings window styled after System Settings on macOS 26: sidebar with
-/// EN: a search field that filters panes via SettingsSearch, detail forms on
-/// EN: the right. Every change applies immediately (no Cancel rollback).
 struct SettingsView: View {
     @AppStorage("ReadMode") private var readMode = 0
     @AppStorage("SpreadCoverSingle") private var spreadCoverSingle = false
@@ -98,7 +92,6 @@ struct SettingsView: View {
     @State private var thumbnailColumns = ThumbnailGridSetting.read().columns
 
     // ページ番号/ページバー(仕様書 §3.4, §6.1。色と寸法は SettingsStore 経由)
-    // EN: page number / page bar options; colors and sizes go through SettingsStore.
     @AppStorage("ShowRelativePaths") private var showRelativePaths = false
     @AppStorage("PageNumPosition") private var pageNumPosition = 0
     @AppStorage("PageNumAutoHide") private var pageNumAutoHide = false
@@ -108,7 +101,6 @@ struct SettingsView: View {
     @AppStorage("PageBarAutoHide") private var pageBarAutoHide = false
     // PageBarSize は辞書のため @AppStorage が使えない。@State を鏡にして
     // onAppear で読み込み、変更時に SettingsStore へ書き戻す
-    // EN: Dict-backed PageBarSize can't use @AppStorage; mirror it in @State.
     @State private var pageBarWidth = 200.0
     @State private var pageBarHeight = 15.0
     @State private var pageBarShowsThumbnail = true
@@ -148,12 +140,10 @@ struct SettingsView: View {
 
     /// 前回選択していたペイン(検証用に引数 -SettingsSelectedTab n でも指定可。
     /// 値は SettingsPane.rawValue)
-    /// EN: Remembers the last pane; overridable with -SettingsSelectedTab.
     @AppStorage("SettingsSelectedTab") private var selectedTab = 0
 
     /// 検索語(検証用に引数 -SettingsSearchText <語> で初期値を注入できる。
     /// アプリ自身はこのキーへ保存しないため通常起動では常に空)
-    /// EN: Search text; -SettingsSearchText seeds it for snapshot verification.
     @State private var searchText =
         UserDefaults.standard.string(forKey: "SettingsSearchText") ?? ""
 
@@ -200,7 +190,6 @@ struct SettingsView: View {
     }
 
     /// 検索語でサイドバーを絞り込んだ結果(空なら全ペイン)
-    /// EN: Sidebar rows after applying the search filter.
     private var sidebarMatches: [SettingsSearch.Match] {
         SettingsSearch.filter(
             query: searchText,
@@ -212,8 +201,6 @@ struct SettingsView: View {
 
     /// システム設定風の行(角丸カラーアイコン+タイトル。検索中は一致した
     /// 設定名を下に添える)
-    /// EN: System Settings-style row: rounded color icon + title, with the
-    /// EN: matched setting labels as a caption while searching.
     private func paneRow(_ pane: SettingsPane, matchedTerms: [String]) -> some View {
         HStack(spacing: 7) {
             Image(systemName: pane.symbolName)
@@ -263,7 +250,6 @@ struct SettingsView: View {
     }
 
     /// ペイン内の設定項目ラベル(検索索引。項目を増やしたらここにも追加)
-    /// EN: Per-pane search terms — extend when adding a setting to a pane.
     static func searchTerms(for pane: SettingsPane) -> [String] {
         switch pane {
         case .general: [
@@ -343,7 +329,6 @@ struct SettingsView: View {
         case .pageBar: pageBarPane
         case .control: controlPane
         // タイトルバー(ツールバー)と重ならないよう上に余白を入れる
-        // EN: Keep the segmented picker clear of the title-bar area.
         case .keyBindings: KeyBindingsPane().padding(.top, 12)
         case .decoders: decodersPane
         case .advanced: advancedPane
@@ -366,7 +351,6 @@ struct SettingsView: View {
                     Text(String(localized: "Never")).tag(2)
                 }
                 // 履歴から溢れた本のページも LastPages に残す(仕様書 §7.3)
-                // EN: keep last pages even for books that fell out of the history.
                 Toggle(String(localized: "Always remember the last page"),
                        isOn: $alwaysRememberLastPage)
                 Toggle(String(localized: "Remember settings per book"),
@@ -414,7 +398,6 @@ struct SettingsView: View {
                     Text(String(localized: "Left to Right (single page)")).tag(3)
                 }
                 // 表紙(先頭ページ)を単ページで表示(見開きモード時のみ効果)
-                // EN: Cover page stays single; effective in spread modes only.
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle(String(localized: "Show the Cover Page Alone"),
                            isOn: $spreadCoverSingle)
@@ -429,7 +412,6 @@ struct SettingsView: View {
                     display: String(format: "%.2f", Double(singleSetting) / 1000)
                 )
                 // 表示モード(メニュー ⌘1-4 と同じ設定を共有。仕様書 §3.2)
-                // EN: Same "FitMode" default the View menu (⌘1-4) writes.
                 Picker(String(localized: "View mode:"), selection: $fitMode) {
                     Text(String(localized: "Fit to Screen")).tag(0)
                     Text(String(localized: "Fit to Screen Width")).tag(1)
@@ -475,7 +457,6 @@ struct SettingsView: View {
             Section {
                 Toggle(String(localized: "Show page number"), isOn: $showNumber)
                 // サムネイル一覧のフッターと原寸表示のタイトルにも効く
-                // EN: also affects the thumbnail footer and original-size title.
                 Picker(String(localized: "File name display:"),
                        selection: $showRelativePaths) {
                     Text(String(localized: "File name only")).tag(false)
@@ -586,8 +567,6 @@ struct SettingsView: View {
 
     /// 独自デコーダの形式トグル(高度な設定のマスタースイッチとは独立。
     /// 判定は先頭マジックなので OFF にした形式は壊れページ表示になるだけ)
-    /// EN: Per-format toggles for the built-in decoders; independent of the
-    /// EN: advanced-settings master switch.
     private var decodersPane: some View {
         Form {
             Section(String(localized: "Built-in image decoders")) {
@@ -609,8 +588,6 @@ struct SettingsView: View {
 
     /// 挙動チューニング(設計書 キャッシュ・先読み節)。マスタースイッチが
     /// OFF の間、SettingsStore 側は保存値を無視して既定値で動作する
-    /// EN: Behavior tuning. While the master switch is off, SettingsStore ignores
-    /// EN: the stored values and serves the built-in defaults.
     private var advancedPane: some View {
         Form {
             Section {
@@ -635,7 +612,6 @@ struct SettingsView: View {
                 Picker(String(localized: "Archive spooling:"), selection: $advSpoolPolicy) {
                     Text(String(localized: "Automatic (by media speed)")).tag(0)
                     // "Always"/"Never" は別文脈の既存訳と衝突するため独立キー
-                    // EN: Keyed separately; the bare words collide with other contexts.
                     Text(String(localized: "spool.policy.always",
                                 defaultValue: "Always")).tag(1)
                     Text(String(localized: "spool.policy.never",
@@ -691,7 +667,6 @@ struct SettingsView: View {
     }
 
     /// 現在のパーセント指定が実メモリで何バイトになるかの表示
-    /// EN: Human-readable byte size for the selected memory percentage.
     private var advancedMemoryDisplay: String {
         let bytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
             / 100 * Int64(advMemoryPercent)
@@ -712,7 +687,6 @@ struct SettingsView: View {
     // MARK: - 部品
 
     /// ラベル+スライダー+現在値の 1 行(値は幅固定でガタつかないように)
-    /// EN: Label + slider + fixed-width value readout so the row doesn't jitter.
     private func sliderRow(
         label: String, value: Binding<Double>,
         range: ClosedRange<Double>, display: String
@@ -730,7 +704,6 @@ struct SettingsView: View {
     }
 
     /// 補間モードごとの処理内容(設計書 §5 描画品質)
-    /// EN: One-line explanation of what each interpolation mode does.
     private var interpolationDescription: String {
         switch interpolation {
         case 1: String(localized: "None: pixels are scaled as-is (for pixel art).")
@@ -743,7 +716,6 @@ struct SettingsView: View {
     }
 
     /// 4 隅の位置選択(仕様書 §6.1: 0=左上/1=右上/2=左下/3=右下)
-    /// EN: Four-corner position picker (0=TL / 1=TR / 2=BL / 3=BR).
     private func positionPicker(selection: Binding<Int>) -> some View {
         Picker(String(localized: "Position:"), selection: selection) {
             Text(String(localized: "Top left")).tag(0)
