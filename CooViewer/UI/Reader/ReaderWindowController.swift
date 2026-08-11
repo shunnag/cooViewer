@@ -117,7 +117,14 @@ final class ReaderWindowController: NSWindowController {
         self.init(window: window)
 
         setUpContentViews(in: window)
-        window.center()
+        // 前回終了時と画面解像度が一致するときだけ autosave の位置を生かし、
+        // 解像度が変わっていた(または初回起動の)場合は従来どおり中央へ。
+        // サイズは setFrameAutosaveName がどちらの場合も復元する
+        // EN: Keep the autosaved position only when the screen resolution
+        // EN: matches the one recorded at last quit; otherwise center as before.
+        if !Self.shouldRestoreWindowPosition() {
+            window.center()
+        }
         window.delegate = self
         readerView.delegate = self
         applySettings()
@@ -734,10 +741,47 @@ final class ReaderWindowController: NSWindowController {
     func windowWillClose(_ notification: Notification) {
         stopSlideshow()
         saveCurrentBookState()
+        saveWindowScreenSize()
     }
 
     func saveStateBeforeTermination() {
         saveCurrentBookState()
+        saveWindowScreenSize()
+    }
+
+    // MARK: - ウインドウ位置の復元(解像度一致時のみ)
+
+    /// ウインドウがある画面の解像度(frame サイズ)を保存する。
+    /// 起動時にこの値と一致する画面があれば autosave の位置を復元する
+    /// EN: Record the resolution of the window's screen at quit/close; launch
+    /// EN: restores the autosaved position only when a screen still matches.
+    private func saveWindowScreenSize() {
+        guard let size = window?.screen?.frame.size else { return }
+        UserDefaults.standard.set(NSStringFromSize(size),
+                                  forKey: "ReaderWindowScreenSize")
+    }
+
+    /// 保存済みフレームがあり、かつ終了時の画面解像度が現在のいずれかの
+    /// 画面と一致するときだけ位置を復元する(不一致・初回は中央配置)
+    /// EN: True when an autosaved frame exists and the recorded resolution
+    /// EN: matches one of the attached screens.
+    static func shouldRestoreWindowPosition() -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: "NSWindow Frame ReaderWindow") != nil
+        else { return false }
+        return shouldRestorePosition(
+            savedScreenSize: defaults.string(forKey: "ReaderWindowScreenSize"),
+            screenSizes: NSScreen.screens.map { $0.frame.size })
+    }
+
+    /// 純粋判定部(テスト用に分離): 保存解像度が候補のいずれかと一致するか
+    /// EN: Pure comparison split out for unit tests.
+    nonisolated static func shouldRestorePosition(
+        savedScreenSize: String?, screenSizes: [CGSize]) -> Bool {
+        guard let savedScreenSize else { return false }
+        let size = NSSizeFromString(savedScreenSize)
+        guard size.width > 0, size.height > 0 else { return false }
+        return screenSizes.contains(size)
     }
 
     private enum UnlockResult {
