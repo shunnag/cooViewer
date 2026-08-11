@@ -377,6 +377,43 @@ final class Book {
         currentIndex = entries.count - 1
     }
 
+    /// 現在位置を「先頭から組み直した見開き区分」に整列させる。
+    /// ペア判定は仕様書 §4.2 どおり現在位置から局所的に決まるため、
+    /// 表紙単ページや見開きしきい値の切替だけではページの区切り
+    /// (偶奇)が変わらない。設定変更の瞬間はここで先頭起点の区分を
+    /// 歩き直し、現在ページを含むスプレッドの先頭に着地させる。
+    /// サイズ未取得のページは縦長(ペア可)とみなす(サムネイル一覧と
+    /// 同じ収束方針)。強制指定(marks)は isSmall 側で常に優先される。
+    /// EN: Re-anchor the current position to the partition walked from page 0.
+    /// EN: Pairing is local to the current index (§4.2), so toggling the
+    /// EN: cover-single option alone cannot shift the pair parity mid-book;
+    /// EN: this walk realigns the anchor right after such a settings change.
+    func reanchorToLeadingPartition() async {
+        guard readMode.isSpread, currentIndex > 0 else { return }
+        // サイズ未取得でも marks・表紙単ページの規則は適用したいので、
+        // 不明なページは縦長サイズを仮定して通常判定に流す
+        // EN: Unknown sizes still go through the normal rule with an assumed
+        // EN: portrait size, so marks / cover-single decisions apply.
+        func assumedSmall(at index: Int) async -> Bool {
+            let size = await pageSize(at: index) ?? CGSize(width: 70, height: 100)
+            return PageLayout.isSmall(size: size, index: index, marks: marks,
+                                      singleSetting: singleSetting,
+                                      coverSingle: coverSingleFirst)
+        }
+        var start = 0
+        while start < currentIndex {
+            var length = 1
+            if start + 1 < entries.count,
+               await assumedSmall(at: start),
+               await assumedSmall(at: start + 1) {
+                length = 2
+            }
+            guard start + length <= currentIndex else { break }
+            start += length
+        }
+        currentIndex = start
+    }
+
     /// パーセントジャンプ(旧 goToPar)。上限クランプなしの旧仕様を維持し、
     /// 100% 以上は hitEnd を返す(仕様書 §13.3)。
     /// EN: Percent jump; values >= 100% report hitEnd (legacy behavior kept).
