@@ -52,6 +52,23 @@ final class SettingsStore {
     var openLastFolder: Bool { defaults.bool(forKey: "OpenLastFolder") }
     var openRecentLimit: Int { defaults.integer(forKey: "OpenRecentLimit") }
 
+    /// 表示モード(仕様書 §3.2 fitScreenMode)。旧実装は永続化せず毎回 0 で
+    /// 起動したが、新実装ではグローバル設定として保存する(仕様変更)。
+    /// キー "FitMode" は新実装のみのキー(旧実装に同名キーは存在しない)
+    /// EN: Fit mode. The legacy app never persisted it (always relaunched at 0);
+    /// EN: the rewrite stores it globally under the new-only key "FitMode".
+    var fitMode: ReaderView.FitMode {
+        get { ReaderView.FitMode(rawValue: defaults.integer(forKey: "FitMode")) ?? .fitToScreen }
+        set { defaults.set(newValue.rawValue, forKey: "FitMode") }
+    }
+
+    /// 見開きモードで先頭ページ(表紙)を単ページにする(新機能・既定オフ)
+    /// EN: Keep the first page (cover) single in spread modes (new; default off).
+    var spreadCoverSingle: Bool {
+        get { defaults.bool(forKey: "SpreadCoverSingle") }
+        set { defaults.set(newValue, forKey: "SpreadCoverSingle") }
+    }
+
     /// 見開き判定しきい値×1000(0 は 740 に補正。仕様書 §6.1)
     /// EN: Spread aspect threshold x1000; 0 self-repairs to 740.
     var singleSetting: Int {

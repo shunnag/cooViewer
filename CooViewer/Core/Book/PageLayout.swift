@@ -94,15 +94,18 @@ enum PageLayout {
 
     /// ページが「小さい」=見開き候補か。
     /// 1. marks の強制指定が最優先
-    /// 2. 幅/高さ が singleSetting/1000 以下(縦長)なら見開き候補
-    /// EN: Marks win first; otherwise portrait pages (aspect <= threshold)
-    /// EN: are pair candidates.
+    /// 2. coverSingle(表紙を単ページにする。新機能・既定オフ)なら先頭ページは単ページ
+    /// 3. 幅/高さ が singleSetting/1000 以下(縦長)なら見開き候補
+    /// EN: Marks win first; with coverSingle the first page stays single;
+    /// EN: otherwise portrait pages (aspect <= threshold) are pair candidates.
     static func isSmall(
         size: CGSize, index: Int, marks: PageMarks,
-        singleSetting: Int = defaultSingleSetting
+        singleSetting: Int = defaultSingleSetting,
+        coverSingle: Bool = false
     ) -> Bool {
         if marks.forcesSingle(index) { return false }
         if marks.forcesPairContaining(index) { return true }
+        if coverSingle, index == 0 { return false }
         guard size.height > 0 else { return false }
         return size.width / size.height <= CGFloat(singleSetting) / 1000.0
     }

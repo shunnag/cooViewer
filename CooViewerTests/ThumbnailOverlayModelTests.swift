@@ -105,6 +105,27 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         XCTAssertEqual(model.layout.cellGroups, [[0, 1], [2], [3]])
     }
 
+    /// 表紙単ページ設定: サムネイル一覧でも先頭ページは単独セルになること
+    /// (強制ペア指定 1-2 がある場合はそちらが優先)
+    func testCoverSingleSeparatesFirstCell() async throws {
+        let portrait = CGSize(width: 70, height: 100)
+        let book = try await Book.open(source: NamedStubSource(
+            names: ["a.png", "b.png", "c.png", "d.png", "e.png"],
+            sizes: [portrait, portrait, portrait, portrait, portrait]))
+        book.coverSingleFirst = true
+        let model = makeModel()
+        model.onlyBookmarks = false
+        model.comicMode = true
+        model.present(book: book)
+        await model.waitForPrefetch()
+        XCTAssertEqual(model.layout.cellGroups, [[0], [1, 2], [3, 4]])
+
+        // 強制ペア(1-2)を付けると表紙もペアに戻る
+        book.marks.setForcedPair(firstIndex: 0)
+        model.follow(book: book, displayedIndices: [0])
+        XCTAssertEqual(model.layout.cellGroups, [[0, 1], [2, 3], [4]])
+    }
+
     /// clear がスナップショット(ソースへの強参照)を解放すること。
     /// 非表示のまま本を切り替えたときの旧書庫の一時ファイル保持を防ぐ
     func testClearReleasesSnapshot() async throws {

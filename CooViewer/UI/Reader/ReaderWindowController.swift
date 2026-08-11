@@ -156,10 +156,27 @@ final class ReaderWindowController: NSWindowController {
         pageBar.readColor = settings.pageBarReadColor
         layoutPageIndicators()
         updateIndicatorVisibility()
+        // 表示モードは設定ウインドウ/メニューのどちらからでも変わる
+        // (共に defaults "FitMode" 経由。ここが唯一の反映点)
+        // EN: Fit mode changes arrive via the "FitMode" default from either
+        // EN: the Settings window or the menu; this is the single apply point.
+        if readerView.fitMode != settings.fitMode {
+            readerView.fitMode = settings.fitMode
+            refreshDisplayIfCapRaised()
+        }
         if let book, book.pageCount > 0 {
-            // 見開きしきい値の変更は現表示を再判定する(仕様書 §6.3)
+            // 見開きしきい値・表紙単ページの変更は現表示を再判定する(仕様書 §6.3)
+            // EN: Re-evaluate the on-screen spread when pairing inputs change.
+            var pairingChanged = false
             if book.singleSetting != settings.singleSetting {
                 book.singleSetting = settings.singleSetting
+                pairingChanged = true
+            }
+            if book.coverSingleFirst != settings.spreadCoverSingle {
+                book.coverSingleFirst = settings.spreadCoverSingle
+                pairingChanged = true
+            }
+            if pairingChanged {
                 Task { await refreshDisplay() }
             }
             applyAdvancedSettings(to: book)
@@ -607,6 +624,7 @@ final class ReaderWindowController: NSWindowController {
             endOpeningProgress(generation: generation)
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
+            book.coverSingleFirst = settings.spreadCoverSingle
             book.mediaProfile = mediaProfile
             await source.applyMediaProfile(mediaProfile)
             applyAdvancedSettings(to: book)
@@ -1266,6 +1284,16 @@ final class ReaderWindowController: NSWindowController {
 
     @objc func changeFitMode(_ sender: NSMenuItem) {
         guard let mode = ReaderView.FitMode(rawValue: sender.tag) else { return }
+        setFitMode(mode)
+    }
+
+    /// 表示モードの唯一の変更経路(メニュー/キー巡回/設定)。ビューへ即時
+    /// 反映しつつ defaults へ保存する(applySettings 側は同値なら何もしない)
+    /// EN: Single entry point for fit-mode changes: apply to the view now and
+    /// EN: persist; the coalesced applySettings pass then no-ops on equality.
+    func setFitMode(_ mode: ReaderView.FitMode) {
+        settings.fitMode = mode
+        guard readerView.fitMode != mode else { return }
         readerView.fitMode = mode
         refreshDisplayIfCapRaised()
     }
@@ -1284,6 +1312,12 @@ final class ReaderWindowController: NSWindowController {
 
     @objc func changeInterpolation(_ sender: NSMenuItem) {
         UserDefaults.standard.set(sender.tag, forKey: "Interpolation")
+    }
+
+    /// 表紙を単ページで表示(見開きモード時のみ効果。設定と同じ defaults を共有)
+    /// EN: Toggle "cover page stays single"; shares the Settings default.
+    @objc func toggleCoverSingleMenu(_ sender: Any?) {
+        settings.spreadCoverSingle.toggle()
     }
 
     @objc func toggleInterpolationMenu(_ sender: Any?) {
@@ -1308,6 +1342,9 @@ final class ReaderWindowController: NSWindowController {
             return book != nil
         case #selector(changeInterpolation(_:)):
             menuItem.state = settings.interpolation.rawValue == menuItem.tag ? .on : .off
+            return true
+        case #selector(toggleCoverSingleMenu(_:)):
+            menuItem.state = settings.spreadCoverSingle ? .on : .off
             return true
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
