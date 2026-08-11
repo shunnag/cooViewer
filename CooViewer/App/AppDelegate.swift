@@ -191,6 +191,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if arguments.contains("--then-toggle-cover-single") {
+            // 検証用: 表示後に「表紙を単ページで表示」を切り替え、現在の
+            // 見開きが即座に組み直されることをスナップショットで確認する
+            // EN: Verification flag: toggle "cover page alone" after the first
+            // EN: display to prove the on-screen spread re-pairs immediately.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.toggleCoverSingleMenu(nil)
+            }
+        }
         if arguments.contains("--show-file-info") {
             // 検証用: ファイル情報パネルを開く(--snapshot はパネルを撮る)
             // EN: Verification flag: open the File Info panel for the snapshot.
