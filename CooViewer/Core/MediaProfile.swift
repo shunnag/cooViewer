@@ -4,9 +4,6 @@ import Foundation
 /// 方針(設計書「キャッシュ・先読み設計」の自動適応)。
 /// 分類は MediaSpeedProbe が行い、本クラスは純粋な「方針表」に徹する。
 /// unknown は従来の固定動作と完全に同じ値を返す(判定不能時の回帰防止)。
-/// EN: Speed class of the volume a book lives on, plus the derived cache and
-/// EN: prefetch policy. Classification lives in MediaSpeedProbe; this type is
-/// EN: a pure policy table. `.unknown` reproduces the legacy fixed behavior.
 struct MediaProfile: Sendable, Equatable {
     enum MediaClass: String, Sendable {
         /// 内蔵 SSD・Thunderbolt/USB の SSD 等(実測 ≥ fastThreshold も含む)
@@ -21,12 +18,9 @@ struct MediaProfile: Sendable, Equatable {
 
     var mediaClass: MediaClass
     /// 実測スループット(MB/s)。ベンチを走らせた場合のみ
-    /// EN: Measured throughput when the micro-benchmark ran.
     var measuredMBPerSec: Double?
     /// スプール方針の明示上書き(設定「高度」の三択)。nil=自動。
     /// 「明示は自動に勝つ」の整合規則(設計書 キャッシュ節)
-    /// EN: Explicit spool-policy override from Advanced settings; nil = auto.
-    /// EN: Explicit values always beat the automatic policy.
     var spoolOverride: Bool?
 
     static let unknown = MediaProfile(mediaClass: .unknown)
@@ -42,10 +36,8 @@ struct MediaProfile: Sendable, Equatable {
 
     /// これ以上は SSD 相当(USB 3 の HDD は実測 ~100-160MB/s 程度、
     /// SATA SSD ~400、NVMe/TB は GB/s 級)
-    /// EN: At or above this the volume behaves like an SSD.
     static let fastThresholdMBPerSec: Double = 180
     /// これ未満は HDD/低速回線相当
-    /// EN: Below this it behaves like a spinning disk or slow link.
     static let slowThresholdMBPerSec: Double = 80
 
     // MARK: - 方針(設計書のポリシー表)
@@ -54,11 +46,8 @@ struct MediaProfile: Sendable, Equatable {
     /// 高速ローカルではランダムアクセスが安い zip 系のスプールをやめて
     /// 二重書き込みを避ける。solid 圧縮になり得る形式(rar/7z/lha/sit)は
     /// 逐次展開の恩恵が大きいので常にスプールする
-    /// EN: Whether to spool an archive: fast local volumes skip zip-style
-    /// EN: formats (cheap random access); solid-prone formats always spool.
     func shouldSpoolArchive(fileExtension: String) -> Bool {
         // 高度設定の明示(常に行う/行わない)が最優先
-        // EN: An explicit Advanced-tab policy always wins.
         if let spoolOverride {
             return spoolOverride
         }
@@ -74,7 +63,6 @@ struct MediaProfile: Sendable, Equatable {
 
     /// フォルダの本の同時読み取り上限(サムネイルのセル読みも含む全読者)。
     /// HDD ではシーク嵐を防ぎ、SSD では並列デコードを活かす
-    /// EN: Concurrent-read cap for folder books (all readers, thumbnails too).
     var sourceReadConcurrency: Int {
         switch mediaClass {
         case .fastLocal: 6
@@ -86,8 +74,6 @@ struct MediaProfile: Sendable, Equatable {
 
     /// Book 先読みの並列幅(並列ロード可能なソースのみ)。
     /// fastLocal は読み取りゲート(6)と揃え、多コアの並列デコードを活かす
-    /// EN: Prefetch width used by Book for parallel-capable sources;
-    /// EN: fastLocal matches the read gate so decodes pipeline fully.
     var bookPrefetchConcurrency: Int {
         switch mediaClass {
         case .fastLocal: 6
@@ -98,7 +84,6 @@ struct MediaProfile: Sendable, Equatable {
     }
 
     /// サムネイル一覧の先読み並列度
-    /// EN: Thumbnail-overlay prefetch concurrency.
     var thumbnailPrefetchConcurrency: Int {
         switch mediaClass {
         case .fastLocal: 6
@@ -109,7 +94,6 @@ struct MediaProfile: Sendable, Equatable {
 
     /// 先読み深さの既定値(高度設定 OFF のときだけ使う。遅い媒体ほど
     /// レイテンシ隠蔽のため深くする)
-    /// EN: Default prefetch depth (used only while Advanced settings are off).
     var defaultPrefetchAhead: Int {
         switch mediaClass {
         case .fastLocal, .unknown: SettingsStore.AdvancedDefault.prefetchAhead
@@ -129,7 +113,6 @@ struct MediaProfile: Sendable, Equatable {
 
     /// プローブが集めた材料からクラスを決める。優先順:
     /// ネットワーク → 物理特性(Medium Type)→ 実測 → unknown
-    /// EN: Pure classification: network, then medium type, then benchmark.
     static func classify(isLocalVolume: Bool,
                          mediumType: MediumType,
                          measuredMBPerSec: Double?) -> MediaProfile {
@@ -156,14 +139,11 @@ struct MediaProfile: Sendable, Equatable {
             }
             // 中間帯(USB3 HDD の上限〜SATA SSD の下限)は HDD 寄りに倒す:
             // 誤って並列を上げるより、抑える方の誤りが安全
-            // EN: The ambiguous band leans slow — over-parallelizing a disk
-            // EN: hurts more than under-parallelizing an SSD.
             return MediaProfile(mediaClass: .slowLocal, measuredMBPerSec: speed)
         }
     }
 
     /// IOKit の Device Characteristics / Medium Type に対応する値
-    /// EN: Mirrors IOKit's medium-type device characteristic.
     enum MediumType: Sendable {
         case solidState
         case rotational
@@ -176,10 +156,6 @@ struct MediaProfile: Sendable, Equatable {
 /// サムネイル生成(utility)の行列を追い越して先に許可される。これがないと
 /// 低速媒体でページ表示がサムネイルの後ろに数秒並ばされる。
 /// limit の縮小は実行中の読者には作用しない(次の acquire から効く)
-/// EN: Concurrency gate with two lanes: interactive readers (page display,
-/// EN: userInitiated and above) overtake queued background work (thumbnail
-/// EN: generation runs at utility). Shrinking the limit affects future
-/// EN: acquires only.
 actor SourceReadGate {
     private var limit: Int
     private var active = 0

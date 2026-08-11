@@ -1,7 +1,6 @@
 import AppKit
 
 /// 修飾キーの符号化(仕様書 §5.2)。旧実装の整数加算方式と互換。
-/// EN: Additive modifier encoding compatible with the legacy integers.
 enum LegacyModifier {
     static let shift = 1
     static let option = 2
@@ -39,7 +38,6 @@ enum LegacyModifier {
 }
 
 /// マルチタッチジェスチャの仮想ボタン番号(仕様書 §5.1)
-/// EN: Virtual button numbers representing trackpad gestures.
 enum VirtualButton {
     static let swipeRight = 1000
     static let swipeLeft = 2000
@@ -72,7 +70,6 @@ struct MouseBinding: Sendable, Equatable {
 }
 
 /// 6 本のバインディング配列(仕様書 §5.1)と解決ロジック(§5.3, §5.4)。
-/// EN: The six legacy binding arrays plus the lookup/mirroring logic.
 struct BindingConfiguration: Sendable {
     var keyNormal: [KeyBinding]
     var keyMode2: [KeyBinding]     // 幅フィット(fitScreenMode 1)用
@@ -102,8 +99,6 @@ struct BindingConfiguration: Sendable {
 
     /// キーバインディングを解決する。readsFromLeft のとき switchAction 付きは
     /// 対称アクションへ入替える(仕様書 §5.4)。
-    /// EN: Mode-specific array first, then the normal array; switchAction
-    /// EN: bindings mirror for left-to-right books.
     func resolveKey(character: Character, modifiers: Int,
                     fitMode: Int, readsFromLeft: Bool) -> KeyBinding? {
         for array in keyArrays(for: fitMode) {
@@ -134,7 +129,6 @@ struct BindingConfiguration: Sendable {
 
     /// ドラッグジェスチャの解決: 方向別(+200..500)→ 方向不問(100)の順に
     /// フォールバックする(仕様書 §5.3)。
-    /// EN: Directional drag first, then the direction-agnostic drag binding.
     func resolveDrag(button: Int, baseModifiers: Int, directionModifier: Int,
                      fitMode: Int, readsFromLeft: Bool) -> MouseBinding? {
         if let binding = resolveMouse(button: button, modifiers: directionModifier + baseModifiers,
@@ -148,7 +142,6 @@ struct BindingConfiguration: Sendable {
     // MARK: - 旧 defaults 形式との相互変換(仕様書 §5.1)
 
     /// 旧データの真偽値。キーが無ければ偽、明示保存された 0/NO も偽として扱う
-    /// EN: Legacy flag: absent = false, and an explicit stored 0/NO is honored.
     private static func legacyFlag(_ value: Any?) -> Bool {
         guard let value else { return false }
         return (value as? NSNumber)?.boolValue ?? true
@@ -207,7 +200,6 @@ struct BindingConfiguration: Sendable {
     }
 
     /// UserDefaults(旧キー名のまま)から読む。無ければ既定を返す。
-    /// EN: Read the legacy defaults keys, falling back to built-in defaults.
     static func load(from defaults: UserDefaults = .standard) -> BindingConfiguration {
         func keys(_ name: String, fallback: [KeyBinding]) -> [KeyBinding] {
             guard let array = defaults.array(forKey: name) as? [[String: Any]] else {
@@ -217,8 +209,6 @@ struct BindingConfiguration: Sendable {
             guard !bindings.isEmpty else { return fallback }
             // 保存済み配列への新既定の移行: f が未使用かつ補間切替(53)が
             // 未割当のときだけ追記する(ユーザーのカスタマイズは尊重)
-            // EN: Migration: add the new default "f" binding only when it
-            // EN: cannot clash with the user's own bindings.
             if name == "KeyArray",
                !bindings.contains(where: { $0.key == "f" && $0.modifiers == 0 }),
                !bindings.contains(where: { $0.legacyActionNumber == 53 }) {
@@ -247,7 +237,6 @@ struct BindingConfiguration: Sendable {
 
     // MARK: - 既定バインディング(仕様書 §5.7。Apple Remote 分は除外)
 
-    /// EN: Built-in default bindings (spec §5.7) minus the Apple Remote set.
     static let builtInDefaults: BindingConfiguration = {
         let left = Character(UnicodeScalar(NSLeftArrowFunctionKey)!)
         let right = Character(UnicodeScalar(NSRightArrowFunctionKey)!)

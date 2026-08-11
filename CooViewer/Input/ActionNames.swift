@@ -2,7 +2,6 @@ import AppKit
 
 /// キーアクション番号(仕様書 §5.5)の表示名と、キーの人間可読表記。
 /// バインディング編集 UI で使う。
-/// EN: Display names for actions and keys, used by the binding editor UI.
 enum ActionNames {
     static let allKeyActionNumbers = Array(0...53)
 

@@ -8,8 +8,6 @@ import XCTest
 /// 合成した最小ファイルでアルゴリズムの各段(新規データ・コピー参照・
 /// マスク展開・XOR フィルタ・パレット拡張)を検証し、実サンプルがあれば
 /// 公式レンダリング(PNG)とのピクセル一致も確認する。
-/// EN: Synthetic-file tests for each stage of the MAG/MAKI decoders, plus
-/// EN: golden-image comparison against reference PNGs when samples exist.
 final class RetroImageDecodingTests: XCTestCase {
     // MARK: - ヘルパ
 
@@ -352,7 +350,6 @@ final class RetroImageDecodingTests: XCTestCase {
 
     /// 環境変数 RETRO_SAMPLE_DIR に mooncore.eu の例画像(.mag/.mki と
     /// 同名 .png)を置いて実行すると、公式レンダリングとの一致を検証する
-    /// EN: Compares against reference PNGs when RETRO_SAMPLE_DIR is set.
     func testGoldenSamplesMatchReferenceRenderings() throws {
         guard let dir = ProcessInfo.processInfo.environment["RETRO_SAMPLE_DIR"],
               FileManager.default.fileExists(atPath: dir) else {
@@ -391,8 +388,6 @@ final class RetroImageDecodingTests: XCTestCase {
             var mismatches = 0
             // 参照側のパレット方針差(下位ビット複製の有無、量子化)を吸収する
             // ため ±16 まで許容。構造的な誤りは大差になるため検出力は保たれる
-            // EN: ±16 absorbs palette-expansion policy differences between
-            // EN: references; structural bugs still blow far past this.
             for i in stride(from: 0, to: ours.count, by: 4) {
                 let delta = max(
                     abs(Int(ours[i]) - Int(reference[i])),

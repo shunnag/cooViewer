@@ -3,8 +3,6 @@ import AppKit
 /// ページバー(仕様書 §3.4)。進捗表示とクリック/ドラッグでのページジャンプ。
 /// 既読部分は読み方向に応じて左端/右端から塗る。位置・寸法は
 /// ReaderWindowController が制約で、色は下記プロパティで設定から反映する。
-/// EN: Progress bar with click/drag page jumping and hover reporting;
-/// EN: the read portion fills from the side matching the reading direction.
 @MainActor
 final class PageBarView: NSView {
     /// 0.0-1.0 の進捗(既読率)
@@ -86,7 +84,6 @@ final class PageBarView: NSView {
     }
 
     /// x 位置 → 読み方向補正済みの割合
-    /// EN: Convert an x position into a reading-direction-relative fraction.
     private func fraction(atX x: CGFloat) -> Double {
         var fraction = min(max(0, x / bounds.width), 1)
         if !readsFromLeft { fraction = 1 - fraction }

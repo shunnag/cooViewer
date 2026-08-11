@@ -3,7 +3,6 @@ import SwiftUI
 
 /// メインウインドウ。本のオープンフロー・表示更新・メニューアクションを担う。
 /// 旧 Controller の表示/ナビゲーション部分に相当する(仕様書 §4.1-4.3)。
-/// EN: Main window controller: opens books, drives display updates, handles menus.
 @MainActor
 final class ReaderWindowController: NSWindowController {
     private(set) var book: Book?
@@ -15,12 +14,10 @@ final class ReaderWindowController: NSWindowController {
 
     /// オープン進捗 HUD(大書庫入りフォルダの統合など、開くのに時間が
     /// かかるときだけ中央に表示。設計書 §2.4 補)
-    /// EN: Opening-progress HUD, shown only when the open takes noticeable time.
     private let openingProgressBox = NSView()
     private let openingProgressSpinner = NSProgressIndicator()
     private let openingProgressLabel = NSTextField(labelWithString: "")
     /// 進捗表示を所有しているオープン処理の世代(nil = 進行中なし)
-    /// EN: Generation of the open flow that owns the HUD (nil = none in flight).
     private var openingFlowGeneration: Int?
     private var openingProgressName = ""
     private var openingProgressCounts: (done: Int, total: Int)?
@@ -33,7 +30,6 @@ final class ReaderWindowController: NSWindowController {
 
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
-    /// EN: Never removed; this controller lives for the app's lifetime.
     private var settingsObserver: (any NSObjectProtocol)?
     var slideshowTimer: Timer?
     /// 2 本指スワイプ(ページ間スワイプ)の追跡状態(+Input.swift)
@@ -41,11 +37,9 @@ final class ReaderWindowController: NSWindowController {
     var swipeTrackingDeltaX: CGFloat = 0
     var originalSizePanel: NSPanel?
     /// ファイル情報パネル(File > ファイル情報を表示)
-    /// EN: File Info utility panel.
     var fileInfoPanel: NSPanel?
     /// 検証用: 最後に表示したファイル情報(--show-file-info のスナップショット。
     /// ヘッドレス実行ではパネルのレイヤーが描画されないため ImageRenderer で描く)
-    /// EN: Last presented File Info details, for headless snapshot rendering.
     var fileInfoDebugDetails: PageFileInfo.Details?
 
     /// サムネイルオーバーレイ(ウインドウ内表示。仕様書 §4.8)
@@ -59,7 +53,6 @@ final class ReaderWindowController: NSWindowController {
     var preparedNextBook: (path: String, source: any BookSource)?
     var preparingNextBookPath: String?
     /// 同フォルダの本一覧のキャッシュ(+Library。巻末付近の毎ページ走査対策)
-    /// EN: Sibling-book list cache (see +Library).
     var cachedSiblings: (parent: String, paths: [String], timestamp: Double)?
 
     /// ページバーホバーのサムネイルバブル(仕様書 §3.4)
@@ -79,14 +72,11 @@ final class ReaderWindowController: NSWindowController {
     private(set) var lastSpreadIndices: [Int] = []
     /// アニメページの読み込み時実効キャップ(entry.id → px)。ウインドウ拡大
     /// での再デコード判定に使う(本切替時にリセット)
-    /// EN: Effective decode cap per animated page id; drives grow-and-redecode.
     var loadedAnimationFrameCaps: [Int: Int] = [:]
 
     /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
-    /// EN: Generation counter for openBookFlow, mirroring displayGeneration.
     private var openGeneration = 0
     /// 消費したスワイプの慣性イベントを飲み込むあいだ true(+Input.swift)
-    /// EN: True while momentum events of a consumed swipe should be swallowed.
     var swipeConsumeMomentum = false
 
     /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
@@ -99,7 +89,6 @@ final class ReaderWindowController: NSWindowController {
     private var indicatorHideTimer: Timer?
     private var indicatorsTemporarilyVisible = true
     /// applySettings の一括化フラグ(defaults 連続書込対策)
-    /// EN: Coalescing flag for applySettings bursts.
     private var applySettingsScheduled = false
 
     convenience init() {
@@ -120,8 +109,6 @@ final class ReaderWindowController: NSWindowController {
         // 前回終了時と画面解像度が一致するときだけ autosave の位置を生かし、
         // 解像度が変わっていた(または初回起動の)場合は従来どおり中央へ。
         // サイズは setFrameAutosaveName がどちらの場合も復元する
-        // EN: Keep the autosaved position only when the screen resolution
-        // EN: matches the one recorded at last quit; otherwise center as before.
         if !Self.shouldRestoreWindowPosition() {
             window.center()
         }
@@ -134,7 +121,6 @@ final class ReaderWindowController: NSWindowController {
             MainActor.assumeIsolated {
                 // 1 runloop 内の連続書込(スライダー操作・ウインドウ枠保存等)を
                 // 1 回の適用にまとめる(バインディング再読込を含む全再適用のため)
-                // EN: Coalesce bursts of defaults writes into one apply pass.
                 guard let self, !self.applySettingsScheduled else { return }
                 self.applySettingsScheduled = true
                 DispatchQueue.main.async {
@@ -146,8 +132,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
-    /// EN: Apply settings immediately (no Cancel rollback), restyle indicators,
-    /// EN: and refresh the open book when relevant values changed.
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
         readerView.interpolation = settings.interpolation
@@ -165,15 +149,12 @@ final class ReaderWindowController: NSWindowController {
         updateIndicatorVisibility()
         // 表示モードは設定ウインドウ/メニューのどちらからでも変わる
         // (共に defaults "FitMode" 経由。ここが唯一の反映点)
-        // EN: Fit mode changes arrive via the "FitMode" default from either
-        // EN: the Settings window or the menu; this is the single apply point.
         if readerView.fitMode != settings.fitMode {
             readerView.fitMode = settings.fitMode
             refreshDisplayIfCapRaised()
         }
         if let book, book.pageCount > 0 {
             // 見開きしきい値・表紙単ページの変更は現表示を再判定する(仕様書 §6.3)
-            // EN: Re-evaluate the on-screen spread when pairing inputs change.
             var pairingChanged = false
             if book.singleSetting != settings.singleSetting {
                 book.singleSetting = settings.singleSetting
@@ -186,8 +167,6 @@ final class ReaderWindowController: NSWindowController {
             if pairingChanged {
                 // ページの区切り(偶奇)も先頭起点で組み直してから再表示する
                 // (途中ページで切り替えても 3-4 → 2-3 のように即座に変わる)
-                // EN: Realign the spread parity from page 0, then refresh, so
-                // EN: mid-book toggles re-pair the on-screen spread too.
                 Task {
                     await book.reanchorToLeadingPartition()
                     await refreshDisplay()
@@ -201,8 +180,6 @@ final class ReaderWindowController: NSWindowController {
     /// 位置(4 隅)と寸法の制約を設定から組み直す(仕様書 §6.1
     /// PageNumPosition/PageBarPosition: 0=左上/1=右上/2=左下/3=右下)。
     /// 同じ隅を指すときはページ番号とバーを縦に積む(旧既定の並び)
-    /// EN: Rebuild the corner/size constraints for the page number and page bar;
-    /// EN: when both share a corner they are stacked vertically.
     private func layoutPageIndicators() {
         guard let contentView = window?.contentView else { return }
         let numPosition = settings.pageNumPosition
@@ -253,8 +230,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// ShowNumber/ShowPageBar と自動隠し状態から表示可否を決める
     /// (ページのない本では常に隠す)
-    /// EN: Resolve indicator visibility from the master toggles, auto-hide state,
-    /// EN: and whether the book has pages at all.
     private func updateIndicatorVisibility() {
         let hasPages = (book?.pageCount ?? 0) > 0
         pageLabel.isHidden = !hasPages || !settings.showNumber
@@ -264,7 +239,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 自動隠し: マウス移動で表示を復活させ、2 秒後に隠す(仕様書 §3.4)
-    /// EN: Auto-hide: reveal the indicators on mouse move, hide them 2 s later.
     func noteMouseMovedForIndicators() {
         guard settings.pageNumAutoHide || settings.pageBarAutoHide else { return }
         indicatorsTemporarilyVisible = true
@@ -284,9 +258,6 @@ final class ReaderWindowController: NSWindowController {
     /// 実効メディアプロファイル: 自動調整の判定結果に、高度設定の明示値
     /// (スプール方針の三択)を上書きしたもの。整合規則は「明示は自動に勝つ」。
     /// 自動調整 OFF でも明示のスプール方針は効く
-    /// EN: Effective media profile: probe result (or unknown) with explicit
-    /// EN: Advanced-tab overrides applied. Explicit always beats automatic,
-    /// EN: and the spool policy works even with adaptive tuning off.
     func effectiveMediaProfile(for url: URL) async -> MediaProfile {
         var profile = settings.adaptiveMediaTuning
             ? await MediaSpeedProbe.profile(for: url)
@@ -302,8 +273,6 @@ final class ReaderWindowController: NSWindowController {
     /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)。
     /// 高度設定 OFF のときの先読み深さは、置き場所の速度プロファイルの
     /// 既定値(遅い媒体ほど深く)を使う。ON なら明示値を尊重する
-    /// EN: Push the Advanced-tab tunables into the open book. While the
-    /// EN: Advanced switch is off, prefetch depth follows the media profile.
     private func applyAdvancedSettings(to book: Book) {
         if settings.advancedSettingsEnabled {
             book.prefetchAhead = settings.prefetchAheadCount
@@ -313,18 +282,15 @@ final class ReaderWindowController: NSWindowController {
             book.prefetchBehind = book.mediaProfile.defaultPrefetchBehind
         }
         // キャップは raise 時のクリアを通して反映(設定の上限引き上げにも追従)
-        // EN: Route through the raise-aware update (covers Settings changes).
         refreshDisplayIfCapRaised()
     }
 
     /// いまのウインドウ実寸・原寸表示設定から適切なデコード上限を求める
-    /// EN: Decode cap for the current window pixels and fit mode.
     private func currentDisplayPixelCap() -> Int {
         let scale = window?.backingScaleFactor ?? 2
         let size = window?.contentView?.bounds.size ?? .zero
         let edge = Int((max(size.width, size.height) * scale).rounded(.up))
         // ウインドウに収まらない描画をするモードは従来のユーザー上限のまま
-        // EN: Modes rendering beyond the window keep the user cap.
         let usesUserCap = switch readerView.fitMode {
         case .noScale, .fitWidth, .fitWidthDivide: true
         default: false
@@ -337,7 +303,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// キャップの再評価。上がった(ウインドウ拡大・原寸表示切替)なら
     /// 低解像度キャッシュを捨てて現スプレッドを再デコードする
-    /// EN: Re-evaluate the cap; a raise drops the low-res cache and refreshes.
     func updateDisplayPixelCapIfNeeded() async {
         guard let book else { return }
         _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
@@ -464,14 +429,10 @@ final class ReaderWindowController: NSWindowController {
     // MARK: - 本を開く
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
-    /// EN: Open a book; a single image file opens its parent folder at that page.
     /// allowCollectionDrill: 画像ゼロのコレクションフォルダで中の本へ自動で
     /// 潜るか(設計書 §2.4)。Finder/ダイアログ等の明示オープンのみ true。
     /// 次/前の本ナビゲーションは false — フォルダ自身に着地して階層を保つ
     /// (潜ると以後の兄弟走査が別の深さで行われ、元の階層に戻れなくなる)
-    /// EN: allowCollectionDrill is true only for explicit opens; next/previous
-    /// EN: navigation lands on the folder itself so the sibling scan keeps
-    /// EN: operating at the same depth of the hierarchy.
     func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false,
                   allowCollectionDrill: Bool = true) {
         Task {
@@ -487,7 +448,6 @@ final class ReaderWindowController: NSWindowController {
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
         showWindow(nil)
         // 連打時は最後に要求された本だけを確定する(古いフローの巻き戻り防止)
-        // EN: Open-generation guard: only the newest open request may commit.
         openGeneration += 1
         let generation = openGeneration
 
@@ -498,7 +458,6 @@ final class ReaderWindowController: NSWindowController {
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
         guard exists else {
             // ドリルダウンから引き継いだ HUD が残らないように畳む
-            // EN: Fold up a HUD inherited from a drill step; no successor follows.
             endAnyOpeningProgress()
             return
         }
@@ -513,9 +472,6 @@ final class ReaderWindowController: NSWindowController {
         // 統合を再構築しない)。サブフォルダ読み込みの下層画像も実ファイル
         // URL の照合で拾う。一覧に無い(=開いた後に追加された)場合は
         // 従来どおり開き直され、結果として一覧も更新される
-        // EN: If the dropped image is a page of the CURRENT book, just jump —
-        // EN: never rebuild a large folder merge. Files not in the listing
-        // EN: (added after opening) fall through to the normal reopen path.
         if let initialPageURL, let book {
             let targetPath = initialPageURL.standardizedFileURL.path
             if let index = book.entries.firstIndex(where: {
@@ -528,7 +484,6 @@ final class ReaderWindowController: NSWindowController {
         }
 
         // 時間のかかるオープン(大書庫入りフォルダの統合等)の進捗表示を武装
-        // EN: Arm the opening-progress HUD for slow opens.
         beginOpeningProgress(generation: generation, name: bookURL.lastPathComponent)
 
         do {
@@ -539,16 +494,12 @@ final class ReaderWindowController: NSWindowController {
                     // バックグラウンド準備(パスワード UI なし)がロック済みの
                     // ネスト書庫を外して組んでいた場合は使い回さず、通常経路で
                     // 開き直してダイアログを出す(ページの黙落ち防止)
-                    // EN: The prepared source silently dropped locked children;
-                    // EN: rebuild through the interactive path so prompts appear.
                     source = try await BookSourceFactory.make(
                         for: bookURL, readSubFolders: settings.readSubFolder,
                         nestedPasswordProvider: nestedPasswordProvider())
                 } else {
                     // 事前スプール済みの本を再利用(切替を待ちなしに。設計書 §5)。
                     // まだ組んでいない場合に備えてパスワード UI を後付けする
-                    // EN: Reuse the prepared source; attach the password UI in
-                    // EN: case assembly has not run yet.
                     await prepared.source.attachNestedPasswordProvider(
                         nestedPasswordProvider())
                     source = prepared.source
@@ -578,7 +529,6 @@ final class ReaderWindowController: NSWindowController {
             guard generation == openGeneration else { return }
 
             // 統合ソースの組み立て(全書庫の一覧取得)の進捗を HUD へ流す
-            // EN: Route merged-source assembly progress into the HUD.
             await source.setAssemblyProgressHandler { [weak self] done, total in
                 Task { @MainActor [weak self] in
                     self?.noteOpeningProgress(generation: generation,
@@ -592,7 +542,6 @@ final class ReaderWindowController: NSWindowController {
             saveCurrentBookState()
 
             // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)
-            // EN: Probe the volume speed concurrently with opening the book.
             let probeURL = bookURL
             async let mediaProfileTask = effectiveMediaProfile(for: probeURL)
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
@@ -603,23 +552,15 @@ final class ReaderWindowController: NSWindowController {
             // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)。
             // ただしパスワード入力のキャンセル等でネスト書庫を外した結果の
             // 空ならそのまま(自動で開き直すと同じダイアログが即再表示される)
-            // EN: A folder with no images but containing books opens its first
-            // EN: inner book — unless it is empty because the user cancelled a
-            // EN: nested password prompt (auto-open would re-prompt instantly).
             // 統合ソース(フォルダ内書庫/PDF の合本)が 0 ページなのは組み立て
             // 失敗(壊れ書庫の黙殺 §4.17 等)であり、ドリルダウンすると中の
             // 書庫を「単体の本」として開いてしまい階層がずれる。ドリルは
             // 純粋なコレクション(直下も配下も画像・書庫なし=FolderSource)のみ
-            // EN: A 0-page merged source means assembly failed; drilling would
-            // EN: open an inner archive standalone at the wrong depth. Only
-            // EN: drill into pure collections (plain FolderSource, no books).
             if book.pageCount == 0, allowCollectionDrill, autoOpenDepth < 4,
                !(source is NestedFolderSource),
                await !source.hasSkippedLockedContent() {
                 // 候補選定は再帰走査を含むためメインスレッドから外す
                 // (NAS/HDD でのビーチボール防止。走査があるので非同期)
-                // EN: The candidate scan recurses into subfolders; run it off
-                // EN: the main thread so slow volumes cannot beachball the UI.
                 let scanURL = bookURL
                 let inner = await Task.detached(priority: .userInitiated) {
                     Self.innerBook(in: scanURL)
@@ -628,7 +569,6 @@ final class ReaderWindowController: NSWindowController {
                 if let inner {
                     // HUD は畳まない: 再帰側の beginOpeningProgress が
                     // 新しい世代で引き継ぐ(走査〜内側の本のオープンまで連続表示)
-                    // EN: Keep the HUD up; the recursive open re-arms it.
                     await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
                                        allowCollectionDrill: true,
                                        autoOpenDepth: autoOpenDepth + 1)
@@ -645,7 +585,6 @@ final class ReaderWindowController: NSWindowController {
             self.book = book
             loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
-            // EN: Namespace the resample cache by book identity.
             readerView.resampleKeyPrefix = book.cacheKey
 
             // 書庫のローカルスプール等を開始(パスワード解除後。設計書 キャッシュ節)
@@ -657,7 +596,6 @@ final class ReaderWindowController: NSWindowController {
 
             // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
             // (サブフォルダ読み込みで同名ファイルがあっても正しいページへ)
-            // EN: Prefer matching by file URL; name is only the fallback.
             if let initialPageURL {
                 let targetPath = initialPageURL.standardizedFileURL.path
                 if let index = book.entries.firstIndex(where: {
@@ -680,8 +618,6 @@ final class ReaderWindowController: NSWindowController {
             // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す。
             // 非表示中はスナップショットを空にして旧本のソース保持を解く
             // (書庫のスプール/ネスト展開の一時ファイル回収のため)
-            // EN: Rebuild the visible overlay for the new book; when hidden,
-            // EN: clear the snapshot so the old source's temp files get reclaimed.
             if isThumbnailOverlayVisible, book.pageCount > 0 {
                 presentThumbnailOverlay(for: book)
             } else {
@@ -698,8 +634,6 @@ final class ReaderWindowController: NSWindowController {
     /// 開けなかった本(パスワードのキャンセル/試行超過)を「現在の本」として
     /// 空の状態で表示する。これによりページ送りや「次の本」でこの本を
     /// 飛ばして先へ進める。履歴・設定には記録しない。
-    /// EN: Show a locked/unopenable book as an empty placeholder so navigation
-    /// EN: can still skip past it; nothing is recorded to history.
     private func presentLockedPlaceholder(source: any BookSource, reason: String) {
         stopSlideshow()
         saveCurrentBookState()
@@ -716,7 +650,6 @@ final class ReaderWindowController: NSWindowController {
     // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
 
     /// キャップが上がる変化(ウインドウ拡大・原寸表示切替)なら再デコード
-    /// EN: Redecode when the change raised the cap (bigger window, noScale).
     func refreshDisplayIfCapRaised() {
         Task { [weak self] in
             guard let self, let book = self.book else { return }
@@ -724,7 +657,6 @@ final class ReaderWindowController: NSWindowController {
                 await self.refreshDisplay()  // 再表示がアニメも再デコードする
             } else {
                 // バケット内のリサイズでもアニメの表示枠は伸び得る
-                // EN: Same-bucket resizes can still outgrow animation frames.
                 self.restartAnimationsIfFrameGrew()
             }
         }
@@ -736,7 +668,6 @@ final class ReaderWindowController: NSWindowController {
 
     func windowDidResize(_ notification: Notification) {
         // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
-        // EN: Non-live resizes such as zoom; live resizes handled at end.
         guard window?.inLiveResize == false else { return }
         refreshDisplayIfCapRaised()
     }
@@ -760,8 +691,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// ウインドウがある画面の解像度(frame サイズ)を保存する。
     /// 起動時にこの値と一致する画面があれば autosave の位置を復元する
-    /// EN: Record the resolution of the window's screen at quit/close; launch
-    /// EN: restores the autosaved position only when a screen still matches.
     private func saveWindowScreenSize() {
         guard let size = window?.screen?.frame.size else { return }
         UserDefaults.standard.set(NSStringFromSize(size),
@@ -770,8 +699,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// 保存済みフレームがあり、かつ終了時の画面解像度が現在のいずれかの
     /// 画面と一致するときだけ位置を復元する(不一致・初回は中央配置)
-    /// EN: True when an autosaved frame exists and the recorded resolution
-    /// EN: matches one of the attached screens.
     static func shouldRestoreWindowPosition() -> Bool {
         let defaults = UserDefaults.standard
         guard defaults.string(forKey: "NSWindow Frame ReaderWindow") != nil
@@ -782,7 +709,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 純粋判定部(テスト用に分離): 保存解像度が候補のいずれかと一致するか
-    /// EN: Pure comparison split out for unit tests.
     nonisolated static func shouldRestorePosition(
         savedScreenSize: String?, screenSizes: [CGSize]) -> Bool {
         guard let savedScreenSize else { return false }
@@ -799,8 +725,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// ネスト書庫/PDF 用のパスワード入力コールバック(仕様書 §4.1.3 のネスト版)。
     /// 本を開くフロー(entries() 構築)中に呼ばれ、MainActor でダイアログを出す。
-    /// EN: Password callback for nested books; hops to MainActor and shows a
-    /// EN: dialog while the open flow is assembling entries().
     func nestedPasswordProvider() -> NestedPasswordProvider {
         { name, attempt in
             await MainActor.run {
@@ -813,7 +737,6 @@ final class ReaderWindowController: NSWindowController {
                 alert.messageText = String(
                     localized: "“\(name)” in this book is password-protected.")
                 // 2 回目以降は誤入力を伝える(外側書庫のダイアログと同じ書式)
-                // EN: Retries surface the wrong-password state, like the outer dialog.
                 alert.informativeText = attempt == 1
                     ? String(localized: "Enter the password to include it.")
                     : String(localized: "Wrong password. \(4 - attempt) attempts left.")
@@ -831,7 +754,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// パスワード書庫のロック解除(仕様書 §4.1.3)。
     /// 旧実装の「正解かキャンセルまで無限に再表示」をやめ、3 回で打ち切る。
-    /// EN: Password prompt with a 3-attempt limit (the legacy app retried forever).
     private func unlock(_ source: any BookSource) async -> UnlockResult {
         // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱いにする)
         if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil
@@ -866,10 +788,6 @@ final class ReaderWindowController: NSWindowController {
     /// サブフォルダは中のどこかに画像か本があるものだけを候補にする
     /// (.app 等のパッケージや無関係なディレクトリへ潜って、行き止まりの
     /// 深い階層に置き去りになるのを防ぐ)
-    /// EN: First book-like item inside an image-less folder. Subfolders count
-    /// EN: only when they actually lead to book content; packages (.app etc.)
-    /// EN: and dead-end directories are skipped so the drill never strands the
-    /// EN: reader deep inside an unrelated tree.
     nonisolated static func innerBook(in url: URL) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
@@ -895,10 +813,6 @@ final class ReaderWindowController: NSWindowController {
     /// 巨大ツリーは 2000 項目で走査をやめ **true**(=候補として許容)を返す:
     /// ここでの誤判定はドリル先の選択を左右するため、「大きすぎて判定不能」は
     /// 実際に開いてみる側へ倒す(false だと本のある巨大フォルダを不当に飛ばす)
-    /// EN: Whether the folder eventually contains an image or a book file;
-    /// EN: stops at the first hit. Gives up after 2000 items and returns TRUE —
-    /// EN: an unscannable-huge folder must stay a candidate (skipping it would
-    /// EN: wrongly reject legitimate large series folders); the real open decides.
     nonisolated static func folderLeadsToBookContent(at url: URL) -> Bool {
         guard let enumerator = FileManager.default.enumerator(
             at: url, includingPropertiesForKeys: [.isDirectoryKey],
@@ -924,13 +838,11 @@ final class ReaderWindowController: NSWindowController {
     func refreshDisplay() async {
         guard let book else { return }
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
-        // EN: Self-healing decode cap on every display pass.
         _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
         let generation = displayGeneration
         let spread = await book.currentSpread()
         // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
-        // EN: Drop this result if a newer refresh started while we awaited.
         guard generation == displayGeneration, book === self.book else { return }
 
         if spread.indices.isEmpty {
@@ -976,8 +888,6 @@ final class ReaderWindowController: NSWindowController {
         startAnimationsIfNeeded(spread: spread)
         // サムネイル表示中は本の変化に追従する(%ジャンプ・しおり移動のほか、
         // ソート変更等でエントリ列が変わった場合は一覧を組み直す)
-        // EN: Keep the visible overlay in sync: follow page jumps and rebuild
-        // EN: the grid when the entry order changed (sort / shuffle).
         lastSpreadIndices = spread.indices
         if isThumbnailOverlayVisible {
             thumbnailOverlayModel.follow(book: book, displayedIndices: spread.indices)
@@ -985,7 +895,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)
-    /// EN: Start GIF/WebP-style playback for animated pages in the spread.
     private func startAnimationsIfNeeded(spread: Book.Spread) {
         guard settings.playAnimatedImages, let book else { return }
         let animatable: Set<String> = ["gif", "png", "apng", "webp", "heics", "avif", "avifs"]
@@ -994,23 +903,18 @@ final class ReaderWindowController: NSWindowController {
             let entry = book.entries[index]
             // 一度「静止画」と判定したページは再判定しない(PNG が大半の本で
             // 表示のたびに生データを読み直す無駄の防止)
-            // EN: Skip pages already probed static; without this every PNG
-            // EN: page re-reads its raw bytes on every redisplay.
             guard !book.probedStaticAnimationIDs.contains(entry.id) else { continue }
             let ext = (entry.name as NSString).pathExtension.lowercased()
             guard animatable.contains(ext) else { continue }
             // デコード(最大 120 フレーム)はメインアクターの外で行う。
             // 解像度はページレイヤの実ピクセルに合わせる(全フレーム常駐のため、
             // 一律 2048px より大幅に省メモリ)
-            // EN: Frame decoding runs off the main actor, capped at the page
-            // EN: layer's actual pixel size (all frames stay resident).
             let source = book.source
             let frameCap: Int? = readerViewForInput.pageFramePixelSize(at: position)
                 .map { Int(max($0.width, $0.height).rounded(.up)) }
                 .flatMap { $0 > 0 ? $0 : nil }
             // 実効キャップ(AnimatedImage 側の上限 2048 を反映)を記録し、
             // ウインドウ拡大時の再デコード要否判定(下記)に使う
-            // EN: Record the effective cap for the grow-and-redecode check.
             loadedAnimationFrameCaps[entry.id] = min(frameCap ?? 2048, 2048)
             Task.detached(priority: .userInitiated) { [weak self, weak book] in
                 guard let data = await source.imageData(for: entry) else { return }
@@ -1032,8 +936,6 @@ final class ReaderWindowController: NSWindowController {
     /// ウインドウ拡大でアニメページの表示枠が読み込み時キャップを超えたら
     /// 再デコードする。表示キャップのバケット(1024 刻み・最低 2048)が
     /// 変わらないリサイズでは refreshDisplay が走らないため、ここで補う
-    /// EN: Re-decode animated pages when the frame outgrew the loaded cap —
-    /// EN: needed because same-bucket resizes never trigger refreshDisplay.
     func restartAnimationsIfFrameGrew() {
         guard settings.playAnimatedImages, let book else { return }
         for (position, index) in lastSpreadIndices.enumerated() {
@@ -1044,7 +946,6 @@ final class ReaderWindowController: NSWindowController {
             else { continue }
             let needed = min(Int(max(size.width, size.height).rounded(.up)), 2048)
             // 1.25 倍以上の拡大でだけ再デコード(微小リサイズの連発を防ぐ)
-            // EN: Only re-decode on >=1.25x growth to avoid churn.
             if needed > loaded + loaded / 4 {
                 startAnimationsIfNeeded(
                     spread: .init(indices: lastSpreadIndices, images: []))
@@ -1054,7 +955,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// ページバーホバー: ページ番号+サムネイルの吹き出し(仕様書 §3.4)
-    /// EN: Position the hover bubble and lazily load its page thumbnail.
     private func handlePageBarHover(_ info: (x: CGFloat, fraction: Double)?) {
         guard let info, let book, book.pageCount > 0,
               let contentView = window?.contentView else {
@@ -1102,15 +1002,11 @@ final class ReaderWindowController: NSWindowController {
     /// オープン処理の開始を記録し、0.35 秒経っても終わらなければ HUD を出す
     /// (即終わる本でのちらつき防止)。大書庫入りフォルダの統合は全書庫の
     /// 一覧取得を伴い数十秒かかり得るため、無反応に見えるのを防ぐ
-    /// EN: Arm the opening HUD; it appears only if the open outlives 0.35 s,
-    /// EN: so fast opens never flicker. Folder merges (listing every archive)
-    /// EN: can take tens of seconds and looked unresponsive without this.
     func beginOpeningProgress(generation: Int, name: String) {
         openingFlowGeneration = generation
         openingProgressName = name
         openingProgressCounts = nil
         // ドリルダウンからの引き継ぎで既に表示中なら名前だけ差し替える
-        // EN: If inherited from a drill step the HUD is already up; retitle it.
         if !openingProgressBox.isHidden {
             updateOpeningProgressText()
             return
@@ -1124,7 +1020,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 統合ソースの組み立て進捗(完了書庫数/総数)を反映する
-    /// EN: Update the HUD with assembly progress (books done / total).
     func noteOpeningProgress(generation: Int, done: Int, total: Int) {
         guard openingFlowGeneration == generation else { return }
         openingProgressCounts = (done, total)
@@ -1134,14 +1029,12 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// オープン処理の終了(成功・失敗・ドリル前とも)。HUD を畳む
-    /// EN: The open flow ended (success, failure or before drilling); hide the HUD.
     func endOpeningProgress(generation: Int) {
         guard openingFlowGeneration == generation else { return }
         endAnyOpeningProgress()
     }
 
     /// 世代を問わず HUD を畳む(ドリル先の消失など、引き継ぎ先のない失敗用)
-    /// EN: Unconditionally hide the HUD (failures with no successor flow).
     private func endAnyOpeningProgress() {
         openingFlowGeneration = nil
         openingProgressBox.isHidden = true
@@ -1165,7 +1058,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 検証用: HUD を固定内容で表示する(--show-opening-progress)
-    /// EN: Verification hook: show the HUD with fixed contents.
     func debugShowOpeningProgress() {
         openingFlowGeneration = -1
         openingProgressName = "サンプルシリーズ"
@@ -1174,7 +1066,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する
-    /// EN: Centered explanation for empty/unopenable books, with a next-step hint.
     private func showBookStatusMessage(_ reason: String) {
         statusLabel.stringValue = reason + "\n"
             + String(localized: "Turn the page or use Next Book to continue.")
@@ -1193,7 +1084,6 @@ final class ReaderWindowController: NSWindowController {
         let numbers = shown.count == 2 ? "\(shown[0])-\(shown[1])" : (shown.first ?? "-")
         // 旧実装のページ番号表示は「#N-M/総数 (ファイル名 / ファイル名)」と
         // 表示中のファイル名を併記していた(仕様書 §3.4)。読み順に並べる
-        // EN: Legacy format: page numbers plus displayed file names in reading order.
         let relativePaths = settings.showRelativePaths
         let names = spread.indices.compactMap { index in
             book.entries.indices.contains(index)
@@ -1236,7 +1126,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 巻末超え(仕様書 §4.3.4)
-    /// EN: End-of-book behavior per the LoopCheck setting (loop / next book / stop).
     func handleEndOfBook() {
         guard let book else { return }
         // 開けなかった本(空)はループ設定に関わらずスキップして次へ
@@ -1340,8 +1229,6 @@ final class ReaderWindowController: NSWindowController {
 
     /// 表示モードの唯一の変更経路(メニュー/キー巡回/設定)。ビューへ即時
     /// 反映しつつ defaults へ保存する(applySettings 側は同値なら何もしない)
-    /// EN: Single entry point for fit-mode changes: apply to the view now and
-    /// EN: persist; the coalesced applySettings pass then no-ops on equality.
     func setFitMode(_ mode: ReaderView.FitMode) {
         settings.fitMode = mode
         guard readerView.fitMode != mode else { return }
@@ -1366,7 +1253,6 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 表紙を単ページで表示(見開きモード時のみ効果。設定と同じ defaults を共有)
-    /// EN: Toggle "cover page stays single"; shares the Settings default.
     @objc func toggleCoverSingleMenu(_ sender: Any?) {
         settings.spreadCoverSingle.toggle()
     }
@@ -1433,8 +1319,6 @@ final class ReaderWindowController: NSWindowController {
             }
         }
     }
-
-    // MARK: -
 
 }
 
