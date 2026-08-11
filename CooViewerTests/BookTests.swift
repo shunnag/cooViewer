@@ -81,6 +81,42 @@ final class BookTests: XCTestCase {
         XCTAssertEqual(spread.indices, [0, 1])
     }
 
+    /// 表紙単ページ設定: 先頭は単ページ、以降は (1,2)(3,4)… で見開き
+    func testCoverSingleKeepsFirstPageAlone() async throws {
+        let book = try await makeBook([portrait, portrait, portrait])
+        book.coverSingleFirst = true
+        var spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [0])
+        XCTAssertEqual(book.moveNext(), .moved)
+        spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [1, 2])
+    }
+
+    /// 表紙単ページ設定でも marks の強制ペア(1-2)が優先されること
+    func testCoverSingleYieldsToForcedPairMark() async throws {
+        let book = try await makeBook([portrait, portrait])
+        book.coverSingleFirst = true
+        book.marks = PageMarks(legacyArray: ["1-2"])
+        let spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [0, 1])
+    }
+
+    /// 表紙単ページ設定の後方めくり: (3,4)→(1,2)→(0) と揃って戻ること
+    func testCoverSingleBackwardNavigation() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait, portrait, portrait])
+        book.coverSingleFirst = true
+        book.goTo(index: 3)
+        var result = await book.movePrevious()
+        XCTAssertEqual(result, .moved)
+        XCTAssertEqual(book.currentIndex, 1)     // (1,2) ペアへ
+        result = await book.movePrevious()
+        XCTAssertEqual(result, .moved)
+        XCTAssertEqual(book.currentIndex, 0)     // 表紙は単ページ
+        let spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [0])
+    }
+
     func testMoveNextAdvancesBySpreadWidthAndDetectsEnd() async throws {
         let book = try await makeBook([portrait, portrait, portrait])
         _ = await book.currentSpread()               // [0,1]

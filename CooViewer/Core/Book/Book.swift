@@ -17,6 +17,11 @@ final class Book {
     var readMode: ReadMode = .rightToLeftSpread
     var marks = PageMarks()
     var singleSetting = PageLayout.defaultSingleSetting
+    /// 見開きモードで先頭ページ(表紙)を単ページにする(新機能・既定オフ)。
+    /// marks の強制ペア指定(§4.2.1)はこれより優先される
+    /// EN: Keep the first page (cover) single in spread modes; explicit
+    /// EN: forced-pair marks still win.
+    var coverSingleFirst = false
     var bookmarks: [BookHistoryStore.Bookmark] = []
 
     /// 表示用デコードの長辺上限(px)。原寸表示は fullResolutionImage(at:) を使う
@@ -203,7 +208,8 @@ final class Book {
     private func isSmallFromIndex(at index: Int) async -> Bool? {
         guard let size = await pageSize(at: index) else { return nil }
         return PageLayout.isSmall(size: size, index: index,
-                                  marks: marks, singleSetting: singleSetting)
+                                  marks: marks, singleSetting: singleSetting,
+                                  coverSingle: coverSingleFirst)
     }
 
     /// 表示デコード上限の更新。上げた場合は低解像度の既存キャッシュを破棄する
@@ -228,7 +234,8 @@ final class Book {
         guard let image else { return false }
         return PageLayout.isSmall(
             size: CGSize(width: image.width, height: image.height),
-            index: index, marks: marks, singleSetting: singleSetting
+            index: index, marks: marks, singleSetting: singleSetting,
+            coverSingle: coverSingleFirst
         )
     }
 
