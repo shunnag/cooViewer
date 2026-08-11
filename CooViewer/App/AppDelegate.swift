@@ -261,10 +261,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showSettings(nil)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
-                // NSHostingView 配下は layer.render で上下反転するため補正する
-                // EN: layer.render draws NSHostingView trees upside down; compensate.
-                self.writeSnapshot(of: self.settingsWindow?.contentView, to: path,
-                                   flipped: true)
+                // サイドバーの NSVisualEffectView は layer.render に写らないため
+                // cacheDisplay ベースで撮る(上下反転補正も不要になる)
+                // EN: The sidebar's NSVisualEffectView doesn't survive
+                // EN: layer.render; capture via cacheDisplay instead.
+                self.writeCachedSnapshot(of: self.settingsWindow?.contentView, to: path)
                 NSApp.terminate(nil)
             }
         }
@@ -354,8 +355,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let window = NSWindow(contentViewController: NSHostingController(
                 rootView: SettingsView()))
             window.title = String(localized: "Settings")
-            window.styleMask = [.titled, .closable]
+            // システム設定風のサイドバー+詳細構成のためリサイズ可
+            // EN: Resizable for the System Settings-style split layout.
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 780, height: 560))
             window.center()
             settingsWindow = window
         }
