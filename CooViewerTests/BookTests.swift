@@ -117,6 +117,63 @@ final class BookTests: XCTestCase {
         XCTAssertEqual(spread.indices, [0])
     }
 
+    /// 表紙単ページの途中切替: 先頭起点の区分へ整列してから再表示する
+    /// (OFF で (2,3) 表示中 → ON → (1,2) になる)
+    func testReanchorAfterCoverSingleToggleOn() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait, portrait, portrait, portrait])
+        book.goTo(index: 2)
+        var spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [2, 3])       // OFF: (2,3) を表示中
+        book.coverSingleFirst = true
+        await book.reanchorToLeadingPartition()
+        spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [1, 2])       // ON: (0)(1,2)(3,4)… に整列
+    }
+
+    /// 表紙単ページの途中切替(逆方向): ON で (1,2) → OFF → (0,1)
+    func testReanchorAfterCoverSingleToggleOff() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait, portrait, portrait, portrait])
+        book.coverSingleFirst = true
+        book.goTo(index: 1)
+        var spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [1, 2])
+        book.coverSingleFirst = false
+        await book.reanchorToLeadingPartition()
+        spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [0, 1])
+    }
+
+    /// 整列は強制ペア(1-2)を保つ: 表紙単ページを ON にしても区分が動かない
+    func testReanchorKeepsForcedPairPartition() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait, portrait])
+        book.marks = PageMarks(legacyArray: ["1-2"])
+        book.goTo(index: 2)
+        var spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [2, 3])
+        book.coverSingleFirst = true
+        await book.reanchorToLeadingPartition()
+        spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [2, 3])       // (0,1) 強制ペアのまま
+    }
+
+    /// 整列は先頭・単ページモードでは何もしない
+    func testReanchorNoOpAtCoverAndInSingleMode() async throws {
+        let book = try await makeBook([portrait, portrait, portrait])
+        book.coverSingleFirst = true
+        await book.reanchorToLeadingPartition()
+        XCTAssertEqual(book.currentIndex, 0)
+
+        let single = try await makeBook(
+            [portrait, portrait, portrait], readMode: .rightToLeftSingle)
+        single.goTo(index: 2)
+        single.coverSingleFirst = true
+        await single.reanchorToLeadingPartition()
+        XCTAssertEqual(single.currentIndex, 2)
+    }
+
     func testMoveNextAdvancesBySpreadWidthAndDetectsEnd() async throws {
         let book = try await makeBook([portrait, portrait, portrait])
         _ = await book.currentSpread()               // [0,1]

@@ -184,7 +184,14 @@ final class ReaderWindowController: NSWindowController {
                 pairingChanged = true
             }
             if pairingChanged {
-                Task { await refreshDisplay() }
+                // ページの区切り(偶奇)も先頭起点で組み直してから再表示する
+                // (途中ページで切り替えても 3-4 → 2-3 のように即座に変わる)
+                // EN: Realign the spread parity from page 0, then refresh, so
+                // EN: mid-book toggles re-pair the on-screen spread too.
+                Task {
+                    await book.reanchorToLeadingPartition()
+                    await refreshDisplay()
+                }
             }
             applyAdvancedSettings(to: book)
         }
