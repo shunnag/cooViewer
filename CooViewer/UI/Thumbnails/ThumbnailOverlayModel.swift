@@ -26,6 +26,9 @@ final class ThumbnailOverlayModel: ObservableObject {
         /// EN: Inputs for the pairing decision (legacy isSmallImage rule).
         var marks = PageMarks()
         var singleSetting = PageLayout.defaultSingleSetting
+        /// 表紙(先頭ページ)を単ページにする(Book.coverSingleFirst と同期)
+        /// EN: Cover page stays single; mirrors Book.coverSingleFirst.
+        var coverSingle = false
         /// 先読み並列度(本の置き場所の速度プロファイル由来)
         /// EN: Prefetch concurrency from the book's volume-speed profile.
         var prefetchConcurrency = MediaProfile.unknown.thumbnailPrefetchConcurrency
@@ -49,6 +52,11 @@ final class ThumbnailOverlayModel: ObservableObject {
     var knownLargePages: Set<Int> {
         var large = Set(snapshot.marks.forcedSingleIndices)
         let paired = Set(snapshot.marks.forcedPairMemberIndices)
+        // 表紙単ページ設定は先頭ページを単独セルにする(強制ペア指定が優先)
+        // EN: Cover-single keeps page 0 alone unless a forced pair contains it.
+        if snapshot.coverSingle, !paired.contains(0) {
+            large.insert(0)
+        }
         let threshold = CGFloat(snapshot.singleSetting) / 1000
         for (index, ratio) in measuredAspects
             where ratio > threshold && !paired.contains(index) && !large.contains(index) {
@@ -123,6 +131,7 @@ final class ThumbnailOverlayModel: ObservableObject {
             readsFromLeft: book.readMode.readsFromLeft,
             marks: book.marks,
             singleSetting: book.singleSetting,
+            coverSingle: book.coverSingleFirst,
             prefetchConcurrency: book.mediaProfile.thumbnailPrefetchConcurrency)
         measuredAspects = [:]
         showScreenContainingCurrentPage()
@@ -158,6 +167,9 @@ final class ThumbnailOverlayModel: ObservableObject {
             }
             if snapshot.singleSetting != book.singleSetting {
                 snapshot.singleSetting = book.singleSetting
+            }
+            if snapshot.coverSingle != book.coverSingleFirst {
+                snapshot.coverSingle = book.coverSingleFirst
             }
             focusCurrentIndex(book.currentIndex, displayedIndices: displayedIndices)
         }

@@ -13,6 +13,18 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         store = SettingsStore(defaults: defaults)
     }
 
+    /// 表示モード(FitMode)と表紙単ページ(SpreadCoverSingle)の既定と往復
+    func testFitModeAndCoverSingleAccessors() {
+        XCTAssertEqual(store.fitMode, .fitToScreen)   // 未設定 = 0
+        XCTAssertFalse(store.spreadCoverSingle)       // 既定オフ
+        store.fitMode = .fitWidthDivide
+        store.spreadCoverSingle = true
+        XCTAssertEqual(defaults.integer(forKey: "FitMode"),
+                       ReaderView.FitMode.fitWidthDivide.rawValue)
+        XCTAssertEqual(store.fitMode, .fitWidthDivide)
+        XCTAssertTrue(defaults.bool(forKey: "SpreadCoverSingle"))
+    }
+
     func testDefaultsWhenSwitchIsOff() {
         // 保存値があってもマスタースイッチ OFF なら既定値
         defaults.set(40, forKey: "AdvancedPrefetchAhead")

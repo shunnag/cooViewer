@@ -130,6 +130,13 @@ enum MainMenuBuilder {
                 keyEquivalent: "")
             item.tag = tag
         }
+        // 表紙(先頭ページ)を単ページで表示(新機能・既定オフ。見開き時のみ効果)
+        // EN: Cover page stays single in spread modes (new; default off).
+        readModeMenu.addItem(.separator())
+        readModeMenu.addItem(
+            withTitle: String(localized: "Show the Cover Page Alone"),
+            action: #selector(ReaderWindowController.toggleCoverSingleMenu(_:)),
+            keyEquivalent: "")
         readModeItem.submenu = readModeMenu
 
         // 補間(なし/低/既定/高。f キーの切替アクションもここから)

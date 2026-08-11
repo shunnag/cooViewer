@@ -51,6 +51,26 @@
         }
       }
     },
+    "Show the Cover Page Alone" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表紙を単ページで表示"
+          }
+        }
+      }
+    },
+    "Takes effect in two-page (spread) modes." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "見開き表示のときのみ効果があります。"
+          }
+        }
+      }
+    },
     "Image" : {
       "localizations" : {
         "ja" : {
@@ -2460,6 +2480,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "表示"
+          }
+        }
+      }
+    },
+    "View mode:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表示モード:"
           }
         }
       }
