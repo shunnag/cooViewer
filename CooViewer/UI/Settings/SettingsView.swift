@@ -7,6 +7,7 @@ import SwiftUI
 /// EN: applies immediately; the reader reacts via the defaults-change notification.
 struct SettingsView: View {
     @AppStorage("ReadMode") private var readMode = 0
+    @AppStorage("SpreadCoverSingle") private var spreadCoverSingle = false
     @AppStorage("SortMode") private var sortMode = 0
     @AppStorage("LoopCheck") private var loopCheck = 0
     @AppStorage("GoToLastPage") private var goToLastPage = 0
@@ -17,6 +18,7 @@ struct SettingsView: View {
     @AppStorage("OpenRecentLimit") private var openRecentLimit = 10
 
     @AppStorage("SingleSetting") private var singleSetting = 740
+    @AppStorage("FitMode") private var fitMode = 0
     @AppStorage("Interpolation") private var interpolation = 0
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
@@ -109,6 +111,16 @@ struct SettingsView: View {
                     Text(String(localized: "Right to Left (single page)")).tag(2)
                     Text(String(localized: "Left to Right (single page)")).tag(3)
                 }
+                // 表紙(先頭ページ)を単ページで表示(見開きモード時のみ効果)
+                // EN: Cover page stays single; effective in spread modes only.
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(String(localized: "Show the Cover Page Alone"),
+                           isOn: $spreadCoverSingle)
+                    Text(String(localized:
+                        "Takes effect in two-page (spread) modes."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Picker(String(localized: "Sort by:"), selection: $sortMode) {
                     Text(String(localized: "Name (numeric aware)")).tag(0)
                     Text(String(localized: "Name (simple)")).tag(4)
@@ -150,6 +162,16 @@ struct SettingsView: View {
 
     private var displayPane: some View {
         Form {
+            Section {
+                // 表示モード(メニュー ⌘1-4 と同じ設定を共有。仕様書 §3.2)
+                // EN: Same "FitMode" default the View menu (⌘1-4) writes.
+                Picker(String(localized: "View mode:"), selection: $fitMode) {
+                    Text(String(localized: "Fit to Screen")).tag(0)
+                    Text(String(localized: "Fit to Screen Width")).tag(1)
+                    Text(String(localized: "No Scale")).tag(2)
+                    Text(String(localized: "Fit to Screen Width (divide)")).tag(3)
+                }
+            }
             Section(String(localized: "Page number")) {
                 Toggle(String(localized: "Show page number"), isOn: $showNumber)
                 // サムネイル一覧のフッターと原寸表示のタイトルにも効く

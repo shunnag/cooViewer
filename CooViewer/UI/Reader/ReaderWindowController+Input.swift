@@ -327,8 +327,7 @@ extension ReaderWindowController {
         case .fitWidthDivide: .noScale
         case .noScale: .fitToScreen
         }
-        readerViewForInput.fitMode = next
-        refreshDisplayIfCapRaised()
+        setFitMode(next)
     }
 
     private func stepViewMode(enlarge: Bool) {
@@ -345,8 +344,7 @@ extension ReaderWindowController {
         case (.fitToScreen, false): next = nil
         }
         if let next {
-            readerViewForInput.fitMode = next
-            refreshDisplayIfCapRaised()
+            setFitMode(next)
         }
     }
 
