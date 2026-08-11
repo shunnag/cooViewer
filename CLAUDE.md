@@ -14,7 +14,11 @@ Two documents drive all work here — consult them before changing behavior:
   (referenced from code comments as 仕様書 §n). When implementing or fixing a feature,
   match this spec unless `architecture.md` §2.2-2.4 lists it as dropped/changed.
 - `Documentation/architecture.md` — rewrite design decisions, feature keep/drop/change
-  triage, module layout, milestones.
+  triage, module layout, milestones, and cross-cutting rules (§7 設計指針).
+
+`Documentation/development-guide.md` is the human-oriented how-to (build,
+snapshot-CLI verification catalog, release steps, pitfalls) — keep it in sync
+when those procedures change.
 
 ## Build & test
 
@@ -63,16 +67,19 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   must be `cooViewer-<version>.zip` because the appcast URL is derived from it.
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
-  the PNG (add `--show-thumbnails` to capture the thumbnail overlay; `--show-bookmark-editor`
-  with `--snapshot-settings` renders the bookmark editor). Sample book generator: create portrait PNGs in a folder (see git history for
-  `makepages.swift`).
+  the PNG. The full flag catalog (thumbnails, bookmark editor, settings window with
+  `-SettingsSelectedTab n` / `-SettingsSearchText`, file info, navigation steps) is in
+  `Documentation/development-guide.md` §2. Sample book generator: create portrait
+  PNGs in a folder (see git history for `makepages.swift`).
 
 ## Code conventions
 
 - Swift 6 language mode with strict concurrency; UI is `@MainActor`, sources that wrap
   non-thread-safe libraries (XADArchive, PDFDocument) are actors.
-- Comments in Japanese, citing the spec (`仕様書 §n`) or design doc (`設計書 §n`) for any
-  behavior that mirrors or deliberately deviates from the legacy app.
+- Comments in Japanese **only** (no English duplicates), citing the spec (`仕様書 §n`)
+  or design doc (`設計書 §n`) for any behavior that mirrors or deliberately deviates
+  from the legacy app. Prefer explaining *why* (spec, avoided bug, performance)
+  over *what*.
 - Persisted-data compatibility (updated for 2.0b5): the UserDefaults domain
   `jp.coo.cooViewer` and the binding array schema (`KeyArray*`/`MouseArray*`) remain
   legacy-compatible (§13.2) — never change those without a migration mapping (§13.5).

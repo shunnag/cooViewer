@@ -21,6 +21,8 @@ macOS 用の漫画・画像ビューア。フォルダ / zip / rar / 7z 等の�
 - 書き直しにあたり旧アプリの全挙動を調査・記録した資料が
   [`Documentation/legacy-app-analysis.md`](Documentation/legacy-app-analysis.md)(詳細仕様)と
   [`Documentation/architecture.md`](Documentation/architecture.md)(設計方針)にあります
+- ビルド・動作検証・リリースの実務手順は
+  [`Documentation/development-guide.md`](Documentation/development-guide.md)(開発ガイド)にまとめています
 
 ## ビルド
 
