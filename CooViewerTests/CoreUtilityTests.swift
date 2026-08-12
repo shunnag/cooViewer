@@ -230,9 +230,9 @@ final class PreresamplePolicyTests: XCTestCase {
     }
 
     func testPageBudgetShrinksForLargePages() {
-        // 100MB/ページ(5K 級ウインドウ)→ 256MB / 100MB = 2 ページ
+        // 200MB/ページ(6K 級ウインドウ)→ 512MB / 200MB = 2 ページ
         XCTAssertEqual(PreresamplePolicy.pageBudget(
-            bytesPerPage: 100 << 20, physicalMemory: 64 << 30), 2)
+            bytesPerPage: 200 << 20, physicalMemory: 64 << 30), 2)
     }
 
     func testPageBudgetFloorsAtOne() {
@@ -243,9 +243,10 @@ final class PreresamplePolicyTests: XCTestCase {
     }
 
     func testByteBudgetScalesWithMemory() {
-        // 4GB 機では 1/32 = 128MB、大容量機では 256MB で頭打ち
+        // 4GB 機 128MB・8GB 機 256MB(いずれも 1/32)、大容量機は 512MB で頭打ち
         XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 4 << 30), 128 << 20)
-        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30), 256 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 8 << 30), 256 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30), 512 << 20)
     }
 }
 
