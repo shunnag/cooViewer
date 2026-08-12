@@ -11,9 +11,16 @@ import QuartzCore
 /// 「下の角が先行する」動きは帯ごとの角の先行(ねじれ)で表現する
 /// (リーフ全体を面内回転させるとノドから離れてしまう。過去実装の反省点)。
 ///
+/// 影は**パッチに載せず**、幾何(ロールの頂点位置)に追従する単一レイヤー群で
+/// 描く: 投影影(ロール直下の柔らかい影)・接触影(その芯)・綴じ目の陰影・
+/// 紙の縁ハイライト・着地側の影。パッチ毎に陰レイヤーを重ねる方式は、
+/// ヘアライン対策の重なり部分で二重に暗くなり格子(四角)が見えるため廃止
+/// (過去実装の反省点)。
+///
 /// アニメーション版(makeAnimated)のほか、任意の進行度で止めた
 /// モデル値版(makeStatic)を持ち、CARenderer による実描画テストで
-/// 向き・整合・綴じの維持を検証できるようにしている(PageCurlRenderTests)。
+/// 向き・整合・綴じ・シームの有無を検証できるようにしている
+/// (PageCurlRenderTests)。
 @MainActor
 enum PageCurlOverlay {
     struct Configuration {
@@ -30,8 +37,8 @@ enum PageCurlOverlay {
         /// 1 帯あたり数 pt 以下に収まるよう細かめにする
         var bandCount = 24
         var duration: CFTimeInterval = 0.45
-        /// キーフレームの時間分割数
-        var timeSteps = 30
+        /// キーフレームの時間分割数(120Hz 表示でも補間段差が出ない密度)
+        var timeSteps = 48
     }
 
     /// 下の角の先行度。下端の帯ほど角を増やす倍率で、ノドは全帯で
@@ -95,21 +102,36 @@ enum PageCurlOverlay {
                 patch.add(move, forKey: "curlMove")
                 patch.add(contentsSwap, forKey: "curlContents")
                 patch.add(rectSwap, forKey: "curlRect")
-
-                // カールの丸みの陰(帯に依存しない角で計算=横縞を作らない)
-                let shade = CAKeyframeAnimation(keyPath: "opacity")
-                shade.values = timeline.map {
-                    NSNumber(value: shadeOpacity(for: $0.shadeAngles[strip]))
-                }
-                shade.duration = config.duration
-                shade.isRemovedOnCompletion = false
-                shade.fillMode = .forwards
-                parts.patchShades[band][strip].add(shade, forKey: "curlShade")
             }
+        }
+
+        // 幾何追従の影(位置=ロール頂点の投影 x、濃さ=めくりの進み)
+        let gutterX = config.bounds.width / 2
+        func addTrack(_ layer: CALayer, keyPath: String, values: [NSNumber]) {
+            let animation = CAKeyframeAnimation(keyPath: keyPath)
+            animation.values = values
+            animation.duration = config.duration
+            animation.isRemovedOnCompletion = false
+            animation.fillMode = .forwards
+            layer.add(animation, forKey: "curl-\(keyPath)")
+        }
+        addTrack(parts.castShadow, keyPath: "position.x",
+                 values: timeline.map { NSNumber(value: gutterX + $0.apexX) })
+        addTrack(parts.castShadow, keyPath: "opacity",
+                 values: timeline.map { NSNumber(value: 0.30 * $0.thetaSin) })
+        addTrack(parts.contactShadow, keyPath: "position.x",
+                 values: timeline.map { NSNumber(value: gutterX + $0.apexX) })
+        addTrack(parts.contactShadow, keyPath: "opacity",
+                 values: timeline.map { NSNumber(value: 0.30 * $0.thetaSin) })
+        addTrack(parts.gutterShade, keyPath: "opacity",
+                 values: timeline.map { NSNumber(value: 0.35 * $0.thetaSin) })
+        for highlight in parts.edgeHighlights {
+            addTrack(highlight, keyPath: "opacity",
+                     values: timeline.map { NSNumber(value: 0.45 * $0.outerSin) })
         }
         // 着地側の影(前半で濃くなり、リーフが被さって見えなくなる)
         let dim = CAKeyframeAnimation(keyPath: "opacity")
-        dim.values = [0, 0.35, 0.35]
+        dim.values = [0, 0.30, 0.30]
         dim.keyTimes = [0, 0.5, 1]
         dim.duration = config.duration
         parts.shadow.add(dim, forKey: "curlShadow")
@@ -128,9 +150,16 @@ enum PageCurlOverlay {
                     patch.contents = parts.backContent
                     patch.contentsRect = parts.backRects[band][strip]
                 }
-                parts.patchShades[band][strip].opacity =
-                    shadeOpacity(for: frame.shadeAngles[strip])
             }
+        }
+        let gutterX = config.bounds.width / 2
+        parts.castShadow.position.x = gutterX + frame.apexX
+        parts.castShadow.opacity = Float(0.30 * frame.thetaSin)
+        parts.contactShadow.position.x = gutterX + frame.apexX
+        parts.contactShadow.opacity = Float(0.30 * frame.thetaSin)
+        parts.gutterShade.opacity = Float(0.35 * frame.thetaSin)
+        for highlight in parts.edgeHighlights {
+            highlight.opacity = Float(0.45 * frame.outerSin)
         }
         return parts.overlay
     }
@@ -138,30 +167,33 @@ enum PageCurlOverlay {
     // MARK: - 内部
 
     /// レイヤー一式(まだ配置は初期状態、アニメーションなし)。
-    /// 添字はすべて [帯][ストリップ]
+    /// patches 等の添字は [帯][ストリップ]
     private struct Parts {
         let overlay: CALayer
         let patches: [[CALayer]]
-        /// パッチごとの陰(カールの丸みの表現。角に応じて暗くする)
-        let patchShades: [[CALayer]]
+        /// 着地側の影(リーフ接近で暗くなる)
         let shadow: CALayer
+        /// 投影影(ロール直下の広く柔らかい影。下の live 内容にも落ちる)
+        let castShadow: CALayer
+        /// 接触影(投影影の芯。紙が面に近い所の濃く狭い影)
+        let contactShadow: CALayer
+        /// 綴じ目(ノド)の陰影
+        let gutterShade: CALayer
+        /// 紙の縁のハイライト(自由端。帯ごとに外側パッチへ内蔵)
+        let edgeHighlights: [CALayer]
         let frontRects: [[CGRect]]
         let backRects: [[CGRect]]
         let backContent: CGImage
     }
 
-    /// ある進行度の全パッチ配置(トランスフォームと角。[帯][ストリップ])。
-    /// shadeAngles は陰の計算専用に帯へ依存しない角(帯ごとに陰の濃さが
-    /// 段差になって横縞に見えるのを防ぐ)
+    /// ある進行度の全パッチ配置と影の材料。
+    /// apexX はロール頂点(α≈π/2)のノド基準投影 x(符号付き)
     private struct FrameGeometry {
         let transforms: [[CATransform3D]]
         let angles: [[CGFloat]]
-        let shadeAngles: [CGFloat]
-    }
-
-    /// ストリップの角 α に応じた陰の濃さ(edge-on で最も暗く、平らで 0)
-    private static func shadeOpacity(for angle: CGFloat) -> Float {
-        Float(0.30 * sin(angle))
+        let apexX: CGFloat
+        let thetaSin: CGFloat
+        let outerSin: CGFloat
     }
 
     /// 単位矩形(0-1)へのクランプ(境界の重なりぶんのはみ出しを丸める)
@@ -171,6 +203,23 @@ enum PageCurlOverlay {
         return CGRect(x: minX, y: minY,
                       width: min(1, rect.maxX) - minX,
                       height: min(1, rect.maxY) - minY)
+    }
+
+    /// 縦ストライプの影(中央が濃く左右へ透ける水平グラデーション)
+    private static func makeVerticalShadow(coreAlpha: CGFloat, width: CGFloat,
+                                           height: CGFloat) -> CAGradientLayer {
+        let layer = CAGradientLayer()
+        layer.startPoint = CGPoint(x: 0, y: 0.5)
+        layer.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.colors = [
+            CGColor(gray: 0, alpha: 0),
+            CGColor(gray: 0, alpha: coreAlpha),
+            CGColor(gray: 0, alpha: 0),
+        ]
+        layer.locations = [0, 0.5, 1]
+        layer.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        layer.opacity = 0
+        return layer
     }
 
     private static func makeParts(_ config: Configuration) -> Parts? {
@@ -203,10 +252,21 @@ enum PageCurlOverlay {
         shadow.opacity = 0
         landing.addSublayer(shadow)
 
+        // 投影影と接触影(リーフの下に敷く: パッチより先に追加)。
+        // 位置はロール頂点へキーフレームで追従する
+        let castShadow = makeVerticalShadow(coreAlpha: 1,
+                                            width: half * 0.55, height: height)
+        castShadow.position = CGPoint(x: half, y: height / 2)
+        overlay.addSublayer(castShadow)
+        let contactShadow = makeVerticalShadow(coreAlpha: 1,
+                                               width: half * 0.14, height: height)
+        contactShadow.position = CGPoint(x: half, y: height / 2)
+        overlay.addSublayer(contactShadow)
+
         // リーフのパッチ格子。ストリップはノド側から外側の順に重ねる
         // (めくり中は外側ほど手前にあるため)
         var patches: [[CALayer]] = []
-        var patchShades: [[CALayer]] = []
+        var edgeHighlights: [CALayer] = []
         var frontRects: [[CGRect]] = []
         var backRects: [[CGRect]] = []
         let stripLength = half / CGFloat(config.stripCount)
@@ -219,7 +279,6 @@ enum PageCurlOverlay {
         let yPad = patchOverlap / height
         for band in 0..<config.bandCount {
             var bandPatches: [CALayer] = []
-            var bandShades: [CALayer] = []
             var bandFronts: [CGRect] = []
             var bandBacks: [CGRect] = []
             let yOrigin = CGFloat(band) * ySpan
@@ -259,28 +318,42 @@ enum PageCurlOverlay {
                 patch.contentsRect = frontRect
                 bandFronts.append(frontRect)
                 bandBacks.append(backRect)
-                // カールの丸みの陰(角に応じて暗くする黒レイヤー)
-                let shade = CALayer()
-                shade.frame = patch.bounds
-                shade.backgroundColor = CGColor(gray: 0, alpha: 1)
-                shade.opacity = 0
-                patch.addSublayer(shade)
-                bandShades.append(shade)
+
+                // 紙の縁のハイライト(最外ストリップの自由端に細い明線。
+                // パッチ内蔵なので湾曲・ねじれにそのまま追従する)
+                if stripIndex == config.stripCount - 1 {
+                    let highlight = CALayer()
+                    let lineWidth: CGFloat = 1.5
+                    highlight.frame = CGRect(
+                        x: leafOnLeft ? 0 : patch.bounds.width - lineWidth,
+                        y: 0, width: lineWidth, height: patch.bounds.height)
+                    highlight.backgroundColor = CGColor(gray: 1, alpha: 1)
+                    highlight.opacity = 0
+                    patch.addSublayer(highlight)
+                    edgeHighlights.append(highlight)
+                }
                 bandPatches.append(patch)
                 overlay.addSublayer(patch)
             }
             patches.append(bandPatches)
-            patchShades.append(bandShades)
             frontRects.append(bandFronts)
             backRects.append(bandBacks)
         }
-        return Parts(overlay: overlay, patches: patches, patchShades: patchShades,
-                     shadow: shadow,
+
+        // 綴じ目(ノド)の陰影(最前面。低い不透明度で両半面の谷を示す)
+        let gutterShade = makeVerticalShadow(coreAlpha: 1,
+                                             width: width * 0.07, height: height)
+        gutterShade.position = CGPoint(x: half, y: height / 2)
+        overlay.addSublayer(gutterShade)
+
+        return Parts(overlay: overlay, patches: patches, shadow: shadow,
+                     castShadow: castShadow, contactShadow: contactShadow,
+                     gutterShade: gutterShade, edgeHighlights: edgeHighlights,
                      frontRects: frontRects, backRects: backRects,
                      backContent: backContent)
     }
 
-    /// 進行度 progress の全パッチ配置。
+    /// 進行度 progress の全パッチ配置と影の材料。
     /// 帯ごとの先行(lift)で「下の角から」めくれるねじれを作る。
     /// どの帯も連結はノドから始まるため綴じは離れない
     private static func frameGeometry(_ config: Configuration,
@@ -310,13 +383,26 @@ enum PageCurlOverlay {
             })
             angles.append(placements.map(\.angle))
         }
-        // 陰は帯中央の角で全帯共通に計算する(帯ごとの明度段差を作らない)
-        let shadePlacements = PageCurlGeometry.strips(
+        // 影の材料は帯中央相当の基準配置から取る(帯に依存させない)
+        let reference = PageCurlGeometry.strips(
             theta: theta, lift: leadNow * 0.5,
             count: config.stripCount, stripLength: stripLength,
             towardRight: !config.leafOnLeft)
+        // ロール頂点 = α が π/2 に最も近いストリップの投影 x
+        var apexX: CGFloat = 0
+        var bestDelta = CGFloat.greatestFiniteMagnitude
+        for placement in reference {
+            let delta = abs(placement.angle - .pi / 2)
+            if delta < bestDelta {
+                bestDelta = delta
+                apexX = placement.offsetX
+            }
+        }
+        let outerAngle = reference.last?.angle ?? 0
         return FrameGeometry(transforms: transforms, angles: angles,
-                             shadeAngles: shadePlacements.map(\.angle))
+                             apexX: apexX,
+                             thetaSin: sin(theta),
+                             outerSin: sin(outerAngle))
     }
 
     /// 水平反転した複製(カール裏面用)。y 軸回転の裏面描画は内容が水平に
