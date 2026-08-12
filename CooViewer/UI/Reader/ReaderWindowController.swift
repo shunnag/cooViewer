@@ -139,6 +139,11 @@ final class ReaderWindowController: NSWindowController {
         window.title = "cooViewer"
         window.collectionBehavior = [.fullScreenPrimary]
         window.minSize = NSSize(width: 300, height: 200)
+        // macOS 26 のタイル状態(フィル等)ごと保存されたフレームは、タイル前の
+        // フレームへ書き戻してから復元する。tilingState 付きのまま復元すると
+        // WindowManager がタイルを再確立し、ブランク起動が毎回全画面フィルになる
+        // うえ、終了時に再びタイル込みで保存されて自己永続化する
+        Self.untileSavedWindowFrame()
         window.setFrameAutosaveName("ReaderWindow")
         window.isReleasedWhenClosed = false  // 閉じても解放せず再表示できるように
         self.init(window: window)
@@ -865,6 +870,36 @@ final class ReaderWindowController: NSWindowController {
         guard let size = window?.screen?.frame.size else { return }
         UserDefaults.standard.set(NSStringFromSize(size),
                                   forKey: "ReaderWindowScreenSize")
+    }
+
+    /// autosave 文字列にタイル状態(macOS 26 の tilingState JSON)が付いて
+    /// いたら、フレーム欄をタイル前の untiledFrame に差し替えて JSON を落とす。
+    /// 新規起動のウインドウはタイルを復活させない、という設計判断
+    static func untileSavedWindowFrame() {
+        let key = "NSWindow Frame ReaderWindow"
+        let defaults = UserDefaults.standard
+        guard let saved = defaults.string(forKey: key),
+              let sanitized = untiledFrameString(from: saved) else { return }
+        defaults.set(sanitized, forKey: key)
+    }
+
+    /// 純粋変換部(テスト用に分離)。差し替え不要・解析不能なら nil。
+    /// 文字列は "x y w h sx sy sw sh {JSON}" 形式(JSON は付いていれば)
+    nonisolated static func untiledFrameString(from saved: String) -> String? {
+        guard let braceIndex = saved.firstIndex(of: "{") else { return nil }
+        let fields = saved[..<braceIndex].split(separator: " ").map(String.init)
+        guard fields.count == 8,
+              let data = saved[braceIndex...].data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data)
+                  as? [String: Any],
+              let tiling = json["tilingState"] as? [String: Any],
+              let untiled = tiling["untiledFrame"] as? String else { return nil }
+        let rect = NSRectFromString(untiled)
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        let frame = [rect.origin.x, rect.origin.y, rect.width, rect.height]
+            .map { String(Int($0)) }
+        // 画面欄(後半 4 つ)は保存時のまま。末尾の空白も AppKit の書式に合わせる
+        return (frame + fields[4...]).joined(separator: " ") + " "
     }
 
     /// 保存済みフレームがあり、かつ終了時の画面解像度が現在のいずれかの
