@@ -115,7 +115,7 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 
 ### ML モデル資産(models-1 リリース)
 
-圧縮ノイズ低減「最高」の Real-ESRGAN モデルは、アプリ本体とは別の
+補間(描画品質)「最高」の Real-ESRGAN モデルは、アプリ本体とは別の
 GitHub リリース **`models-1`**(タグ)に資産として置き、アプリが同意後に
 ダウンロードする(URL と SHA-256 は `MLSuperResolver.swift` にピン留め)。
 

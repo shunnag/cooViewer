@@ -423,9 +423,8 @@ extension ReaderWindowController {
             guard let index = displayedIndex(in: spread, leftSide: leftSide),
                   // 原寸表示は表示上限(displayPixelCap)を介さないフル解像度で
                   var image = await book.fullResolutionImage(at: index) else { return }
-            // 圧縮ノイズ低減(適用範囲が原寸表示を含み、JPEG のページのみ)
-            if settings.noiseReductionScope.includesOriginalSize,
-               SupportedTypes.isJPEGFile(book.entries[index].name) {
+            // ML 高画質化(適用範囲が原寸表示を含むとき。全ページ対象)
+            if settings.noiseReductionScope.includesOriginalSize {
                 image = await ImageResampler.shared.reduceNoise(
                     image, level: settings.noiseReductionLevel)
             }

@@ -297,7 +297,7 @@ struct SettingsView: View {
             String(localized: "View mode:"),
             String(localized: "Page turn effect:"),
             String(localized: "Interpolation:"),
-            String(localized: "Compression noise reduction:"),
+            String(localized: "Apply ML processing to:"),
             String(localized: "Play animated images (GIF, WebP, etc.)"),
             String(localized: "Background color:"),
             String(localized: "Thumbnails"),
@@ -457,62 +457,37 @@ struct SettingsView: View {
                 }
             }
             Section {
+                // 補間=描画品質 5 段階(基礎補間+ML 高画質化の統合。
+                // 保存は旧互換の Interpolation と NoiseReductionLevel の組合せ)。
+                // ML 段階は初回選択時に「ダウンロードが必要・処理が重い」ことへの
+                // 同意をモデル毎に取ってから設定する
                 VStack(alignment: .leading, spacing: 4) {
-                    Picker(String(localized: "Interpolation:"), selection: $interpolation) {
-                        Text(String(localized: "Default")).tag(0)
-                        Text(String(localized: "None")).tag(1)
-                        Text(String(localized: "Low")).tag(2)
-                        Text(String(localized: "High")).tag(3)
+                    Picker(String(localized: "Interpolation:"),
+                           selection: renderQualityBinding) {
+                        Text(String(localized: "None")).tag(RenderQuality.none.rawValue)
+                        Text(String(localized: "Standard"))
+                            .tag(RenderQuality.standard.rawValue)
+                        Text(String(localized: "High")).tag(RenderQuality.high.rawValue)
+                        Text(String(localized: "Very High (ML denoise)"))
+                            .tag(RenderQuality.mlDenoise.rawValue)
+                        Text(String(localized: "Maximum (×4 ML upscale)"))
+                            .tag(RenderQuality.mlSuperRes.rawValue)
                     }
                     .help(interpolationDescription)
                     // 選択中モードの処理内容(ツールチップと同文)
                     Text(interpolationDescription)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                // 圧縮ノイズ低減(JPEG のみ。古いファイルのブロックノイズ向け)。
-                // 強・最高は CoreML モデル: 初回選択時に「ダウンロードが必要・
-                // 処理が重い」ことへの同意をモデル毎に取ってから設定する
-                VStack(alignment: .leading, spacing: 4) {
-                    Picker(String(localized: "Compression noise reduction:"),
-                           selection: $noiseReductionLevel) {
-                        Text(String(localized: "None")).tag(0)
-                        Text(String(localized: "Weak")).tag(1)
-                        Text(String(localized: "Medium")).tag(2)
-                        Text(String(localized: "Strong (ML model)")).tag(3)
-                        Text(String(localized: "Maximum (×4 ML upscale)")).tag(4)
-                    }
-                    Text(String(localized: "Applies to JPEG pages only."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if noiseReductionLevel == 4 {
+                    if renderQualityValue == RenderQuality.mlSuperRes.rawValue {
                         Text(String(localized:
-                            "Very large pages (over 2048 px) and the loupe / View Original fall back to Strong."))
+                            "Very large pages (over 2048 px) and the loupe / View Original fall back to Very High."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    if noiseReductionLevel == 3 || noiseReductionLevel == 4 {
+                    if renderQualityValue >= RenderQuality.mlDenoise.rawValue {
                         Text(mlStatusDescription)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    }
-                }
-                .onChange(of: noiseReductionLevel) { oldValue, newValue in
-                    if newValue == 3 {
-                        if mlModelAccepted {
-                            Task { await MLNoiseReducer.shared.ensureModel() }
-                        } else {
-                            // 同意が得られるまで元の値へ戻して確認を出す
-                            noiseReductionLevel = oldValue
-                            showsMLConsentAlert = true
-                        }
-                    } else if newValue == 4 {
-                        if srModelAccepted {
-                            Task { await MLSuperResolver.shared.ensureModel() }
-                        } else {
-                            noiseReductionLevel = oldValue
-                            showsSRConsentAlert = true
-                        }
                     }
                 }
                 .onAppear {
@@ -523,12 +498,11 @@ struct SettingsView: View {
                         Task { await MLSuperResolver.shared.ensureModel() }
                     }
                 }
-                .alert(String(localized: "Use the “Strong (ML model)” level?"),
+                .alert(String(localized: "Use the “Very High (ML denoise)” level?"),
                        isPresented: $showsMLConsentAlert) {
                     Button(String(localized: "Download and Use")) {
                         mlModelAccepted = true
-                        noiseReductionLevel = 3
-                        Task { await MLNoiseReducer.shared.ensureModel() }
+                        applyRenderQuality(.mlDenoise)
                     }
                     Button(String(localized: "Cancel"), role: .cancel) {}
                 } message: {
@@ -539,15 +513,15 @@ struct SettingsView: View {
                        isPresented: $showsSRConsentAlert) {
                     Button(String(localized: "Download and Use")) {
                         srModelAccepted = true
-                        noiseReductionLevel = 4
-                        Task { await MLSuperResolver.shared.ensureModel() }
+                        applyRenderQuality(.mlSuperRes)
                     }
                     Button(String(localized: "Cancel"), role: .cancel) {}
                 } message: {
                     Text(String(localized:
                         "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk."))
                 }
-                Picker(String(localized: "Apply to:"),
+                // ML 高画質化(超高・最高)をルーペ・原寸表示にも掛けるか
+                Picker(String(localized: "Apply ML processing to:"),
                        selection: $noiseReductionScope) {
                     Text(String(localized: "Main view only")).tag(0)
                     Text(String(localized: "Main view and loupe")).tag(1)
@@ -824,15 +798,59 @@ struct SettingsView: View {
         }
     }
 
-    /// 補間モードごとの処理内容(設計書 §5 描画品質)
-    private var interpolationDescription: String {
+    /// 現在の描画品質(2 キーの組合せから導出。SettingsStore.renderQuality と同じ規則)
+    private var renderQualityValue: Int {
+        if noiseReductionLevel == 4 { return RenderQuality.mlSuperRes.rawValue }
+        if noiseReductionLevel == 3 { return RenderQuality.mlDenoise.rawValue }
         switch interpolation {
-        case 1: String(localized: "None: pixels are scaled as-is (for pixel art).")
-        case 2: String(localized: "Low: fast GPU scaling only.")
-        case 3: String(localized:
+        case 1: return RenderQuality.none.rawValue
+        case 3: return RenderQuality.high.rawValue
+        default: return RenderQuality.standard.rawValue  // 既定・旧「低」
+        }
+    }
+
+    /// 描画品質を 2 キーへ分解して保存し、必要なら ML モデルの導入を始める
+    private func applyRenderQuality(_ quality: RenderQuality) {
+        interpolation = quality.interpolationRawValue
+        noiseReductionLevel = quality.noiseReductionRawValue
+        if quality == .mlDenoise {
+            Task { await MLNoiseReducer.shared.ensureModel() }
+        } else if quality == .mlSuperRes {
+            Task { await MLSuperResolver.shared.ensureModel() }
+        }
+    }
+
+    /// 補間ピッカーのバインディング。ML 段階は未同意なら値を変えずに
+    /// 確認を出す(OK のときだけ applyRenderQuality)
+    private var renderQualityBinding: Binding<Int> {
+        Binding(
+            get: { renderQualityValue },
+            set: { newValue in
+                guard let quality = RenderQuality(rawValue: newValue) else { return }
+                if quality == .mlDenoise, !mlModelAccepted {
+                    showsMLConsentAlert = true
+                    return
+                }
+                if quality == .mlSuperRes, !srModelAccepted {
+                    showsSRConsentAlert = true
+                    return
+                }
+                applyRenderQuality(quality)
+            })
+    }
+
+    /// 補間(描画品質)モードごとの処理内容(設計書 §5 描画品質)
+    private var interpolationDescription: String {
+        switch RenderQuality(rawValue: renderQualityValue) ?? .standard {
+        case .none: String(localized: "None: pixels are scaled as-is (for pixel art).")
+        case .standard: String(localized:
+            "Standard: high-quality downscaling that reduces moiré on screentones.")
+        case .high: String(localized:
             "High: high-quality downscaling plus MetalFX upscaling for enlargement.")
-        default: String(localized:
-            "Default: high-quality downscaling that reduces moiré on screentones.")
+        case .mlDenoise: String(localized:
+            "Very High: High plus ML denoising (waifu2x) applied to every page.")
+        case .mlSuperRes: String(localized:
+            "Maximum: High plus ×4 ML upscaling (Real-ESRGAN) applied to every page.")
         }
     }
 

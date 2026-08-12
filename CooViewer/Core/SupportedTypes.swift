@@ -78,13 +78,6 @@ enum SupportedTypes {
         return type.conforms(to: .image)
     }
 
-    /// JPEG のファイル名か(圧縮ノイズ低減の対象判定。PNG 等の線画を
-    /// 誤って甘くしないため、低減は JPEG に限って適用する)
-    static func isJPEGFile(_ name: String) -> Bool {
-        ["jpg", "jpeg", "jfif", "jpe"]
-            .contains((name as NSString).pathExtension.lowercased())
-    }
-
     /// 「本」として開ける URL か(フォルダ判定は呼び出し側で行う)
     static func isBookFile(_ url: URL) -> Bool {
         isArchive(url) || isPDF(url)

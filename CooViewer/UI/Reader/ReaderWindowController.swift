@@ -898,11 +898,6 @@ final class ReaderWindowController: NSWindowController {
         let ids = spread.indices.map { index in
             book.entries.indices.contains(index) ? book.entries[index].id : index
         }
-        // 圧縮ノイズ低減の対象可否(JPEG のページのみ)
-        let noiseReducible = spread.indices.map { index in
-            book.entries.indices.contains(index)
-                && SupportedTypes.isJPEGFile(book.entries[index].name)
-        }
         // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
         let turn: ReaderView.PageTurn? = {
             guard let turnForward else { return nil }
@@ -914,7 +909,6 @@ final class ReaderWindowController: NSWindowController {
         }()
         readerView.setPages(images, ids: ids,
                             readsFromLeft: book.readMode.readsFromLeft,
-                            noiseReducible: noiseReducible,
                             turn: turn)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
@@ -984,15 +978,13 @@ final class ReaderWindowController: NSWindowController {
                 for (position, image) in images.enumerated() {
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
-                    // ノイズ低減の有無も含めて実表示時と同一条件で先行計算する
-                    let reduction = SupportedTypes.isJPEGFile(book.entries[index].name)
-                        ? self.settings.noiseReductionLevel : NoiseReductionLevel.none
-                    // キーは ReaderView の実表示時と同一(そこでキャッシュ命中する)
+                    // キーは ReaderView の実表示時と同一(ML 高画質化の段階も
+                    // 含めて同一条件で先行計算し、そこでキャッシュ命中する)
                     _ = await ImageResampler.shared.resample(
                         image, to: targets[position],
                         cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
                         upscaleWithMetalFX: useMetalFX,
-                        noiseReduction: reduction)
+                        noiseReduction: self.settings.noiseReductionLevel)
                 }
                 resampledPages += indices.count
                 guard resampledPages < pageLimit else { return }
@@ -1359,8 +1351,47 @@ final class ReaderWindowController: NSWindowController {
         Task { await refreshDisplay() }
     }
 
+    /// 補間(描画品質)の切替。ML 段階は設定ペインと同じ規則で
+    /// 初回に同意を取ってから設定する(§7.5 メニューと設定の同値性)
     @objc func changeInterpolation(_ sender: NSMenuItem) {
-        UserDefaults.standard.set(sender.tag, forKey: "Interpolation")
+        guard let quality = RenderQuality(rawValue: sender.tag) else { return }
+        let defaults = UserDefaults.standard
+        switch quality {
+        case .mlDenoise:
+            if !defaults.bool(forKey: "NoiseReductionMLAccepted") {
+                guard confirmMLDownload(
+                    title: String(localized: "Use the “Very High (ML denoise)” level?"),
+                    message: String(localized:
+                        "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds.")
+                ) else { return }
+                defaults.set(true, forKey: "NoiseReductionMLAccepted")
+            }
+            settings.renderQuality = quality
+            Task { await MLNoiseReducer.shared.ensureModel() }
+        case .mlSuperRes:
+            if !defaults.bool(forKey: "NoiseReductionSRAccepted") {
+                guard confirmMLDownload(
+                    title: String(localized: "Use the “Maximum (×4 ML upscale)” level?"),
+                    message: String(localized:
+                        "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk.")
+                ) else { return }
+                defaults.set(true, forKey: "NoiseReductionSRAccepted")
+            }
+            settings.renderQuality = quality
+            Task { await MLSuperResolver.shared.ensureModel() }
+        case .none, .standard, .high:
+            settings.renderQuality = quality
+        }
+    }
+
+    /// ML モデルのダウンロード同意ダイアログ(メニュー経由の切替用)
+    private func confirmMLDownload(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: String(localized: "Download and Use"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// 表紙を単ページで表示(見開きモード時のみ効果。設定と同じ defaults を共有)
@@ -1400,7 +1431,7 @@ final class ReaderWindowController: NSWindowController {
             menuItem.state = book?.readMode.rawValue == menuItem.tag ? .on : .off
             return book != nil
         case #selector(changeInterpolation(_:)):
-            menuItem.state = settings.interpolation.rawValue == menuItem.tag ? .on : .off
+            menuItem.state = settings.renderQuality.rawValue == menuItem.tag ? .on : .off
             return true
         case #selector(toggleCoverSingleMenu(_:)):
             menuItem.state = settings.spreadCoverSingle ? .on : .off

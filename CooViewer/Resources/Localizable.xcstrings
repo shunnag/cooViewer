@@ -14,6 +14,26 @@
         }
       }
     },
+    "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "初回にモデル(約 9 MB)をダウンロードします。各ページをニューラルネットワークで 4 倍に拡大する最も重い方式で、ページの処理に数秒かかることがあります(結果はディスクにキャッシュされます)。"
+          }
+        }
+      }
+    },
+    "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "初回に小さなモデル(約 1.2 MB)をダウンロードします。この方式は処理が重く、ページの表示に数秒かかることがあります。"
+          }
+        }
+      }
+    },
     "About cooViewer" : {
       "localizations" : {
         "ja" : {
@@ -354,6 +374,16 @@
         }
       }
     },
+    "Copy" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コピー"
+          }
+        }
+      }
+    },
     "Created" : {
       "localizations" : {
         "ja" : {
@@ -370,6 +400,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "作成日"
+          }
+        }
+      }
+    },
+    "Cut" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カット"
           }
         }
       }
@@ -434,382 +474,12 @@
         }
       }
     },
-    "Applies to JPEG pages only." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "JPEG のページにのみ適用されます。"
-          }
-        }
-      }
-    },
-    "Apply to:" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "適用範囲:"
-          }
-        }
-      }
-    },
-    "Compression noise reduction:" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "圧縮ノイズ低減:"
-          }
-        }
-      }
-    },
-    "Copy" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "コピー"
-          }
-        }
-      }
-    },
-    "Everywhere (incl. View Original)" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "原寸表示も含めて全て"
-          }
-        }
-      }
-    },
-    "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "初回に小さなモデル(約 1.2 MB)をダウンロードします。この方式は処理が重く、ページの表示に数秒かかることがあります。"
-          }
-        }
-      }
-    },
-    "Download and Use" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ダウンロードして使用"
-          }
-        }
-      }
-    },
-    "Medium" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "中"
-          }
-        }
-      }
-    },
-    "Model: downloading…" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "モデル: ダウンロード中…"
-          }
-        }
-      }
-    },
-    "Model: not downloaded yet" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "モデル: 未ダウンロード(使用時に取得します)"
-          }
-        }
-      }
-    },
-    "Model: ready" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "モデル: 使用可能"
-          }
-        }
-      }
-    },
-    "Model: unavailable (retried automatically when needed)" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "モデル: 利用不可(必要時に自動で再試行します)"
-          }
-        }
-      }
-    },
-    "Strong (ML model)" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "強(ML モデル)"
-          }
-        }
-      }
-    },
-    "Use the “Strong (ML model)” level?" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "「強(ML モデル)」を使用しますか?"
-          }
-        }
-      }
-    },
-    "Maximum (×4 ML upscale)" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "最高(×4 ML 超解像)"
-          }
-        }
-      }
-    },
-    "Use the “Maximum (×4 ML upscale)” level?" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "「最高(×4 ML 超解像)」を使用しますか?"
-          }
-        }
-      }
-    },
-    "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "初回にモデル(約 9 MB)をダウンロードします。各ページをニューラルネットワークで 4 倍に拡大する最も重い方式で、ページの処理に数秒かかることがあります(結果はディスクにキャッシュされます)。"
-          }
-        }
-      }
-    },
-    "Very large pages (over 2048 px) and the loupe / View Original fall back to Strong." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "非常に大きなページ(長辺 2048 px 超)とルーペ・原寸表示は「強」で処理します。"
-          }
-        }
-      }
-    },
-    "Main view and loupe" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "メイン表示とルーペ"
-          }
-        }
-      }
-    },
-    "Main view only" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "メイン表示のみ"
-          }
-        }
-      }
-    },
-    "Strong" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "強"
-          }
-        }
-      }
-    },
-    "Weak" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "弱"
-          }
-        }
-      }
-    },
-    "Cut" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "カット"
-          }
-        }
-      }
-    },
     "Delete" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "削除"
-          }
-        }
-      }
-    },
-    "Edit" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "編集"
-          }
-        }
-      }
-    },
-    "Fade" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "フェード"
-          }
-        }
-      }
-    },
-    "Loupe" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ルーペ"
-          }
-        }
-      }
-    },
-    "Paste" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ペースト"
-          }
-        }
-      }
-    },
-    "Redo" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "やり直す"
-          }
-        }
-      }
-    },
-    "Select All" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "すべてを選択"
-          }
-        }
-      }
-    },
-    "Undo" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "取り消す"
-          }
-        }
-      }
-    },
-    "Page Curl" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ページカール"
-          }
-        }
-      }
-    },
-    "Page Turn Effect" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ページめくり効果"
-          }
-        }
-      }
-    },
-    "Page turn effect:" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ページめくり効果:"
-          }
-        }
-      }
-    },
-    "Slide" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "スライド"
-          }
-        }
-      }
-    },
-    "Zoom Fade" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ズームフェード"
-          }
-        }
-      }
-    },
-    "Default" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "デフォルト"
-          }
-        }
-      }
-    },
-    "Default: high-quality downscaling that reduces moiré on screentones." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "既定: 縮小を高品質リサンプルし、網点のモアレを抑えます。"
           }
         }
       }
@@ -860,6 +530,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "何もしない"
+          }
+        }
+      }
+    },
+    "Download and Use" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ダウンロードして使用"
+          }
+        }
+      }
+    },
+    "Edit" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "編集"
           }
         }
       }
@@ -926,12 +616,32 @@
         }
       }
     },
+    "Everywhere (incl. View Original)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原寸表示も含めて全て"
+          }
+        }
+      }
+    },
     "Exposure Time" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "露出時間"
+          }
+        }
+      }
+    },
+    "Fade" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "フェード"
           }
         }
       }
@@ -1396,6 +1106,16 @@
         }
       }
     },
+    "Loupe" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ルーペ"
+          }
+        }
+      }
+    },
     "Loupe Zoom In" : {
       "localizations" : {
         "ja" : {
@@ -1416,22 +1136,22 @@
         }
       }
     },
-    "Low" : {
+    "Main view and loupe" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "低"
+            "value" : "メイン表示とルーペ"
           }
         }
       }
     },
-    "Low: fast GPU scaling only." : {
+    "Main view only" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "低: GPU の高速な拡縮のみを行います。"
+            "value" : "メイン表示のみ"
           }
         }
       }
@@ -1442,6 +1162,96 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "デコード上限(長辺):"
+          }
+        }
+      }
+    },
+    "Standard" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "標準"
+          }
+        }
+      }
+    },
+    "Very High (ML denoise)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超高(ML ノイズ除去)"
+          }
+        }
+      }
+    },
+    "Use the “Very High (ML denoise)” level?" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「超高(ML ノイズ除去)」を使用しますか?"
+          }
+        }
+      }
+    },
+    "Apply ML processing to:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ML 処理の適用範囲:"
+          }
+        }
+      }
+    },
+    "Standard: high-quality downscaling that reduces moiré on screentones." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "標準: スクリーントーンのモアレを抑える高品質な縮小を行います。"
+          }
+        }
+      }
+    },
+    "Very High: High plus ML denoising (waifu2x) applied to every page." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超高: 「高」に加えて全ページに ML ノイズ除去(waifu2x)を適用します。"
+          }
+        }
+      }
+    },
+    "Maximum: High plus ×4 ML upscaling (Real-ESRGAN) applied to every page." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最高: 「高」に加えて全ページに ×4 ML 超解像(Real-ESRGAN)を適用します。"
+          }
+        }
+      }
+    },
+    "Very large pages (over 2048 px) and the loupe / View Original fall back to Very High." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "非常に大きなページ(長辺 2048 px 超)とルーペ・原寸表示は「超高」で処理します。"
+          }
+        }
+      }
+    },
+    "Maximum (×4 ML upscale)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最高(×4 ML 超解像)"
           }
         }
       }
@@ -1462,6 +1272,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "しまう"
+          }
+        }
+      }
+    },
+    "Model: downloading…" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: ダウンロード中…"
+          }
+        }
+      }
+    },
+    "Model: not downloaded yet" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: 未ダウンロード(使用時に取得します)"
+          }
+        }
+      }
+    },
+    "Model: ready" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: 使用可能"
+          }
+        }
+      }
+    },
+    "Model: unavailable (retried automatically when needed)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: 利用不可(必要時に自動で再試行します)"
           }
         }
       }
@@ -1837,6 +1687,16 @@
         }
       }
     },
+    "Page Curl" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページカール"
+          }
+        }
+      }
+    },
     "Page number" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1858,6 +1718,26 @@
         }
       }
     },
+    "Page Turn Effect" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページめくり効果"
+          }
+        }
+      }
+    },
+    "Page turn effect:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページめくり効果:"
+          }
+        }
+      }
+    },
     "Pages / pixels / percent used by some actions." : {
       "localizations" : {
         "ja" : {
@@ -1874,6 +1754,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "パスワード入力はキャンセルされました。"
+          }
+        }
+      }
+    },
+    "Paste" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ペースト"
           }
         }
       }
@@ -2054,6 +1944,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "履歴の件数: %lld"
+          }
+        }
+      }
+    },
+    "Redo" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "やり直す"
           }
         }
       }
@@ -2338,6 +2238,16 @@
         }
       }
     },
+    "Select All" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "すべてを選択"
+          }
+        }
+      }
+    },
     "Services" : {
       "localizations" : {
         "ja" : {
@@ -2546,6 +2456,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "スキップ(進む)"
+          }
+        }
+      }
+    },
+    "Slide" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スライド"
           }
         }
       }
@@ -2855,12 +2775,32 @@
         }
       }
     },
+    "Undo" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取り消す"
+          }
+        }
+      }
+    },
     "Use advanced settings" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "高度な設定を使う"
+          }
+        }
+      }
+    },
+    "Use the “Maximum (×4 ML upscale)” level?" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「最高(×4 ML 超解像)」を使用しますか?"
           }
         }
       }
@@ -3001,6 +2941,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "拡大/縮小"
+          }
+        }
+      }
+    },
+    "Zoom Fade" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ズームフェード"
           }
         }
       }
