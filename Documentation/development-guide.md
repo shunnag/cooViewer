@@ -135,6 +135,7 @@ GitHub リリース **`models-1`**(タグ)に資産として置き、アプリ�
 | 症状 | 原因と対処 |
 |---|---|
 | SR 結果にタイル境界の帯・線 | GAN は平坦部のトーンがタイル毎に Δ1-2 階調揺れる。マージン捨てだけでは不十分で、フェザー合成+Bayer ディザ(MLSuperResolver.writeTile)を外さないこと |
+| Xcode コンソールに linkd / appintents のエラー | `Unable to get synchronousRemoteObjectProxy … com.apple.linkd.autoShortcut` 等は AppKit の App Intents 自動登録が **ad-hoc 署名の Debug ビルド**で弾かれる macOS 側のノイズ(XCTest 実行にも出る)。アプリのコードとは無関係で、Developer ID 署名の Release ビルドでは出ない(2026-08 監査: Release はエラー級・fault 級ともゼロ、stdout/stderr もゼロを確認)。アプリ自身のログは MediaSpeedProbe の Logger.info(ボリューム毎 1 回)のみ、という状態を保つ |
 | XADMaster が undefined symbol | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
 | 公証が Invalid | Sparkle 内部の再署名漏れ(sign-sparkle-nested.sh)か、素の Release ビルド |
 | 自動更新が来ない | appcast.xml の `length=` 不一致・資産名が `cooViewer-<ver>.zip` でない |
