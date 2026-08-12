@@ -47,7 +47,7 @@ actor ImageResampler {
     /// 圧縮ノイズ低減を掛ける(拡大時にノイズを増幅させないため前段で行う)
     func resample(_ image: CGImage, to pixelSize: CGSize,
                   cacheKey: String, upscaleWithMetalFX: Bool,
-                  noiseReduction: NoiseReductionLevel = .none) -> CGImage? {
+                  noiseReduction: NoiseReductionLevel = .none) async -> CGImage? {
         let width = Int(pixelSize.width.rounded())
         let height = Int(pixelSize.height.rounded())
         guard width > 0, height > 0 else { return nil }
@@ -64,12 +64,11 @@ actor ImageResampler {
             return hit
         }
 
-        // 圧縮ノイズ低減(JPEG のブロックノイズ)。失敗時は原画で続行
-        var source = image
-        if noiseReduction != .none,
-           let reduced = noiseReducer?.reduce(image, level: noiseReduction) {
-            source = reduced
-        }
+        // 圧縮ノイズ低減(JPEG のブロックノイズ)。強は CoreML モデル、
+        // 弱/中(および強のモデル未導入時)は CINoiseReduction。失敗時は原画
+        let source = await reducedSource(of: image, level: noiseReduction)
+        // モデル推論の await 中に同じキーの計算が完了していたら使い回す
+        if let hit = cache[key] { return hit }
 
         let isUpscale = width > source.width || height > source.height
         var result: CGImage?
@@ -94,12 +93,19 @@ actor ImageResampler {
 
     /// リサイズを伴わない圧縮ノイズ低減(ルーペ・原寸表示用)。
     /// なし指定・失敗時はそのまま返す
-    func reduceNoise(_ image: CGImage, level: NoiseReductionLevel) -> CGImage {
-        guard level != .none,
-              let reduced = noiseReducer?.reduce(image, level: level) else {
-            return image
+    func reduceNoise(_ image: CGImage, level: NoiseReductionLevel) async -> CGImage {
+        await reducedSource(of: image, level: level)
+    }
+
+    /// ノイズ低減の実処理の振り分け(強=CoreML → CI フォールバック)
+    private func reducedSource(of image: CGImage,
+                               level: NoiseReductionLevel) async -> CGImage {
+        guard level != .none else { return image }
+        if level == .strong,
+           let reduced = await MLNoiseReducer.shared.reduce(image) {
+            return reduced
         }
-        return reduced
+        return noiseReducer?.reduce(image, level: level) ?? image
     }
 
     // MARK: - バイト基準 LRU(PageCache と同じ方針)

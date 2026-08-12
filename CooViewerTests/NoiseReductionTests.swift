@@ -43,18 +43,40 @@ final class NoiseReductionTests: XCTestCase {
         return total / Double(count)
     }
 
-    func testStrongReductionSoftensBlockBoundaries() throws {
+    func testMediumReductionSoftensBlockBoundaries() throws {
         guard let reducer = NoiseReducer() else {
             throw XCTSkip("Metal が使えない環境")
         }
         let source = blockyImage()
         let before = boundaryContrast(source)
-        let reduced = try XCTUnwrap(reducer.reduce(source, level: .strong))
+        let reduced = try XCTUnwrap(reducer.reduce(source, level: .medium))
         XCTAssertEqual(reduced.width, source.width)
         XCTAssertEqual(reduced.height, source.height)
         let after = boundaryContrast(reduced)
         XCTAssertLessThan(after, before * 0.9,
             "ブロック境界の段差が下がるはず(前 \(before) 後 \(after))")
+    }
+
+    func testLightIsGentlerThanMedium() throws {
+        // 弱(旧弱と旧強の中間)は中より段差の残りが多い=弱い
+        guard let reducer = NoiseReducer() else {
+            throw XCTSkip("Metal が使えない環境")
+        }
+        let source = blockyImage()
+        let light = boundaryContrast(
+            try XCTUnwrap(reducer.reduce(source, level: .light)))
+        let medium = boundaryContrast(
+            try XCTUnwrap(reducer.reduce(source, level: .medium)))
+        XCTAssertGreaterThan(light, medium)
+    }
+
+    func testMLTileOriginsCoverImage() {
+        // 128 で割り切れないサイズも端まで覆う
+        let origins = MLNoiseReducer.tileOrigins(width: 300, height: 130)
+        XCTAssertEqual(origins.count, 6)  // 3 列 × 2 行
+        XCTAssertTrue(origins.contains { $0.x == 256 && $0.y == 128 })
+        XCTAssertEqual(MLNoiseReducer.tileOrigins(width: 128, height: 128).count, 1)
+        XCTAssertTrue(MLNoiseReducer.tileOrigins(width: 0, height: 100).isEmpty)
     }
 
     func testNoneLevelReturnsOriginal() throws {
@@ -105,6 +127,9 @@ final class NoiseReductionTests: XCTestCase {
         store.noiseReductionLevel = .strong
         store.noiseReductionScope = .everywhere
         XCTAssertEqual(store.noiseReductionLevel, .strong)
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 3)
+        store.noiseReductionLevel = .medium
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 2)
         XCTAssertEqual(store.noiseReductionScope, .everywhere)
         XCTAssertTrue(store.noiseReductionScope.includesLoupe)
         XCTAssertTrue(store.noiseReductionScope.includesOriginalSize)

@@ -484,6 +484,96 @@
         }
       }
     },
+    "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "初回に小さなモデル(約 1.2 MB)をダウンロードします。この方式は処理が重く、ページの表示に数秒かかることがあります。"
+          }
+        }
+      }
+    },
+    "Download and Use" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ダウンロードして使用"
+          }
+        }
+      }
+    },
+    "Medium" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中"
+          }
+        }
+      }
+    },
+    "Model: downloading…" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: ダウンロード中…"
+          }
+        }
+      }
+    },
+    "Model: not downloaded yet" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: 未ダウンロード(使用時に取得します)"
+          }
+        }
+      }
+    },
+    "Model: ready" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: 使用可能"
+          }
+        }
+      }
+    },
+    "Model: unavailable (retried automatically when needed)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデル: 利用不可(必要時に自動で再試行します)"
+          }
+        }
+      }
+    },
+    "Strong (ML model)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "強(ML モデル)"
+          }
+        }
+      }
+    },
+    "Use the “Strong (ML model)” level?" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「強(ML モデル)」を使用しますか?"
+          }
+        }
+      }
+    },
     "Main view and loupe" : {
       "localizations" : {
         "ja" : {
