@@ -65,6 +65,11 @@ actor ImageResampler {
         // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
         let source = await reducedSource(of: image, level: noiseReduction,
                                          cacheKey: cacheKey)
+        // キャンセルされた呼び出しの結果は捨てる: ML がキャンセルで nil を
+        // 返すと source は CI フォールバックの絵になっており、これを
+        // キャッシュすると ML 用キーに非 ML の結果が残る(先読みの
+        // 表示優先キャンセルで顕在化する汚染の防止)
+        if Task.isCancelled { return nil }
         // モデル推論の await 中に同じキーの計算が完了していたら使い回す
         if let hit = cache[key] { return hit }
 

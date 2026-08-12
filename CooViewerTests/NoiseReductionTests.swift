@@ -128,6 +128,27 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertTrue(reduced === reducedAgain)  // キャッシュ命中
     }
 
+    func testCancelledResampleDoesNotPolluteCache() async {
+        // 表示優先の先読みキャンセル時、ML がフォールバックした結果を
+        // ML 用キーでキャッシュしない(汚染防止)
+        let resampler = ImageResampler(byteLimit: 8 << 20)
+        let source = blockyImage()
+        let size = CGSize(width: 32, height: 32)
+        let task = Task {
+            try? await Task.sleep(for: .seconds(1))  // キャンセルで即座に抜ける
+            return await resampler.resample(
+                source, to: size, cacheKey: "cancel-t",
+                upscaleWithMetalFX: false, noiseReduction: .strong)
+        }
+        task.cancel()
+        let result = await task.value
+        XCTAssertNil(result, "キャンセルされた呼び出しは結果を返さない")
+        let cached = await resampler.cached(
+            source, to: size, cacheKey: "cancel-t",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        XCTAssertNil(cached, "キャンセル時はキャッシュに何も残さない")
+    }
+
     @MainActor
     func testResampleActivityNotification() async throws {
         // リサンプル開始で true、完了で false が通知される
