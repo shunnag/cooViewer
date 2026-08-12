@@ -21,6 +21,7 @@ actor ImageResampler {
     private var pressureSource: (any DispatchSourceMemoryPressure)?
     private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
     private lazy var lanczos: LanczosDownscaler? = LanczosDownscaler()
+    private lazy var noiseReducer: NoiseReducer? = NoiseReducer()
 
     init(byteLimit: Int = min(
         512 << 20,
@@ -40,16 +41,21 @@ actor ImageResampler {
     }
 
     /// image を pixelSize(デバイスピクセル)へリサンプルする。
-    /// 同サイズなら image をそのまま返す。upscaleWithMetalFX は拡大時のみ有効で、
-    /// 使えない場合は CG へフォールバックする。
+    /// 同サイズ(かつノイズ低減なし)なら image をそのまま返す。
+    /// upscaleWithMetalFX は拡大時のみ有効で、使えない場合は CG へ
+    /// フォールバックする。noiseReduction を指定するとリサンプルの前に
+    /// 圧縮ノイズ低減を掛ける(拡大時にノイズを増幅させないため前段で行う)
     func resample(_ image: CGImage, to pixelSize: CGSize,
-                  cacheKey: String, upscaleWithMetalFX: Bool) -> CGImage? {
+                  cacheKey: String, upscaleWithMetalFX: Bool,
+                  noiseReduction: NoiseReductionLevel = .none) -> CGImage? {
         let width = Int(pixelSize.width.rounded())
         let height = Int(pixelSize.height.rounded())
         guard width > 0, height > 0 else { return nil }
-        if width == image.width, height == image.height { return image }
+        if width == image.width, height == image.height,
+           noiseReduction == .none { return image }
 
-        let key = "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)|\(upscaleWithMetalFX)"
+        let key = "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)"
+            + "|\(upscaleWithMetalFX)|nr\(noiseReduction.rawValue)"
         if let hit = cache[key] {
             if let index = order.firstIndex(of: key) {
                 order.remove(at: index)
@@ -58,22 +64,42 @@ actor ImageResampler {
             return hit
         }
 
-        let isUpscale = width > image.width || height > image.height
+        // 圧縮ノイズ低減(JPEG のブロックノイズ)。失敗時は原画で続行
+        var source = image
+        if noiseReduction != .none,
+           let reduced = noiseReducer?.reduce(image, level: noiseReduction) {
+            source = reduced
+        }
+
+        let isUpscale = width > source.width || height > source.height
         var result: CGImage?
-        if isUpscale, upscaleWithMetalFX {
-            result = metalFXUpscale(image, width: width, height: height)
+        if width == source.width, height == source.height {
+            result = source  // ノイズ低減のみ(サイズ変更なし)
+        }
+        if result == nil, isUpscale, upscaleWithMetalFX {
+            result = metalFXUpscale(source, width: width, height: height)
         }
         // 縮小は GPU の Lanczos を最優先(CPU の CG 高品質補間はフォールバック)
         if result == nil, !isUpscale {
-            result = lanczos?.downscale(image, to: CGSize(width: width, height: height))
+            result = lanczos?.downscale(source, to: CGSize(width: width, height: height))
         }
         if result == nil {
-            result = Self.cgResample(image, width: width, height: height)
+            result = Self.cgResample(source, width: width, height: height)
         }
         if let result {
             insert(result, for: key)
         }
         return result
+    }
+
+    /// リサイズを伴わない圧縮ノイズ低減(ルーペ・原寸表示用)。
+    /// なし指定・失敗時はそのまま返す
+    func reduceNoise(_ image: CGImage, level: NoiseReductionLevel) -> CGImage {
+        guard level != .none,
+              let reduced = noiseReducer?.reduce(image, level: level) else {
+            return image
+        }
+        return reduced
     }
 
     // MARK: - バイト基準 LRU(PageCache と同じ方針)

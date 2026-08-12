@@ -152,6 +152,7 @@ final class ReaderWindowController: NSWindowController {
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
         readerView.interpolation = settings.interpolation
+        readerView.noiseReductionLevel = settings.noiseReductionLevel
         readerView.backgroundColor = settings.viewBackgroundColor
         // ページ番号/ページバーの見た目(仕様書 §3.4, §6.1)
         pageLabel.font = settings.pageNumFont
@@ -897,6 +898,11 @@ final class ReaderWindowController: NSWindowController {
         let ids = spread.indices.map { index in
             book.entries.indices.contains(index) ? book.entries[index].id : index
         }
+        // 圧縮ノイズ低減の対象可否(JPEG のページのみ)
+        let noiseReducible = spread.indices.map { index in
+            book.entries.indices.contains(index)
+                && SupportedTypes.isJPEGFile(book.entries[index].name)
+        }
         // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
         let turn: ReaderView.PageTurn? = {
             guard let turnForward else { return nil }
@@ -908,6 +914,7 @@ final class ReaderWindowController: NSWindowController {
         }()
         readerView.setPages(images, ids: ids,
                             readsFromLeft: book.readMode.readsFromLeft,
+                            noiseReducible: noiseReducible,
                             turn: turn)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
@@ -977,11 +984,15 @@ final class ReaderWindowController: NSWindowController {
                 for (position, image) in images.enumerated() {
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
+                    // ノイズ低減の有無も含めて実表示時と同一条件で先行計算する
+                    let reduction = SupportedTypes.isJPEGFile(book.entries[index].name)
+                        ? self.settings.noiseReductionLevel : NoiseReductionLevel.none
                     // キーは ReaderView の実表示時と同一(そこでキャッシュ命中する)
                     _ = await ImageResampler.shared.resample(
                         image, to: targets[position],
                         cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
-                        upscaleWithMetalFX: useMetalFX)
+                        upscaleWithMetalFX: useMetalFX,
+                        noiseReduction: reduction)
                 }
                 resampledPages += indices.count
                 guard resampledPages < pageLimit else { return }

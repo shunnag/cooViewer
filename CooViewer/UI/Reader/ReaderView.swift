@@ -93,6 +93,20 @@ final class ReaderView: NSView {
         }
     }
 
+    /// 圧縮ノイズ低減の強さ(設定から注入。JPEG のページのみ効く)。
+    /// 変更時はリサンプルを作り直す(補間変更と同じ扱い)
+    var noiseReductionLevel: NoiseReductionLevel = .none {
+        didSet {
+            if noiseReductionLevel != oldValue {
+                resampledPages = Array(repeating: nil, count: images.count)
+                needsLayout = true
+            }
+        }
+    }
+
+    /// ページごとの「圧縮ノイズ低減の対象か」(JPEG のみ true。setPages で更新)
+    private var noiseReducibles: [Bool] = []
+
     var backgroundColor: NSColor = .black {
         didSet { layer?.backgroundColor = backgroundColor.cgColor }
     }
@@ -156,8 +170,10 @@ final class ReaderView: NSView {
 
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
+    /// noiseReducible はページごとの圧縮ノイズ低減の対象可否(JPEG のみ true)。
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
+                  noiseReducible: [Bool] = [],
                   turn: PageTurn? = nil) {
         // スワイプ追従カールの予約(refreshDisplay 前にコントローラが設定)。
         // 自動再生の turn より優先する
@@ -178,6 +194,8 @@ final class ReaderView: NSView {
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
+        noiseReducibles = noiseReducible.count == images.count
+            ? noiseReducible : Array(repeating: false, count: images.count)
         resampledPages = Array(repeating: nil, count: images.count)
         loupeHighResImages.removeAll()
         for pageLayer in pageLayers {
@@ -503,7 +521,8 @@ final class ReaderView: NSView {
     private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
         guard interpolation == .systemDefault || interpolation == .high,
               !images.isEmpty else { return }
-        let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String)] =
+        let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String,
+                        noiseReduction: NoiseReductionLevel)] =
             images.indices.compactMap { index in
                 // レイアウトと setPages の間で配列長が食い違っても落ちないように検証
                 guard scaledSizes.indices.contains(index),
@@ -514,8 +533,10 @@ final class ReaderView: NSView {
                     width: (scaledSizes[index].width * backingScale).rounded(),
                     height: (scaledSizes[index].height * backingScale).rounded())
                 if let done = resampledPages[index], done.size == pixelSize { return nil }
+                let reduction = noiseReducibles.indices.contains(index)
+                    && noiseReducibles[index] ? noiseReductionLevel : .none
                 return (index, images[index], pixelSize,
-                        "\(resampleKeyPrefix)#\(pageIDs[index])")
+                        "\(resampleKeyPrefix)#\(pageIDs[index])", reduction)
             }
         // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
         // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
@@ -537,7 +558,8 @@ final class ReaderView: NSView {
             for request in requests {
                 guard let resampled = await ImageResampler.shared.resample(
                     request.image, to: request.pixelSize,
-                    cacheKey: request.key, upscaleWithMetalFX: useMetalFX) else { continue }
+                    cacheKey: request.key, upscaleWithMetalFX: useMetalFX,
+                    noiseReduction: request.noiseReduction) else { continue }
                 guard let self, !Task.isCancelled else { return }
                 self.applyResampled(resampled, size: request.pixelSize,
                                     at: request.index, generation: generation,
