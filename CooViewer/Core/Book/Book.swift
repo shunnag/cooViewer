@@ -6,8 +6,6 @@ import Foundation
 ///
 /// 旧実装の「nowPage の二重意味」(仕様書 §1.4)は持ち込まず、
 /// `currentIndex` は常に「表示中スプレッドの先頭ページ(読み順)」を指す。
-/// EN: One open book: sorted page list, current position, spread pairing,
-/// EN: page cache and prefetch. currentIndex is the first page of the spread.
 @MainActor
 final class Book {
     let source: any BookSource
@@ -19,43 +17,35 @@ final class Book {
     var singleSetting = PageLayout.defaultSingleSetting
     /// 見開きモードで先頭ページ(表紙)を単ページにする(新機能・既定オフ)。
     /// marks の強制ペア指定(§4.2.1)はこれより優先される
-    /// EN: Keep the first page (cover) single in spread modes; explicit
-    /// EN: forced-pair marks still win.
     var coverSingleFirst = false
     var bookmarks: [BookHistoryStore.Bookmark] = []
 
     /// 表示用デコードの長辺上限(px)。原寸表示は fullResolutionImage(at:) を使う
     /// (設計書「キャッシュ・先読み設計」)。nil で無制限。
-    /// EN: Long-edge pixel cap for display decodes; nil means uncapped.
     var displayPixelCap: Int? = 4096
 
     /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)
-    /// EN: Identity key for disk caches; changes whenever the book content changes.
     let cacheKey: String
 
     private let cache: PageCache
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
-    private var lastMoveForward = true
+    /// 直近の移動方向(先読み・事前リサンプルの向きの決定に使う)
+    private(set) var lastMoveForward = true
 
     /// アニメーション判定で「静止画」と分かったページ(entry.id)。
     /// 表示のたびに生データを読み直して判定し直すのを防ぐ
-    /// EN: Entry ids probed as NOT animated, so redisplays skip the raw
-    /// EN: re-read + re-parse of the animation probe.
     var probedStaticAnimationIDs: Set<Int> = []
 
-    /// 先読みの幅(設計書「キャッシュ・先読み設計」)
-    /// 先読み枚数(設定「高度」から注入される。既定は設計書 §3.1 の値)
-    /// EN: Prefetch window sizes, injected from the Advanced settings tab.
+    /// 先読み枚数(設計書「キャッシュ・先読み設計」。設定「高度」または
+    /// メディアプロファイルから注入される。既定は SSD 想定の値)
     var prefetchAhead = 12
     var prefetchBehind = 3
     /// 置き場所の速度プロファイル(先読み並列度・サムネイル並列度の根拠)
-    /// EN: Volume-speed profile driving prefetch and thumbnail concurrency.
     var mediaProfile: MediaProfile = .unknown
 
     /// 表示すべきページの組。images の nil は「読めないページ」
     /// (呼び出し側が壊れ画像プレースホルダを当てる。仕様書 §4.17)。
-    /// EN: Pages to show now; a nil image means the page failed to decode.
     struct Spread {
         let indices: [Int]
         let images: [CGImage?]
@@ -88,8 +78,6 @@ final class Book {
     /// 混ぜる: フォルダの本はサブフォルダ内だけの変更や同名上書きで親の
     /// 更新日時が変わらないため、ファイル情報だけでは古いサムネイルが残る。
     /// エントリ側のダイジェストは順序非依存(ソート・シャッフルの影響なし)
-    /// EN: Hash of file stat plus an order-independent digest of all entries,
-    /// EN: so folder books invalidate even when only subfolder contents change.
     private static func makeCacheKey(for url: URL, entries: [PageEntry]) -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let modified = (attributes?[.modificationDate] as? Date)?
@@ -126,8 +114,6 @@ final class Book {
 
     /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
     /// デコードに合流し、同じページを二重にデコードしないための単一飛行
-    /// EN: In-flight decodes keyed by entry id: the display request joins the
-    /// EN: prefetch decode instead of duplicating it (single-flight).
     private var inFlightLoads: [Int: (token: Int, task: Task<CGImage?, Never>)] = [:]
     private var inFlightToken = 0
 
@@ -140,8 +126,6 @@ final class Book {
         }
         // detached: 先読みのキャンセルが、合流している表示要求まで
         // 巻き込まないように独立タスクで走らせる
-        // EN: Detached so cancelling the prefetch never kills a decode the
-        // EN: on-screen request has joined.
         let source = source
         let entry = entries[index]
         let cap = displayPixelCap
@@ -160,14 +144,11 @@ final class Book {
             // キャッシュへの登録はキャップが変わっていない場合のみ
             // (拡大後に旧キャップの低解像度が居座るのを防ぐ。表示自体は返し、
             //  直後の再表示が新キャップで再デコードする)
-            // EN: Insert only if the cap is unchanged, so a raise never gets
-            // EN: repopulated with stale low-res decodes.
             if cap == displayPixelCap {
                 await cache.insert(image, for: key)
             }
             if pageSizeCache[key] == nil {
                 // キャップ付きデコードでも縦横比は保たれるため判定に使える
-                // EN: Capped decodes preserve the aspect ratio, fine for pairing.
                 pageSizeCache[key] = CGSize(width: image.width, height: image.height)
             }
         }
@@ -175,7 +156,6 @@ final class Book {
     }
 
     /// 原寸表示・書き出し用: キャッシュと表示上限を介さずフル解像度でデコードする。
-    /// EN: Full-resolution decode that bypasses the cache and the display cap.
     func fullResolutionImage(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
         return try? await source.image(for: entries[index], maxPixelSize: nil)
@@ -183,8 +163,6 @@ final class Book {
 
     /// ページ寸法の索引(entry.id → 寸法)。ヘッダ読みやデコード結果から
     /// 埋まり、見開き判定(縦横比)をデコードなしで行えるようにする
-    /// EN: Page-size index (header reads + decode results) so spread pairing
-    /// EN: needs no decode.
     private var pageSizeCache: [Int: CGSize] = [:]
 
     private func pageSize(at index: Int) async -> CGSize? {
@@ -204,7 +182,6 @@ final class Book {
     }
 
     /// サイズ索引による見開き候補判定。寸法が取れなければ nil(従来判定へ)
-    /// EN: Size-index pairing check; nil falls back to the decode-based test.
     private func isSmallFromIndex(at index: Int) async -> Bool? {
         guard let size = await pageSize(at: index) else { return nil }
         return PageLayout.isSmall(size: size, index: index,
@@ -214,7 +191,6 @@ final class Book {
 
     /// 表示デコード上限の更新。上げた場合は低解像度の既存キャッシュを破棄する
     /// (ウインドウ拡大・原寸表示切替時。下げた場合は大きい画像を使い続ける)
-    /// EN: Update the decode cap; raising it drops the lower-res cache.
     func updateDisplayPixelCap(_ cap: Int) async -> Bool {
         guard cap != displayPixelCap else { return false }
         let raised = cap > (displayPixelCap ?? Int.max)
@@ -223,8 +199,6 @@ final class Book {
             await cache.removeAll()
             // 旧キャップで進行中のデコードには合流させない(新規要求は
             // 新キャップで作り直す。旧タスクの結果はキャップ照合で捨てられる)
-            // EN: Detach in-flight old-cap decodes; new requests re-decode at
-            // EN: the new cap and stale results fail the cap check.
             inFlightLoads.removeAll()
         }
         return raised
@@ -240,8 +214,6 @@ final class Book {
     }
 
     /// 現在位置のスプレッドを確定する(仕様書 §4.2.4 の見開き判定を再現)。
-    /// EN: Builds the current 1- or 2-page spread: pair only when both pages
-    /// EN: are portrait-ish ("small") and spread mode is on.
     func currentSpread() async -> Spread {
         guard !entries.isEmpty else { return Spread(indices: [], images: []) }
         currentIndex = min(max(0, currentIndex), entries.count - 1)
@@ -249,8 +221,6 @@ final class Book {
         // サイズ索引(ヘッダ寸法)でペアが確定するなら、両ページを並列取得する
         // (従来はまず 1 枚目をデコードしないと 2 枚目に着手できなかった)。
         // 壊れページ(デコード失敗)は従来どおり単ページへ落とす
-        // EN: When the size index settles the pairing, fetch both halves in
-        // EN: parallel; broken pages still collapse to a single page.
         if readMode.isSpread, currentIndex + 1 < entries.count,
            let firstSmall = await isSmallFromIndex(at: currentIndex),
            firstSmall,
@@ -266,7 +236,6 @@ final class Book {
                                   images: [first, second])
                 }
                 // 片方が壊れていたら従来規則(単ページ)へ
-                // EN: A broken half collapses to a single page (legacy rule).
                 lastDisplayCount = 1
                 schedulePrefetch()
                 return Spread(indices: [currentIndex], images: [first])
@@ -305,8 +274,6 @@ final class Book {
         if readMode.isSpread, currentIndex >= 2 {
             // サイズ索引が両ページ分あればデコードなしで判定(後方めくりの
             // 逐次 2 デコード待ちを解消)。無ければ従来のデコード判定
-            // EN: Judge from the size index when both sizes are known —
-            // EN: no decodes on the backward turn; else the legacy path.
             if let firstSmall = await isSmallFromIndex(at: currentIndex - 2),
                let secondSmall = await isSmallFromIndex(at: currentIndex - 1) {
                 if firstSmall, secondSmall {
@@ -353,7 +320,6 @@ final class Book {
     }
 
     /// 末尾へ。見開きなら最終 2 枚がペアになる場合 count-2 に着地(仕様書 §4.3.3)。
-    /// EN: Jump to the end; lands on count-2 when the last two pages pair up.
     func goToLast() async {
         guard !entries.isEmpty else { return }
         lastMoveForward = true
@@ -377,9 +343,82 @@ final class Book {
         currentIndex = entries.count - 1
     }
 
+    /// 現在位置を「先頭から組み直した見開き区分」に整列させる。
+    /// ペア判定は仕様書 §4.2 どおり現在位置から局所的に決まるため、
+    /// 表紙単ページや見開きしきい値の切替だけではページの区切り
+    /// (偶奇)が変わらない。設定変更の瞬間はここで先頭起点の区分を
+    /// 歩き直し、現在ページを含むスプレッドの先頭に着地させる。
+    /// サイズ未取得のページは縦長(ペア可)とみなす(サムネイル一覧と
+    /// 同じ収束方針)。強制指定(marks)は isSmall 側で常に優先される。
+    func reanchorToLeadingPartition() async {
+        guard readMode.isSpread, currentIndex > 0 else { return }
+        // サイズ未取得でも marks・表紙単ページの規則は適用したいので、
+        // 不明なページは縦長サイズを仮定して通常判定に流す
+        func assumedSmall(at index: Int) async -> Bool {
+            let size = await pageSize(at: index) ?? CGSize(width: 70, height: 100)
+            return PageLayout.isSmall(size: size, index: index, marks: marks,
+                                      singleSetting: singleSetting,
+                                      coverSingle: coverSingleFirst)
+        }
+        var start = 0
+        while start < currentIndex {
+            var length = 1
+            if start + 1 < entries.count,
+               await assumedSmall(at: start),
+               await assumedSmall(at: start + 1) {
+                length = 2
+            }
+            guard start + length <= currentIndex else { break }
+            start += length
+        }
+        currentIndex = start
+    }
+
+    /// 次(forward)または前の方向へ、隣接するスプレッド列を予測する
+    /// (合計 maxPages ページまで。現在位置は動かさない)。事前リサンプル用に
+    /// ReaderWindowController が使う。ペア判定は moveNext/movePrevious と
+    /// 同じ規則だが、サイズ索引で確定できない場合はデコードせず単ページと
+    /// 予測する(先読みの完了後に確定するので外れても実害はない)。
+    /// 途中のスプレッドを分割してまで maxPages に詰めることはしない。
+    /// 端(次/前が無い)では空を返す
+    func predictedAdjacentSpreads(forward: Bool, maxPages: Int) async -> [[Int]] {
+        guard !entries.isEmpty, maxPages > 0 else { return [] }
+        var result: [[Int]] = []
+        var pages = 0
+        if forward {
+            var start = currentIndex + lastDisplayCount
+            while start < entries.count, pages < maxPages {
+                var spread = [start]
+                if readMode.isSpread, start + 1 < entries.count,
+                   await isSmallFromIndex(at: start) == true,
+                   await isSmallFromIndex(at: start + 1) == true {
+                    spread = [start, start + 1]
+                }
+                guard pages + spread.count <= maxPages else { break }
+                result.append(spread)
+                pages += spread.count
+                start += spread.count
+            }
+        } else {
+            var anchor = currentIndex
+            while anchor > 0, pages < maxPages {
+                var spread = [anchor - 1]
+                if readMode.isSpread, anchor >= 2,
+                   await isSmallFromIndex(at: anchor - 2) == true,
+                   await isSmallFromIndex(at: anchor - 1) == true {
+                    spread = [anchor - 2, anchor - 1]
+                }
+                guard pages + spread.count <= maxPages else { break }
+                result.append(spread)
+                pages += spread.count
+                anchor = spread[0]
+            }
+        }
+        return result
+    }
+
     /// パーセントジャンプ(旧 goToPar)。上限クランプなしの旧仕様を維持し、
     /// 100% 以上は hitEnd を返す(仕様書 §13.3)。
-    /// EN: Percent jump; values >= 100% report hitEnd (legacy behavior kept).
     func goToPercent(_ percent: Double) -> MoveResult {
         guard !entries.isEmpty else { return .hitEnd }
         let target = Int(Double(entries.count) * percent)
@@ -394,7 +433,6 @@ final class Book {
     }
 
     /// ソート変更。旧仕様通り先頭ページへ戻る(仕様書 §13.3 で「維持」判断)。
-    /// EN: Re-sorts the pages and resets to page 0, as the legacy app did.
     func setSortMode(_ mode: SortMode) {
         sortMode = mode
         entries = PageSorter.sorted(entries, mode: mode)
@@ -402,7 +440,6 @@ final class Book {
     }
 
     /// 先読みを打ち切る(本の切替時に旧本の I/O・デコードを止める)
-    /// EN: Cancel prefetch so a replaced book stops decoding in the background.
     func cancelPrefetch() {
         prefetchTask?.cancel()
         prefetchTask = nil
@@ -428,7 +465,6 @@ final class Book {
             index = (index - 1 + entries.count) % entries.count
             if entries[index].containerPath != current {
                 // 前グループの先頭へ(仕様書 §4.3.5)
-                // EN: Walk back to the first page of the previous folder group.
                 let target = entries[index].containerPath
                 var first = index
                 while first > 0, entries[first - 1].containerPath == target { first -= 1 }
@@ -450,8 +486,6 @@ final class Book {
 
     // MARK: - 先読み(仕様書 §4.5 の置換。設計書 §3.1)
 
-    /// EN: Cancels the previous prefetch and warms the cache around the
-    /// EN: current position, direction-aware; parallel only for folder books.
     private func schedulePrefetch() {
         prefetchTask?.cancel()
         let ahead = (0..<max(0, prefetchAhead)).map { currentIndex + lastDisplayCount + $0 }
@@ -460,7 +494,6 @@ final class Book {
         let targets = (lastMoveForward ? ahead + behind : behind + ahead)
             .filter { entries.indices.contains($0) }
         // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)
-        // EN: Prefetch width follows the volume-speed profile.
         let width = max(1, mediaProfile.bookPrefetchConcurrency)
         let source = source
 
@@ -468,8 +501,6 @@ final class Book {
             guard let self else { return }
             // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
             // ソースの「現在の状態」(スプール完了・形式)で判断する
-            // EN: Parallel-ness is decided from the source's CURRENT state so
-            // EN: solid archives never extract out of order.
             let parallel = await source.currentlySupportsParallelPageLoads()
             if parallel {
                 await withTaskGroup(of: Void.self) { group in

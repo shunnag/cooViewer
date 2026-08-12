@@ -3,21 +3,16 @@ import SwiftUI
 
 /// 付随機能: しおり・本の状態保存/復元・同フォルダ移動・スライドショー・
 /// ゴミ箱・Finder 表示・原寸表示(仕様書 §4.7-§4.13, §7)。
-/// EN: Companion features: bookmarks, state save/restore, sibling books,
-/// EN: slideshow, trash, Show in Finder, and original-size view.
 extension ReaderWindowController {
     // MARK: - 状態の保存と復元(仕様書 §7)
 
     /// 現在の本の状態を保存する(切替時・クローズ時・終了時。§7.7 の穴も塞ぐ)
-    /// EN: Persist page position, per-book settings, and bookmarks.
     func saveCurrentBookState() {
         // 開けなかった本(空のプレースホルダ)は履歴・設定に記録しない
         guard let book, book.pageCount > 0 else { return }
         let path = book.source.url.path
         // ページ番号に加えて「どのファイルか」も添える(新規キー)。次回開いたとき
         // エントリ列が変わっていても(ネスト展開の失敗・並び替え)照合できる
-        // EN: Record the page's in-book path next to the index so a changed
-        // EN: entry list (failed nested expansion, re-sort) can be re-resolved.
         func pagePath(_ index: Int) -> String? {
             book.entries.indices.contains(index) ? book.entries[index].pathInBook : nil
         }
@@ -28,8 +23,6 @@ extension ReaderWindowController {
             // 記録済みパスのページが今回の本に存在しない(ネスト展開の失敗等で
             // 照合できなかった)場合は元の記録を保つ。今回の位置で上書きすると、
             // 次回そのページが戻ってきたときに照合できなくなる
-            // EN: Keep the stored path when its page is absent this session
-            // EN: (failed reconciliation); overwriting would lose the target.
             if let stored = bookmark.pagePath,
                !book.entries.contains(where: { $0.pathInBook == stored }) {
                 return bookmark
@@ -45,7 +38,6 @@ extension ReaderWindowController {
     }
 
     /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)
-    /// EN: Apply saved per-book settings and optionally restore the last page.
     func restoreBookState(for book: Book, skipPageRestore: Bool) async {
         let store = BookHistoryStore.shared
         let path = book.source.url.path
@@ -56,7 +48,6 @@ extension ReaderWindowController {
             }
             book.marks = saved.marks
             // しおりは保存時のページパスで照合し直す(エントリ列の変化に追従)
-            // EN: Re-resolve bookmarks via their recorded page paths.
             book.bookmarks = saved.bookmarks.map { bookmark in
                 var resolved = bookmark
                 resolved.pageIndex = BookHistoryStore.reconciledIndex(
@@ -104,14 +95,12 @@ extension ReaderWindowController {
         }
         saveCurrentBookState()
         // サムネイル表示中はしおりバッジ/絞り込みへ即時反映
-        // EN: Keep the visible thumbnail overlay's bookmark state in sync.
         if isThumbnailOverlayVisible {
             presentThumbnailOverlay(for: book)
         }
     }
 
     /// しおり編集シート(§4.7.2。コピー編集のため Cancel が有効 §13.3)
-    /// EN: Bookmark editor sheet; edits a copy so Cancel really discards.
     func editBookmarks() {
         guard let book, book.pageCount > 0, let window,
               bookmarkEditorWindow == nil else { return }
@@ -125,14 +114,11 @@ extension ReaderWindowController {
                     if book === self.book {
                         self.saveCurrentBookState()
                         // サムネイル表示中はしおりバッジへ即時反映
-                        // EN: Refresh the visible overlay's bookmark badges.
                         if self.isThumbnailOverlayVisible {
                             self.presentThumbnailOverlay(for: book)
                         }
                     } else {
                         // シート中に本が切り替わっても編集対象の本へ保存する
-                        // EN: Persist to the edited book even if the current
-                        // EN: book changed while the sheet was open.
                         BookHistoryStore.shared.save(
                             displayName: book.displayName,
                             path: book.source.url.path,
@@ -192,8 +178,6 @@ extension ReaderWindowController {
     /// 巻末付近では毎ページ表示ごとに呼ばれる(次の本の事前準備)ため、
     /// 5 秒間キャッシュしてメインスレッドのディレクトリ走査を抑える
     /// (NAS/HDD の大きなフォルダで毎ページ数十 ms 止まるのを防ぐ)
-    /// EN: Cached for 5s — near the end of a book this runs per page turn,
-    /// EN: and a large NAS folder scan on the main thread stalls page turns.
     private func siblingBooks() -> [String] {
         guard let book else { return [] }
         let parent = book.source.url.deletingLastPathComponent()
@@ -227,9 +211,6 @@ extension ReaderWindowController {
         // ナビゲーションではコレクションフォルダへ潜らない: フォルダ自身に
         // 着地して階層を保つ(潜ると以後の次/前の本が中の階層の兄弟を走査し、
         // 元の階層へ戻れなくなる)。画像ゼロなら「画像がありません」を表示
-        // EN: Never drill on navigation — land on the folder itself so the
-        // EN: sibling scan stays at this depth; an image-less folder just
-        // EN: shows the no-images message.
         openBook(at: URL(fileURLWithPath: siblings[target]), atLastPage: openLast,
                  allowCollectionDrill: false)
     }
@@ -268,13 +249,13 @@ extension ReaderWindowController {
                 return
             }
         }
+        pendingTurnForward = true  // スライドショーもページ送りとしてめくり効果を付ける
         refreshAfterJump()
     }
 
     // MARK: - ゴミ箱(仕様書 §4.12。AppleScript フォールバックは廃止)
 
     /// 表示中ページをゴミ箱へ。side は画面の左右(readMode で実ページに解決)。
-    /// EN: Trash the displayed page (folder books only), then reopen in place.
     func trashDisplayedPage(leftSide: Bool) {
         guard let book else { return }
         Task {
@@ -318,8 +299,6 @@ extension ReaderWindowController {
             let spread = await book.currentSpread()
             // ページの実体ファイルを選択表示: 単体画像はその画像、
             // 書庫/PDF 内のページは書庫/PDF 本体(仕様書 §4.13)
-            // EN: Select the page's on-disk file: the image itself for folder
-            // EN: pages, the containing archive/PDF for nested pages.
             let url: URL
             if let index = displayedIndex(in: spread, leftSide: leftSide) {
                 url = await book.source.containerFileURL(for: book.entries[index])
@@ -333,8 +312,6 @@ extension ReaderWindowController {
     /// 見開きのもう一方(読み順で 2 枚目)のページを Finder で表示する
     /// (File メニューで Option を押すと現れる代替項目。単ページ表示では
     /// 「もう一方」が無いのでビープ)
-    /// EN: Reveal the spread's second page (the Option-modified alternate
-    /// EN: menu item); beeps in single-page display.
     func showOtherPageInFinder() {
         guard let book else { return }
         Task {
@@ -353,8 +330,6 @@ extension ReaderWindowController {
     /// 現在のページのファイル情報パネルを表示する(新規機能。開いていれば
     /// 内容を現在ページで更新する)。見開き時は両ページ分を用意し、
     /// パネル上部のセグメントで左右を切り替える(既定は読み順の先頭)
-    /// EN: Show (or refresh) the File Info panel. Spreads prepare both pages
-    /// EN: and switch via a segmented control (reading-first preselected).
     func showFileInfo() {
         guard let book else { return }
         Task {
@@ -383,7 +358,6 @@ extension ReaderWindowController {
     }
 
     /// 1 ページ分のファイル情報を収集する
-    /// EN: Collect one page's File Info content.
     private func fileInfoPage(for index: Int, in book: Book,
                               sideLabel: String) async -> FileInfoPage {
         let entry = book.entries[index]
@@ -408,9 +382,6 @@ extension ReaderWindowController {
         // パネルの高さは内容の自然サイズに合わせる(画面の 85% まで。
         // スクロールは内容が収まらないときだけ生きる)。見開きは左右の
         // 切替でパネルが伸縮しないよう、大きい方のページに合わせる
-        // EN: Size the panel to the content's natural height (capped at 85%
-        // EN: of the screen). Spreads use the taller page so switching sides
-        // EN: never resizes the panel.
         let contentHeight = pages.map { page in
             NSHostingView(rootView: FileInfoContent(details: page.details)
                 .frame(width: FileInfoView.contentWidth)).fittingSize.height
@@ -428,7 +399,6 @@ extension ReaderWindowController {
 
         if let panel = fileInfoPanel {
             // 開いたまま再実行されたら内容だけ差し替える(パネルは 1 枚)
-            // EN: Re-invocations refresh the single panel in place.
             panel.title = pages[initialIndex].title
             panel.contentViewController = hosting
             panel.setContentSize(size)
@@ -468,7 +438,6 @@ extension ReaderWindowController {
     }
 
     /// 原寸表示パネル(旧 FullImagePanel §4.13 の簡易版。キーを失うと閉じる)
-    /// EN: Utility panel showing the page at full resolution in a scroll view.
     private func presentOriginalSizePanel(image: CGImage, title: String) {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
@@ -516,8 +485,6 @@ extension ReaderWindowController {
 
     /// 巻末が近づいたら同フォルダの次の書庫をバックグラウンドで開いて
     /// ローカル展開を始める。開く際に openBookFlow が再利用する。
-    /// EN: Near the end of a book, pre-open and spool the next sibling archive
-    /// EN: so switching to it is instant.
     func maybePrepareNextBook() {
         let threshold = settings.prepareNextBookPages  // 0 は無効(設定「高度」)
         guard threshold > 0, let book, book.pageCount > 0,
@@ -539,8 +506,6 @@ extension ReaderWindowController {
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
                 // 実効プロファイル(自動判定+高度設定の明示上書き)を適用してから展開
-                // EN: Apply the effective profile (probe + explicit overrides)
-                // EN: before spooling starts.
                 let profile = await effectiveMediaProfile(
                     for: URL(fileURLWithPath: nextPath))
                 await source.applyMediaProfile(profile)
@@ -574,7 +539,6 @@ extension ReaderWindowController {
 }
 
 /// しおりサブメニューを開くたびに現在の本のしおりで再構築する(仕様書 §4.7.1)
-/// EN: Rebuilds the bookmark jump submenu from the current book on every open.
 @MainActor
 final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = BookmarkListMenuDelegate()
@@ -601,7 +565,6 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
 }
 
 /// Open Recent サブメニューを開くたびに履歴から再構築する(仕様書 §7.2)
-/// EN: Rebuilds the Open Recent submenu from history on every open.
 @MainActor
 final class RecentBooksMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = RecentBooksMenuDelegate()

@@ -5,7 +5,6 @@ import XCTest
 @testable import cooViewer
 
 /// ファイル情報パネルの内容組み立て(PageFileInfo)のテスト
-/// EN: Tests for the File Info content builder.
 final class PageFileInfoTests: XCTestCase {
     private var tempDir: URL!
 

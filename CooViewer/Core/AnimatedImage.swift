@@ -4,7 +4,6 @@ import ImageIO
 
 /// アニメーション画像(GIF/APNG/WebP/HEICS/AVIF シーケンス)の全フレーム読込。
 /// 再生は ReaderView が CAKeyframeAnimation で行う(設計書 §5 描画品質)。
-/// EN: Loads all frames of an animated image; playback happens in ReaderView.
 struct AnimatedImage {
     let frames: [CGImage]
     let delays: [Double]
@@ -13,7 +12,6 @@ struct AnimatedImage {
 
     /// 複数フレームを持つ場合のみ返す。メモリ保護のためフレーム数と
     /// 解像度(既定 2048px)に上限を設ける。
-    /// EN: Returns nil for single-frame images; frame count and size capped.
     static func load(from data: Data, maxPixelSize: Int? = nil,
                      maxFrames: Int = 120) -> AnimatedImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
@@ -42,8 +40,6 @@ struct AnimatedImage {
     }
 
     /// フレーム表示時間。形式別の辞書から unclamped → clamped の順で読む
-    /// EN: Per-frame delay, read per container format; 0.1s default,
-    /// EN: floored at 0.02s like browsers do.
     private static func delay(source: CGImageSource, index: Int) -> Double {
         let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil)
             as? [CFString: Any] ?? [:]

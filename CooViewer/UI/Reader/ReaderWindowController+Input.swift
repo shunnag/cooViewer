@@ -2,7 +2,6 @@ import AppKit
 
 /// 入力イベント → バインディング解決 → アクション実行(仕様書 §5)。
 /// 旧 Controller (Input) カテゴリに相当する。
-/// EN: Input events -> binding resolution -> action dispatch.
 extension ReaderWindowController {
     private var fitModeNumber: Int { readerViewForInput.fitMode.rawValue }
     private var readsFromLeft: Bool { book?.readMode.readsFromLeft ?? false }
@@ -10,7 +9,6 @@ extension ReaderWindowController {
     // MARK: - キー(仕様書 §5.3, §5.5)
 
     /// 処理したら true。未割り当てなら false(ビープへ)。
-    /// EN: Returns true when handled; false falls through to the system beep.
     func handleKeyEvent(_ event: NSEvent) -> Bool {
         guard book != nil else { return false }
         guard !event.modifierFlags.contains(.command) else { return false }
@@ -42,8 +40,6 @@ extension ReaderWindowController {
         // 水平スワイプのページ送りはトグルで無効化できる。システム設定が
         // 「3 本指でスワイプ」の場合はスクロールではなく swipe イベントとして
         // この経路に届くため、2 本指(handleSwipeToTurn)と共通でここで見る
-        // EN: Swipe page-turn honors the toggle and optional direction flip;
-        // EN: three-finger system swipes arrive here as swipe events.
         var button = virtualButton
         if button == VirtualButton.swipeLeft || button == VirtualButton.swipeRight {
             guard settings.swipeToTurnPage else { return }
@@ -82,7 +78,6 @@ extension ReaderWindowController {
         if view.fitMode == .fitToScreen || mode == 3 {
             // 慣性スクロールでは連続でめくらない。閾値は旧実装同様
             // 行単位デルタ(deltaY)と比較する(仕様書 §4.16)
-            // EN: Ignore momentum so inertia never turns several pages at once.
             guard event.momentumPhase == [] else { return }
             wheelTurnPage(deltaY: event.deltaY)
             return
@@ -112,15 +107,11 @@ extension ReaderWindowController {
     /// ページを前後させる(既定オン。設定の「操作」でオフにできる)。
     /// 方向は既存のスワイプ仮想ボタン経由で解決するため、読み方向・カスタム
     /// バインディングに追従する。処理した(消費した)ら true。
-    /// EN: Two-finger horizontal scroll turns pages, mirroring the system
-    /// EN: page-swipe gesture; returns true when the event was consumed.
     private func handleSwipeToTurn(_ event: NSEvent) -> Bool {
         guard settings.swipeToTurnPage,
               NSEvent.isSwipeTrackingFromScrollEventsEnabled else { return false }
         // 消費したスワイプの慣性イベントは、めくった後の新しいページを
         // 揺らさないよう終端まで飲み込む
-        // EN: Swallow the consumed swipe's momentum so it doesn't scroll the
-        // EN: page we just turned to.
         if event.momentumPhase != [] {
             guard swipeConsumeMomentum else { return false }
             if event.momentumPhase == .ended || event.momentumPhase == .cancelled {
@@ -134,15 +125,19 @@ extension ReaderWindowController {
             swipeTrackingActive =
                 abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
             swipeTrackingDeltaX = event.scrollingDeltaX
+            interactiveCurlPhase = nil
+            interactiveCurlEndDecision = nil
             return swipeTrackingActive
         case .changed:
             guard swipeTrackingActive else { return false }
             swipeTrackingDeltaX += event.scrollingDeltaX
+            driveInteractiveCurl(event)
             return true
         case .ended, .cancelled:
             guard swipeTrackingActive else { return false }
             swipeTrackingActive = false
             swipeConsumeMomentum = true
+            if settleInteractiveCurlOnGestureEnd() { return true }
             if abs(swipeTrackingDeltaX) > 60 {
                 let virtualButton = swipeTrackingDeltaX > 0
                     ? VirtualButton.swipeRight : VirtualButton.swipeLeft
@@ -152,6 +147,138 @@ extension ReaderWindowController {
             return true
         default:
             return swipeTrackingActive  // 慣性イベント等はスワイプ中なら消費
+        }
+    }
+
+    // MARK: - スワイプ追従カール(設定「ページカール」時のみ)
+
+    /// スワイプ中の移動量からカールの進行度を駆動する。
+    /// スワイプの向きが「次/前のページ」に割り当てられている場合だけ追従し、
+    /// それ以外の割当・修飾キー付きは従来動作(離した時に一括実行)のまま
+    private func driveInteractiveCurl(_ event: NSEvent) {
+        guard settings.pageTurnAnimation == .curl,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        else { return }
+        let delta = swipeTrackingDeltaX
+        switch interactiveCurlPhase {
+        case .finished, .unavailable:
+            return
+        case nil:
+            guard abs(delta) > 12 else { return }
+            guard LegacyModifier.encode(flags: event.modifierFlags) == 0,
+                  let forward = swipeTurnDirection(deltaX: delta) else {
+                interactiveCurlPhase = .unavailable
+                return
+            }
+            interactiveCurlPhase = .starting(forward: forward)
+            interactiveCurlProgress = curlProgress(for: delta)
+            Task { await self.startInteractiveCurl(forward: forward) }
+        case .starting:
+            interactiveCurlProgress = curlProgress(for: delta)
+        case .active:
+            interactiveCurlProgress = curlProgress(for: delta)
+            readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
+        }
+    }
+
+    /// 移動量 → 進行度(350pt のスワイプでめくり切り)
+    private func curlProgress(for delta: CGFloat) -> CGFloat {
+        min(1, max(0, abs(delta) / 350))
+    }
+
+    /// スワイプの向きに割り当てられたアクションが次/前のページなら進行方向を返す
+    private func swipeTurnDirection(deltaX: CGFloat) -> Bool? {
+        var button = deltaX > 0 ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+        if settings.flipSwipeDirection {
+            button = button == VirtualButton.swipeLeft
+                ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+        }
+        guard let binding = bindings.resolveMouse(
+            button: button, modifiers: 0,
+            fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
+            let action = binding.action else { return nil }
+        switch action {
+        case .nextPage: return true
+        case .previousPage: return false
+        default: return nil
+        }
+    }
+
+    /// モデルを先に進め、旧内容のスナップショットで追従用オーバーレイを組む。
+    /// 画面は progress=0 のオーバーレイ(旧内容)のまま=見た目は変わらない
+    private func startInteractiveCurl(forward: Bool) async {
+        guard let book, case .starting = interactiveCurlPhase else { return }
+        let oldContent = readerViewForInput.snapshotContent()
+        let moved = forward ? book.moveNext() : await book.movePrevious()
+        guard moved == .moved else {
+            // 端に達した: 従来動作(離した時の端処理=ループ/次の本)へ
+            interactiveCurlPhase = .unavailable
+            return
+        }
+        pendingTurnForward = nil
+        if let oldContent {
+            readerViewForInput.pendingInteractiveCurl = (oldContent, forward)
+        }
+        await refreshDisplay()
+        if readerViewForInput.hasInteractiveCurl {
+            interactiveCurlPhase = .active(forward: forward)
+            readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
+        } else {
+            // オーバーレイを組めない状態(回転・ルーペ等): 即時切替済み
+            interactiveCurlPhase = .finished
+        }
+        settleInteractiveCurlIfGestureEnded()
+    }
+
+    /// ジェスチャ終了時の確定/取消。追従に入っていたら true(従来動作を抑止)
+    private func settleInteractiveCurlOnGestureEnd() -> Bool {
+        switch interactiveCurlPhase {
+        case nil, .unavailable:
+            interactiveCurlPhase = nil
+            return false
+        case .finished:
+            interactiveCurlPhase = nil
+            return true
+        case .starting:
+            // 準備完了時(startInteractiveCurl の末尾)に判定を適用する
+            interactiveCurlEndDecision = abs(swipeTrackingDeltaX) > 60
+            return true
+        case .active(let forward):
+            let complete = abs(swipeTrackingDeltaX) > 60
+                || interactiveCurlProgress > 0.35
+            resolveActiveCurl(forward: forward, complete: complete)
+            return true
+        }
+    }
+
+    /// 準備完了前にジェスチャが終わっていた場合の後始末
+    private func settleInteractiveCurlIfGestureEnded() {
+        guard let decision = interactiveCurlEndDecision else { return }
+        interactiveCurlEndDecision = nil
+        if case .active(let forward) = interactiveCurlPhase {
+            resolveActiveCurl(forward: forward, complete: decision)
+        } else {
+            interactiveCurlPhase = nil
+        }
+    }
+
+    /// 追従中カールの確定(残り再生)または取消(巻き戻し+モデルを戻す)
+    private func resolveActiveCurl(forward: Bool, complete: Bool) {
+        interactiveCurlPhase = nil
+        if complete {
+            readerViewForInput.finishInteractiveCurl()
+        } else {
+            readerViewForInput.cancelInteractiveCurl { [weak self] in
+                guard let self, let book = self.book else { return }
+                Task {
+                    if forward {
+                        _ = await book.movePrevious()
+                    } else {
+                        _ = book.moveNext()
+                    }
+                    await self.refreshDisplay()
+                }
+            }
         }
     }
 
@@ -168,16 +295,12 @@ extension ReaderWindowController {
     // MARK: - アクション実行
 
     /// leftHalf: 画面の左半分での操作か(positional 系のみ使用。nil=キー等)
-    /// EN: Dispatch one action; leftHalf tells positional actions which screen
-    /// EN: side was used (nil for keyboard input).
     func perform(_ action: ReaderAction, value: Double?, leftHalf: Bool?) {
         // 「left 側=次」は右→左読みのとき。左綴じでは鏡像(仕様書 §5.6)
         let isNextSide = (leftHalf ?? true) == !readsFromLeft
 
         // サムネイルオーバーレイ表示中はページ送りをサムネイルのめくりに転用
         // (旧来のページ単位閲覧 §4.8)。t(showThumbnail)は下でトグル=閉じる
-        // EN: While the thumbnail overlay is open, page-turn actions flip
-        // EN: thumbnail screens instead of book pages.
         if isThumbnailOverlayVisible {
             switch action {
             case .nextPage, .pageDownOrNextPage, .halfNextPage:
@@ -302,7 +425,6 @@ extension ReaderWindowController {
     }
 
     /// Go to Page(旧 pageMover の簡易版。完全版はマイルストーン 7)
-    /// EN: Simple page-number dialog (the in-view pageMover overlay is deferred).
     private func promptGoToPage() {
         guard let book else { return }
         let alert = NSAlert()

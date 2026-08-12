@@ -47,6 +47,48 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(image.height, 6)
     }
 
+    func testParallelZipLoadsDecodeCorrectlyThroughPool() async throws {
+        // エントリ独立圧縮(zip)は展開プールで並列展開しても、全ページが
+        // 正しい内容で届くこと(ページ幅にエントリ番号を埋めて照合する)
+        var entries: [(nameBytes: [UInt8], data: Data)] = []
+        for page in 0..<12 {
+            entries.append((Array(String(format: "p%02d.png", page).utf8),
+                            TestFixtures.pngData(width: 4 + page, height: 6)))
+        }
+        let url = try writeZip(named: "pool.zip", entries: entries)
+        let source = try ArchiveSource(url: url)
+        let pages = try await source.entries()
+        XCTAssertEqual(pages.count, 12)
+        try await withThrowingTaskGroup(of: (Int, Int).self) { group in
+            for (offset, entry) in pages.enumerated() {
+                group.addTask {
+                    let image = try await source.image(for: entry, maxPixelSize: nil)
+                    return (offset, image.width)
+                }
+            }
+            for try await (offset, width) in group {
+                XCTAssertEqual(width, 4 + offset)
+            }
+        }
+        // プールは成長しても上限(3)まで
+        let extractorCount = await source.extractorCount
+        XCTAssertGreaterThanOrEqual(extractorCount, 1)
+        XCTAssertLessThanOrEqual(extractorCount, 3)
+    }
+
+    func testSerialZipReadsKeepPoolMinimal() async throws {
+        // 直列読みでは展開係が 1 つより増えないこと(余計に書庫を開かない)
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let url = try writeZip(named: "serial.zip", entries: [
+            (Array("a.png".utf8), png), (Array("b.png".utf8), png)])
+        let source = try ArchiveSource(url: url)
+        for entry in try await source.entries() {
+            _ = try await source.image(for: entry, maxPixelSize: nil)
+        }
+        let count = await source.extractorCount
+        XCTAssertLessThanOrEqual(count, 1)
+    }
+
     func testShiftJISEntryNamesAreAutoDetected() async throws {
         // UTF-8 フラグなしの DOS ホスト ZIP に Shift-JIS 名を入れると、
         // XADMaster + UniversalDetector が自動判定する(仕様書 §4.17)

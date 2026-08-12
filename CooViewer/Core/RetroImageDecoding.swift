@@ -1,20 +1,8 @@
 import CoreGraphics
 import Foundation
 
-/// レトロ日本形式(MAG / MAKI)のデコーダ。
-/// 仕様は「Maki-chan graphics format」文書(mooncore.eu/bunny/txt/makichan.htm)
-/// に基づく。**判定は拡張子ではなく先頭マジックで行う**: 同じ拡張子で別形式が
-/// 流通しているため(.max は 3ds Max 等、.pic は Softimage/Pictor 等と衝突)、
-/// マジックが一致しないデータには決して適用しない。ImageIO で読めない
-/// データのフォールバックとして ImageDecoding から呼ばれる。
-/// EN: Decoders for retro Japanese image formats (MAG / MAKI), based on the
-/// EN: Maki-chan graphics format document. Dispatch is strictly magic-based —
-/// EN: the extensions collide with unrelated formats — and runs only as a
-/// EN: fallback when ImageIO cannot read the data.
-/// 独自デコーダ形式の個別有効化(高度設定タブのトグル。未設定は有効)。
+/// 独自デコーダ形式の個別有効化(設定「デコーダ」ペインのトグル。未設定は有効)。
 /// リスト作成(SupportedTypes)とデコードの両方で参照する
-/// EN: Per-format toggles for the built-in decoders (default on), consulted
-/// EN: by both the file-listing check and the decode dispatch.
 enum RetroFormatToggle {
     static let magKey = "RetroDecodeMAG"
     static let makiKey = "RetroDecodeMAKI"
@@ -28,6 +16,12 @@ enum RetroFormatToggle {
     }
 }
 
+/// レトロ日本形式(MAG / MAKI / Pi / PIC / PBM P4)のデコーダ。
+/// 仕様は「Maki-chan graphics format」文書(mooncore.eu/bunny/txt/makichan.htm)
+/// と柳沢氏の公式仕様・参照実装に基づく。**判定は拡張子ではなく先頭マジックで
+/// 行う**: 同じ拡張子で別形式が流通しているため(.max は 3ds Max 等、.pic は
+/// Softimage/Pictor 等と衝突)、マジックが一致しないデータには決して適用しない。
+/// ImageIO で読めないデータのフォールバックとして ImageDecoding から呼ばれる。
 enum RetroImageDecoding {
     private static let magMagic = Array("MAKI02  ".utf8)
     private static let makiMagicA = Array("MAKI01A ".utf8)
@@ -37,8 +31,6 @@ enum RetroImageDecoding {
 
     /// 先頭マジックによる形式判定(拡張子は一切見ない)。
     /// Pi/PIC はマジックが短いため、ヘッダ全体の妥当性検証も判定に含める
-    /// EN: Magic-based detection; Pi/PIC also require a parseable header
-    /// EN: because their signatures are short.
     static func isRetroImage(_ data: Data) -> Bool {
         let head = [UInt8](data.prefix(8))
         if head == magMagic {
@@ -61,7 +53,6 @@ enum RetroImageDecoding {
     }
 
     /// ヘッダのみからピクセル寸法を返す(縦横比 1:2 の伸長込み)
-    /// EN: Header-only pixel size (aspect doubling applied).
     static func imageSize(_ data: Data) -> CGSize? {
         let bytes = [UInt8](data.prefix(65536))
         if let header = parseMagHeader(bytes),
@@ -93,7 +84,6 @@ enum RetroImageDecoding {
     }
 
     /// フルデコード。対応外の変種や壊れたデータは nil
-    /// EN: Full decode; nil for unsupported variants or corrupt data.
     static func decode(_ data: Data) -> CGImage? {
         let bytes = [UInt8](data)
         if bytes.prefix(8).elementsEqual(magMagic) {
@@ -131,7 +121,6 @@ enum RetroImageDecoding {
     }
 
     /// MSB ファーストのビットリーダ(Pi / PIC 共通)
-    /// EN: MSB-first bit reader shared by the Pi and PIC decoders.
     private struct BitReader {
         let data: [UInt8]
         var position: Int
@@ -181,7 +170,6 @@ enum RetroImageDecoding {
             return !is256 && (mode & 0x01) != 0
         }
         /// MSX2+ の YJK スクリーンモード(10/11 = パレット混在、12 = 純 YJK)
-        /// EN: MSX2+ YJK screen modes (0x24/0x34 mix palette, 0x44 pure YJK).
         var isYJK: Bool {
             modelCode == 0x03 && [0x24, 0x34, 0x44].contains(modelFlag & 0xFC)
         }
@@ -310,7 +298,6 @@ enum RetroImageDecoding {
         }
 
         // MSX2+ YJK モード: バイト列を YJK サンプルとして RGB 変換する
-        // EN: MSX2+ YJK modes convert the byte buffer through YJK->RGB.
         if h.isYJK {
             let cropLeftBytes = h.left / pixelsPerByte - paddedLeft
             return renderMagYJK(out: out, byteWidth: byteWidth, height: height,
@@ -338,8 +325,6 @@ enum RetroImageDecoding {
 
     /// YJK バッファの RGB 変換(仕様: 4 バイト = 4 ピクセルで J/K を共有。
     /// YAE モードでは Y の最下位ビットが 1 のピクセルはパレット参照)
-    /// EN: YJK conversion: groups of 4 bytes share J/K; in YAE modes an odd
-    /// EN: Y selects a palette color instead.
     private static func renderMagYJK(
         out: [UInt8], byteWidth: Int, height: Int, cropLeftBytes: Int,
         width: Int, usePalette: Bool,
@@ -381,8 +366,6 @@ enum RetroImageDecoding {
     /// モデルコードに加えて機種名文字列(オフセット 8)も見る: 実在の
     /// X68000 画像にはモデルコード 0x00 のまま機種名 "X68K" のものがあり、
     /// 5bit で解釈しないと全色がわずかにずれる(実サンプルで確認)
-    /// EN: Significant palette bits. Also honors the machine-name string at
-    /// EN: offset 8 — real X68000 files exist with model code 0x00.
     private static func paletteSignificantBits(
         modelCode: UInt8, paletteCount: Int, file: [UInt8]) -> Int {
         if file.count >= 12, Array(file[8..<12]) == Array("X68K".utf8) {
@@ -405,7 +388,6 @@ enum RetroImageDecoding {
 
     /// 上位 bits ビットを下位へ繰り返しコピーして 8 ビットへ拡張
     /// (仕様の例: 0x55/3bit→0x49, 0xBF/4bit→0xBB, 0x67/5bit→0x63)
-    /// EN: Replicate the significant top bits downward to fill the byte.
     static func expandComponent(_ value: UInt8, bits: Int) -> UInt8 {
         guard (1...7).contains(bits) else { return value }
         let mask = UInt8(0xFF << (8 - bits) & 0xFF)
@@ -453,7 +435,6 @@ enum RetroImageDecoding {
         }
 
         // フラグ A(96〜、固定 1000 バイト)を 4x4 チャンクのマスクへ展開
-        // EN: Expand flag A (+ flag B words) into the 320x400 one-bit mask.
         var mask = [Bool](repeating: false, count: byteWidth * height)
         let flagAStart = 96
         let flagBStart = flagAStart + 1000
@@ -503,9 +484,6 @@ enum RetroImageDecoding {
         // ニブル順は MAG と同じ**上位=左**。参考文書には「下位が左」の記述が
         // あるが、実ファイルと公式レンダリングの照合で上位=左と確認済み
         // (対称バイト以外の全ピクセルが一致)
-        // EN: HIGH nibble = left pixel, same as MAG. The reference document
-        // EN: claims low-first, but byte-level comparison against the official
-        // EN: renderings proves high-first.
         return renderIndexed(
             width: 640, height: height, doubleHeight: h.doubleHeight,
             palette: palette
@@ -529,7 +507,6 @@ enum RetroImageDecoding {
 
     fileprivate static func parsePiHeader(_ d: [UInt8]) -> PiHeader? {
         // マジック "Pi"(仕様上は省略もあり得るが、拡張子衝突対策として必須にする)
-        // EN: Require the "Pi" magic; headerless variants are rejected on purpose.
         guard d.count > 24, d[0] == 0x50, d[1] == 0x69,
               let escape = d[2...].firstIndex(of: 0x1A),
               let base = d[escape...].firstIndex(of: 0x00) else { return nil }
@@ -579,7 +556,6 @@ enum RetroImageDecoding {
     }
 
     /// Pi 展開本体(デルタ符号+繰り返し列。仕様と作者実装 pi.pas に準拠)
-    /// EN: Pi decompression core (delta codes + repetition commands).
     private static func unpackPi(_ d: [UInt8], header h: PiHeader) -> [UInt8]? {
         let total = h.width * h.height
         var out = [UInt8](repeating: 0, count: total)
@@ -814,7 +790,6 @@ enum RetroImageDecoding {
     }
 
     /// X68k の 16bit 色 GGGGGRRRRRBBBBBI → 8bit RGB
-    /// EN: X68k GGGGGRRRRRBBBBBI to 8-bit RGB.
     private static func x68kColor(_ color: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
         let intensity = color & 1
         func channel(_ five: Int) -> UInt8 {
@@ -828,7 +803,6 @@ enum RetroImageDecoding {
 
     /// 直近 128 色のキャッシュ(双方向リンクリングの LRU。7bit 符号は
     /// スロット番号を指す — 参照実装と同一の構造)
-    /// EN: 128-entry LRU ring; the 7-bit code addresses slots directly.
     private struct PicColorCache {
         var values = [Int](repeating: 0, count: 128)
         var previous = [Int](repeating: 0, count: 128)
@@ -1027,7 +1001,6 @@ enum RetroImageDecoding {
         let rowBytes = (h.width + 7) / 8
         guard h.dataOffset + rowBytes * h.height <= d.count else { return nil }
         // PBM は 1 = 黒、0 = 白。MSB が左
-        // EN: PBM: 1 = black, 0 = white, MSB leftmost.
         return renderRGB(width: h.width, height: h.height,
                          doubleHeight: false) { x, y in
             let byte = d[h.dataOffset + y * rowBytes + x / 8]
@@ -1039,8 +1012,6 @@ enum RetroImageDecoding {
     /// MAKI のパレット拡張は MAG の繰り返し複製と異なり、仕様で明記された
     /// 「上位ニブルが 0 なら 0x00、それ以外は下位ニブルを 0xF にする」規則
     /// (公式レンダリングと照合して確認済み)
-    /// EN: MAKI palette expansion per its spec: zero top nibble -> 0x00,
-    /// EN: otherwise OR 0x0F (verified against the reference renderings).
     static func makiPaletteComponent(_ value: UInt8) -> UInt8 {
         let top = value & 0xF0
         return top == 0 ? 0 : top | 0x0F
@@ -1050,8 +1021,6 @@ enum RetroImageDecoding {
 
     /// インデックス画像を RGBX の CGImage にする(doubleHeight で縦 2 倍)。
     /// メモリ配置は R,G,B,X の素直なバイト列(バイトオーダーフラグ不使用)
-    /// EN: Rasterize palette-indexed pixels into an RGBX CGImage with a
-    /// EN: plain big-endian byte layout.
     private static func renderIndexed(
         width: Int, height: Int, doubleHeight: Bool,
         palette: [(r: UInt8, g: UInt8, b: UInt8)],
@@ -1064,7 +1033,6 @@ enum RetroImageDecoding {
     }
 
     /// RGB クロージャから CGImage を作る(全レトロ形式の最終段)
-    /// EN: Rasterize via an RGB-per-pixel closure (final stage for all formats).
     private static func renderRGB(
         width: Int, height: Int, doubleHeight: Bool,
         pixel: (Int, Int) -> (r: UInt8, g: UInt8, b: UInt8)) -> CGImage? {
@@ -1072,7 +1040,12 @@ enum RetroImageDecoding {
         let rowRepeat = doubleHeight ? 2 : 1
         let outHeight = height * rowRepeat
         let rowBytes = width * 4
-        var rgba = [UInt8](repeating: 0xFF, count: rowBytes * outHeight)
+        // 出力バッファは malloc 領域へ直接書き、CGImage に所有権ごと渡す
+        // (配列 → Data のコピーを省く。大きい画像で最大数百 MB のコピー削減)
+        let byteCount = rowBytes * outHeight
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
+        buffer.initializeMemory(as: UInt8.self, repeating: 0xFF, count: byteCount)
+        let rgba = buffer.assumingMemoryBound(to: UInt8.self)
         for y in 0..<height {
             let base = y * rowRepeat * rowBytes
             for x in 0..<width {
@@ -1087,8 +1060,12 @@ enum RetroImageDecoding {
                 }
             }
         }
-        let data = rgba.withUnsafeBufferPointer { Data(buffer: $0) }
-        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+        guard let provider = CGDataProvider(
+            dataInfo: nil, data: buffer, size: byteCount,
+            releaseData: { _, data, _ in data.deallocate() }) else {
+            buffer.deallocate()
+            return nil
+        }
         return CGImage(
             width: width, height: outHeight,
             bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: rowBytes,

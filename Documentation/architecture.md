@@ -120,8 +120,13 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 | Finder で表示・ファイル情報 | Finder 表示(§4.13)はメニュー(File > Finder で表示 ⇧⌘R)にも追加し、**ページの実体ファイル**(単体画像はその画像、書庫/PDF 内のページは書庫/PDF 本体。BookSource.containerFileURL)を選択表示。**ファイル情報パネル(File > ファイル情報を表示 ⌘I)は新規**: PageFileInfo が ImageIO/FileManager からセクション(概要/画像/EXIF/位置情報/ファイル)を組む。パネルの高さは内容に自動追従(画面の 85% まで、超過時のみスクロール)。EXIF の GPS 座標があるときは MapKit の地図(ピン付き)を末尾に表示 |
 | レトロ日本形式 (MAG/MAKI/Pi/PIC) | 旧実装には無い**新規**。RetroImageDecoding(Core)が MAG(MAKI02。16/256 色、パディング/切出し、機種別パレットビット: X68K は機種名文字列でも 5bit 判定、1:2 アスペクト伸長、**MSX2+ YJK スクリーン 10-12** の色変換込み)、MAKI01A/B(640x400 固定、4x4 マスク+XOR フィルタ、パレットは「非 0 上位ニブル \| 0x0F」規則)、**Pi**(デルタ符号 MTF 表+繰り返し列。16/256 色、パレットは RGB 順)、**PIC**(X68000 系: 変化点+チェーン+128 スロット LRU 色キャッシュ。15/16bit と 16/256 色パレット、FM-Towns/汎用 0x1F ヘッダ対応。PC-88VA は対象外)をデコード。**判定は拡張子でなく先頭マジック**— .max(3ds Max)や .pic(Softimage 等)の同拡張子別形式は誤描画しない。ImageIO 失敗時のフォールバックとして ImageDecoding から呼ぶ。**PBM P4**(pbmplus のバイナリ 1bit。ImageIO が P4 のみ非対応)も同経路でデコードし、.pnm 拡張子も登録。**各形式は高度設定タブのトグル(RetroFormatToggle、既定 ON)で個別に無効化可能**(一覧判定 SupportedTypes とデコード両方が参照。反映は次の本から)。検証: 一次仕様(Maki-chan 文書・柳沢氏の PIC 公式仕様)+実サンプル 16 点を公式レンダリング/RECOIL とピクセル照合(テストは RETRO_SAMPLE_DIR 指定時のみゴールデン比較)。PIC2 (.p2) は公式資料(実験版仕様・作者 C ソース・ヘッダ草案 5)を発掘済みだが、最終形式 pic2.x の検証手段が無いため未対応 |
 | ウインドウ位置の復元 | サイズは AppKit の frame autosave("ReaderWindow")で常に復元。位置は**終了時(⌘Q/ウインドウクローズ)に記録した画面解像度(screen.frame サイズ、defaults `ReaderWindowScreenSize`)が現在接続中のいずれかの画面と一致するときだけ**復元し、不一致・初回起動時は従来どおり中央に置く(旧実装は "NormalWindow" autosave のみで解像度照合なし。autosave 文字列内の画面欄はメニューバー/Dock 状態に依存するため照合に使わない) |
-| 表示モードの永続化と設定 UI | 旧: fitScreenMode は永続化されず毎回 0(全体フィット)で起動(§3.2)→ **defaults `FitMode`(新キー)にグローバル保存**し、次回起動時も復元。設定「表示」タブ先頭のピッカーとメニュー ⌘1-4/キー巡回(action 42/51/52)は同じ値を共有(変更経路は ReaderWindowController.setFitMode に一本化)。方針: メニューにある設定的項目は必ず設定ウインドウにもあり、メニューは頻繁に切り替えるものの抜粋 |
-| 表紙の単ページ表示 | 旧実装には無い**新規**(既定オフ)。defaults `SpreadCoverSingle`。ON のとき見開きモードで先頭ページ(表紙)を常に単ページにし、以降を (1,2)(3,4)… で組む(PageLayout.isSmall の coverSingle 判定。marks の強制ペア「1-2」が最優先)。サムネイル一覧の見開きセルも同じ規則で追従。設定「一般」の読み方向直下のトグルと、表示メニュー > 読み方向 > 「表紙を単ページで表示」の両方から切替(即時反映) |
+| 表示モードの永続化と設定 UI | 旧: fitScreenMode は永続化されず毎回 0(全体フィット)で起動(§3.2)→ **defaults `FitMode`(新キー)にグローバル保存**し、次回起動時も復元。設定「表示」ペインのピッカーとメニュー ⌘1-4/キー巡回(action 42/51/52)は同じ値を共有(変更経路は ReaderWindowController.setFitMode に一本化)。方針: メニューにある設定的項目は必ず設定ウインドウにもあり、メニューは頻繁に切り替えるものの抜粋 |
+| 表紙の単ページ表示 | 旧実装には無い**新規**(既定オフ)。defaults `SpreadCoverSingle`。ON のとき見開きモードで先頭ページ(表紙)を常に単ページにし、以降を (1,2)(3,4)… で組む(PageLayout.isSmall の coverSingle 判定。marks の強制ペア「1-2」が最優先)。サムネイル一覧の見開きセルも同じ規則で追従。設定「表示」の読み方向直下のトグルと、表示メニュー > 読み方向 > 「表紙を単ページで表示」の両方から切替(即時反映)。ペア判定は §4.2 どおり現在位置から局所的に決まるため、切替の瞬間だけ Book.reanchorToLeadingPartition が先頭起点の区分を歩き直して現在位置を整列させる(途中ページで切り替えても 3-4 → 2-3 のように即座に組み替わる。サイズ未取得ページは縦長とみなし、marks の強制指定は常に優先。検証フラグ `--then-toggle-cover-single`) |
+| 設定ウインドウの構成 | 旧: 5 タブの TabView → **macOS のシステム設定風**(サイドバー+検索+詳細、NavigationSplitView。リサイズ可)。ペインは意味で再編: 一般(起動・履歴・記憶)/本(並び順・サブフォルダ・本の端)/表示(読み方向・表紙単ページ・見開きしきい値・表示モード・補間・サムネイル)/ページ番号/ページバー/操作/キー割り当て/デコーダ(高度から独立)/高度(チューニングのみ)。**検索**はペインごとの索引(タイトル+項目ラベル、SettingsSearch)でサイドバーを絞り込み、一致した項目名を行の下に注釈表示。選択ペインは defaults `SettingsSelectedTab`(旧 0-4 の意味を保持し新ペインは 5 以降。検証は `-SettingsSelectedTab n --snapshot-settings`、検索は `-SettingsSearchText 語` で注入)。ペインへ項目を足すときは SettingsView.searchTerms への追加も必須 |
+| 書庫の並列展開プール | エントリ独立圧縮の形式(zip/cbz)のみ、ArchiveEntryExtractor(独立 XADArchive の actor)を最大 3 つプールし、未スプールのページ展開をエントリ間で並列化(PDFSource のレンダラープールと同型)。空き再利用が最優先で全員使用中のときだけ成長(直列読みでは 1 つのまま)。エントリ数不一致(差し替え)は成長を止めてメイン書庫の直列展開へ。solid 形式(rar/7z 等)は従来どおり直列 |
+| 縮小リサンプルの GPU 化 | 表示ピクセルへの縮小を CoreImage(Metal)の Lanczos で行う(LanczosDownscaler)。従来の CGContext 高品質補間(CPU)はフォールバック。色空間の規則は CG 経路と同一(RGB 以外は sRGB)。CIImage(cgImage:) は CG と同じ向きのため反転補正は不要(色・向きの回帰テストあり) |
+| 次スプレッドの事前リサンプル | refreshDisplay 後、進行方向の隣接スプレッド列(Book.predictedAdjacentSpreads が moveNext/movePrevious と同じ規則で予測)を表示ピクセルサイズ(ReaderView.predictedResampleSizes)へ先行リサンプルし、ImageResampler のキャッシュに載せる。めくった直後の最初の描画から等倍のシャープな画像になる。先へ進む量は**最大 5 ページ、ただしメモリ予算内**(PreresamplePolicy: 1 ページの表示サイズ×枚数 ≤ 物理メモリの 1/32・最大 512MB。ペアは分割しない)。ImageResampler のキャッシュは件数制(8)から**バイト基準 LRU**(物理メモリの 1/16・最大 512MB、メモリ圧迫で半減トリム)に変更。現スプレッドのリサンプルと競合しないよう 250ms 遅延し、表示世代が進んでいたら残りを捨てる |
+| ページめくり効果 | 旧実装には無い**新規**(既定オフ)。defaults `PageTurnAnimation`(0=なし/1=フェード/2=スライド/3=ズームフェード/4=ページカール)。フェード/スライドは CATransition(スライドは読み方向連動: 右→左読みで進むと新ページが左から入る。PageTurnAnimation.entersFromLeft)、ズームフェードは container への軽い拡大+フェード。**ページカール**は本式のめくり: 画面をノド(中央)で左右に分割し、空く側の半面をストリップ列(12 本)として 0→π 回転+外側ほど大きい曲げ角(sin θ 比例)で紙のしなりを表現(piecewise 円筒近似。幾何は PageCurlGeometry の純関数)。リーフの表=旧内容の空く側半面、裏=新内容の着地側半面(実際の紙の裏=次のページ)で、α が π/2 を跨いだストリップから discrete キーフレームで裏面に切替。裏面用の複製は **180° 回転**(水平だけでなく垂直も反転): 裏面描画の向きは机上の行列計算では決められず、**CARenderer による実描画テスト**(PageCurlRenderTests: 実物の ReaderView に実経路のスナップショットを流し、終端の絵=ライブ表示の絵をピクセル比較する自己校正方式)で確定した。リーフは**帯(横割り 24)×ストリップ(縦割り 12)のパッチ格子**で、ストリップ角は α = min(π, θ×(1+curl×外側度)×(1+lead×下端度)) の巻き込み+ねじれモデル(自由端が先に裏返って丸まる Apple Books 風の剥がれ方で、**下の帯ほど先行**して下の角から持ち上がる)。ノイズ対策: ねじれは序盤に集中させ二乗フェードで中盤に 0 へ(帯間の食い違い=階段状の横線を消す)、パッチは 1.2pt 重ねる(丸め由来のヘアラインを消す)。**影はパッチに載せない**(パッチ毎の陰は重なり部分で二重に暗くなり格子が見える。過去実装の反省点): 幾何(ロール頂点の投影 x)に追従する単一レイヤー群 — 投影影(広く柔らかい)+接触影(芯)+綴じ目の陰影+着地側の影。紙の縁ハイライトは不採用: リーフは「画面の半分」でありページ実体より広いため、ページが画面より小さいとき明線が黒背景まで届いて白線ノイズになる(実装後に撤去)。ページ束の表現もユーザー判断で不採用。濃さはいずれも sin θ 比例で始端・終端は消える。キーフレームは 48 分割(120Hz 表示でも補間段差なし)。メモリ圧迫時はオーバーレイ(スナップショット 2 枚)を即時解放。白ページの行輝度走査でシームを検出する実描画テストあり。どの帯も連結はノドから始まるため**綴じは離れない**(リーフ全体の面内回転で角先行を作ると上端がノドから浮く。過去実装の反省点。ノド起点は幾何の単体テストで固定)。角に応じた陰(パッチ毎)と着地側の影も付く。非公開の CATransition "pageCurl" は macOS 26 ではフェードにフォールバックすることをプローブで確認済み(採用不可)。着地側には旧内容を静止表示する。**スナップショットの向きに注意**: flipped ビューの layer を直接 render すると上下逆の像になるため snapshotContent が補正する(この取り違えが「着地側が上下反転」の原因だった。裏面は水平鏡像の複製で正像に戻る)。**スワイプ追従**: 設定がページカールのとき、2 本指スワイプはオーバーレイを speed=0 で組んで timeOffset を指の移動量(350pt でめくり切り)でスクラブする。モデルは追従開始時に先へ進めておき、確定=残り再生、取消=巻き戻してからモデルを戻す(スワイプの向きが次/前ページに割り当てられている場合のみ追従。修飾キー付き・別割当・端到達は従来動作)。オーバーレイ構築は PageCurlOverlay(静止フレーム版 makeStatic がテスト用)。完了時にオーバーレイごと除去。回転表示・ルーペ表示中とリサイズ時は省略/打ち切り。適用はページ送り(次/前/半ページ・スライドショー)のみで、ジャンプ・設定変更の再表示には付けない(ReaderWindowController.pendingTurnForward の消費方式)。「視差効果を減らす」で自動無効。設定「表示」ペインと表示メニューの両方から切替(§7.5 の不変条件)。検証フラグ `--then-next-page` |
 | オープン進捗表示 | 旧実装には無い**新規**。開くのに 0.35 秒を超えたら中央に HUD(スピナー+「“名前” を開いています…」)。統合ソースの組み立て中は「書庫 n/m」の進捗を併記(NestedFolderSource の進捗コールバック)。ドリルダウン中は畳まず引き継ぐ |
 | 自動更新 | 旧実装には無い **Sparkle 2** による自動更新を追加(2.0b3〜)。フィードは master の `appcast.xml`(raw URL)、更新 zip は EdDSA 署名。フレームワークは公式バイナリ配布をバージョン+SHA-256 固定で取得(`Scripts/fetch-sparkle.sh`)。検証スナップショット実行(`--snapshot`)ではアップデーターを起動しない |
 
@@ -133,68 +138,89 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 CooViewer/
 ├── App/
 │   ├── main.swift                  — NSApplication 起動
-│   ├── AppDelegate.swift           — ライフサイクル・openFile・起動時キャッシュ掃除・
-│   │                                 検証用スナップショット引数(CLAUDE.md 参照)
+│   ├── AppDelegate.swift           — ライフサイクル・文書オープン・起動時キャッシュ掃除・
+│   │                                 Sparkle 自動更新・検証用スナップショット引数
+│   │                                 (development-guide.md 参照)
 │   └── MainMenuBuilder.swift       — メニューバー構築(しおり/最近使った本の
 │                                     サブメニューは NSMenuDelegate で動的再構築)
 ├── Core/
 │   ├── Source/
-│   │   ├── BookSource.swift        — プロトコル+既定実装(パスワード・スプール・ルーペ)
-│   │   ├── FolderSource.swift      — フォルダ走査(readSubFolder 意味論 §4.1)
-│   │   ├── ArchiveSource.swift     — actor。XADMaster ラッパ+ローカルスプール(§5)
-│   │   └── PDFSource.swift         — actor。PDFKit(ページ毎独立レンダリング)
+│   │   ├── BookSource.swift        — プロトコル+既定実装+BookSourceFactory
+│   │   ├── FolderSource.swift      — 不変・並列。フォルダ走査(readSubFolder §4.1)
+│   │   ├── ArchiveSource.swift     — actor。XADMaster ラッパ+ローカルスプール+
+│   │   │                             書庫内書庫/PDF のネスト統合(§5)
+│   │   ├── PDFSource.swift         — actor。PDFKit(ページ毎独立レンダリング+
+│   │   │                             レンダラープールで並列化)
+│   │   ├── NestedFolderSource.swift — actor。フォルダ内書庫/PDF の合本(組み立ては
+│   │   │                              幅 4 並列、登録は候補順に直列)
+│   │   └── NestedUnlocker.swift    — actor。ネスト書庫のパスワード解除係(1 冊で共有)
 │   ├── Book/
 │   │   ├── Book.swift              — @MainActor。ページ列・現在位置・見開き(§4.2)・
-│   │   │                             ナビゲーション・先読み(計画時の Navigator/
-│   │   │                             Prefetcher はここへ統合)
-│   │   ├── PageLayout.swift        — 見開き合成判定(marks + 740 比率 §4.2)
+│   │   │                             ナビゲーション・先読み・サイズ索引
+│   │   ├── PageLayout.swift        — 見開き合成判定(marks + 740 比率+表紙単ページ)
 │   │   └── ReadMode.swift
 │   ├── Cache/
 │   │   ├── PageCache.swift         — actor。バイト基準 LRU+メモリ圧迫トリム(§5)
-│   │   └── ThumbnailCache.swift    — actor。メモリ+ディスク、世代一致の待ち手管理
+│   │   └── ThumbnailCache.swift    — actor。メモリ+ディスク(HEIC)、
+│   │                                 世代一致の待ち手管理・失敗記録
 │   ├── Rendering/
 │   │   ├── ImageResampler.swift    — 表示ピクセルへの事前リサンプル(§5 描画品質)
-│   │   └── MetalFXUpscaler.swift   — MetalFX Spatial 拡大(BGRA 系のみ RGBA 正規化)
+│   │   ├── MetalFXUpscaler.swift   — MetalFX Spatial 拡大(RGBA 正規化+段階適用)
+│   │   └── DisplayCapPolicy.swift  — ウインドウ実寸に応じたデコード上限(1024 刻み)
 │   ├── Sort/PageSorter.swift       — 自然順ほか SortMode 全種(§4.4.3)
-│   └── ImageDecoding / AnimatedImage / SupportedTypes
+│   ├── ImageDecoding.swift         — ImageIO デコード(HDR ゲインマップ・SVG・
+│   │                                 レトロ形式へのフォールバック)
+│   ├── RetroImageDecoding.swift    — MAG/MAKI/Pi/PIC/PBM P4 の独自デコーダ
+│   │                                 (先頭マジック判定・形式別トグル)
+│   ├── AnimatedImage.swift         — アニメ画像の全フレーム読込
+│   ├── SupportedTypes.swift        — 対応拡張子の判定(書庫・分割書庫・画像)
+│   ├── MediaProfile.swift          — 置き場所の速度別ポリシー表+SourceReadGate
+│   ├── MediaSpeedProbe.swift       — ボリューム速度判定(statfs/IOKit/実測)
+│   └── PageFileInfo.swift          — ファイル情報パネルの内容組み立て(EXIF/GPS)
 ├── Input/
 │   ├── ReaderAction.swift          — 全アクション enum(旧番号 §5.5-5.6 は移行用対応表)
 │   ├── Bindings.swift              — 旧 6 配列互換の読み書き・解決順(§5.3)・
-│   │                                 switchAction(§5.4)
+│   │                                 switchAction(§5.4)・既定バインディング
 │   └── ActionNames.swift           — 表示名(設定のバインディング編集用)
 ├── UI/
 │   ├── Reader/
 │   │   ├── ReaderWindowController.swift(+Input/+Library/+Thumbnails 拡張)
 │   │   │                           — 開くフロー・表示更新・入力ディスパッチ・
-│   │   │                             付随機能・ページ番号/バーの配置と自動隠し
+│   │   │                             付随機能・ページ番号/バーの配置と自動隠し・
+│   │   │                             オープン進捗 HUD・ウインドウ位置復元
 │   │   ├── ReaderView.swift        — layer-backed。1/2 ページ配置・フィット・回転・
-│   │   │                             内部スクロール端判定・リサンプル差し替え
+│   │   │                             内部スクロール端判定・リサンプル差し替え・
+│   │   │                             アニメ再生
 │   │   ├── PageBarView.swift       — ページバー(色・進捗・クリック/ホバー)
-│   │   ├── LoupeController.swift / PlaceholderImage.swift
+│   │   ├── LoupeController.swift   — ルーペ(オーバーレイ CALayer 方式+超解像)
+│   │   ├── FileInfoView.swift      — ファイル情報パネルの描画(地図含む)
+│   │   └── PlaceholderImage.swift  — 壊れページ等の実行時生成プレースホルダ
 │   ├── Thumbnails/ (SwiftUI)       — ThumbnailOverlayModel / ThumbnailOverlayView /
 │   │                                 ThumbnailGridLayout(ウインドウ内オーバーレイ §4.8)
 │   ├── Bookmarks/ (SwiftUI)        — BookmarkEditorView(しおり編集シート §4.7.2)
-│   └── Settings/ (SwiftUI)         — SettingsView(一般/表示/操作/キー/高度)+
-│                                     KeyBindingsPane
+│   └── Settings/ (SwiftUI)         — SettingsView(システム設定風サイドバー+検索。
+│                                     9 ペイン)+ SettingsSearch + KeyBindingsPane
 ├── Persistence/
 │   ├── SettingsStore.swift         — 型付きアクセサ。旧キーを直接読み書きし、色/
 │   │                                 フォント等の旧 NSArchiver データは読み替え(§13.5)
-│   └── BookHistoryStore.swift      — BookSettings/RecentItems/LastPages
-│                                     (スキーマ §7.1-7.3 互換、URL ブックマーク)
+│   └── BookHistoryStore.swift      — 本ごとの状態の v2 ストア(1 冊 1 JSON+
+│                                     recents.json。旧キーは初回に一括インポート)
 └── Resources/
     ├── Localizable.xcstrings       — ja/en
     ├── Credits.rtf                 — XAD クレジット維持(§14.2)
-    └── coo_*.icns / broken.png / empty.png
-CooViewerTests/                     — ソート・ソース(スプール/暗号化 zip 含む)・Book・
-                                      バインディング移行・履歴・ページ/サムネイル
-                                      キャッシュ・リサンプル/MetalFX 色回帰・設定の
-                                      ユニットテスト(旧 defaults 移行は §6 リスク表の
-                                      とおりフィクスチャで担保)
+    └── AppIcon.icon ほか
+CooViewerTests/                     — ソート・ソース(スプール/暗号化 zip/ネスト含む)・
+                                      Book・バインディング移行・履歴・キャッシュ・
+                                      リサンプル/MetalFX 色回帰・レトロデコーダ・
+                                      メディアプロファイル・設定・設定検索の
+                                      ユニットテスト
 ```
 
 計画時との主な差分: LegacyMigration の一括移行方式は「各ストアが旧キーを
-そのまま読み書き+新形式へ読み替え」方式に変更(§13.2 のキー互換はそのまま
-成立)。アイコンは Assets.xcassets ではなく Icon Composer の AppIcon.icon。
+そのまま読み書き+新形式へ読み替え」方式を経て、2.0b5 で本の状態のみ
+v2 ストア(BookHistoryStore)へ一括インポート方式に変更(§13.2 のキー互換は
+UserDefaults 側でそのまま成立)。アイコンは Assets.xcassets ではなく
+Icon Composer の AppIcon.icon。
 
 ### 3.1 並行性設計(旧 §4.6 の置換)
 
@@ -279,3 +305,81 @@ CooViewerTests/                     — ソート・ソース(スプール/暗�
 | 見開き合成・ナビゲーションのエッジケース(§4.2-4.3 の複雑な相互作用) | PageLayout/Navigator を純粋ロジックとして切り出しテーブル駆動テスト |
 | 「Tahoe らしさ」と挙動互換の衝突(全画面・設定即時反映) | §2.4 の仕様変更表で明示管理。迷ったら挙動互換を優先 |
 | 旧 NSArchiver データ(色/フォント)の読替 | 読めなければ既定値へフォールバック(§13.5 が許容) |
+
+---
+
+## 7. 設計指針と横断ルール(コードを読む・書く人向け)
+
+個々の機能表(§2.4)とは別に、コードベース全体を貫く約束事をここにまとめる。
+新しい変更はこの指針に沿わせ、外れる場合は本書に理由を書き足すこと。
+
+### 7.1 仕様書駆動
+
+- 挙動はすべて仕様書(legacy-app-analysis.md)を根拠にする。コード中の
+  コメントは `仕様書 §n` / `設計書 §n` の形で該当章を引用する。
+- 旧実装と意図的に変える挙動は必ず §2.4 の表へ 1 行追加する。
+  「なんとなく改善」で挙動を変えない(利用者は旧挙動に最適化されている)。
+
+### 7.2 永続データの互換性
+
+- UserDefaults ドメイン `jp.coo.cooViewer` と旧キー(特にバインディング
+  6 配列 `KeyArray*`/`MouseArray*`)は 1.x と互換のまま維持する。
+  スキーマを変えるときは §13.5 に対応する移行マッピングが必須。
+- 本ごとの状態(しおり・最終ページ・per-book 設定)は v2 ストア
+  (`Application Support/jp.coo.cooViewer/BookStates/`、1 冊 1 JSON)。
+  旧キー(BookSettings/RecentItems/LastPages)は初回に一括インポートした後
+  **1.x 用に凍結保持**し、新実装からは読みも書きもしない。
+- 新規の設定キーは既存キーと衝突しない名前にし、未設定時の既定値を
+  コード側で保証する(registerDefaults か アクセサの補正)。
+
+### 7.3 並行性
+
+- UI と Book は `@MainActor`。スレッド安全でないライブラリを包むソース
+  (XADArchive、PDFDocument)は actor で直列化する。
+- 非同期の競合は**世代番号**で守るのが本アプリの定石:
+  `openGeneration`(開くフローの連打)、`displayGeneration`(表示更新)、
+  `resampleGeneration`(リサンプルの遅延書込)、ThumbnailCache の
+  世代付き in-flight。await をまたいだら世代を照合してから状態に触れる。
+- 同じ結果を二重に計算しない: Book.inFlightLoads・ThumbnailCache.inFlight の
+  「単一飛行+合流」パターンを踏襲する。
+- 読み取り I/O は SourceReadGate(メディア速度別の同時数)で絞る。
+  ゲートは I/O だけを覆い、CPU デコードはゲート外で並列に行う。
+
+### 7.4 エラーの扱い
+
+- 旧実装の「エラー黙殺方針」(§4.17)を維持する: 開けない本はビープ、
+  壊れページは理由入りプレースホルダでページ数を保つ。ダイアログの新設は
+  パスワード入力のような対話が必須の場面だけ。
+
+### 7.5 設定の反映
+
+- 設定は即時反映(旧 Cancel ロールバックは廃止)。反映経路は
+  「defaults 書込 → UserDefaults.didChangeNotification →
+  ReaderWindowController.applySettings(連続書込は 1 回にまとめる)」に
+  一本化する。メニューからの変更も同じ defaults を書く。
+- **メニューにある設定的項目は必ず設定ウインドウにもある**。メニューは
+  頻繁に切り替えるものの抜粋という位置付けを維持する。
+- 設定ペインに項目を足したら SettingsView.searchTerms(検索索引)にも足す。
+
+### 7.6 検証とテスト
+
+- ロジック(ソート・見開き判定・バインディング解決・レイアウト・永続化・
+  検索など)は必ず CooViewerTests にユニットテストを持つ。
+- 見た目の変更はスナップショット CLI(development-guide.md 参照)で
+  実画面を確認する。スクリーンショット権限が無くても検証できる。
+
+### 7.7 Apple Silicon 前提の実装選択
+
+- arm64 のみ・macOS 26 以降が前提。ハードウェア HEIC エンコード
+  (サムネイルキャッシュ)、MetalFX Spatial(拡大)、EDR(HDR ゲイン
+  マップ表示)、多コア並列デコード(読み取りゲートと分離)を積極的に使う。
+- 大きなピクセルバッファは所有権移譲(malloc + CGDataProvider の
+  releaseData)でコピーを避ける(MetalFXUpscaler・RetroImageDecoding 参照)。
+
+### 7.8 コメント規約
+
+- コメントは**日本語のみ**(英語併記はしない)。挙動が仕様書・設計書に
+  由来する箇所は必ず章番号を引用する。
+- 「何をしているか」より「なぜそうなのか(仕様・回避したバグ・性能理由)」を
+  書く。周辺コードとの関係(誰が呼ぶか・何と競合するか)が自明でない場合は
+  それも書く。

@@ -7,15 +7,12 @@ import XCTest
 /// ページ寸法索引による見開き判定(デコードなし)のテスト。
 /// 従来のデコード判定と同じスプレッドになること、後方めくり・巻末ジャンプが
 /// デコードゼロで判定されること、表示キャップの動的更新を確認する。
-/// EN: Size-index spread pairing: parity with the decode-based path, zero
-/// EN: decodes for backward turns, and dynamic display-cap updates.
 @MainActor
 final class PageSizeIndexTests: XCTestCase {
     private let portrait = CGSize(width: 70, height: 100)
     private let landscape = CGSize(width: 150, height: 100)
 
     /// imageSize を実装し、image() 呼び出し回数を数えるスタブ
-    /// EN: Stub with imageSize support and a decode counter.
     private final class SizedStubSource: BookSource, @unchecked Sendable {
         let url = URL(fileURLWithPath: "/stub/sized-book")
         let sizes: [CGSize]

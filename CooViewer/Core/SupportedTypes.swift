@@ -3,7 +3,6 @@ import UniformTypeIdentifiers
 
 /// 対応ファイル種別の判定。
 /// 旧実装の +fileTypes / +archiveTypes(仕様書 §2.1)に相当する。
-/// EN: File-type checks for books and pages (legacy +fileTypes/+archiveTypes).
 enum SupportedTypes {
     /// XADMaster で開く書庫の拡張子(仕様書 §2.1 の archiveTypes と同一)
     static let archiveExtensions: Set<String> = [
@@ -20,7 +19,6 @@ enum SupportedTypes {
 
     /// 分割書庫の拡張子(r00-r99 / z01-z99 / 000-099 等。仕様書 §2.3 の
     /// 旧 304 拡張子のうち番号系列をパターンで受ける)
-    /// EN: Split-volume extensions (rNN / zNN / NNN) accepted by pattern.
     static func isSplitVolumeExtension(_ ext: String) -> Bool {
         guard ext.count == 3 else { return false }
         if ext.hasPrefix("r") || ext.hasPrefix("z") {
@@ -32,8 +30,6 @@ enum SupportedTypes {
     /// 分割書庫の「続き」ボリュームか(先頭巻 .001 以外の番号系列)。
     /// フォルダ統合では先頭巻だけを本として扱い、続き巻は XADMaster の
     /// スパン処理に任せる(続き巻を別の本として数えない)
-    /// EN: Continuation split volumes (anything but the leading .001); folder
-    /// EN: merging opens only the first volume and lets XADMaster span the rest.
     static func isSplitVolumeContinuation(_ ext: String) -> Bool {
         guard isSplitVolumeExtension(ext) else { return false }
         return ext != "001"
@@ -45,7 +41,6 @@ enum SupportedTypes {
 
     /// UTType 上は画像に適合するが表示できない拡張子(.ai は ImageIO でも
     /// NSImage でも開けないため除外)
-    /// EN: Extensions that claim to be images but cannot actually be displayed.
     static let undisplayableImageExtensions: Set<String> = ["ai"]
 
     /// UTType 解決できないが表示できる拡張子か。
@@ -54,10 +49,6 @@ enum SupportedTypes {
     /// トグルで個別に無効化できる)。.max は 3ds Max、.pic は Softimage 等と
     /// 衝突するが、デコードは先頭マジックでゲートするため別形式のファイルを
     /// 誤描画することはない(壊れページ表示)
-    /// EN: Extensions UTType cannot resolve but we can display. The custom
-    /// EN: decoder formats honor the per-format toggles in Advanced settings;
-    /// EN: decoding stays magic-gated, so colliding foreign files never get
-    /// EN: misrendered.
     static func isExtraImageExtension(_ ext: String) -> Bool {
         switch ext {
         case "avifs":
@@ -79,7 +70,6 @@ enum SupportedTypes {
 
     /// ページとして表示できる画像ファイルか(拡張子ベース)。
     /// 旧実装の [NSImage imageFileTypes] 判定に相当。
-    /// EN: Extension-based check for displayable page images.
     static func isImageFile(_ name: String) -> Bool {
         let ext = (name as NSString).pathExtension.lowercased()
         guard !ext.isEmpty, !undisplayableImageExtensions.contains(ext) else { return false }
@@ -89,7 +79,6 @@ enum SupportedTypes {
     }
 
     /// 「本」として開ける URL か(フォルダ判定は呼び出し側で行う)
-    /// EN: Whether the URL opens as a book (folders are checked by callers).
     static func isBookFile(_ url: URL) -> Bool {
         isArchive(url) || isPDF(url)
             || folderLikeExtensions.contains(url.pathExtension.lowercased())

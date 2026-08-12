@@ -131,6 +131,53 @@ final class ImageResamplerTests: XCTestCase {
         XCTAssertLessThan(Int(data[offset + 2]), 120)     // B
     }
 
+    func testDownscalePreservesColor() async throws {
+        // GPU(Lanczos)縮小経路でも色が化けないこと
+        let source = try ImageDecoding.decode(
+            TestFixtures.pngData(width: 100, height: 100, red: 0.9, green: 0.2, blue: 0.2))
+        let resampled = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 50, height: 50),
+            cacheKey: "t-down-color", upscaleWithMetalFX: false)
+        let result = try XCTUnwrap(resampled)
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let offset = 25 * result.bytesPerRow + 25 * (result.bitsPerPixel / 8)
+        XCTAssertGreaterThan(Int(data[offset]), 180)      // R
+        XCTAssertLessThan(Int(data[offset + 1]), 120)     // G
+        XCTAssertLessThan(Int(data[offset + 2]), 120)     // B
+    }
+
+    /// 上半分が赤・下半分が青の画像(メモリ先頭行=画像上端)
+    private func twoToneImage(width: Int, height: Int) -> CGImage {
+        let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        // CG の描画座標は下原点: y 上半分の矩形がメモリ先頭側(画像上端)になる
+        context.setFillColor(CGColor(srgbRed: 0.9, green: 0.1, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: height / 2, width: width, height: height / 2))
+        context.setFillColor(CGColor(srgbRed: 0.1, green: 0.1, blue: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height / 2))
+        return context.makeImage()!
+    }
+
+    func testDownscaleKeepsOrientation() async throws {
+        // CIImage 経路で上下が反転しないこと(向きの回帰防止)
+        let source = twoToneImage(width: 64, height: 64)
+        let resampled = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "t-down-orient", upscaleWithMetalFX: false)
+        let result = try XCTUnwrap(resampled)
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let pixelBytes = result.bitsPerPixel / 8
+        let top = 4 * result.bytesPerRow + 16 * pixelBytes
+        let bottom = 28 * result.bytesPerRow + 16 * pixelBytes
+        XCTAssertGreaterThan(Int(data[top]), 150, "上端は赤のはず")
+        XCTAssertLessThan(Int(data[top + 2]), 100)
+        XCTAssertGreaterThan(Int(data[bottom + 2]), 150, "下端は青のはず")
+        XCTAssertLessThan(Int(data[bottom]), 100)
+    }
+
     func testSameSizeReturnsOriginal() async {
         let source = image(width: 30, height: 30)
         let result = await ImageResampler.shared.resample(
@@ -148,6 +195,58 @@ final class ImageResamplerTests: XCTestCase {
             source, to: CGSize(width: 32, height: 32),
             cacheKey: "t-cache", upscaleWithMetalFX: false)
         XCTAssertTrue(first === second)
+    }
+
+    func testByteLimitEvictsOldestKeepsNewest() async {
+        // 32x32 RGBA(4KB)2 枚分の上限に 3 枚入れると最古が落ちる
+        let resampler = ImageResampler(byteLimit: 32 * 32 * 4 * 2 + 512)
+        let source = image(width: 64, height: 64)
+        let first = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e1", upscaleWithMetalFX: false)
+        _ = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e2", upscaleWithMetalFX: false)
+        let third = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e3", upscaleWithMetalFX: false)
+        // 最新はキャッシュ命中(同一インスタンス)、最古は作り直しになる
+        let thirdAgain = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e3", upscaleWithMetalFX: false)
+        XCTAssertTrue(third === thirdAgain)
+        let firstAgain = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e1", upscaleWithMetalFX: false)
+        XCTAssertFalse(first === firstAgain)
+    }
+}
+
+final class PreresamplePolicyTests: XCTestCase {
+    func testPageBudgetCapsAtMaxPages() {
+        // 30MB/ページ・16GB 機: 予算 256MB → 8 ページ相当だが上限 5
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 30 << 20, physicalMemory: 16 << 30), 5)
+    }
+
+    func testPageBudgetShrinksForLargePages() {
+        // 200MB/ページ(6K 級ウインドウ)→ 512MB / 200MB = 2 ページ
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 200 << 20, physicalMemory: 64 << 30), 2)
+    }
+
+    func testPageBudgetFloorsAtOne() {
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 400 << 20, physicalMemory: 8 << 30), 1)
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 0, physicalMemory: 8 << 30), 1)
+    }
+
+    func testByteBudgetScalesWithMemory() {
+        // 4GB 機 128MB・8GB 機 256MB(いずれも 1/32)、大容量機は 512MB で頭打ち
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 4 << 30), 128 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 8 << 30), 256 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30), 512 << 20)
     }
 }
 
@@ -307,7 +406,6 @@ final class SplitVolumeExtensionTests: XCTestCase {
 
 /// コレクションフォルダのドリルダウン先選択(§2.4 の設計変更。
 /// 明示オープン時のみ使われる — ナビゲーションはドリルしない)
-/// EN: Inner-book pick for collection folders (explicit opens only).
 @MainActor
 final class InnerBookSelectionTests: XCTestCase {
     func testInnerBookPicksFirstBookByName() throws {

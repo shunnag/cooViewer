@@ -5,12 +5,9 @@ import CoreGraphics
 /// API は 0 始まりのページ index で受ける。判定はページ送り・見開き合成・
 /// サムネイルのペア判定などホットパスから毎回呼ばれるため、文字列生成を
 /// 避けて Int 集合を導出キャッシュとして持つ(raw が正で、変更時に再構築)。
-/// EN: Forced single/pair page marks, stored as legacy 1-based strings; hot
-/// EN: lookups use derived Int sets rebuilt on mutation (raw is authoritative).
 struct PageMarks: Sendable, Equatable {
     private(set) var raw: Set<String>
     /// 導出キャッシュ(0 始まり)。raw から一意に決まるため同値比較は raw のみ
-    /// EN: Derived caches (0-based); equality uses raw alone.
     private var singleIndices: Set<Int> = []
     private var pairMemberIndices: Set<Int> = []
 
@@ -36,7 +33,6 @@ struct PageMarks: Sendable, Equatable {
     }
 
     /// index が強制ペアの一部か(仕様書 §4.2.1: "page-(page+1)" または "(page-1)-page")
-    /// EN: True when the page is either half of a forced pair mark.
     func forcesPairContaining(_ index: Int) -> Bool {
         pairMemberIndices.contains(index)
     }
@@ -59,15 +55,12 @@ struct PageMarks: Sendable, Equatable {
     }
 
     /// 強制単ページの index 一覧(0 始まり。サムネイル一覧のペア判定用)
-    /// EN: 0-based indices forced single (thumbnail pairing).
     var forcedSingleIndices: [Int] { Array(singleIndices) }
 
     /// 強制ペアに含まれる index 一覧(0 始まり、両片)
-    /// EN: 0-based indices that are either half of a forced pair.
     var forcedPairMemberIndices: [Int] { Array(pairMemberIndices) }
 
     /// raw(1 始まり文字列)から Int 集合を組み直す。marks は高々数十個
-    /// EN: Rebuild the Int sets from raw; marks stay tiny.
     private mutating func rebuildDerived() {
         singleIndices = []
         pairMemberIndices = []
@@ -87,7 +80,6 @@ struct PageMarks: Sendable, Equatable {
 }
 
 /// 見開き合成の判定ロジック(仕様書 §4.2.1)。
-/// EN: Decides whether a page is a spread candidate ("small").
 enum PageLayout {
     /// 既定のしきい値(SingleSetting = 740 → 縦横比 0.74)
     static let defaultSingleSetting = 740
@@ -96,8 +88,6 @@ enum PageLayout {
     /// 1. marks の強制指定が最優先
     /// 2. coverSingle(表紙を単ページにする。新機能・既定オフ)なら先頭ページは単ページ
     /// 3. 幅/高さ が singleSetting/1000 以下(縦長)なら見開き候補
-    /// EN: Marks win first; with coverSingle the first page stays single;
-    /// EN: otherwise portrait pages (aspect <= threshold) are pair candidates.
     static func isSmall(
         size: CGSize, index: Int, marks: PageMarks,
         singleSetting: Int = defaultSingleSetting,
