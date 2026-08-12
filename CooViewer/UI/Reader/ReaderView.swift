@@ -66,7 +66,9 @@ final class ReaderView: NSView {
     /// 表示中スプレッドのリサンプル(ML 高画質化含む)が進行中かの通知。
     /// コントローラがページバー横のインジケーター表示に使う
     var onResampleActivityChanged: ((Bool) -> Void)?
-    private var resampleActivityVisible = false
+    /// 表示中スプレッドのリサンプルが進行中か(先読みが ML キューを
+    /// 先取りしないための待機判定にも使う)
+    private(set) var isResamplingDisplayedPages = false
     /// ルーペ表示専用の高解像度画像(ページ index → 画像)。通常表示には使わない
     private var loupeHighResImages: [Int: CGImage] = [:]
     private var resampleTask: Task<Void, Never>?
@@ -587,7 +589,7 @@ final class ReaderView: NSView {
     /// 事前引き当て済み・HDR ページ等)では false の再通知が予約解除の
     /// 唯一の手段になる(抑制するとスピナーが出っぱなしになる)
     private func setResampleActivity(_ active: Bool) {
-        resampleActivityVisible = active
+        isResamplingDisplayedPages = active
         onResampleActivityChanged?(active)
     }
 
