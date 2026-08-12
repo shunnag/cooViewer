@@ -63,6 +63,10 @@ final class ReaderView: NSView {
 
     /// ページ毎の高品質リサンプル結果(対象ピクセルサイズ付き。設計書 §5 描画品質)
     private var resampledPages: [(size: CGSize, image: CGImage)?] = []
+    /// 表示中スプレッドのリサンプル(ML 高画質化含む)が進行中かの通知。
+    /// コントローラがページバー横のインジケーター表示に使う
+    var onResampleActivityChanged: ((Bool) -> Void)?
+    private var resampleActivityVisible = false
     /// ルーペ表示専用の高解像度画像(ページ index → 画像)。通常表示には使わない
     private var loupeHighResImages: [Int: CGImage] = [:]
     private var resampleTask: Task<Void, Never>?
@@ -520,7 +524,10 @@ final class ReaderView: NSView {
     /// 完成したページから順に等倍画像へ差し替える。
     private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
         guard interpolation == .systemDefault || interpolation == .high,
-              !images.isEmpty else { return }
+              !images.isEmpty else {
+            setResampleActivity(false)
+            return
+        }
         let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String,
                         noiseReduction: NoiseReductionLevel)] =
             images.indices.compactMap { index in
@@ -541,6 +548,7 @@ final class ReaderView: NSView {
         // スプレッドのスロットを汚す穴の修正)
         resampleTask?.cancel()
         resampleGeneration += 1
+        setResampleActivity(!requests.isEmpty)
         guard !requests.isEmpty else { return }
 
         let generation = resampleGeneration
@@ -563,7 +571,19 @@ final class ReaderView: NSView {
                                     at: request.index, generation: generation,
                                     key: request.key)
             }
+            // このスプレッドの計算が最後まで走り切ったら進行表示を消す
+            // (打ち切り時は次の schedule が新しい状態を設定済み)
+            if let self, !Task.isCancelled, generation == self.resampleGeneration {
+                self.setResampleActivity(false)
+            }
         }
+    }
+
+    /// リサンプル進行状態の変化をコントローラへ通知する(同値は抑制)
+    private func setResampleActivity(_ active: Bool) {
+        guard resampleActivityVisible != active else { return }
+        resampleActivityVisible = active
+        onResampleActivityChanged?(active)
     }
 
     private func applyResampled(_ image: CGImage, size: CGSize,

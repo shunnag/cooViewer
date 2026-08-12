@@ -129,6 +129,27 @@ final class NoiseReductionTests: XCTestCase {
     }
 
     @MainActor
+    func testResampleActivityNotification() async throws {
+        // リサンプル開始で true、完了で false が通知される
+        // (ページバー横の進行インジケーターの駆動源)
+        let view = ReaderView(frame: CGRect(x: 0, y: 0, width: 200, height: 120))
+        var events: [Bool] = []
+        view.onResampleActivityChanged = { events.append($0) }
+        view.setPages([blockyImage(size: 64)], readsFromLeft: false)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(events.first, true, "リサンプル予約と同時に開始通知")
+        for _ in 0..<100 where events.last != false {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(events.last, false, "完了で終了通知")
+        // 空表示への切替は即座に false(空の本・本を閉じた場合)
+        events.removeAll()
+        view.setPages([], readsFromLeft: false)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(events.isEmpty || events.last == false)
+    }
+
+    @MainActor
     func testRenderQualityMapping() {
         // 描画品質(補間 5 段階)⇔ 旧互換 2 キーの相互変換
         let suiteName = "RenderQualityTests-\(UUID().uuidString)"
