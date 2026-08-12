@@ -467,6 +467,8 @@ final class ReaderView: NSView {
         guard !images.isEmpty, available.width > 0, available.height > 0 else {
             contentSize = .zero
             for layer in pageLayers { layer.isHidden = true }
+            // 表示するものがない=リサンプルも起きない。進行表示の予約を解除する
+            setResampleActivity(false)
             return
         }
 
@@ -579,9 +581,12 @@ final class ReaderView: NSView {
         }
     }
 
-    /// リサンプル進行状態の変化をコントローラへ通知する(同値は抑制)
+    /// リサンプル進行状態をコントローラへ通知する。
+    /// 同値でも毎回通知する: コントローラは refreshDisplay 開始時に
+    /// 「表示予約」を出しており、リサンプル不要のスプレッド(全ページ
+    /// 事前引き当て済み・HDR ページ等)では false の再通知が予約解除の
+    /// 唯一の手段になる(抑制するとスピナーが出っぱなしになる)
     private func setResampleActivity(_ active: Bool) {
-        guard resampleActivityVisible != active else { return }
         resampleActivityVisible = active
         onResampleActivityChanged?(active)
     }
