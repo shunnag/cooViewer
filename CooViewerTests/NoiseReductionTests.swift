@@ -79,6 +79,28 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertTrue(MLNoiseReducer.tileOrigins(width: 0, height: 100).isEmpty)
     }
 
+    func testSuperResolverTileOriginsCoverImage() {
+        // 内容領域 240px 単位で端まで覆う(継ぎ目マージンは入力側で確保)
+        XCTAssertEqual(MLSuperResolver.contentSide, 240)
+        let origins = MLSuperResolver.tileOrigins(width: 500, height: 250)
+        XCTAssertEqual(origins.count, 6)  // 3 列 × 2 行
+        XCTAssertTrue(origins.contains { $0.x == 480 && $0.y == 240 })
+        XCTAssertEqual(MLSuperResolver.tileOrigins(width: 240, height: 240).count, 1)
+        XCTAssertTrue(MLSuperResolver.tileOrigins(width: 100, height: 0).isEmpty)
+    }
+
+    func testMaximumLevelBehavior() {
+        // 等倍系(ルーペ・原寸)では「最高」は「強」へ落ちる
+        XCTAssertEqual(NoiseReductionLevel.maximum.cappedForOriginalSize, .strong)
+        XCTAssertEqual(NoiseReductionLevel.strong.cappedForOriginalSize, .strong)
+        XCTAssertEqual(NoiseReductionLevel.light.cappedForOriginalSize, .light)
+        // 超解像のキャッシュファイル名はキーのハッシュ(キー毎に一意・拡張子 heic)
+        let url1 = MLSuperResolver.cacheFileURL(for: "a|100x200|sr4")
+        let url2 = MLSuperResolver.cacheFileURL(for: "b|100x200|sr4")
+        XCTAssertNotEqual(url1, url2)
+        XCTAssertEqual(url1.pathExtension, "heic")
+    }
+
     func testNoneLevelReturnsOriginal() throws {
         guard let reducer = NoiseReducer() else {
             throw XCTSkip("Metal が使えない環境")
@@ -133,6 +155,9 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertEqual(store.noiseReductionScope, .everywhere)
         XCTAssertTrue(store.noiseReductionScope.includesLoupe)
         XCTAssertTrue(store.noiseReductionScope.includesOriginalSize)
+        store.noiseReductionLevel = .maximum
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 4)
+        XCTAssertEqual(store.noiseReductionLevel, .maximum)
         // 範囲外の保存値は既定へフォールバック
         defaults.set(99, forKey: "NoiseReductionLevel")
         XCTAssertEqual(store.noiseReductionLevel, .none)

@@ -89,20 +89,25 @@ struct SettingsView: View {
     @AppStorage("NoiseReductionScope") private var noiseReductionScope = 0
     /// 「強(ML モデル)」の同意済みフラグ(初回のみ確認を出す)
     @AppStorage("NoiseReductionMLAccepted") private var mlModelAccepted = false
+    /// 「最高(×4 ML)」の同意済みフラグ(強とは別モデルなので別に確認する)
+    @AppStorage("NoiseReductionSRAccepted") private var srModelAccepted = false
     @State private var showsMLConsentAlert = false
-    @ObservedObject private var mlStatus = MLNoiseReducerStatus.shared
+    @State private var showsSRConsentAlert = false
+    @ObservedObject private var mlStatus = MLModelInstallStatus.noise
+    @ObservedObject private var srStatus = MLModelInstallStatus.superResolution
 
-    /// モデルの導入状態の表示文
+    /// モデルの導入状態の表示文(強・最高で共通の文面)
     private var mlStatusDescription: String {
-        switch mlStatus.state {
+        let state = noiseReductionLevel == 4 ? srStatus.state : mlStatus.state
+        switch state {
         case .notInstalled:
-            String(localized: "Model: not downloaded yet")
+            return String(localized: "Model: not downloaded yet")
         case .downloading:
-            String(localized: "Model: downloading…")
+            return String(localized: "Model: downloading…")
         case .ready:
-            String(localized: "Model: ready")
+            return String(localized: "Model: ready")
         case .failed:
-            String(localized: "Model: unavailable (retried automatically when needed)")
+            return String(localized: "Model: unavailable (retried automatically when needed)")
         }
     }
     @AppStorage("Interpolation") private var interpolation = 0
@@ -466,8 +471,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 // 圧縮ノイズ低減(JPEG のみ。古いファイルのブロックノイズ向け)。
-                // 強は CoreML モデル: 初回選択時に「ダウンロードが必要・処理が
-                // 重い」ことへの同意を取ってから設定する
+                // 強・最高は CoreML モデル: 初回選択時に「ダウンロードが必要・
+                // 処理が重い」ことへの同意をモデル毎に取ってから設定する
                 VStack(alignment: .leading, spacing: 4) {
                     Picker(String(localized: "Compression noise reduction:"),
                            selection: $noiseReductionLevel) {
@@ -475,29 +480,47 @@ struct SettingsView: View {
                         Text(String(localized: "Weak")).tag(1)
                         Text(String(localized: "Medium")).tag(2)
                         Text(String(localized: "Strong (ML model)")).tag(3)
+                        Text(String(localized: "Maximum (×4 ML upscale)")).tag(4)
                     }
                     Text(String(localized: "Applies to JPEG pages only."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if noiseReductionLevel == 3 {
+                    if noiseReductionLevel == 4 {
+                        Text(String(localized:
+                            "Very large pages (over 2048 px) and the loupe / View Original fall back to Strong."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if noiseReductionLevel == 3 || noiseReductionLevel == 4 {
                         Text(mlStatusDescription)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .onChange(of: noiseReductionLevel) { oldValue, newValue in
-                    guard newValue == 3 else { return }
-                    if mlModelAccepted {
-                        Task { await MLNoiseReducer.shared.ensureModel() }
-                    } else {
-                        // 同意が得られるまで元の値へ戻して確認を出す
-                        noiseReductionLevel = oldValue
-                        showsMLConsentAlert = true
+                    if newValue == 3 {
+                        if mlModelAccepted {
+                            Task { await MLNoiseReducer.shared.ensureModel() }
+                        } else {
+                            // 同意が得られるまで元の値へ戻して確認を出す
+                            noiseReductionLevel = oldValue
+                            showsMLConsentAlert = true
+                        }
+                    } else if newValue == 4 {
+                        if srModelAccepted {
+                            Task { await MLSuperResolver.shared.ensureModel() }
+                        } else {
+                            noiseReductionLevel = oldValue
+                            showsSRConsentAlert = true
+                        }
                     }
                 }
                 .onAppear {
                     if noiseReductionLevel == 3, mlModelAccepted {
                         Task { await MLNoiseReducer.shared.ensureModel() }
+                    }
+                    if noiseReductionLevel == 4, srModelAccepted {
+                        Task { await MLSuperResolver.shared.ensureModel() }
                     }
                 }
                 .alert(String(localized: "Use the “Strong (ML model)” level?"),
@@ -511,6 +534,18 @@ struct SettingsView: View {
                 } message: {
                     Text(String(localized:
                         "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds."))
+                }
+                .alert(String(localized: "Use the “Maximum (×4 ML upscale)” level?"),
+                       isPresented: $showsSRConsentAlert) {
+                    Button(String(localized: "Download and Use")) {
+                        srModelAccepted = true
+                        noiseReductionLevel = 4
+                        Task { await MLSuperResolver.shared.ensureModel() }
+                    }
+                    Button(String(localized: "Cancel"), role: .cancel) {}
+                } message: {
+                    Text(String(localized:
+                        "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk."))
                 }
                 Picker(String(localized: "Apply to:"),
                        selection: $noiseReductionScope) {

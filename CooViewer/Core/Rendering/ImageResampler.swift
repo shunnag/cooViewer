@@ -64,9 +64,10 @@ actor ImageResampler {
             return hit
         }
 
-        // 圧縮ノイズ低減(JPEG のブロックノイズ)。強は CoreML モデル、
-        // 弱/中(および強のモデル未導入時)は CINoiseReduction。失敗時は原画
-        let source = await reducedSource(of: image, level: noiseReduction)
+        // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
+        // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
+        let source = await reducedSource(of: image, level: noiseReduction,
+                                         cacheKey: cacheKey)
         // モデル推論の await 中に同じキーの計算が完了していたら使い回す
         if let hit = cache[key] { return hit }
 
@@ -92,16 +93,30 @@ actor ImageResampler {
     }
 
     /// リサイズを伴わない圧縮ノイズ低減(ルーペ・原寸表示用)。
-    /// なし指定・失敗時はそのまま返す
+    /// なし指定・失敗時はそのまま返す。「最高」は縮小表示前の ×4 拡大が
+    /// 前提の仕組みのため、等倍系のこの経路では「強」として扱う
     func reduceNoise(_ image: CGImage, level: NoiseReductionLevel) async -> CGImage {
-        await reducedSource(of: image, level: level)
+        await reducedSource(of: image, level: level.cappedForOriginalSize,
+                            cacheKey: nil)
     }
 
-    /// ノイズ低減の実処理の振り分け(強=CoreML → CI フォールバック)
+    /// ノイズ低減の実処理の振り分け。
+    /// 最高 = Real-ESRGAN ×4 超解像(結果は 4 倍サイズ。後段の縮小で画質向上)、
+    /// 強 = waifu2x ノイズ除去。ML 系は未導入・失敗・画像過大で 1 段ずつ
+    /// フォールバックする(最高→強→中相当の CI)
     private func reducedSource(of image: CGImage,
-                               level: NoiseReductionLevel) async -> CGImage {
+                               level: NoiseReductionLevel,
+                               cacheKey: String?) async -> CGImage {
         guard level != .none else { return image }
-        if level == .strong,
+        if level == .maximum {
+            // ディスクキャッシュのキーは元画像サイズまで含めて一意にする
+            let srKey = cacheKey.map { "\($0)|\(image.width)x\(image.height)|sr4" }
+            if let upscaled = await MLSuperResolver.shared.upscale(
+                image, cacheKey: srKey) {
+                return upscaled
+            }
+        }
+        if level == .strong || level == .maximum,
            let reduced = await MLNoiseReducer.shared.reduce(image) {
             return reduced
         }

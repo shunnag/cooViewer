@@ -91,8 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? FileManager.default.removeItem(at: child)
                 }
             }
-            await ThumbnailCache.shared.trimDiskCache(
-                olderThanDays: SettingsStore.shared.thumbnailCacheDays)
+            let cacheDays = await SettingsStore.shared.thumbnailCacheDays
+            await ThumbnailCache.shared.trimDiskCache(olderThanDays: cacheDays)
+            // 超解像キャッシュもサムネイルと同じ保持日数で回収する
+            MLSuperResolver.trimDiskCache(olderThanDays: cacheDays)
         }
     }
 

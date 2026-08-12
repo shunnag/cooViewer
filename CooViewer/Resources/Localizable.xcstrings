@@ -574,6 +574,46 @@
         }
       }
     },
+    "Maximum (×4 ML upscale)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最高(×4 ML 超解像)"
+          }
+        }
+      }
+    },
+    "Use the “Maximum (×4 ML upscale)” level?" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「最高(×4 ML 超解像)」を使用しますか?"
+          }
+        }
+      }
+    },
+    "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "初回にモデル(約 9 MB)をダウンロードします。各ページをニューラルネットワークで 4 倍に拡大する最も重い方式で、ページの処理に数秒かかることがあります(結果はディスクにキャッシュされます)。"
+          }
+        }
+      }
+    },
+    "Very large pages (over 2048 px) and the loupe / View Original fall back to Strong." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "非常に大きなページ(長辺 2048 px 超)とルーペ・原寸表示は「強」で処理します。"
+          }
+        }
+      }
+    },
     "Main view and loupe" : {
       "localizations" : {
         "ja" : {

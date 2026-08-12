@@ -113,10 +113,28 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 と `BookStates/` の削除の組み合わせ(移行の再実行)は、開発機の実読書データを
 壊すので絶対に行わない。移行テストは一時ディレクトリ+専用 defaults suite で行う。
 
+### ML モデル資産(models-1 リリース)
+
+圧縮ノイズ低減「最高」の Real-ESRGAN モデルは、アプリ本体とは別の
+GitHub リリース **`models-1`**(タグ)に資産として置き、アプリが同意後に
+ダウンロードする(URL と SHA-256 は `MLSuperResolver.swift` にピン留め)。
+
+- 再変換する場合: `Scripts/convert-realesrgan.py` を使う。
+  Python 3.12 の venv に `torch` と `coremltools` を入れ、公式チェックポイント
+  `RealESRGAN_x4plus_anime_6B.pth`(xinntao/Real-ESRGAN v0.2.2.4、BSD-3-Clause)を
+  渡すと単一ファイルの .mlmodel(fp16、入力 256 → 出力 1024)を出力し、
+  PyTorch とのパリティ(最大絶対誤差)も表示する。
+  **Python 3.14 は不可**(coremltools のバイナリ拡張が無い)。
+- モデルを差し替えたら: 新しいタグ(models-2 など)で `gh release create` →
+  `MLSuperResolver.swift` の URL と SHA-256 を更新。既存タグの資産を
+  上書きしない(過去バージョンのアプリが SHA 不一致で壊れるため)。
+- waifu2x(強)のモデルは外部配布元(imxieyi/waifu2x-mac、MIT)から直接 DL。
+
 ## 5. ハマりどころ早見表
 
 | 症状 | 原因と対処 |
 |---|---|
+| SR 結果にタイル境界の帯・線 | GAN は平坦部のトーンがタイル毎に Δ1-2 階調揺れる。マージン捨てだけでは不十分で、フェザー合成+Bayer ディザ(MLSuperResolver.writeTile)を外さないこと |
 | XADMaster が undefined symbol | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
 | 公証が Invalid | Sparkle 内部の再署名漏れ(sign-sparkle-nested.sh)か、素の Release ビルド |
 | 自動更新が来ない | appcast.xml の `length=` 不一致・資産名が `cooViewer-<ver>.zip` でない |
