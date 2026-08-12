@@ -101,6 +101,9 @@ final class ReaderWindowController: NSWindowController {
 
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
+    /// リサンプル進行中インジケーター(ページバーの横。設計書 §5 描画品質)
+    private let resampleSpinner = NSProgressIndicator()
+    private var resampleSpinnerShowTask: Task<Void, Never>?
     private var indicatorLayoutSignature = ""
     /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
     private var indicatorHideTimer: Timer?
@@ -221,6 +224,17 @@ final class ReaderWindowController: NSWindowController {
         }
         pinHorizontally(pageLabel, position: numPosition)
         pinHorizontally(pageBar, position: barPosition)
+        // 進行スピナーはページバーの内側(ウインドウ中央寄り)にバーと同じ高さで
+        constraints += [
+            resampleSpinner.widthAnchor.constraint(equalToConstant: barSize.height),
+            resampleSpinner.heightAnchor.constraint(equalToConstant: barSize.height),
+            resampleSpinner.centerYAnchor.constraint(equalTo: pageBar.centerYAnchor),
+            barPosition % 2 == 0
+                ? resampleSpinner.leadingAnchor.constraint(
+                    equalTo: pageBar.trailingAnchor, constant: 6)
+                : resampleSpinner.trailingAnchor.constraint(
+                    equalTo: pageBar.leadingAnchor, constant: -6),
+        ]
         let stacked = numPosition == barPosition
         if numPosition < 2 {
             constraints.append(pageLabel.topAnchor.constraint(
@@ -254,6 +268,29 @@ final class ReaderWindowController: NSWindowController {
             || (settings.pageNumAutoHide && !indicatorsTemporarilyVisible)
         pageBar.isHidden = !hasPages || !settings.showPageBar
             || (settings.pageBarAutoHide && !indicatorsTemporarilyVisible)
+    }
+
+    /// 画像の読み込み〜補間(ML 高画質化含む)完成までの控えめな進行表示。
+    /// キャッシュ命中等で瞬時に終わるケースでチラつかないよう表示は
+    /// 250ms 遅らせ、完了時は即座に消す(ReaderView の通知が実状態を反映)
+    func setResampleIndicator(_ active: Bool) {
+        if active {
+            // 既に表示中・表示予約中なら維持(読み込み開始とリサンプル開始の
+            // 二重通知で遅延タイマーを巻き戻さない)
+            guard resampleSpinner.isHidden, resampleSpinnerShowTask == nil else { return }
+            resampleSpinnerShowTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled else { return }
+                self.resampleSpinnerShowTask = nil
+                self.resampleSpinner.isHidden = false
+                self.resampleSpinner.startAnimation(nil)
+            }
+        } else {
+            resampleSpinnerShowTask?.cancel()
+            resampleSpinnerShowTask = nil
+            resampleSpinner.stopAnimation(nil)
+            resampleSpinner.isHidden = true
+        }
     }
 
     /// 自動隠し: マウス移動で表示を復活させ、2 秒後に隠す(仕様書 §3.4)
@@ -347,6 +384,16 @@ final class ReaderWindowController: NSWindowController {
         pageBar.isHidden = true
         contentView.addSubview(pageBar)
 
+        // リサンプル(ML 高画質化含む)進行中の控えめなスピナー。
+        // ページバーの横に同じ高さで置く(layoutPageIndicators が制約を組む)
+        resampleSpinner.style = .spinning
+        resampleSpinner.isIndeterminate = true
+        resampleSpinner.isDisplayedWhenStopped = false
+        resampleSpinner.translatesAutoresizingMaskIntoConstraints = false
+        resampleSpinner.alphaValue = 0.45
+        resampleSpinner.isHidden = true
+        contentView.addSubview(resampleSpinner)
+
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.alignment = .center
         statusLabel.font = .systemFont(ofSize: 14)
@@ -435,6 +482,9 @@ final class ReaderWindowController: NSWindowController {
 
         pageBar.onHover = { [weak self] info in
             self?.handlePageBarHover(info)
+        }
+        readerView.onResampleActivityChanged = { [weak self] active in
+            self?.setResampleIndicator(active)
         }
         pageBar.onJump = { [weak self] fraction in
             guard let self, let book = self.book else { return }
@@ -858,6 +908,11 @@ final class ReaderWindowController: NSWindowController {
         // ページ送りの向きはこの表示で消費する(未設定ならめくり効果なし)
         let turnForward = pendingTurnForward
         pendingTurnForward = nil
+        // 読み込み〜補間完成までの進行表示(表示予約。デコードとリサンプルが
+        // 速ければ 250ms の猶予内に ReaderView 側の通知が消すので出ない)
+        if book.pageCount > 0 {
+            setResampleIndicator(true)
+        }
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
         _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
