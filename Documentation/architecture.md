@@ -305,11 +305,14 @@ Icon Composer の AppIcon.icon。
 (ML の詳細は §2.4 の統合行を参照。保存は旧互換 2 キーの組合せ)。
 注意: MTKTextureLoader は premultipliedFirst 系 CGImage のバイト順を誤読する
 ため、入力は必ず RGBA 正規化してから渡す(色化けの回帰テストあり)。
-表示中スプレッドの読み込み〜リサンプル完成待ちの間は、ページバーの横に
-同じ高さの控えめなスピナーを出す(ReaderView.onResampleActivityChanged →
-ReaderWindowController.setResampleIndicator。チラつき防止に表示は 250ms
-遅延、完了・キャッシュ命中時は出ない。ML 高画質化の初回ダウンロード中も
-これが進行表示を兼ねる)。
+読み込み〜リサンプル完成待ちの間は、ページバーの横に同じ高さの控えめな
+スピナーを出す(ReaderView.onResampleActivityChanged →
+ReaderWindowController.setResampleIndicator / 先読みタスク →
+setPrefetchIndicator)。白いページ上でも見えるよう半透過の角丸黒背景
+(35% 黒)に載せ、濃さは 2 段階: **表示中スプレッドの処理中は濃く
+(alpha 0.85)、先読みのみ進行中はごく薄く(0.4)**。チラつき防止に表示は
+250ms 遅延、完了・キャッシュ命中時は出ない。ML 高画質化の初回
+ダウンロード中もこれが進行表示を兼ねる。
 
 ## 6. リスクと対策
 

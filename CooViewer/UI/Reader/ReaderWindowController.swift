@@ -101,9 +101,16 @@ final class ReaderWindowController: NSWindowController {
 
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
-    /// リサンプル進行中インジケーター(ページバーの横。設計書 §5 描画品質)
+    /// リサンプル進行中インジケーター(ページバーの横。設計書 §5 描画品質)。
+    /// 白いページ上でも見えるよう、半透過の角丸黒背景(box)に載せる
     private let resampleSpinner = NSProgressIndicator()
+    private let resampleSpinnerBox = NSView()
     private var resampleSpinnerShowTask: Task<Void, Never>?
+    /// 表示中スプレッドの処理が進行中か(濃い表示)
+    private var displayResampleActive = false
+    /// 先読みの処理が進行中か(薄い表示。ソフト停止で新旧タスクが
+    /// 重なることがあるためカウントで持つ)
+    private var prefetchResampleCount = 0
     /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
     /// キャンセルして ML 実行キューを明け渡す)
     private var preresampleTask: Task<Void, Never>?
@@ -245,13 +252,13 @@ final class ReaderWindowController: NSWindowController {
         pinHorizontally(pageBar, position: barPosition)
         // 進行スピナーはページバーの内側(ウインドウ中央寄り)にバーと同じ高さで
         constraints += [
-            resampleSpinner.widthAnchor.constraint(equalToConstant: barSize.height),
-            resampleSpinner.heightAnchor.constraint(equalToConstant: barSize.height),
-            resampleSpinner.centerYAnchor.constraint(equalTo: pageBar.centerYAnchor),
+            resampleSpinnerBox.widthAnchor.constraint(equalToConstant: barSize.height),
+            resampleSpinnerBox.heightAnchor.constraint(equalToConstant: barSize.height),
+            resampleSpinnerBox.centerYAnchor.constraint(equalTo: pageBar.centerYAnchor),
             barPosition % 2 == 0
-                ? resampleSpinner.leadingAnchor.constraint(
+                ? resampleSpinnerBox.leadingAnchor.constraint(
                     equalTo: pageBar.trailingAnchor, constant: 6)
-                : resampleSpinner.trailingAnchor.constraint(
+                : resampleSpinnerBox.trailingAnchor.constraint(
                     equalTo: pageBar.leadingAnchor, constant: -6),
         ]
         let stacked = numPosition == barPosition
@@ -289,26 +296,49 @@ final class ReaderWindowController: NSWindowController {
             || (settings.pageBarAutoHide && !indicatorsTemporarilyVisible)
     }
 
-    /// 画像の読み込み〜補間(ML 高画質化含む)完成までの控えめな進行表示。
-    /// キャッシュ命中等で瞬時に終わるケースでチラつかないよう表示は
-    /// 250ms 遅らせ、完了時は即座に消す(ReaderView の通知が実状態を反映)
+    /// 画像の読み込み〜補間(ML 高画質化含む)完成までの控えめな進行表示
+    /// (表示中スプレッドの処理)。ReaderView の通知が実状態を反映する
     func setResampleIndicator(_ active: Bool) {
-        if active {
-            // 既に表示中・表示予約中なら維持(読み込み開始とリサンプル開始の
-            // 二重通知で遅延タイマーを巻き戻さない)
-            guard resampleSpinner.isHidden, resampleSpinnerShowTask == nil else { return }
+        displayResampleActive = active
+        updateResampleIndicator()
+    }
+
+    /// 先読みの処理開始・終了(薄い表示の駆動源。先読みタスクから呼ぶ)
+    func setPrefetchIndicator(_ active: Bool) {
+        prefetchResampleCount = max(0, prefetchResampleCount + (active ? 1 : -1))
+        updateResampleIndicator()
+    }
+
+    /// 進行表示の実体: 表示中ページの処理が濃い(0.85)、先読みのみは
+    /// 薄い(0.4)。キャッシュ命中等で瞬時に終わるケースでチラつかないよう
+    /// 表示は 250ms 遅らせ、完了時は即座に消す
+    private func updateResampleIndicator() {
+        let visible = displayResampleActive || prefetchResampleCount > 0
+        if visible {
+            let alpha: CGFloat = displayResampleActive ? 0.85 : 0.4
+            if !resampleSpinnerBox.isHidden {
+                resampleSpinnerBox.alphaValue = alpha  // 濃さだけ即時更新
+                return
+            }
+            // 表示予約中なら維持(二重通知で遅延タイマーを巻き戻さない。
+            // 濃さは表示時点の状態から改めて決まる)
+            guard resampleSpinnerShowTask == nil else { return }
             resampleSpinnerShowTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self, !Task.isCancelled else { return }
                 self.resampleSpinnerShowTask = nil
-                self.resampleSpinner.isHidden = false
+                guard self.displayResampleActive || self.prefetchResampleCount > 0
+                else { return }
+                self.resampleSpinnerBox.alphaValue =
+                    self.displayResampleActive ? 0.85 : 0.4
+                self.resampleSpinnerBox.isHidden = false
                 self.resampleSpinner.startAnimation(nil)
             }
         } else {
             resampleSpinnerShowTask?.cancel()
             resampleSpinnerShowTask = nil
             resampleSpinner.stopAnimation(nil)
-            resampleSpinner.isHidden = true
+            resampleSpinnerBox.isHidden = true
         }
     }
 
@@ -438,14 +468,33 @@ final class ReaderWindowController: NSWindowController {
         contentView.addSubview(pageBar)
 
         // リサンプル(ML 高画質化含む)進行中の控えめなスピナー。
-        // ページバーの横に同じ高さで置く(layoutPageIndicators が制約を組む)
+        // ページバーの横に同じ高さで置く(layoutPageIndicators が制約を組む)。
+        // 白いページ上でも見えるよう半透過の角丸黒背景に載せ、濃さは
+        // 表示中ページ処理=濃い/先読みのみ=薄い の 2 段階
+        resampleSpinnerBox.wantsLayer = true
+        resampleSpinnerBox.layer?.backgroundColor =
+            CGColor(gray: 0, alpha: 0.35)
+        resampleSpinnerBox.layer?.cornerRadius = 4
+        // 黒背景の上ではスピナーを明色で描かせる
+        resampleSpinnerBox.appearance = NSAppearance(named: .darkAqua)
+        resampleSpinnerBox.translatesAutoresizingMaskIntoConstraints = false
+        resampleSpinnerBox.isHidden = true
+        contentView.addSubview(resampleSpinnerBox)
         resampleSpinner.style = .spinning
         resampleSpinner.isIndeterminate = true
         resampleSpinner.isDisplayedWhenStopped = false
         resampleSpinner.translatesAutoresizingMaskIntoConstraints = false
-        resampleSpinner.alphaValue = 0.45
-        resampleSpinner.isHidden = true
-        contentView.addSubview(resampleSpinner)
+        resampleSpinnerBox.addSubview(resampleSpinner)
+        NSLayoutConstraint.activate([
+            resampleSpinner.centerXAnchor.constraint(
+                equalTo: resampleSpinnerBox.centerXAnchor),
+            resampleSpinner.centerYAnchor.constraint(
+                equalTo: resampleSpinnerBox.centerYAnchor),
+            resampleSpinner.widthAnchor.constraint(
+                equalTo: resampleSpinnerBox.widthAnchor, constant: -4),
+            resampleSpinner.heightAnchor.constraint(
+                equalTo: resampleSpinnerBox.heightAnchor, constant: -4),
+        ])
 
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.alignment = .center
@@ -1111,6 +1160,9 @@ final class ReaderWindowController: NSWindowController {
             let spreads = await book.predictedAdjacentSpreads(
                 forward: forward, maxPages: PreresamplePolicy.maxPages)
             guard !spreads.isEmpty else { return }
+            // 先読み処理中の薄い進行表示(タスク終了時に必ず対で消す)
+            self.setPrefetchIndicator(true)
+            defer { self.setPrefetchIndicator(false) }
             let useMetalFX = self.settings.interpolation == .high
             // ページ数の予算は最初のスプレッドの表示サイズが判明した時点で確定する
             var pageLimit = PreresamplePolicy.maxPages
