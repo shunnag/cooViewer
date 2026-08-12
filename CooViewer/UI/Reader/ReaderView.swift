@@ -73,6 +73,12 @@ final class ReaderView: NSView {
     private var loupeHighResImages: [Int: CGImage] = [:]
     private var resampleTask: Task<Void, Never>?
     private var resampleGeneration = 0
+    /// 進行中リサンプルの要求署名集合(ページ毎のキー・サイズ・条件)。
+    /// レイアウトは頻繁に走るため、新しい要求が進行中の要求の部分集合なら
+    /// 打ち切らず続行させる(ML は 1 ページ数秒かかるのでやり直しは体感
+    /// 遅延に直結する。ページが 1 枚完成するとレイアウトが走って要求が
+    /// 縮むため、完全一致ではなく部分集合で判定する)
+    private var resampleRequestKeys: Set<String> = []
 
     var fitMode: FitMode = .fitToScreen {
         didSet { scrollOffset = .zero; needsLayout = true }
@@ -547,11 +553,23 @@ final class ReaderView: NSView {
                 return (index, images[index], pixelSize,
                         "\(resampleKeyPrefix)#\(pageIDs[index])", noiseReductionLevel)
             }
+        // 新しい要求が進行中の要求の部分集合なら打ち切らず続行させる
+        // (レイアウトは頻繁に走るため、無条件にやり直すと ML リサンプルが
+        // 何度も最初からになる)
+        let requestKeys = Set(requests.map {
+            "\($0.key)|\(Int($0.pixelSize.width))x\(Int($0.pixelSize.height))"
+                + "|nr\($0.noiseReduction.rawValue)|mfx\(interpolation == .high)"
+        })
+        if !requests.isEmpty, resampleTask != nil,
+           requestKeys.isSubset(of: resampleRequestKeys) {
+            return
+        }
         // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
         // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
         // スプレッドのスロットを汚す穴の修正)
         resampleTask?.cancel()
         resampleGeneration += 1
+        resampleRequestKeys = requests.isEmpty ? [] : requestKeys
         setResampleActivity(!requests.isEmpty)
         guard !requests.isEmpty else { return }
 
@@ -575,10 +593,13 @@ final class ReaderView: NSView {
                                     at: request.index, generation: generation,
                                     key: request.key)
             }
-            // このスプレッドの計算が最後まで走り切ったら進行表示を消す
-            // (打ち切り時は次の schedule が新しい状態を設定済み)
+            // このスプレッドの計算が最後まで走り切ったら進行表示を消し、
+            // 完了済みタスクへの参照と署名を片付ける(残すと同じ要求の
+            // 再リサンプルが「進行中」と誤判定されて抑止されてしまう)
             if let self, !Task.isCancelled, generation == self.resampleGeneration {
                 self.setResampleActivity(false)
+                self.resampleTask = nil
+                self.resampleRequestKeys = []
             }
         }
     }
