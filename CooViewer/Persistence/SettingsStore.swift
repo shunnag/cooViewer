@@ -190,16 +190,18 @@ final class SettingsStore {
     }
 
     /// ページキャッシュ上限(バイト)。既定は物理メモリの 15%(上限 16GB)。
-    /// "PageCacheMegabytes" で明示指定可(0/未設定=自動)。
+    /// 高度な設定 ON のときのみ、"PageCacheMegabytes"(隠しキー・MB 直指定)
+    /// > メモリ%指定 の順で上書きできる。OFF では他の高度設定と同様、
+    /// 明示指定は無視して常に標準の動きへ戻る。
     /// 旧 ImageCache(枚数)は廃止(設計書「キャッシュ・先読み設計」)。
     var pageCacheByteLimit: Int {
         let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
         if advancedSettingsEnabled {
-            // 高度な設定: 指定パーセントをそのまま使う(16GB 上限は適用しない)
+            let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
+            if megabytes > 0 { return megabytes * 1024 * 1024 }
+            // 指定パーセントをそのまま使う(16GB 上限は適用しない)
             return physical / 100 * advancedMemoryPercent
         }
-        let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
-        if megabytes > 0 { return megabytes * 1024 * 1024 }
         // 標準時の上限。15% がこれに達するのは 107GB 超の構成のみで、
         // 実質はメモリ圧迫トリムに任せる安全弁
         return min(16 * 1024 * 1024 * 1024,
