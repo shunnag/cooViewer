@@ -233,7 +233,8 @@ final class ReaderView: NSView {
     }
 
     /// 現在の描画内容(背景+ページ)をピクセルスケールでスナップショットする
-    private func snapshotContent() -> CGImage? {
+    /// (internal: PageCurlRenderTests が実経路の向き検証に使う)
+    func snapshotContent() -> CGImage? {
         guard let layer else { return nil }
         let scale = window?.backingScaleFactor ?? 2
         let width = Int(bounds.width * scale)
@@ -250,158 +251,26 @@ final class ReaderView: NSView {
         return context.makeImage()
     }
 
-    /// 水平反転した複製(カール裏面用。裏面描画で再度反転され正像に戻る)
-    private static func mirrored(_ image: CGImage) -> CGImage? {
-        guard let context = CGContext(
-            data: nil, width: image.width, height: image.height,
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.translateBy(x: CGFloat(image.width), y: 0)
-        context.scaleBy(x: -1, y: 1)
-        context.draw(image, in: CGRect(x: 0, y: 0,
-                                       width: image.width, height: image.height))
-        return context.makeImage()
-    }
-
     func removeCurlOverlay() {
         curlOverlay?.removeFromSuperlayer()
         curlOverlay = nil
     }
 
     /// 本式のページめくり: 画面をノド(中央)で左右に分割し、空く側の半面が
-    /// リーフとしてカールしながら反対側へ倒れる。
-    /// - リーフの表 = 旧内容の空く側半面、裏 = 新内容の着地側半面
-    ///   (実際の紙の裏=次のページ)。α が π/2 を超えたストリップから裏面へ
-    ///   切り替える(キータイムは PageCurlGeometry が計算)
-    /// - 着地側の半面には旧内容を静止表示し、リーフが被さって隠れる
-    ///   (実際の本で下のページが見え続けるのと同じ)
-    /// - 空いていく側は下にある live コンテンツ(新内容)がそのまま現れる
+    /// リーフとしてカールしながら反対側へ倒れる(構築は PageCurlOverlay)。
+    /// 空いていく側は下にある live コンテンツ(新内容)がそのまま現れる
     private func runCurlAnimation(oldContent: CGImage, newContent: CGImage,
                                   forward: Bool) {
-        guard let layer, let mirroredNew = Self.mirrored(newContent) else { return }
-        let leafOnLeft = PageTurnAnimation.entersFromLeft(
-            forward: forward, readsFromLeft: readsFromLeft)
-
-        let overlay = CALayer()
-        overlay.frame = bounds
-        overlay.zPosition = 5  // ページの上・ルーペ(10)の下
-        var perspective = CATransform3DIdentity
-        perspective.m34 = -1 / 1600
-        overlay.sublayerTransform = perspective
+        guard let layer else { return }
+        let configuration = PageCurlOverlay.Configuration(
+            bounds: bounds,
+            leafOnLeft: PageTurnAnimation.entersFromLeft(
+                forward: forward, readsFromLeft: readsFromLeft),
+            oldContent: oldContent,
+            newContent: newContent)
+        guard let overlay = PageCurlOverlay.makeAnimated(configuration) else { return }
         layer.addSublayer(overlay)
         curlOverlay = overlay
-
-        let width = bounds.width
-        let height = bounds.height
-        let half = width / 2
-
-        // 着地側半面: リーフが被さるまで旧内容が見え続ける
-        let landing = CALayer()
-        landing.frame = CGRect(x: leafOnLeft ? half : 0, y: 0,
-                               width: half, height: height)
-        landing.contents = oldContent
-        landing.contentsRect = CGRect(x: leafOnLeft ? 0.5 : 0, y: 0,
-                                      width: 0.5, height: 1)
-        overlay.addSublayer(landing)
-        // 近づくリーフの影(着地側がゆっくり暗くなる)
-        let shadow = CALayer()
-        shadow.frame = landing.bounds
-        shadow.backgroundColor = CGColor(gray: 0, alpha: 1)
-        shadow.opacity = 0
-        landing.addSublayer(shadow)
-
-        // リーフのストリップ列(ノド側から外側の順。外側ほど手前に重なる)
-        let stripCount = 12
-        let stripLength = half / CGFloat(stripCount)
-        let duration: CFTimeInterval = 0.45
-        let timeSteps = 30
-        // 全時刻の幾何を先に計算する(トランスフォームと裏面切替時刻の両方に使う)
-        let timeline = (0...timeSteps).map { step in
-            PageCurlGeometry.strips(
-                theta: PageCurlGeometry.easedTheta(
-                    progress: CGFloat(step) / CGFloat(timeSteps)),
-                count: stripCount, stripLength: stripLength,
-                towardRight: !leafOnLeft)
-        }
-        let sign: CGFloat = leafOnLeft ? -1 : 1
-
-        for stripIndex in 0..<stripCount {
-            let strip = CALayer()
-            // アンカーをノド側の縦エッジに置き、位置は常に画面中央。
-            // 配置はすべて transform(平行移動+回転)のキーフレームで与える
-            strip.anchorPoint = CGPoint(x: leafOnLeft ? 1 : 0, y: 0.5)
-            strip.bounds = CGRect(x: 0, y: 0, width: stripLength, height: height)
-            strip.position = CGPoint(x: half, y: height / 2)
-            strip.isDoubleSided = true
-            // 隣接ストリップとの継ぎ目のちらつきを抑える
-            strip.edgeAntialiasingMask = []
-            strip.contents = oldContent
-
-            // 表面: 旧内容の「空く側半面」をノドからの距離で輪切りにする
-            let span = 0.5 / CGFloat(stripCount)
-            let frontRect = CGRect(
-                x: leafOnLeft ? 0.5 - CGFloat(stripIndex + 1) * span
-                              : 0.5 + CGFloat(stripIndex) * span,
-                y: 0, width: span, height: 1)
-            // 裏面: 新内容の「着地側半面」の同じ距離帯。鏡像画像から切り出し、
-            // 裏面描画の反転で正像に戻る
-            let landingRect = CGRect(
-                x: leafOnLeft ? 0.5 + CGFloat(stripIndex) * span
-                              : 0.5 - CGFloat(stripIndex + 1) * span,
-                y: 0, width: span, height: 1)
-            let backRect = CGRect(x: 1 - landingRect.maxX, y: 0,
-                                  width: span, height: 1)
-            strip.contentsRect = frontRect
-
-            // トランスフォームのキーフレーム(ノド基準の連結配置+自身の傾き)
-            let transforms = timeline.map { strips -> NSValue in
-                let placement = strips[stripIndex]
-                var transform = CATransform3DMakeTranslation(
-                    placement.offsetX, 0, placement.offsetZ)
-                transform = CATransform3DRotate(
-                    transform, -sign * placement.angle, 0, 1, 0)
-                return NSValue(caTransform3D: transform)
-            }
-            let move = CAKeyframeAnimation(keyPath: "transform")
-            move.values = transforms
-            move.duration = duration
-            move.isRemovedOnCompletion = false
-            move.fillMode = .forwards
-
-            // 裏面切替(π/2 を跨いだ時刻で内容と切り出し範囲を差し替える)
-            let crossing = PageCurlGeometry.backfaceKeyTime(
-                angleSamples: timeline.map { $0[stripIndex].angle })
-            // discrete モードのキータイムは「値の数 + 1」個(区間の境界)
-            let swapTimes: [NSNumber] = [0, NSNumber(value: crossing), 1]
-            let contentsSwap = CAKeyframeAnimation(keyPath: "contents")
-            contentsSwap.values = [oldContent, mirroredNew]
-            contentsSwap.keyTimes = swapTimes
-            contentsSwap.calculationMode = .discrete
-            contentsSwap.duration = duration
-            contentsSwap.isRemovedOnCompletion = false
-            contentsSwap.fillMode = .forwards
-            let rectSwap = CAKeyframeAnimation(keyPath: "contentsRect")
-            rectSwap.values = [NSValue(rect: frontRect), NSValue(rect: backRect)]
-            rectSwap.keyTimes = swapTimes
-            rectSwap.calculationMode = .discrete
-            rectSwap.duration = duration
-            rectSwap.isRemovedOnCompletion = false
-            rectSwap.fillMode = .forwards
-
-            strip.add(move, forKey: "curlMove")
-            strip.add(contentsSwap, forKey: "curlContents")
-            strip.add(rectSwap, forKey: "curlRect")
-            overlay.addSublayer(strip)
-        }
-
-        // 着地側の影(前半で濃くなり、リーフが被さって見えなくなる)
-        let dim = CAKeyframeAnimation(keyPath: "opacity")
-        dim.values = [0, 0.35, 0.35]
-        dim.keyTimes = [0, 0.5, 1]
-        dim.duration = duration
-        shadow.add(dim, forKey: "curlShadow")
 
         // 完了でオーバーレイごと畳む(下は既に新内容なので切れ目なし)
         CATransaction.begin()
@@ -412,7 +281,7 @@ final class ReaderView: NSView {
         let lifetime = CABasicAnimation(keyPath: "opacity")
         lifetime.fromValue = 1
         lifetime.toValue = 1
-        lifetime.duration = duration
+        lifetime.duration = configuration.duration
         overlay.add(lifetime, forKey: "curlLifetime")
         CATransaction.commit()
     }
