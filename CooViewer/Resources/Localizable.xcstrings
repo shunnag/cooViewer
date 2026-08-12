@@ -434,6 +434,66 @@
         }
       }
     },
+    "Fade" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "フェード"
+          }
+        }
+      }
+    },
+    "Flip" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "フリップ"
+          }
+        }
+      }
+    },
+    "Page Turn Effect" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページめくり効果"
+          }
+        }
+      }
+    },
+    "Page turn effect:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページめくり効果:"
+          }
+        }
+      }
+    },
+    "Slide" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スライド"
+          }
+        }
+      }
+    },
+    "Zoom Fade" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ズームフェード"
+          }
+        }
+      }
+    },
     "Default" : {
       "localizations" : {
         "ja" : {

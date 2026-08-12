@@ -109,6 +109,10 @@ final class ReaderView: NSView {
         layerContentsRedrawPolicy = .never
         layer?.backgroundColor = backgroundColor.cgColor
         layer?.masksToBounds = true
+        // フリップ効果(3D 回転)用の遠近。z=0 の通常描画には影響しない
+        var perspective = CATransform3DIdentity
+        perspective.m34 = -1 / 1200
+        layer?.sublayerTransform = perspective
         containerLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         layer?.addSublayer(containerLayer)
         for pageLayer in pageLayers {
@@ -130,9 +134,22 @@ final class ReaderView: NSView {
 
     // MARK: - コンテンツ設定
 
+    /// ページ送りのめくり効果の指定(効果の種類+進行方向)
+    struct PageTurn {
+        let animation: PageTurnAnimation
+        let forward: Bool
+    }
+
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
-    func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool) {
+    /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
+    func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
+                  turn: PageTurn? = nil) {
+        // フェード/スライドは内容差し替えを挟んで補間する CATransition なので
+        // 差し替えの前に仕込む
+        if let turn {
+            addTurnTransitionIfNeeded(turn, newReadsFromLeft: readsFromLeft)
+        }
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
@@ -145,6 +162,85 @@ final class ReaderView: NSView {
         needsLayout = true
         layoutSubtreeIfNeeded()
         scrollToHome()
+        // ズームフェード/フリップは新内容のレイアウト確定後に container へ掛ける
+        if let turn {
+            addTurnContainerAnimationIfNeeded(turn)
+        }
+    }
+
+    // MARK: - ページめくり効果(設計書 §2.4。既定オフ)
+
+    /// フェード/スライド: レイヤーツリーの差し替え前後を CATransition で補間する
+    private func addTurnTransitionIfNeeded(_ turn: PageTurn, newReadsFromLeft: Bool) {
+        guard let layer else { return }
+        let transition = CATransition()
+        transition.duration = 0.20
+        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        switch turn.animation {
+        case .fade:
+            transition.type = .fade
+        case .slide:
+            transition.type = .push
+            transition.subtype = PageTurnAnimation.entersFromLeft(
+                forward: turn.forward, readsFromLeft: newReadsFromLeft)
+                ? .fromLeft : .fromRight
+        case .none, .zoomFade, .flip:
+            return
+        }
+        layer.add(transition, forKey: "pageTurn")
+    }
+
+    /// ズームフェード/フリップ: 新しい内容の container に入場アニメーションを掛ける。
+    /// relayout は position と 2D 変換(モデル値)しか触らないため、
+    /// from/to 明示のアニメーションはリサイズ等と競合しない
+    private func addTurnContainerAnimationIfNeeded(_ turn: PageTurn) {
+        switch turn.animation {
+        case .zoomFade:
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.2
+            fade.toValue = 1
+            let zoom = CABasicAnimation(keyPath: "transform.scale")
+            zoom.fromValue = 0.98
+            zoom.toValue = 1
+            let group = CAAnimationGroup()
+            group.animations = [fade, zoom]
+            group.duration = 0.18
+            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            containerLayer.add(group, forKey: "pageTurnZoom")
+        case .flip:
+            // ページの回転表示中は軸の幾何が合わないため省略する(まれな併用)
+            guard rotation == 0 else { return }
+            let width = containerLayer.bounds.width
+            guard width > 0 else { return }
+            let fromLeft = PageTurnAnimation.entersFromLeft(
+                forward: turn.forward, readsFromLeft: readsFromLeft)
+            // 進入側エッジを軸に、めくり起こすように回転させる。
+            // アンカーは動かさず「エッジへ平行移動 → 回転 → 戻す」の合成を
+            // キーフレームで刻む(モデル値の position/変換と独立に動く)
+            let edgeX = (fromLeft ? -1 : 1) * width / 2
+            let maxAngle = CGFloat.pi / 2 * 0.85 * (fromLeft ? 1 : -1)
+            let steps = 16
+            let values = (0...steps).map { step -> NSValue in
+                let progress = CGFloat(step) / CGFloat(steps)
+                let angle = (1 - progress) * maxAngle
+                var transform = CATransform3DMakeTranslation(edgeX, 0, 0)
+                transform = CATransform3DRotate(transform, angle, 0, 1, 0)
+                transform = CATransform3DTranslate(transform, -edgeX, 0, 0)
+                return NSValue(caTransform3D: transform)
+            }
+            let flip = CAKeyframeAnimation(keyPath: "transform")
+            flip.values = values
+            flip.duration = 0.3
+            flip.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            containerLayer.add(flip, forKey: "pageTurnFlip")
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.4
+            fade.toValue = 1
+            fade.duration = 0.3
+            containerLayer.add(fade, forKey: "pageTurnFlipFade")
+        case .none, .fade, .slide:
+            break
+        }
     }
 
     // MARK: - レイアウト

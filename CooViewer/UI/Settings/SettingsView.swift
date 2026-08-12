@@ -84,6 +84,7 @@ struct SettingsView: View {
 
     @AppStorage("SingleSetting") private var singleSetting = 740
     @AppStorage("FitMode") private var fitMode = 0
+    @AppStorage("PageTurnAnimation") private var pageTurnAnimation = 0
     @AppStorage("Interpolation") private var interpolation = 0
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
@@ -269,6 +270,7 @@ struct SettingsView: View {
             String(localized: "Show the Cover Page Alone"),
             String(localized: "Spread threshold (width/height):"),
             String(localized: "View mode:"),
+            String(localized: "Page turn effect:"),
             String(localized: "Interpolation:"),
             String(localized: "Play animated images (GIF, WebP, etc.)"),
             String(localized: "Background color:"),
@@ -417,6 +419,15 @@ struct SettingsView: View {
                     Text(String(localized: "Fit to Screen Width")).tag(1)
                     Text(String(localized: "No Scale")).tag(2)
                     Text(String(localized: "Fit to Screen Width (divide)")).tag(3)
+                }
+                // ページめくり効果(表示メニューと同じ設定を共有。既定なし)
+                Picker(String(localized: "Page turn effect:"),
+                       selection: $pageTurnAnimation) {
+                    Text(String(localized: "None")).tag(0)
+                    Text(String(localized: "Fade")).tag(1)
+                    Text(String(localized: "Slide")).tag(2)
+                    Text(String(localized: "Zoom Fade")).tag(3)
+                    Text(String(localized: "Flip")).tag(4)
                 }
             }
             Section {

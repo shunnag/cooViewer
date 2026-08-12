@@ -54,6 +54,7 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--show-file-info` | ファイル情報パネルを開く(`--snapshot` はパネルを撮る) |
 | `--show-opening-progress` | オープン進捗 HUD を固定内容で表示 |
 | `--then-next-book` / `--then-previous-book` | 表示後に次/前の本へ移動(複数回可) |
+| `--then-next-page` | 表示後にページ送りする(めくり効果の完了後状態の確認等) |
 | `--then-open <path>` | 表示後に別の本へ切り替える |
 | `--then-toggle-cover-single` | 表示後に「表紙を単ページで表示」を切り替える |
 | `--snapshot-settings <png>` | 設定ウインドウを撮って終了 |
