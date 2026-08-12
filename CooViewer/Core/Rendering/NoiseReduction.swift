@@ -3,11 +3,14 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import Metal
 
-/// 圧縮ノイズ低減の強さ(古い JPEG のブロックノイズ向け。既定はなし)
+/// 圧縮ノイズ低減の強さ(古い JPEG のブロックノイズ向け。既定はなし)。
+/// 弱・中は CINoiseReduction、強は CoreML の超解像モデル(MLNoiseReducer。
+/// 未導入時は中相当の CI へフォールバック)
 enum NoiseReductionLevel: Int, CaseIterable {
     case none = 0
     case light = 1
-    case strong = 2
+    case medium = 2
+    case strong = 3
 }
 
 /// 圧縮ノイズ低減の適用範囲。メイン表示は常に含まれ、選択で
@@ -33,7 +36,9 @@ final class NoiseReducer {
         context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
     }
 
-    /// image にノイズ低減を掛けた複製を返す(同サイズ)。失敗時は nil
+    /// image にノイズ低減を掛けた複製を返す(同サイズ)。失敗時は nil。
+    /// 強はモデル(MLNoiseReducer)の担当で、ここへ来た場合は
+    /// フォールバックとして中と同じ処理を行う
     func reduce(_ image: CGImage, level: NoiseReductionLevel) -> CGImage? {
         guard level != .none else { return image }
         let filter = CIFilter.noiseReduction()
@@ -42,11 +47,11 @@ final class NoiseReducer {
         case .none:
             return image
         case .light:
-            filter.noiseLevel = 0.02
-            filter.sharpness = 0.60
-        case .strong:
-            filter.noiseLevel = 0.05
-            filter.sharpness = 0.40
+            filter.noiseLevel = 0.035
+            filter.sharpness = 0.50
+        case .medium, .strong:
+            filter.noiseLevel = 0.06
+            filter.sharpness = 0.35
         }
         guard let output = filter.outputImage else { return nil }
 

@@ -87,6 +87,24 @@ struct SettingsView: View {
     @AppStorage("PageTurnAnimation") private var pageTurnAnimation = 0
     @AppStorage("NoiseReductionLevel") private var noiseReductionLevel = 0
     @AppStorage("NoiseReductionScope") private var noiseReductionScope = 0
+    /// 「強(ML モデル)」の同意済みフラグ(初回のみ確認を出す)
+    @AppStorage("NoiseReductionMLAccepted") private var mlModelAccepted = false
+    @State private var showsMLConsentAlert = false
+    @ObservedObject private var mlStatus = MLNoiseReducerStatus.shared
+
+    /// モデルの導入状態の表示文
+    private var mlStatusDescription: String {
+        switch mlStatus.state {
+        case .notInstalled:
+            String(localized: "Model: not downloaded yet")
+        case .downloading:
+            String(localized: "Model: downloading…")
+        case .ready:
+            String(localized: "Model: ready")
+        case .failed:
+            String(localized: "Model: unavailable (retried automatically when needed)")
+        }
+    }
     @AppStorage("Interpolation") private var interpolation = 0
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
@@ -447,17 +465,52 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                // 圧縮ノイズ低減(JPEG のみ。古いファイルのブロックノイズ向け)
+                // 圧縮ノイズ低減(JPEG のみ。古いファイルのブロックノイズ向け)。
+                // 強は CoreML モデル: 初回選択時に「ダウンロードが必要・処理が
+                // 重い」ことへの同意を取ってから設定する
                 VStack(alignment: .leading, spacing: 4) {
                     Picker(String(localized: "Compression noise reduction:"),
                            selection: $noiseReductionLevel) {
                         Text(String(localized: "None")).tag(0)
                         Text(String(localized: "Weak")).tag(1)
-                        Text(String(localized: "Strong")).tag(2)
+                        Text(String(localized: "Medium")).tag(2)
+                        Text(String(localized: "Strong (ML model)")).tag(3)
                     }
                     Text(String(localized: "Applies to JPEG pages only."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if noiseReductionLevel == 3 {
+                        Text(mlStatusDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: noiseReductionLevel) { oldValue, newValue in
+                    guard newValue == 3 else { return }
+                    if mlModelAccepted {
+                        Task { await MLNoiseReducer.shared.ensureModel() }
+                    } else {
+                        // 同意が得られるまで元の値へ戻して確認を出す
+                        noiseReductionLevel = oldValue
+                        showsMLConsentAlert = true
+                    }
+                }
+                .onAppear {
+                    if noiseReductionLevel == 3, mlModelAccepted {
+                        Task { await MLNoiseReducer.shared.ensureModel() }
+                    }
+                }
+                .alert(String(localized: "Use the “Strong (ML model)” level?"),
+                       isPresented: $showsMLConsentAlert) {
+                    Button(String(localized: "Download and Use")) {
+                        mlModelAccepted = true
+                        noiseReductionLevel = 3
+                        Task { await MLNoiseReducer.shared.ensureModel() }
+                    }
+                    Button(String(localized: "Cancel"), role: .cancel) {}
+                } message: {
+                    Text(String(localized:
+                        "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds."))
                 }
                 Picker(String(localized: "Apply to:"),
                        selection: $noiseReductionScope) {
