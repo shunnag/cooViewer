@@ -4,13 +4,21 @@ import CoreImage.CIFilterBuiltins
 import Metal
 
 /// 圧縮ノイズ低減の強さ(古い JPEG のブロックノイズ向け。既定はなし)。
-/// 弱・中は CINoiseReduction、強は CoreML の超解像モデル(MLNoiseReducer。
-/// 未導入時は中相当の CI へフォールバック)
+/// 弱・中は CINoiseReduction、強は CoreML のノイズ除去モデル(MLNoiseReducer)、
+/// 最高は CoreML の ×4 超解像モデル(MLSuperResolver)。ML 系はモデル未導入・
+/// 失敗時に 1 段ずつフォールバックする(最高→強→中相当の CI)
 enum NoiseReductionLevel: Int, CaseIterable {
     case none = 0
     case light = 1
     case medium = 2
     case strong = 3
+    case maximum = 4
+
+    /// 等倍表示(ルーペ・原寸)での実効レベル。「最高」は縮小表示前の
+    /// ×4 拡大で効果を出す仕組みのため、等倍系では「強」として扱う
+    var cappedForOriginalSize: NoiseReductionLevel {
+        self == .maximum ? .strong : self
+    }
 }
 
 /// 圧縮ノイズ低減の適用範囲。メイン表示は常に含まれ、選択で
@@ -37,8 +45,8 @@ final class NoiseReducer {
     }
 
     /// image にノイズ低減を掛けた複製を返す(同サイズ)。失敗時は nil。
-    /// 強はモデル(MLNoiseReducer)の担当で、ここへ来た場合は
-    /// フォールバックとして中と同じ処理を行う
+    /// 強・最高はモデル(MLNoiseReducer / MLSuperResolver)の担当で、
+    /// ここへ来た場合はフォールバックとして中と同じ処理を行う
     func reduce(_ image: CGImage, level: NoiseReductionLevel) -> CGImage? {
         guard level != .none else { return image }
         let filter = CIFilter.noiseReduction()
@@ -49,7 +57,7 @@ final class NoiseReducer {
         case .light:
             filter.noiseLevel = 0.035
             filter.sharpness = 0.50
-        case .medium, .strong:
+        case .medium, .strong, .maximum:
             filter.noiseLevel = 0.06
             filter.sharpness = 0.35
         }

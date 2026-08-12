@@ -1,23 +1,6 @@
 import CoreGraphics
 import CoreML
-import CryptoKit
 import Foundation
-
-/// 超解像モデルの導入状態(設定 UI が表示するためのブリッジ)。
-/// 実体は MLNoiseReducer(actor)が更新する
-@MainActor
-final class MLNoiseReducerStatus: ObservableObject {
-    static let shared = MLNoiseReducerStatus()
-
-    enum State {
-        case notInstalled
-        case downloading
-        case ready
-        case failed
-    }
-
-    @Published var state: State = .notInstalled
-}
 
 /// 圧縮ノイズ低減「強」の実体: waifu2x のノイズ除去モデル(CoreML)。
 /// アニメ・マンガ絵の JPEG ノイズ除去に特化した小さな CNN で、
@@ -25,20 +8,22 @@ final class MLNoiseReducerStatus: ObservableObject {
 ///
 /// モデル(約 1.2MB)はアプリに同梱せず、「強」を初回選択して同意した後の
 /// **必要時にのみ**配布元(imxieyi/waifu2x-mac、MIT ライセンス)から
-/// ダウンロードする。SHA-256 をピン留めして検証し、Application Support に
-/// 保存・コンパイルして使い回す。未導入・失敗時の「強」は CINoiseReduction
-/// (中相当)へフォールバックする(ImageResampler 側)。
+/// ダウンロードする(取得・検証・コンパイルは MLModelInstaller が共通処理)。
+/// 未導入・失敗時の「強」は CINoiseReduction(中相当)へフォールバックする
+/// (ImageResampler 側)。
 actor MLNoiseReducer {
     static let shared = MLNoiseReducer()
 
-    // MARK: - モデル配布元(バージョンと SHA-256 をピン留め)
-
-    private static let modelDownloadURL = URL(string:
-        "https://raw.githubusercontent.com/imxieyi/waifu2x-mac/master/waifu2x-mac/models/anime_noise2_model.mlmodel")!
-    private static let modelSHA256 =
-        "bda49fe8993393ae7f90333ce7c92455736c26f740f9d65edf3e1c55494af57f"
     /// 同意ダイアログに表示する概算サイズ
     static let modelSizeDescription = "1.2 MB"
+
+    private let installer = MLModelInstaller(
+        specification: .init(
+            downloadURL: URL(string:
+                "https://raw.githubusercontent.com/imxieyi/waifu2x-mac/master/waifu2x-mac/models/anime_noise2_model.mlmodel")!,
+            sha256: "bda49fe8993393ae7f90333ce7c92455736c26f740f9d65edf3e1c55494af57f",
+            fileName: "anime_noise2_model.mlmodel"),
+        status: MLModelInstallStatus.noise)
 
     // MARK: - waifu2x の入出力仕様
 
@@ -49,99 +34,12 @@ actor MLNoiseReducer {
     /// 入力正規化のオフセット(waifu2x の clip_eta8)
     private static let clipEta8: Float = 0.00196
 
-    // MARK: - 状態
-
-    private var model: MLModel?
-    private var installing = false
-
-    private var modelDirectory: URL {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("jp.coo.cooViewer/Models")
-    }
-
-    private var modelFileURL: URL {
-        modelDirectory.appendingPathComponent("anime_noise2_model.mlmodel")
-    }
-
-    private var compiledURL: URL {
-        modelDirectory.appendingPathComponent("anime_noise2_model.mlmodelc")
-    }
-
-    private func setStatus(_ state: MLNoiseReducerStatus.State) {
-        Task { @MainActor in
-            MLNoiseReducerStatus.shared.state = state
-        }
-    }
-
     // MARK: - 導入
 
-    /// モデルを使える状態にする(必要ならダウンロード→検証→コンパイル→ロード)。
-    /// XCTest 実行ではネットワークに触れない方針のため常に失敗扱い
+    /// モデルを使える状態にする(必要ならダウンロード→検証→コンパイル→ロード)
     @discardableResult
     func ensureModel() async -> Bool {
-        if model != nil { return true }
-        guard !installing else { return false }
-        guard !AutomatedRun.isXCTest else {
-            setStatus(.failed)
-            return false
-        }
-        installing = true
-        defer { installing = false }
-
-        let fileManager = FileManager.default
-        do {
-            // 1. ダウンロード(既存の検証済みファイルがあれば再利用)
-            if !fileManager.fileExists(atPath: modelFileURL.path)
-                || !verifyModelHash() {
-                setStatus(.downloading)
-                let (data, _) = try await URLSession.shared.data(
-                    from: Self.modelDownloadURL)
-                let digest = SHA256.hash(data: data)
-                    .map { String(format: "%02x", $0) }.joined()
-                guard digest == Self.modelSHA256 else {
-                    throw CocoaError(.fileReadCorruptFile)
-                }
-                try fileManager.createDirectory(
-                    at: modelDirectory, withIntermediateDirectories: true)
-                try data.write(to: modelFileURL, options: .atomic)
-                try? fileManager.removeItem(at: compiledURL)  // 再コンパイルさせる
-            }
-            // 2. コンパイル(結果はキャッシュして使い回す)
-            if !fileManager.fileExists(atPath: compiledURL.path) {
-                let compiled = try await MLModel.compileModel(at: modelFileURL)
-                try? fileManager.removeItem(at: compiledURL)
-                try fileManager.moveItem(at: compiled, to: compiledURL)
-            }
-            // 3. ロード(Neural Engine を含む全ユニットを許可)
-            let configuration = MLModelConfiguration()
-            configuration.computeUnits = .all
-            model = try MLModel(contentsOf: compiledURL,
-                                configuration: configuration)
-            setStatus(.ready)
-            return true
-        } catch {
-            setStatus(.failed)
-            return false
-        }
-    }
-
-    private func verifyModelHash() -> Bool {
-        guard let data = try? Data(contentsOf: modelFileURL) else { return false }
-        let digest = SHA256.hash(data: data)
-            .map { String(format: "%02x", $0) }.joined()
-        return digest == Self.modelSHA256
-    }
-
-    /// 起動済みセッションでの状態問い合わせ(設定画面の表示更新用)
-    func refreshStatus() {
-        if model != nil {
-            setStatus(.ready)
-        } else if FileManager.default.fileExists(atPath: modelFileURL.path) {
-            setStatus(.notInstalled)  // 未ロード(次の使用時にロードされる)
-        } else {
-            setStatus(.notInstalled)
-        }
+        await installer.ensureModel() != nil
     }
 
     // MARK: - 推論
@@ -150,12 +48,8 @@ actor MLNoiseReducer {
     /// モデル未導入ならバックグラウンドで導入を始め、今回は nil を返す
     /// (呼び出し側は CI フォールバックで表示し、次回から本処理になる)
     func reduce(_ image: CGImage) async -> CGImage? {
-        if model == nil {
-            let ready = await ensureModel()
-            guard ready else { return nil }
-        }
-        guard let model else { return nil }
-        return Self.runTiled(model: model, image: image)
+        guard let loaded = await installer.ensureModel() else { return nil }
+        return Self.runTiled(model: loaded.model, image: image)
     }
 
     /// タイル推論の本体(モデルへの入出力仕様は probe で実測確認済み:
