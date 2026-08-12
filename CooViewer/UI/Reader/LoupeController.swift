@@ -150,6 +150,12 @@ extension ReaderWindowController {
                       readerViewForInput.isLoupeEnabled else { return }
                 guard var image = try? await book.source.loupeImage(
                     for: book.entries[index], pixelScale: scale) else { continue }
+                // ML 高画質化(適用範囲がルーペを含むとき。全ページ対象)。
+                // 超解像で拡大する前に掛けてノイズの増幅を防ぐ
+                if settings.noiseReductionScope.includesLoupe {
+                    image = await ImageResampler.shared.reduceNoise(
+                        image, level: settings.noiseReductionLevel)
+                }
                 // 元解像度が必要量に足りないラスタ画像は MetalFX 超解像で補う
                 if let frame = readerViewForInput.pageFramePixelSize(at: position) {
                     let rate = CGFloat(max(1.0, settings.loupeRate))

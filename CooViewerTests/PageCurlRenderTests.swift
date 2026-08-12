@@ -265,4 +265,42 @@ final class PageCurlRenderTests: XCTestCase {
                 "(上=\(topRevealed) 下=\(bottomRevealed))")
         }
     }
+
+    /// setPages の事前引き当て(preResampled)が最初のフレームから使われる
+    /// =めくり効果のスナップショットにフィルタ済みの絵が入ることの検証
+    func testPreResampledSeedsFirstFrame() throws {
+        let view = ReaderView(frame: CGRect(origin: .zero, size: size))
+        let dark = solidImage(gray: 0.1)
+        // 実レイアウトと同じ目標ピクセルサイズを予測し、その寸法の
+        // 「完成画像」(明るい灰色)を用意して引き当てとして渡す
+        let targets = try XCTUnwrap(view.predictedResampleSizes(
+            for: [CGSize(width: dark.width, height: dark.height)]))
+        let context = CGContext(
+            data: nil, width: Int(targets[0].width), height: Int(targets[0].height),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(gray: 0.9, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: targets[0]))
+        let bright = context.makeImage()!
+
+        view.setPages([dark], readsFromLeft: false,
+                      preResampled: [(targets[0], bright)])
+        view.layoutSubtreeIfNeeded()
+        let snapshot = try XCTUnwrap(view.snapshotContent())
+        let data = try XCTUnwrap(snapshot.dataProvider?.data) as Data
+        let center = (snapshot.height / 2 * snapshot.bytesPerRow)
+            + (snapshot.width / 2 * 4)
+        XCTAssertGreaterThan(Int(data[center]), 180,
+            "中央画素が明るい=事前引き当てが最初のレイアウトで使われている")
+
+        // 引き当てなしの対照: 原画(暗)がそのまま出る
+        view.setPages([dark], readsFromLeft: false)
+        view.layoutSubtreeIfNeeded()
+        let plain = try XCTUnwrap(view.snapshotContent())
+        let plainData = try XCTUnwrap(plain.dataProvider?.data) as Data
+        let plainCenter = (plain.height / 2 * plain.bytesPerRow)
+            + (plain.width / 2 * 4)
+        XCTAssertLessThan(Int(plainData[plainCenter]), 100)
+    }
 }

@@ -84,17 +84,61 @@ final class SettingsStore {
             ?? .systemDefault
     }
 
-    /// 補間なし ⇔ 直前の補間を切り替える(直前が未保存なら「高」へ)
+    /// ML 高画質化の処理段階(新設キー・既定なし。全ページ対象)。
+    /// UI は renderQuality 経由で 0/3/4 のみ書くが、2.0b16 以前の
+    /// 弱 1・中 2(CINoiseReduction)も従来どおり読める
+    var noiseReductionLevel: NoiseReductionLevel {
+        get {
+            NoiseReductionLevel(rawValue: defaults.integer(forKey: "NoiseReductionLevel"))
+                ?? .none
+        }
+        set { defaults.set(newValue.rawValue, forKey: "NoiseReductionLevel") }
+    }
+
+    /// ML 高画質化の適用範囲(新設キー・既定はメイン表示のみ)
+    var noiseReductionScope: NoiseReductionScope {
+        get {
+            NoiseReductionScope(rawValue: defaults.integer(forKey: "NoiseReductionScope"))
+                ?? .displayOnly
+        }
+        set { defaults.set(newValue.rawValue, forKey: "NoiseReductionScope") }
+    }
+
+    /// 描画品質(UI の「補間」5 段階)。実体は旧互換キー Interpolation
+    /// (0-3 のまま。1.x と共有する設定に未知値を書かないため)と
+    /// NoiseReductionLevel(ML 段階)の組合せへ分解して保存する。
+    /// 読み出しは ML 段階を優先し、旧設定の Interpolation=2(低)は
+    /// 標準として扱う(選択肢からは廃止)
+    var renderQuality: RenderQuality {
+        get {
+            switch noiseReductionLevel {
+            case .maximum: return .mlSuperRes
+            case .strong: return .mlDenoise
+            case .none, .light, .medium: break  // 弱・中(旧設定)は基礎補間で表示
+            }
+            switch interpolation {
+            case .none: return .none
+            case .high: return .high
+            case .systemDefault, .low: return .standard
+            }
+        }
+        set {
+            defaults.set(newValue.interpolationRawValue, forKey: "Interpolation")
+            defaults.set(newValue.noiseReductionRawValue, forKey: "NoiseReductionLevel")
+        }
+    }
+
+    /// 補間なし ⇔ 直前の品質を切り替える(直前が未保存なら「高」へ)。
+    /// 旧実装の f キー相当。ML 段階も含めた描画品質単位でトグルする
     func toggleInterpolationNone() {
-        let current = defaults.integer(forKey: "Interpolation")
-        if current == ReaderView.Interpolation.none.rawValue {
+        if renderQuality == RenderQuality.none {
             let stored = defaults.object(forKey: "InterpolationBeforeNone") as? Int
-            let restored = (stored == nil || stored == ReaderView.Interpolation.none.rawValue)
-                ? ReaderView.Interpolation.high.rawValue : stored!
-            defaults.set(restored, forKey: "Interpolation")
+            let restored = stored.flatMap { RenderQuality(rawValue: $0) }
+            renderQuality = (restored == nil || restored == RenderQuality.none)
+                ? .high : restored!
         } else {
-            defaults.set(current, forKey: "InterpolationBeforeNone")
-            defaults.set(ReaderView.Interpolation.none.rawValue, forKey: "Interpolation")
+            defaults.set(renderQuality.rawValue, forKey: "InterpolationBeforeNone")
+            renderQuality = .none
         }
     }
 
@@ -145,19 +189,22 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "ShowNumber") }
     }
 
-    /// ページキャッシュ上限(バイト)。既定は物理メモリの 15%(上限 6GB)。
-    /// "PageCacheMegabytes" で明示指定可(0/未設定=自動)。
+    /// ページキャッシュ上限(バイト)。既定は物理メモリの 15%(上限 16GB)。
+    /// 高度な設定 ON のときのみ、"PageCacheMegabytes"(隠しキー・MB 直指定)
+    /// > メモリ%指定 の順で上書きできる。OFF では他の高度設定と同様、
+    /// 明示指定は無視して常に標準の動きへ戻る。
     /// 旧 ImageCache(枚数)は廃止(設計書「キャッシュ・先読み設計」)。
     var pageCacheByteLimit: Int {
         let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
         if advancedSettingsEnabled {
-            // 高度な設定: 指定パーセントをそのまま使う(2GB 上限は適用しない)
+            let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
+            if megabytes > 0 { return megabytes * 1024 * 1024 }
+            // 指定パーセントをそのまま使う(16GB 上限は適用しない)
             return physical / 100 * advancedMemoryPercent
         }
-        let megabytes = defaults.integer(forKey: "PageCacheMegabytes")
-        if megabytes > 0 { return megabytes * 1024 * 1024 }
-        // 標準時の上限は近年の搭載メモリ(32-64GB)に合わせて 6GB
-        return min(6 * 1024 * 1024 * 1024,
+        // 標準時の上限。15% がこれに達するのは 107GB 超の構成のみで、
+        // 実質はメモリ圧迫トリムに任せる安全弁
+        return min(16 * 1024 * 1024 * 1024,
                    physical / 100 * AdvancedDefault.memoryPercent)
     }
 
