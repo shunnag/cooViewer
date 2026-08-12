@@ -292,7 +292,10 @@ actor MLSuperResolver {
 
     private static func readDiskCache(for key: String) -> CGImage? {
         let url = cacheFileURL(for: key)
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+        // 未キャッシュは正常系: 先に存在確認しないと ImageIO が
+        // 「can't open (fileExists == false)」をコンソールへ吐いて紛らわしい
+        guard FileManager.default.fileExists(atPath: url.path),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             return nil
         }
