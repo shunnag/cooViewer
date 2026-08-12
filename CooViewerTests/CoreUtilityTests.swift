@@ -196,6 +196,57 @@ final class ImageResamplerTests: XCTestCase {
             cacheKey: "t-cache", upscaleWithMetalFX: false)
         XCTAssertTrue(first === second)
     }
+
+    func testByteLimitEvictsOldestKeepsNewest() async {
+        // 32x32 RGBA(4KB)2 枚分の上限に 3 枚入れると最古が落ちる
+        let resampler = ImageResampler(byteLimit: 32 * 32 * 4 * 2 + 512)
+        let source = image(width: 64, height: 64)
+        let first = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e1", upscaleWithMetalFX: false)
+        _ = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e2", upscaleWithMetalFX: false)
+        let third = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e3", upscaleWithMetalFX: false)
+        // 最新はキャッシュ命中(同一インスタンス)、最古は作り直しになる
+        let thirdAgain = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e3", upscaleWithMetalFX: false)
+        XCTAssertTrue(third === thirdAgain)
+        let firstAgain = await resampler.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "e1", upscaleWithMetalFX: false)
+        XCTAssertFalse(first === firstAgain)
+    }
+}
+
+final class PreresamplePolicyTests: XCTestCase {
+    func testPageBudgetCapsAtMaxPages() {
+        // 30MB/ページ・16GB 機: 予算 256MB → 8 ページ相当だが上限 5
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 30 << 20, physicalMemory: 16 << 30), 5)
+    }
+
+    func testPageBudgetShrinksForLargePages() {
+        // 100MB/ページ(5K 級ウインドウ)→ 256MB / 100MB = 2 ページ
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 100 << 20, physicalMemory: 64 << 30), 2)
+    }
+
+    func testPageBudgetFloorsAtOne() {
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 400 << 20, physicalMemory: 8 << 30), 1)
+        XCTAssertEqual(PreresamplePolicy.pageBudget(
+            bytesPerPage: 0, physicalMemory: 8 << 30), 1)
+    }
+
+    func testByteBudgetScalesWithMemory() {
+        // 4GB 機では 1/32 = 128MB、大容量機では 256MB で頭打ち
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 4 << 30), 128 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30), 256 << 20)
+    }
 }
 
 @MainActor

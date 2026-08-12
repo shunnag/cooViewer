@@ -895,12 +895,15 @@ final class ReaderWindowController: NSWindowController {
         preresampleAdjacentSpread()
     }
 
-    /// 進行方向の隣のスプレッドを表示ピクセルサイズへ事前リサンプルして
+    /// 進行方向の隣のスプレッド列を表示ピクセルサイズへ事前リサンプルして
     /// ImageResampler の LRU に載せる(設計書 §5 描画品質)。めくった直後の
     /// 最初の描画から等倍のシャープな画像になる(従来は一瞬 CALayer の
     /// trilinear 表示 → リサンプル完成後に差し替えだった)。
-    /// 現スプレッドのリサンプル(scheduleHighQualityResample)と GPU を
-    /// 奪い合わないよう少し遅らせて始め、表示が先へ進んでいたら捨てる
+    /// 先へ進む量は最大 5 ページ、ただしメモリ予算(PreresamplePolicy:
+    /// 1 ページの表示サイズ × 枚数が物理メモリの 1/32・最大 256MB に収まる数)
+    /// まで。近いスプレッドから順に行い、現スプレッドのリサンプル
+    /// (scheduleHighQualityResample)と GPU を奪い合わないよう少し遅らせて
+    /// 始め、表示が先へ進んでいたら残りを捨てる
     private func preresampleAdjacentSpread() {
         guard let book, book.pageCount > 0 else { return }
         let forward = book.lastMoveForward
@@ -909,31 +912,49 @@ final class ReaderWindowController: NSWindowController {
             try? await Task.sleep(for: .milliseconds(250))
             guard let self, let book = self.book,
                   generation == self.displayGeneration else { return }
-            let indices = await book.predictedAdjacentSpreadIndices(forward: forward)
-            guard !indices.isEmpty else { return }
-            var images: [CGImage] = []
-            for index in indices {
-                // 先読み済みならキャッシュ命中、未了なら進行中のデコードに合流。
-                // HDR(>8bit)ページは通常表示側もリサンプルしないので対象外
-                guard let image = await book.image(at: index),
-                      image.bitsPerComponent <= 8 else { return }
-                images.append(image)
-            }
-            // デコード待ちの間に表示が進んでいたら破棄する
-            // (次の refreshDisplay が改めて予約する)
-            guard generation == self.displayGeneration, book === self.book else { return }
-            let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
-            guard let targets = self.readerViewForInput.predictedResampleSizes(
-                for: sizes) else { return }
+            let spreads = await book.predictedAdjacentSpreads(
+                forward: forward, maxPages: PreresamplePolicy.maxPages)
+            guard !spreads.isEmpty else { return }
             let useMetalFX = self.settings.interpolation == .high
-            for (position, image) in images.enumerated() {
-                let index = indices[position]
-                guard book.entries.indices.contains(index) else { continue }
-                // キーは ReaderView の実表示時と同一(そこでキャッシュ命中する)
-                _ = await ImageResampler.shared.resample(
-                    image, to: targets[position],
-                    cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
-                    upscaleWithMetalFX: useMetalFX)
+            // ページ数の予算は最初のスプレッドの表示サイズが判明した時点で確定する
+            var pageLimit = PreresamplePolicy.maxPages
+            var limitComputed = false
+            var resampledPages = 0
+            for indices in spreads {
+                var images: [CGImage] = []
+                for index in indices {
+                    // 先読み済みならキャッシュ命中、未了なら進行中のデコードに
+                    // 合流。HDR(>8bit)ページは通常表示側もリサンプルしないので
+                    // 対象外(以降はさらに遠いページなので打ち切ってよい)
+                    guard let image = await book.image(at: index),
+                          image.bitsPerComponent <= 8 else { return }
+                    images.append(image)
+                }
+                // デコード待ちの間に表示が進んでいたら残りを破棄する
+                // (次の refreshDisplay が改めて予約する)
+                guard generation == self.displayGeneration,
+                      book === self.book else { return }
+                let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
+                guard let targets = self.readerViewForInput.predictedResampleSizes(
+                    for: sizes) else { return }
+                if !limitComputed, let first = targets.first {
+                    let bytesPerPage = Int(first.width) * Int(first.height) * 4
+                    pageLimit = PreresamplePolicy.pageBudget(
+                        bytesPerPage: bytesPerPage,
+                        physicalMemory: ProcessInfo.processInfo.physicalMemory)
+                    limitComputed = true
+                }
+                for (position, image) in images.enumerated() {
+                    let index = indices[position]
+                    guard book.entries.indices.contains(index) else { continue }
+                    // キーは ReaderView の実表示時と同一(そこでキャッシュ命中する)
+                    _ = await ImageResampler.shared.resample(
+                        image, to: targets[position],
+                        cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
+                        upscaleWithMetalFX: useMetalFX)
+                }
+                resampledPages += indices.count
+                guard resampledPages < pageLimit else { return }
             }
         }
     }
