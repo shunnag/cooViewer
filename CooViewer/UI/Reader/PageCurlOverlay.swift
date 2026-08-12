@@ -125,10 +125,6 @@ enum PageCurlOverlay {
                  values: timeline.map { NSNumber(value: 0.30 * $0.thetaSin) })
         addTrack(parts.gutterShade, keyPath: "opacity",
                  values: timeline.map { NSNumber(value: 0.35 * $0.thetaSin) })
-        for highlight in parts.edgeHighlights {
-            addTrack(highlight, keyPath: "opacity",
-                     values: timeline.map { NSNumber(value: 0.45 * $0.outerSin) })
-        }
         // 着地側の影(前半で濃くなり、リーフが被さって見えなくなる)
         let dim = CAKeyframeAnimation(keyPath: "opacity")
         dim.values = [0, 0.30, 0.30]
@@ -158,9 +154,6 @@ enum PageCurlOverlay {
         parts.contactShadow.position.x = gutterX + frame.apexX
         parts.contactShadow.opacity = Float(0.30 * frame.thetaSin)
         parts.gutterShade.opacity = Float(0.35 * frame.thetaSin)
-        for highlight in parts.edgeHighlights {
-            highlight.opacity = Float(0.45 * frame.outerSin)
-        }
         return parts.overlay
     }
 
@@ -179,8 +172,6 @@ enum PageCurlOverlay {
         let contactShadow: CALayer
         /// 綴じ目(ノド)の陰影
         let gutterShade: CALayer
-        /// 紙の縁のハイライト(自由端。帯ごとに外側パッチへ内蔵)
-        let edgeHighlights: [CALayer]
         let frontRects: [[CGRect]]
         let backRects: [[CGRect]]
         let backContent: CGImage
@@ -193,7 +184,6 @@ enum PageCurlOverlay {
         let angles: [[CGFloat]]
         let apexX: CGFloat
         let thetaSin: CGFloat
-        let outerSin: CGFloat
     }
 
     /// 単位矩形(0-1)へのクランプ(境界の重なりぶんのはみ出しを丸める)
@@ -266,7 +256,6 @@ enum PageCurlOverlay {
         // リーフのパッチ格子。ストリップはノド側から外側の順に重ねる
         // (めくり中は外側ほど手前にあるため)
         var patches: [[CALayer]] = []
-        var edgeHighlights: [CALayer] = []
         var frontRects: [[CGRect]] = []
         var backRects: [[CGRect]] = []
         let stripLength = half / CGFloat(config.stripCount)
@@ -318,20 +307,6 @@ enum PageCurlOverlay {
                 patch.contentsRect = frontRect
                 bandFronts.append(frontRect)
                 bandBacks.append(backRect)
-
-                // 紙の縁のハイライト(最外ストリップの自由端に細い明線。
-                // パッチ内蔵なので湾曲・ねじれにそのまま追従する)
-                if stripIndex == config.stripCount - 1 {
-                    let highlight = CALayer()
-                    let lineWidth: CGFloat = 1.5
-                    highlight.frame = CGRect(
-                        x: leafOnLeft ? 0 : patch.bounds.width - lineWidth,
-                        y: 0, width: lineWidth, height: patch.bounds.height)
-                    highlight.backgroundColor = CGColor(gray: 1, alpha: 1)
-                    highlight.opacity = 0
-                    patch.addSublayer(highlight)
-                    edgeHighlights.append(highlight)
-                }
                 bandPatches.append(patch)
                 overlay.addSublayer(patch)
             }
@@ -348,7 +323,7 @@ enum PageCurlOverlay {
 
         return Parts(overlay: overlay, patches: patches, shadow: shadow,
                      castShadow: castShadow, contactShadow: contactShadow,
-                     gutterShade: gutterShade, edgeHighlights: edgeHighlights,
+                     gutterShade: gutterShade,
                      frontRects: frontRects, backRects: backRects,
                      backContent: backContent)
     }
@@ -398,11 +373,9 @@ enum PageCurlOverlay {
                 apexX = placement.offsetX
             }
         }
-        let outerAngle = reference.last?.angle ?? 0
         return FrameGeometry(transforms: transforms, angles: angles,
                              apexX: apexX,
-                             thetaSin: sin(theta),
-                             outerSin: sin(outerAngle))
+                             thetaSin: sin(theta))
     }
 
     /// 水平反転した複製(カール裏面用)。y 軸回転の裏面描画は内容が水平に
