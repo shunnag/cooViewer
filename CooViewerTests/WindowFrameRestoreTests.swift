@@ -33,13 +33,14 @@ final class WindowFrameRestoreTests: XCTestCase {
 
     // MARK: - タイル状態の除去(macOS 26 の tilingState 付き autosave)
 
-    func testTiledFrameIsReplacedByUntiledFrame() {
-        // フィルタイルのまま終了した保存値 → タイル前のフレーム+JSON なしへ
+    func testTiledFrameKeepsFrameAndDropsTilingState() {
+        // フィルタイルのまま終了した保存値 → フレームはそのまま、JSON だけ除去
+        // (見た目は終了時どおりに復元し、タイルとしては復活させない)
         let saved = "0 51 1728 1033 0 0 1728 1084 "
             + #"{"tilingState":{"tilingPosition":9,"normalizedSize":1,"#
             + #""untiledFrame":"{{513, 409}, {1215, 657}}"}}"#
         XCTAssertEqual(ReaderWindowController.untiledFrameString(from: saved),
-                       "513 409 1215 657 0 0 1728 1084 ")
+                       "0 51 1728 1033 0 0 1728 1084 ")
     }
 
     func testPlainFrameIsLeftAlone() {
@@ -48,12 +49,10 @@ final class WindowFrameRestoreTests: XCTestCase {
     }
 
     func testMalformedTilingInfoIsLeftAlone() {
-        // JSON が壊れている/untiledFrame が無い/サイズ 0 → 触らない(従来動作)
+        // JSON が壊れている/tilingState 以外の JSON → 触らない(従来動作)
         XCTAssertNil(ReaderWindowController.untiledFrameString(
             from: "0 51 1728 1033 0 0 1728 1084 {not-json"))
         XCTAssertNil(ReaderWindowController.untiledFrameString(
-            from: #"0 51 1728 1033 0 0 1728 1084 {"tilingState":{"tilingPosition":9}}"#))
-        XCTAssertNil(ReaderWindowController.untiledFrameString(
-            from: #"0 51 1728 1033 0 0 1728 1084 {"tilingState":{"untiledFrame":"{{0, 0}, {0, 0}}"}}"#))
+            from: #"0 51 1728 1033 0 0 1728 1084 {"unknownKey":1}"#))
     }
 }
