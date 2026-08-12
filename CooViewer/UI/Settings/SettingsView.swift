@@ -427,7 +427,7 @@ struct SettingsView: View {
                     Text(String(localized: "Fade")).tag(1)
                     Text(String(localized: "Slide")).tag(2)
                     Text(String(localized: "Zoom Fade")).tag(3)
-                    Text(String(localized: "Flip")).tag(4)
+                    Text(String(localized: "Page Curl")).tag(4)
                 }
             }
             Section {

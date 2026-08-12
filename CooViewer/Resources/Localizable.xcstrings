@@ -444,12 +444,12 @@
         }
       }
     },
-    "Flip" : {
+    "Page Curl" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "フリップ"
+            "value" : "ページカール"
           }
         }
       }
