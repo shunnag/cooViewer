@@ -174,50 +174,55 @@ final class BookTests: XCTestCase {
         XCTAssertEqual(single.currentIndex, 2)
     }
 
-    /// 次スプレッドの予測: サイズ判明済みならペア、端では空
-    func testPredictedAdjacentSpreadForward() async throws {
+    /// 次方向のスプレッド列予測: サイズ判明済みならペア、端では空
+    func testPredictedAdjacentSpreadsForward() async throws {
         let book = try await makeBook(
-            [portrait, portrait, portrait, portrait])
+            [portrait, portrait, portrait, portrait, portrait, portrait])
         _ = await book.currentSpread()               // (0,1) 表示
         // サイズ未取得のうちは単ページと保守的に予測する
-        var predicted = await book.predictedAdjacentSpreadIndices(forward: true)
-        XCTAssertEqual(predicted, [2])
+        var predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
+        XCTAssertEqual(predicted, [[2], [3], [4], [5]])
         // デコードでサイズ索引が埋まればペアと予測する
-        _ = await book.image(at: 2)
-        _ = await book.image(at: 3)
-        predicted = await book.predictedAdjacentSpreadIndices(forward: true)
-        XCTAssertEqual(predicted, [2, 3])
+        for index in 2...5 {
+            _ = await book.image(at: index)
+        }
+        predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
+        XCTAssertEqual(predicted, [[2, 3], [4, 5]])
+        // ペアを分割してまで maxPages に詰めない
+        predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 3)
+        XCTAssertEqual(predicted, [[2, 3]])
         // 末尾のスプレッド表示中は次が無い
-        book.goTo(index: 2)
+        book.goTo(index: 4)
         _ = await book.currentSpread()
-        predicted = await book.predictedAdjacentSpreadIndices(forward: true)
+        predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
         XCTAssertEqual(predicted, [])
     }
 
-    /// 前スプレッドの予測: ペア判定は movePrevious と同じ規則、先頭では空
-    func testPredictedAdjacentSpreadBackward() async throws {
+    /// 前方向のスプレッド列予測: ペア判定は movePrevious と同じ規則、先頭では空
+    func testPredictedAdjacentSpreadsBackward() async throws {
         let book = try await makeBook(
-            [portrait, portrait, portrait, portrait])
-        _ = await book.image(at: 0)
-        _ = await book.image(at: 1)
-        book.goTo(index: 2)
+            [portrait, portrait, portrait, portrait, portrait, portrait])
+        for index in 0...3 {
+            _ = await book.image(at: index)
+        }
+        book.goTo(index: 4)
         _ = await book.currentSpread()
-        let predicted = await book.predictedAdjacentSpreadIndices(forward: false)
-        XCTAssertEqual(predicted, [0, 1])
+        let predicted = await book.predictedAdjacentSpreads(forward: false, maxPages: 5)
+        XCTAssertEqual(predicted, [[2, 3], [0, 1]])
         book.goTo(index: 0)
-        let atStart = await book.predictedAdjacentSpreadIndices(forward: false)
+        let atStart = await book.predictedAdjacentSpreads(forward: false, maxPages: 5)
         XCTAssertEqual(atStart, [])
     }
 
-    /// 単ページモードの予測は常に 1 ページ
-    func testPredictedAdjacentSpreadInSingleMode() async throws {
+    /// 単ページモードの予測は常に 1 ページずつ
+    func testPredictedAdjacentSpreadsInSingleMode() async throws {
         let book = try await makeBook(
             [portrait, portrait, portrait], readMode: .rightToLeftSingle)
         _ = await book.currentSpread()
         _ = await book.image(at: 1)
         _ = await book.image(at: 2)
-        let predicted = await book.predictedAdjacentSpreadIndices(forward: true)
-        XCTAssertEqual(predicted, [1])
+        let predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
+        XCTAssertEqual(predicted, [[1], [2]])
     }
 
     func testMoveNextAdvancesBySpreadWidthAndDetectsEnd() async throws {

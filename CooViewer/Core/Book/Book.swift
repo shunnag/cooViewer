@@ -374,31 +374,47 @@ final class Book {
         currentIndex = start
     }
 
-    /// 次(forward)または前のスプレッドの予測インデックス列。現在位置は
-    /// 動かさない(事前リサンプル用。ReaderWindowController が表示ピクセル
-    /// サイズへの先行リサンプルに使う)。ペア判定は moveNext/movePrevious と
+    /// 次(forward)または前の方向へ、隣接するスプレッド列を予測する
+    /// (合計 maxPages ページまで。現在位置は動かさない)。事前リサンプル用に
+    /// ReaderWindowController が使う。ペア判定は moveNext/movePrevious と
     /// 同じ規則だが、サイズ索引で確定できない場合はデコードせず単ページと
     /// 予測する(先読みの完了後に確定するので外れても実害はない)。
+    /// 途中のスプレッドを分割してまで maxPages に詰めることはしない。
     /// 端(次/前が無い)では空を返す
-    func predictedAdjacentSpreadIndices(forward: Bool) async -> [Int] {
-        guard !entries.isEmpty else { return [] }
+    func predictedAdjacentSpreads(forward: Bool, maxPages: Int) async -> [[Int]] {
+        guard !entries.isEmpty, maxPages > 0 else { return [] }
+        var result: [[Int]] = []
+        var pages = 0
         if forward {
-            let start = currentIndex + lastDisplayCount
-            guard start < entries.count else { return [] }
-            if readMode.isSpread, start + 1 < entries.count,
-               await isSmallFromIndex(at: start) == true,
-               await isSmallFromIndex(at: start + 1) == true {
-                return [start, start + 1]
+            var start = currentIndex + lastDisplayCount
+            while start < entries.count, pages < maxPages {
+                var spread = [start]
+                if readMode.isSpread, start + 1 < entries.count,
+                   await isSmallFromIndex(at: start) == true,
+                   await isSmallFromIndex(at: start + 1) == true {
+                    spread = [start, start + 1]
+                }
+                guard pages + spread.count <= maxPages else { break }
+                result.append(spread)
+                pages += spread.count
+                start += spread.count
             }
-            return [start]
+        } else {
+            var anchor = currentIndex
+            while anchor > 0, pages < maxPages {
+                var spread = [anchor - 1]
+                if readMode.isSpread, anchor >= 2,
+                   await isSmallFromIndex(at: anchor - 2) == true,
+                   await isSmallFromIndex(at: anchor - 1) == true {
+                    spread = [anchor - 2, anchor - 1]
+                }
+                guard pages + spread.count <= maxPages else { break }
+                result.append(spread)
+                pages += spread.count
+                anchor = spread[0]
+            }
         }
-        guard currentIndex > 0 else { return [] }
-        if readMode.isSpread, currentIndex >= 2,
-           await isSmallFromIndex(at: currentIndex - 2) == true,
-           await isSmallFromIndex(at: currentIndex - 1) == true {
-            return [currentIndex - 2, currentIndex - 1]
-        }
-        return [currentIndex - 1]
+        return result
     }
 
     /// パーセントジャンプ(旧 goToPar)。上限クランプなしの旧仕様を維持し、
