@@ -5,8 +5,9 @@ import XCTest
 final class ScaffoldTests: XCTestCase {
     @MainActor
     func testMainMenuHasStandardTopLevelMenus() {
+        // アプリ/ファイル/編集/表示/移動/ウインドウ/ヘルプ の 7 本
         let menu = MainMenuBuilder.build()
-        XCTAssertEqual(menu.items.count, 6)
+        XCTAssertEqual(menu.items.count, 7)
         XCTAssertNotNil(menu.items.first?.submenu)
     }
 }
