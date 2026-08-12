@@ -1025,6 +1025,15 @@ final class ReaderWindowController: NSWindowController {
             guard !Task.isCancelled else { return }
             guard let self, let book = self.book,
                   generation == self.displayGeneration else { return }
+            // 表示中スプレッドの補間(ML 含む)完了を待ってから積む:
+            // ML 実行は actor の FIFO のため、ここで先に並ぶと見開き
+            // 2 枚目の表示処理が先読み 1 ページ分待たされてしまう
+            while self.readerViewForInput.isResamplingDisplayedPages,
+                  !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, generation == self.displayGeneration,
+                  book === self.book else { return }
             let spreads = await book.predictedAdjacentSpreads(
                 forward: forward, maxPages: PreresamplePolicy.maxPages)
             guard !spreads.isEmpty else { return }
