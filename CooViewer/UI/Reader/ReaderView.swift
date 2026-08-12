@@ -167,8 +167,12 @@ final class ReaderView: NSView {
 
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
+    /// preResampled はリサンプル済みキャッシュの事前引き当て(サイズ+画像。
+    /// 未命中は nil): 渡すと最初のレイアウトから完成画像を使うため、
+    /// めくり効果のスナップショットにもフィルタ済みの絵が入る。
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
+                  preResampled: [(size: CGSize, image: CGImage)?] = [],
                   turn: PageTurn? = nil) {
         // スワイプ追従カールの予約(refreshDisplay 前にコントローラが設定)。
         // 自動再生の turn より優先する
@@ -189,7 +193,10 @@ final class ReaderView: NSView {
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
-        resampledPages = Array(repeating: nil, count: images.count)
+        // 事前引き当て分を最初から採用する(サイズが実レイアウトと一致した
+        // ページだけが使われ、不一致・未命中は通常の非同期リサンプルが埋める)
+        resampledPages = preResampled.count == images.count
+            ? preResampled : Array(repeating: nil, count: images.count)
         loupeHighResImages.removeAll()
         for pageLayer in pageLayers {
             pageLayer.removeAnimation(forKey: "pageAnimation")

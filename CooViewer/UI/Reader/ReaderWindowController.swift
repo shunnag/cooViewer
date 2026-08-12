@@ -907,8 +907,25 @@ final class ReaderWindowController: NSWindowController {
             else { return nil }
             return ReaderView.PageTurn(animation: animation, forward: turnForward)
         }()
+        // リサンプル済みキャッシュの事前引き当て(照会のみ。事前リサンプルが
+        // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
+        // からフィルタ済みの絵を使える)
+        var preResampled: [(size: CGSize, image: CGImage)?] = []
+        if let targets = readerView.predictedResampleSizes(
+            for: images.map { CGSize(width: $0.width, height: $0.height) }) {
+            let useMetalFX = settings.interpolation == .high
+            let level = settings.noiseReductionLevel
+            for (position, image) in images.enumerated() {
+                let hit = await ImageResampler.shared.cached(
+                    image, to: targets[position],
+                    cacheKey: "\(book.cacheKey)#\(ids[position])",
+                    upscaleWithMetalFX: useMetalFX, noiseReduction: level)
+                preResampled.append(hit.map { (targets[position], $0) })
+            }
+        }
         readerView.setPages(images, ids: ids,
                             readsFromLeft: book.readMode.readsFromLeft,
+                            preResampled: preResampled,
                             turn: turn)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)

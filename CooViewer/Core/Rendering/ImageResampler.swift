@@ -54,15 +54,11 @@ actor ImageResampler {
         if width == image.width, height == image.height,
            noiseReduction == .none { return image }
 
-        let key = "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)"
-            + "|\(upscaleWithMetalFX)|nr\(noiseReduction.rawValue)"
-        if let hit = cache[key] {
-            if let index = order.firstIndex(of: key) {
-                order.remove(at: index)
-                order.append(key)
-            }
-            return hit
-        }
+        let key = Self.makeKey(cacheKey: cacheKey, image: image,
+                               width: width, height: height,
+                               upscaleWithMetalFX: upscaleWithMetalFX,
+                               noiseReduction: noiseReduction)
+        if let hit = touch(key) { return hit }
 
         // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
         // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
@@ -90,6 +86,40 @@ actor ImageResampler {
             insert(result, for: key)
         }
         return result
+    }
+
+    /// リサンプル済みキャッシュの照会のみ(計算はしない。命中は MRU 更新)。
+    /// ページめくり効果の最初のフレームから完成画像を使うための引き当てで、
+    /// resample と同じ引数から同じキーを組み立てる
+    func cached(_ image: CGImage, to pixelSize: CGSize,
+                cacheKey: String, upscaleWithMetalFX: Bool,
+                noiseReduction: NoiseReductionLevel = .none) -> CGImage? {
+        let width = Int(pixelSize.width.rounded())
+        let height = Int(pixelSize.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+        return touch(Self.makeKey(cacheKey: cacheKey, image: image,
+                                  width: width, height: height,
+                                  upscaleWithMetalFX: upscaleWithMetalFX,
+                                  noiseReduction: noiseReduction))
+    }
+
+    /// キャッシュキー(resample / cached で共通)
+    private static func makeKey(cacheKey: String, image: CGImage,
+                                width: Int, height: Int,
+                                upscaleWithMetalFX: Bool,
+                                noiseReduction: NoiseReductionLevel) -> String {
+        "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)"
+            + "|\(upscaleWithMetalFX)|nr\(noiseReduction.rawValue)"
+    }
+
+    /// 命中エントリを MRU に上げて返す
+    private func touch(_ key: String) -> CGImage? {
+        guard let hit = cache[key] else { return nil }
+        if let index = order.firstIndex(of: key) {
+            order.remove(at: index)
+            order.append(key)
+        }
+        return hit
     }
 
     /// リサイズを伴わない圧縮ノイズ低減(ルーペ・原寸表示用)。
