@@ -700,9 +700,15 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section(String(localized: "Memory & Cache")) {
-                Stepper(value: $advMemoryPercent, in: 5...50, step: 5) {
-                    Text(String(localized: "Page cache memory:")
-                         + " \(advMemoryPercent)% (\(advancedMemoryDisplay))")
+                VStack(alignment: .leading, spacing: 4) {
+                    Stepper(value: $advMemoryPercent, in: 5...50, step: 5) {
+                        Text(String(localized: "Page cache memory:")
+                             + " \(advMemoryPercent)% (\(advancedMemoryDisplay))")
+                    }
+                    Text(String(localized:
+                        "While advanced settings are off: 15% of physical memory (up to 16 GB)."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Picker(String(localized: "Archive spooling:"), selection: $advSpoolPolicy) {
                     Text(String(localized: "Automatic (by media speed)")).tag(0)
@@ -729,7 +735,7 @@ struct SettingsView: View {
                         value: $advPrepareNextBook, in: 0...20)
                 if !advancedEnabled {
                     Text(String(localized:
-                        "While advanced settings are off, prefetch depth follows the media speed: SSD 12/3, HDD 16/4, network 20/4."))
+                        "While advanced settings are off, prefetch depth is set automatically from memory size, window size, and media speed (minimums: SSD 12, HDD 16, network 20 pages)."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

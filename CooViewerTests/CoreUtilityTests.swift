@@ -249,6 +249,34 @@ final class PreresamplePolicyTests: XCTestCase {
         XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 16 << 30), 2 << 30)
         XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30), 4 << 30)
     }
+
+    func testDecodeAheadCoversResamplePrefetch() {
+        // リサンプル先読み 24 ページ → +4 で 28 を確保(I/O と ML の直列化防止)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(
+            resamplePages: 24, decodedPageBytes: 100 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 12), 28)
+        // PageCache 予算の 1/3 が広ければそちらを採る:
+        // 2.4GB/3 = 819MB ÷ 24MB = 34 ページ > 12+4
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(
+            resamplePages: 12, decodedPageBytes: 24 << 20,
+            pageCacheByteLimit: Int(2.4 * Double(1 << 30)), mediaFloor: 12), 34)
+        // 媒体別下限(ネットワーク 20)を下回らない
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(
+            resamplePages: 1, decodedPageBytes: 500 << 20,
+            pageCacheByteLimit: 1 << 30, mediaFloor: 20), 20)
+        // 上限は maxPages
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(
+            resamplePages: 64, decodedPageBytes: 1 << 20,
+            pageCacheByteLimit: 16 << 30, mediaFloor: 12),
+            PreresamplePolicy.maxPages)
+    }
+
+    func testDecodeBehindIsQuarterOfAhead() {
+        XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 12), 3)
+        XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 33), 8)
+        XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 64), 16)
+        XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 4), 3)  // 下限 3
+    }
 }
 
 @MainActor
