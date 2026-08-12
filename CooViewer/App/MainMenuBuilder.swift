@@ -155,6 +155,26 @@ enum MainMenuBuilder {
             action: #selector(ReaderWindowController.toggleInterpolationMenu(_:)),
             keyEquivalent: "")
         interpolationItem.submenu = interpolationMenu
+
+        // ページめくり効果(新機能・既定なし。設定「表示」ペインと同じ値)
+        let turnItem = menu.addItem(withTitle: String(localized: "Page Turn Effect"),
+                                    action: nil, keyEquivalent: "")
+        let turnMenu = NSMenu()
+        let turnTitles: [(String, Int)] = [
+            (String(localized: "None"), 0),
+            (String(localized: "Fade"), 1),
+            (String(localized: "Slide"), 2),
+            (String(localized: "Zoom Fade"), 3),
+            (String(localized: "Flip"), 4),
+        ]
+        for (title, tag) in turnTitles {
+            let item = turnMenu.addItem(
+                withTitle: title,
+                action: #selector(ReaderWindowController.changePageTurnAnimation(_:)),
+                keyEquivalent: "")
+            item.tag = tag
+        }
+        turnItem.submenu = turnMenu
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Rotate Left"),
                      action: #selector(ReaderWindowController.rotateLeft(_:)), keyEquivalent: "")

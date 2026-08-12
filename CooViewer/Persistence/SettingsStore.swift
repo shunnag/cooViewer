@@ -63,6 +63,16 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "SpreadCoverSingle") }
     }
 
+    /// ページめくり効果(新設キー・既定なし)。0=なし/1=フェード/2=スライド/
+    /// 3=ズームフェード/4=フリップ
+    var pageTurnAnimation: PageTurnAnimation {
+        get {
+            PageTurnAnimation(rawValue: defaults.integer(forKey: "PageTurnAnimation"))
+                ?? .none
+        }
+        set { defaults.set(newValue.rawValue, forKey: "PageTurnAnimation") }
+    }
+
     /// 見開き判定しきい値×1000(0 は 740 に補正。仕様書 §6.1)
     var singleSetting: Int {
         let value = defaults.integer(forKey: "SingleSetting")

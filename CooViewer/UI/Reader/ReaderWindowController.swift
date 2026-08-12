@@ -82,6 +82,11 @@ final class ReaderWindowController: NSWindowController {
     /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
     private var displayGeneration = 0
 
+    /// 次の refreshDisplay に伝えるページ送りの向き(ページ送り系アクションが
+    /// 設定し、消費されたら nil に戻る)。nil のままの再表示(ジャンプ・
+    /// 設定変更等)ではめくり効果を付けない
+    var pendingTurnForward: Bool?
+
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
     private var indicatorLayoutSignature = ""
@@ -837,6 +842,9 @@ final class ReaderWindowController: NSWindowController {
 
     func refreshDisplay() async {
         guard let book else { return }
+        // ページ送りの向きはこの表示で消費する(未設定ならめくり効果なし)
+        let turnForward = pendingTurnForward
+        pendingTurnForward = nil
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
         _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
@@ -877,8 +885,18 @@ final class ReaderWindowController: NSWindowController {
         let ids = spread.indices.map { index in
             book.entries.indices.contains(index) ? book.entries[index].id : index
         }
+        // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
+        let turn: ReaderView.PageTurn? = {
+            guard let turnForward else { return nil }
+            let animation = settings.pageTurnAnimation
+            guard animation != .none,
+                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            else { return nil }
+            return ReaderView.PageTurn(animation: animation, forward: turnForward)
+        }()
         readerView.setPages(images, ids: ids,
-                            readsFromLeft: book.readMode.readsFromLeft)
+                            readsFromLeft: book.readMode.readsFromLeft,
+                            turn: turn)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
         if readerView.isLoupeEnabled {
@@ -1168,6 +1186,7 @@ final class ReaderWindowController: NSWindowController {
         guard let book else { return }
         switch book.moveNext() {
         case .moved:
+            pendingTurnForward = true
             Task { await refreshDisplay() }
         case .hitEnd:
             handleEndOfBook()
@@ -1181,6 +1200,7 @@ final class ReaderWindowController: NSWindowController {
         Task {
             switch await book.movePrevious() {
             case .moved:
+                pendingTurnForward = false
                 await refreshDisplay()
             case .hitStart:
                 handleStartOfBook()
@@ -1244,6 +1264,7 @@ final class ReaderWindowController: NSWindowController {
         Task {
             switch await book.movePrevious() {
             case .moved:
+                pendingTurnForward = false
                 await refreshDisplay()
                 if settings.prevPageMode == 1 {
                     readerView.scrollToEnd()
@@ -1264,6 +1285,7 @@ final class ReaderWindowController: NSWindowController {
     @objc func halfNextPage(_ sender: Any?) {
         guard let book else { return }
         if book.moveHalfNext() == .moved {
+            pendingTurnForward = true
             Task { await refreshDisplay() }
         }
     }
@@ -1271,6 +1293,7 @@ final class ReaderWindowController: NSWindowController {
     @objc func halfPreviousPage(_ sender: Any?) {
         guard let book else { return }
         if book.moveHalfPrevious() == .moved {
+            pendingTurnForward = false
             Task { await refreshDisplay() }
         }
     }
@@ -1326,6 +1349,12 @@ final class ReaderWindowController: NSWindowController {
         settings.toggleInterpolationNone()
     }
 
+    /// ページめくり効果の切替(設定「表示」ペインと同じ defaults を共有)
+    @objc func changePageTurnAnimation(_ sender: NSMenuItem) {
+        guard let animation = PageTurnAnimation(rawValue: sender.tag) else { return }
+        settings.pageTurnAnimation = animation
+    }
+
     @objc func rotateLeft(_ sender: Any?) {
         readerView.rotation += 1  // 仕様書 §4.15: rotateLeft はインクリメント
     }
@@ -1347,6 +1376,10 @@ final class ReaderWindowController: NSWindowController {
             return true
         case #selector(toggleCoverSingleMenu(_:)):
             menuItem.state = settings.spreadCoverSingle ? .on : .off
+            return true
+        case #selector(changePageTurnAnimation(_:)):
+            menuItem.state = settings.pageTurnAnimation.rawValue == menuItem.tag
+                ? .on : .off
             return true
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),

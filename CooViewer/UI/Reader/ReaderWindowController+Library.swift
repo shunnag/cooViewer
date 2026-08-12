@@ -249,6 +249,7 @@ extension ReaderWindowController {
                 return
             }
         }
+        pendingTurnForward = true  // スライドショーもページ送りとしてめくり効果を付ける
         refreshAfterJump()
     }
 

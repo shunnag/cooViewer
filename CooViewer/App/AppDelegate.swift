@@ -158,6 +158,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if arguments.contains("--then-next-page") {
+            // 検証用: 表示後にページ送りする(めくり効果の完了後状態の確認等)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.nextPage(nil)
+            }
+        }
         if arguments.contains("--then-toggle-cover-single") {
             // 検証用: 表示後に「表紙を単ページで表示」を切り替え、現在の
             // 見開きが即座に組み直されることをスナップショットで確認する
