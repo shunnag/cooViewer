@@ -147,6 +147,43 @@ final class PageCurlRenderTests: XCTestCase {
         }
     }
 
+    /// めくり途中、着地側(かぶさられて暗くなる側)と表面(リーフ)が
+    /// ライブ表示と同じ向き(正立)で見えること。
+    /// 「かぶさってくる側のページが上下反転する」の回帰テスト
+    func testCurlMidTurnShowsLandingAndFrontUpright() throws {
+        for leafOnLeft in [false, true] {
+            let view = makeReaderView()
+            let reference = try render(view.layer!)
+            // 旧内容=実経路のスナップショット(ライブと同じ絵)、新内容=灰色。
+            // めくり始めの画面はライブ表示とほぼ同じに見えるはず
+            let oldContent = try XCTUnwrap(view.snapshotContent())
+            let overlay = try XCTUnwrap(PageCurlOverlay.makeStatic(
+                .init(bounds: view.bounds, leafOnLeft: leafOnLeft,
+                      oldContent: oldContent,
+                      newContent: solidImage(gray: 0.5)),
+                progress: 0.1))
+            view.layer!.addSublayer(overlay)
+            defer { overlay.removeFromSuperlayer() }
+            let rendered = try render(view.layer!)
+
+            // 着地側(リーフの反対側)はほぼ全面が旧内容の静止表示
+            let landingXs = leafOnLeft ? [150, 170] : [30, 50]
+            // リーフ側もめくり始めは表面(旧内容)がほぼ元の位置にある
+            // (わずかな傾き・陰があるため許容差を広めにとる)
+            let leafXs = leafOnLeft ? [30, 50] : [150, 170]
+            for x in landingXs + leafXs {
+                for row in [15, Int(size.height) - 15] {
+                    let got = pixel(rendered, x: x, row: row)
+                    let want = pixel(reference, x: x, row: row)
+                    XCTAssertTrue(
+                        roughlyEqual(got, want, tolerance: 70),
+                        "leafOnLeft=\(leafOnLeft) (\(x),\(row)): " +
+                        "got \(got) want \(want)(上下反転すると赤と青が入れ替わる)")
+                }
+            }
+        }
+    }
+
     /// めくり途中(progress=0.35)は「下の角が先行して」空くこと。
     /// リーフ元位置で、ライブ内容(新しいページ)が見えている割合が
     /// 下の帯のほうが上の帯より多い。両リーフ方向で確認する

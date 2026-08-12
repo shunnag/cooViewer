@@ -141,16 +141,20 @@ final class ReaderView: NSView {
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
                   turn: PageTurn? = nil) {
+        // スワイプ追従カールの予約(refreshDisplay 前にコントローラが設定)。
+        // 自動再生の turn より優先する
+        let interactive = pendingInteractiveCurl
+        pendingInteractiveCurl = nil
         // 進行中のカールは即終了(連打時は最後のめくりだけが動く)
         removeCurlOverlay()
         // カールは差し替え前の見た目(旧内容)のスナップショットが要る
         var oldContentForCurl: CGImage?
-        if let turn, turn.animation == .curl, canRunCurl {
+        if interactive == nil, let turn, turn.animation == .curl, canRunCurl {
             oldContentForCurl = snapshotContent()
         }
         // フェード/スライドは内容差し替えを挟んで補間する CATransition なので
         // 差し替えの前に仕込む
-        if let turn {
+        if interactive == nil, let turn {
             addTurnTransitionIfNeeded(turn, newReadsFromLeft: readsFromLeft)
         }
         self.images = images
@@ -167,7 +171,12 @@ final class ReaderView: NSView {
         scrollToHome()
         // ズームフェードは新内容のレイアウト確定後に container へ掛ける。
         // カールは旧内容と新内容のスナップショットからオーバーレイを組む
-        if let turn {
+        if let interactive {
+            if canRunCurl {
+                startInteractiveCurlOverlay(oldContent: interactive.oldContent,
+                                            forward: interactive.forward)
+            }
+        } else if let turn {
             if turn.animation == .curl {
                 if let old = oldContentForCurl, let new = snapshotContent() {
                     runCurlAnimation(oldContent: old, newContent: new,
@@ -233,7 +242,10 @@ final class ReaderView: NSView {
     }
 
     /// 現在の描画内容(背景+ページ)をピクセルスケールでスナップショットする
-    /// (internal: PageCurlRenderTests が実経路の向き検証に使う)
+    /// (internal: PageCurlRenderTests が実経路の向き検証に使う)。
+    /// flipped ビューの layer を直接 render すると上下逆の像になるため
+    /// 補正する(設定ウインドウの NSHostingView スナップショットと同じ癖。
+    /// 向きは PageCurlRenderTests の実描画比較で担保)
     func snapshotContent() -> CGImage? {
         guard let layer else { return nil }
         let scale = window?.backingScaleFactor ?? 2
@@ -247,13 +259,106 @@ final class ReaderView: NSView {
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
         context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: 0, y: bounds.height)
+        context.scaleBy(x: 1, y: -1)
         layer.render(in: context)
         return context.makeImage()
     }
 
     func removeCurlOverlay() {
+        curlScrubTimer?.invalidate()
+        curlScrubTimer = nil
         curlOverlay?.removeFromSuperlayer()
         curlOverlay = nil
+    }
+
+    // MARK: - スワイプ追従カール(指の移動量で進行度を駆動する)
+
+    /// setPages 前にコントローラが設定する予約(旧内容+進行方向)。
+    /// 設定されていると、自動再生の代わりに speed=0 のオーバーレイを組み、
+    /// updateInteractiveCurl(progress:) の timeOffset 駆動で指に追従させる
+    var pendingInteractiveCurl: (oldContent: CGImage, forward: Bool)?
+    private var interactiveCurlDuration: CFTimeInterval = 0.45
+    private var curlScrubTimer: Timer?
+
+    /// スワイプ追従カールが有効か(オーバーレイが停止状態で存在する)
+    var hasInteractiveCurl: Bool {
+        curlOverlay != nil && curlOverlay?.speed == 0
+    }
+
+    private func startInteractiveCurlOverlay(oldContent: CGImage, forward: Bool) {
+        guard let layer, let newContent = snapshotContent() else { return }
+        let configuration = PageCurlOverlay.Configuration(
+            bounds: bounds,
+            leafOnLeft: PageTurnAnimation.entersFromLeft(
+                forward: forward, readsFromLeft: readsFromLeft),
+            oldContent: oldContent,
+            newContent: newContent)
+        guard let overlay = PageCurlOverlay.makeAnimated(configuration) else { return }
+        // speed=0 で止めて timeOffset をスクラブする(標準的な手法)
+        overlay.speed = 0
+        overlay.timeOffset = 0
+        layer.addSublayer(overlay)
+        curlOverlay = overlay
+        interactiveCurlDuration = configuration.duration
+    }
+
+    /// 進行度(0-1)を反映する。1.0 は完了直前で止める(確定は finish で)
+    func updateInteractiveCurl(progress: CGFloat) {
+        guard let curlOverlay, curlOverlay.speed == 0 else { return }
+        curlOverlay.timeOffset =
+            Double(min(max(progress, 0), 0.999)) * interactiveCurlDuration
+    }
+
+    /// 指を離した後、残りを再生してめくりを確定する(モデルは進んでいる前提)
+    func finishInteractiveCurl() {
+        guard let overlay = curlOverlay, overlay.speed == 0 else { return }
+        let offset = overlay.timeOffset
+        overlay.speed = 1
+        overlay.timeOffset = 0
+        overlay.beginTime = CACurrentMediaTime() - offset
+        let remaining = max(0.02, interactiveCurlDuration - offset)
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.03) {
+            [weak self, weak overlay] in
+            guard let self, let overlay, self.curlOverlay === overlay else { return }
+            self.removeCurlOverlay()
+        }
+    }
+
+    /// 指を離した後、巻き戻して取りやめる。巻き戻し完了時に completion
+    /// (呼び出し側がモデルを元のページへ戻し、その再表示でオーバーレイが畳まれる)
+    func cancelInteractiveCurl(completion: @escaping @MainActor () -> Void) {
+        guard let overlay = curlOverlay, overlay.speed == 0,
+              overlay.timeOffset > 0.01 else {
+            completion()
+            return
+        }
+        curlScrubTimer?.invalidate()
+        let start = overlay.timeOffset
+        let rewindDuration = 0.05 + 0.15 * start / interactiveCurlDuration
+        let startTime = CACurrentMediaTime()
+        curlScrubTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0 / 120, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                // オーバーレイが差し替え等で消えていたら巻き戻しをやめる
+                guard let overlay = self.curlOverlay, overlay.speed == 0 else {
+                    self.curlScrubTimer?.invalidate()
+                    self.curlScrubTimer = nil
+                    return
+                }
+                let progress = (CACurrentMediaTime() - startTime) / rewindDuration
+                if progress >= 1 {
+                    self.curlScrubTimer?.invalidate()
+                    self.curlScrubTimer = nil
+                    overlay.timeOffset = 0
+                    completion()
+                } else {
+                    overlay.timeOffset = start * (1 - progress)
+                }
+            }
+        }
     }
 
     /// 本式のページめくり: 画面をノド(中央)で左右に分割し、空く側の半面が

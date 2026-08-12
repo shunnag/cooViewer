@@ -72,6 +72,16 @@ enum PageCurlOverlay {
             strip.add(move, forKey: "curlMove")
             strip.add(contentsSwap, forKey: "curlContents")
             strip.add(rectSwap, forKey: "curlRect")
+
+            // カールの丸みの陰(角に応じた濃さ)
+            let shade = CAKeyframeAnimation(keyPath: "opacity")
+            shade.values = timeline.map {
+                NSNumber(value: shadeOpacity(for: $0.angles[index]))
+            }
+            shade.duration = config.duration
+            shade.isRemovedOnCompletion = false
+            shade.fillMode = .forwards
+            parts.stripShades[index].add(shade, forKey: "curlShade")
         }
         // 着地側の影(前半で濃くなり、リーフが被さって見えなくなる)
         let dim = CAKeyframeAnimation(keyPath: "opacity")
@@ -92,6 +102,7 @@ enum PageCurlOverlay {
                 strip.contents = parts.backContent
                 strip.contentsRect = parts.backRects[index]
             }
+            parts.stripShades[index].opacity = shadeOpacity(for: frame.angles[index])
         }
         return parts.overlay
     }
@@ -102,10 +113,17 @@ enum PageCurlOverlay {
     private struct Parts {
         let overlay: CALayer
         let strips: [CALayer]
+        /// ストリップごとの陰(カールの丸みの表現。角に応じて暗くする)
+        let stripShades: [CALayer]
         let shadow: CALayer
         let frontRects: [CGRect]
         let backRects: [CGRect]
         let backContent: CGImage
+    }
+
+    /// ストリップの角 α に応じた陰の濃さ(edge-on で最も暗く、平らで 0)
+    private static func shadeOpacity(for angle: CGFloat) -> Float {
+        Float(0.30 * sin(angle))
     }
 
     /// ある進行度のストリップ配置(トランスフォームと角)
@@ -146,6 +164,7 @@ enum PageCurlOverlay {
 
         // リーフのストリップ列(ノド側から外側の順。外側ほど手前に重なる)
         var strips: [CALayer] = []
+        var stripShades: [CALayer] = []
         var frontRects: [CGRect] = []
         var backRects: [CGRect] = []
         let stripLength = half / CGFloat(config.stripCount)
@@ -178,10 +197,18 @@ enum PageCurlOverlay {
             strip.contentsRect = frontRect
             frontRects.append(frontRect)
             backRects.append(backRect)
+            // カールの丸みの陰(角に応じて暗くする黒レイヤー)
+            let shade = CALayer()
+            shade.frame = strip.bounds
+            shade.backgroundColor = CGColor(gray: 0, alpha: 1)
+            shade.opacity = 0
+            strip.addSublayer(shade)
+            stripShades.append(shade)
             strips.append(strip)
             overlay.addSublayer(strip)
         }
-        return Parts(overlay: overlay, strips: strips, shadow: shadow,
+        return Parts(overlay: overlay, strips: strips, stripShades: stripShades,
+                     shadow: shadow,
                      frontRects: frontRects, backRects: backRects,
                      backContent: backContent)
     }
@@ -216,10 +243,9 @@ enum PageCurlOverlay {
                              angles: placements.map(\.angle))
     }
 
-    /// 180° 回転した複製(カール裏面用)。
-    /// 幾何(y 軸回転)の水平反転に加え、実際の描画環境では裏面の内容が
-    /// 垂直にも反転して表示される(CARenderer による実描画テストで確認。
-    /// PageCurlRenderTests)ため、両軸を反転した複製を渡して正像に戻す
+    /// 水平反転した複製(カール裏面用)。y 軸回転の裏面描画は内容が水平に
+    /// 反転して見えるため、あらかじめ反転した複製を渡して正像に戻す
+    /// (向きは PageCurlRenderTests の実描画比較で担保)
     private static func mirrored(_ image: CGImage) -> CGImage? {
         guard let context = CGContext(
             data: nil, width: image.width, height: image.height,
@@ -227,8 +253,8 @@ enum PageCurlOverlay {
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
-        context.translateBy(x: CGFloat(image.width), y: CGFloat(image.height))
-        context.scaleBy(x: -1, y: -1)
+        context.translateBy(x: CGFloat(image.width), y: 0)
+        context.scaleBy(x: -1, y: 1)
         context.draw(image, in: CGRect(x: 0, y: 0,
                                        width: image.width, height: image.height))
         return context.makeImage()
