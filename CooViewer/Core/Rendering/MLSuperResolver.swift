@@ -68,12 +68,18 @@ actor MLSuperResolver {
         if let cacheKey, let cached = Self.readDiskCache(for: cacheKey) {
             return cached
         }
+        if ProcessInfo.processInfo.environment["COO_TRACE"] != nil {
+            NSLog("SR start %@ (%dx%d)", cacheKey ?? "-", image.width, image.height)
+        }
         guard let loaded = await installer.ensureModel() else { return nil }
         guard let result = await runTiled(model: loaded.model, image: image) else {
             return nil
         }
         if let cacheKey {
             Self.writeDiskCache(result, for: cacheKey)
+        }
+        if ProcessInfo.processInfo.environment["COO_TRACE"] != nil {
+            NSLog("SR done %@", cacheKey ?? "-")
         }
         return result
     }

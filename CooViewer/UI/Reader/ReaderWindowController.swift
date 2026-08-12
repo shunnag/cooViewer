@@ -107,6 +107,11 @@ final class ReaderWindowController: NSWindowController {
     /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
     /// キャンセルして ML 実行キューを明け渡す)
     private var preresampleTask: Task<Void, Never>?
+    /// 先読みがいま処理中のエントリ ID(処理中のページへジャンプした場合は
+    /// キャンセルせず完走させて表示に使うための判定材料)
+    private var preresamplingEntryID: Int?
+    /// 表示中スプレッドのエントリ ID 集合(上記判定に使う)
+    private var displayedEntryIDs: Set<Int> = []
     private var indicatorLayoutSignature = ""
     /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
     private var indicatorHideTimer: Timer?
@@ -914,8 +919,13 @@ final class ReaderWindowController: NSWindowController {
         // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
         // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
         // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
-        // preresampleAdjacentSpread が組み直す
-        preresampleTask?.cancel()
+        // preresampleAdjacentSpread が組み直す。
+        // ただしページを処理中の場合は、それが「これから表示するページ」かも
+        // しれない(処理中のページへのジャンプ)ため、表示対象が判明する
+        // まで判断を保留する(下の displayedEntryIDs 確定後に判定)
+        if preresamplingEntryID == nil {
+            preresampleTask?.cancel()
+        }
         // 読み込み〜補間完成までの進行表示(表示予約。デコードとリサンプルが
         // 速ければ 250ms の猶予内に ReaderView 側の通知が消すので出ない)
         if book.pageCount > 0 {
@@ -960,6 +970,13 @@ final class ReaderWindowController: NSWindowController {
         // インデックスをそのままキーにする。クラッシュ報告 Index out of range 対策)
         let ids = spread.indices.map { index in
             book.entries.indices.contains(index) ? book.entries[index].id : index
+        }
+        displayedEntryIDs = Set(ids)
+        // 保留していた先読みキャンセルの確定: 処理中のページが表示対象なら
+        // 完走させて結果をそのまま表示に使う(途中まで進んだ推論を捨てて
+        // 最初からやり直すより速い。タスクは世代チェックで自然停止する)
+        if let current = preresamplingEntryID, !displayedEntryIDs.contains(current) {
+            preresampleTask?.cancel()
         }
         // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
         let turn: ReaderView.PageTurn? = {
@@ -1019,7 +1036,13 @@ final class ReaderWindowController: NSWindowController {
         guard let book, book.pageCount > 0 else { return }
         let forward = book.lastMoveForward
         let generation = displayGeneration
-        preresampleTask?.cancel()
+        // 表示対象を処理中の先読みは切らずに完走させる(結果を表示に使う。
+        // 旧タスクは世代チェックで現在のページの後に自然停止する)
+        if let current = preresamplingEntryID, displayedEntryIDs.contains(current) {
+            // 完走待ち
+        } else {
+            preresampleTask?.cancel()
+        }
         preresampleTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
@@ -1067,16 +1090,23 @@ final class ReaderWindowController: NSWindowController {
                     limitComputed = true
                 }
                 for (position, image) in images.enumerated() {
-                    guard !Task.isCancelled else { return }  // 表示要求を優先
+                    // 表示要求を優先(キャンセル)。世代遅れの旧タスク
+                    // (表示対象の完走のため切らずに残した場合)もここで止まる
+                    guard !Task.isCancelled,
+                          generation == self.displayGeneration else { return }
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
                     // キーは ReaderView の実表示時と同一(ML 高画質化の段階も
-                    // 含めて同一条件で先行計算し、そこでキャッシュ命中する)
+                    // 含めて同一条件で先行計算し、そこでキャッシュ命中する)。
+                    // 処理中エントリを公開して「そのページへのジャンプ時は
+                    // キャンセルせず完走」判定に使わせる
+                    self.preresamplingEntryID = book.entries[index].id
                     _ = await ImageResampler.shared.resample(
                         image, to: targets[position],
                         cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
                         upscaleWithMetalFX: useMetalFX,
                         noiseReduction: self.settings.noiseReductionLevel)
+                    self.preresamplingEntryID = nil
                 }
                 resampledPages += indices.count
                 guard resampledPages < pageLimit else { return }
