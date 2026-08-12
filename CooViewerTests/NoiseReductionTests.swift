@@ -128,13 +128,57 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertTrue(reduced === reducedAgain)  // キャッシュ命中
     }
 
-    func testJPEGFileDetection() {
-        XCTAssertTrue(SupportedTypes.isJPEGFile("page01.jpg"))
-        XCTAssertTrue(SupportedTypes.isJPEGFile("PAGE01.JPEG"))
-        XCTAssertTrue(SupportedTypes.isJPEGFile("a.jfif"))
-        XCTAssertFalse(SupportedTypes.isJPEGFile("page01.png"))
-        XCTAssertFalse(SupportedTypes.isJPEGFile("page01.webp"))
-        XCTAssertFalse(SupportedTypes.isJPEGFile("jpg"))  // 拡張子なし
+    @MainActor
+    func testRenderQualityMapping() {
+        // 描画品質(補間 5 段階)⇔ 旧互換 2 キーの相互変換
+        let suiteName = "RenderQualityTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SettingsStore(defaults: defaults)
+
+        XCTAssertEqual(store.renderQuality, .standard)  // 既定
+        store.renderQuality = .mlSuperRes
+        // Interpolation は旧互換の 0-3 のまま(1.x と共有するため未知値を書かない)
+        XCTAssertEqual(defaults.integer(forKey: "Interpolation"), 3)
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 4)
+        XCTAssertEqual(store.renderQuality, .mlSuperRes)
+        store.renderQuality = .mlDenoise
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 3)
+        store.renderQuality = .none
+        XCTAssertEqual(defaults.integer(forKey: "Interpolation"), 1)
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 0)
+        store.renderQuality = .high
+        XCTAssertEqual(defaults.integer(forKey: "Interpolation"), 3)
+        XCTAssertEqual(store.renderQuality, .high)
+        // 旧設定の「低」(2)は標準として読む。CI 弱・中(旧 NR 1-2)は
+        // 基礎補間の段階で表示(パイプラインでは従来どおり効く)
+        defaults.set(2, forKey: "Interpolation")
+        XCTAssertEqual(store.renderQuality, .standard)
+        defaults.set(2, forKey: "NoiseReductionLevel")
+        XCTAssertEqual(store.renderQuality, .standard)
+    }
+
+    @MainActor
+    func testToggleInterpolationNoneRestoresQuality() {
+        // f キーのトグルは ML 段階も含めた品質単位で往復する
+        let suiteName = "RenderQualityToggle-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SettingsStore(defaults: defaults)
+
+        store.renderQuality = .mlSuperRes
+        store.toggleInterpolationNone()
+        XCTAssertEqual(store.renderQuality, .none)
+        XCTAssertEqual(defaults.integer(forKey: "NoiseReductionLevel"), 0)
+        store.toggleInterpolationNone()
+        XCTAssertEqual(store.renderQuality, .mlSuperRes)
+        // 直前の記録が無いときは「高」へ復帰
+        let fresh = UserDefaults(suiteName: suiteName + "-b")!
+        defer { fresh.removePersistentDomain(forName: suiteName + "-b") }
+        let freshStore = SettingsStore(defaults: fresh)
+        fresh.set(1, forKey: "Interpolation")
+        freshStore.toggleInterpolationNone()
+        XCTAssertEqual(freshStore.renderQuality, .high)
     }
 
     @MainActor

@@ -3,10 +3,47 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import Metal
 
-/// 圧縮ノイズ低減の強さ(古い JPEG のブロックノイズ向け。既定はなし)。
-/// 弱・中は CINoiseReduction、強は CoreML のノイズ除去モデル(MLNoiseReducer)、
-/// 最高は CoreML の ×4 超解像モデル(MLSuperResolver)。ML 系はモデル未導入・
-/// 失敗時に 1 段ずつフォールバックする(最高→強→中相当の CI)
+/// 描画品質(補間+ML 高画質化を 1 本に統合した UI 上の段階。設定と
+/// 表示メニューの「補間」)。永続化はこの値そのものではなく、旧互換の
+/// `Interpolation`(0-3。1.x と共有するため未知値を書かない)と新設の
+/// `NoiseReductionLevel`(0/3/4)の**組合せ**で行う(SettingsStore.renderQuality)
+enum RenderQuality: Int, CaseIterable {
+    /// 補間なし(ニアレスト。ドット絵向け)
+    case none = 0
+    /// 標準(高品質縮小。モアレ低減)
+    case standard = 1
+    /// 高(標準+MetalFX 拡大)
+    case high = 2
+    /// 超高(高+waifu2x の ML ノイズ除去。全ページ対象)
+    case mlDenoise = 3
+    /// 最高(高+Real-ESRGAN の ×4 ML 超解像。全ページ対象)
+    case mlSuperRes = 4
+
+    /// 対応する基礎補間(レイヤーフィルタ+リサンプル経路)の保存値
+    var interpolationRawValue: Int {
+        switch self {
+        case .none: 1        // ReaderView.Interpolation.none
+        case .standard: 0    // .systemDefault
+        case .high, .mlDenoise, .mlSuperRes: 3  // .high
+        }
+    }
+
+    /// 対応する ML 処理段階の保存値
+    var noiseReductionRawValue: Int {
+        switch self {
+        case .none, .standard, .high: 0
+        case .mlDenoise: NoiseReductionLevel.strong.rawValue
+        case .mlSuperRes: NoiseReductionLevel.maximum.rawValue
+        }
+    }
+}
+
+/// ML 高画質化(旧・圧縮ノイズ低減)の処理段階。UI からは RenderQuality
+/// 経由で 0/3/4 のみ設定されるが、2.0b16 以前の設定値(弱 1・中 2 の
+/// CINoiseReduction)も従来どおり動作させるため enum としては残す。
+/// 強は CoreML のノイズ除去モデル(MLNoiseReducer)、最高は CoreML の
+/// ×4 超解像モデル(MLSuperResolver)。ML 系はモデル未導入・失敗時に
+/// 1 段ずつフォールバックする(最高→強→中相当の CI)
 enum NoiseReductionLevel: Int, CaseIterable {
     case none = 0
     case light = 1
@@ -21,8 +58,8 @@ enum NoiseReductionLevel: Int, CaseIterable {
     }
 }
 
-/// 圧縮ノイズ低減の適用範囲。メイン表示は常に含まれ、選択で
-/// ルーペ・原寸表示へ広げる(強い低減は等倍で見ると甘く感じることが
+/// ML 高画質化の適用範囲。メイン表示は常に含まれ、選択で
+/// ルーペ・原寸表示へ広げる(強い処理は等倍で見ると甘く感じることが
 /// あるため、原寸系は好みで外せるようにする)
 enum NoiseReductionScope: Int, CaseIterable {
     case displayOnly = 0

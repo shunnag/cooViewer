@@ -159,15 +159,17 @@ enum MainMenuBuilder {
             keyEquivalent: "")
         readModeItem.submenu = readModeMenu
 
-        // 補間(なし/低/既定/高。f キーの切替アクションもここから)
+        // 補間=描画品質 5 段階(基礎補間+ML 高画質化の統合。
+        // タグは RenderQuality の rawValue。f キーの切替アクションもここから)
         let interpolationItem = menu.addItem(
             withTitle: String(localized: "Interpolation"), action: nil, keyEquivalent: "")
         let interpolationMenu = NSMenu()
         let interpolationTitles: [(String, Int)] = [
-            (String(localized: "Default"), 0),
-            (String(localized: "None"), 1),
-            (String(localized: "Low"), 2),
-            (String(localized: "High"), 3),
+            (String(localized: "None"), RenderQuality.none.rawValue),
+            (String(localized: "Standard"), RenderQuality.standard.rawValue),
+            (String(localized: "High"), RenderQuality.high.rawValue),
+            (String(localized: "Very High (ML denoise)"), RenderQuality.mlDenoise.rawValue),
+            (String(localized: "Maximum (×4 ML upscale)"), RenderQuality.mlSuperRes.rawValue),
         ]
         for (title, tag) in interpolationTitles {
             let item = interpolationMenu.addItem(
