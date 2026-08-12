@@ -434,12 +434,92 @@
         }
       }
     },
+    "Applies to JPEG pages only." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "JPEG のページにのみ適用されます。"
+          }
+        }
+      }
+    },
+    "Apply to:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "適用範囲:"
+          }
+        }
+      }
+    },
+    "Compression noise reduction:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圧縮ノイズ低減:"
+          }
+        }
+      }
+    },
     "Copy" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "コピー"
+          }
+        }
+      }
+    },
+    "Everywhere (incl. View Original)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原寸表示も含めて全て"
+          }
+        }
+      }
+    },
+    "Main view and loupe" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メイン表示とルーペ"
+          }
+        }
+      }
+    },
+    "Main view only" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メイン表示のみ"
+          }
+        }
+      }
+    },
+    "Strong" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "強"
+          }
+        }
+      }
+    },
+    "Weak" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "弱"
           }
         }
       }

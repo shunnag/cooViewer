@@ -84,6 +84,24 @@ final class SettingsStore {
             ?? .systemDefault
     }
 
+    /// 圧縮ノイズ低減の強さ(新設キー・既定なし。JPEG のページのみ対象)
+    var noiseReductionLevel: NoiseReductionLevel {
+        get {
+            NoiseReductionLevel(rawValue: defaults.integer(forKey: "NoiseReductionLevel"))
+                ?? .none
+        }
+        set { defaults.set(newValue.rawValue, forKey: "NoiseReductionLevel") }
+    }
+
+    /// 圧縮ノイズ低減の適用範囲(新設キー・既定はメイン表示のみ)
+    var noiseReductionScope: NoiseReductionScope {
+        get {
+            NoiseReductionScope(rawValue: defaults.integer(forKey: "NoiseReductionScope"))
+                ?? .displayOnly
+        }
+        set { defaults.set(newValue.rawValue, forKey: "NoiseReductionScope") }
+    }
+
     /// 補間なし ⇔ 直前の補間を切り替える(直前が未保存なら「高」へ)
     func toggleInterpolationNone() {
         let current = defaults.integer(forKey: "Interpolation")

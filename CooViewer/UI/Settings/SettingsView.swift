@@ -85,6 +85,8 @@ struct SettingsView: View {
     @AppStorage("SingleSetting") private var singleSetting = 740
     @AppStorage("FitMode") private var fitMode = 0
     @AppStorage("PageTurnAnimation") private var pageTurnAnimation = 0
+    @AppStorage("NoiseReductionLevel") private var noiseReductionLevel = 0
+    @AppStorage("NoiseReductionScope") private var noiseReductionScope = 0
     @AppStorage("Interpolation") private var interpolation = 0
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
@@ -272,6 +274,7 @@ struct SettingsView: View {
             String(localized: "View mode:"),
             String(localized: "Page turn effect:"),
             String(localized: "Interpolation:"),
+            String(localized: "Compression noise reduction:"),
             String(localized: "Play animated images (GIF, WebP, etc.)"),
             String(localized: "Background color:"),
             String(localized: "Thumbnails"),
@@ -444,6 +447,25 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                // 圧縮ノイズ低減(JPEG のみ。古いファイルのブロックノイズ向け)
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker(String(localized: "Compression noise reduction:"),
+                           selection: $noiseReductionLevel) {
+                        Text(String(localized: "None")).tag(0)
+                        Text(String(localized: "Weak")).tag(1)
+                        Text(String(localized: "Strong")).tag(2)
+                    }
+                    Text(String(localized: "Applies to JPEG pages only."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Picker(String(localized: "Apply to:"),
+                       selection: $noiseReductionScope) {
+                    Text(String(localized: "Main view only")).tag(0)
+                    Text(String(localized: "Main view and loupe")).tag(1)
+                    Text(String(localized: "Everywhere (incl. View Original)")).tag(2)
+                }
+                .disabled(noiseReductionLevel == 0)
                 Toggle(String(localized: "Play animated images (GIF, WebP, etc.)"),
                        isOn: $playAnimatedImages)
                 ColorPicker(String(localized: "Background color:"),
