@@ -9,11 +9,38 @@ enum MainMenuBuilder {
         let mainMenu = NSMenu()
         mainMenu.addItem(makeAppMenu())
         mainMenu.addItem(makeFileMenu())
+        mainMenu.addItem(makeEditMenu())
         mainMenu.addItem(makeViewMenu())
         mainMenu.addItem(makeBrowseMenu())
         mainMenu.addItem(makeWindowMenu())
         mainMenu.addItem(makeHelpMenu())
         return mainMenu
+    }
+
+    /// 編集メニュー(旧 §8.1 と同じ標準構成。ターゲットは FirstResponder)。
+    /// これが無いとパスワード・しおり名・ページ番号などのテキスト欄で
+    /// ⌘C/⌘V 等のキーが効かない(キー等価はメニュー経由で配送されるため)
+    private static func makeEditMenu() -> NSMenuItem {
+        let menu = NSMenu(title: String(localized: "Edit"))
+        menu.addItem(withTitle: String(localized: "Undo"),
+                     action: Selector(("undo:")), keyEquivalent: "z")
+        menu.addItem(withTitle: String(localized: "Redo"),
+                     action: Selector(("redo:")), keyEquivalent: "Z")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Cut"),
+                     action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        menu.addItem(withTitle: String(localized: "Copy"),
+                     action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        menu.addItem(withTitle: String(localized: "Paste"),
+                     action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        menu.addItem(withTitle: String(localized: "Delete"),
+                     action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: String(localized: "Select All"),
+                     action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        let item = NSMenuItem()
+        item.submenu = menu
+        return item
     }
 
     private static func makeAppMenu() -> NSMenuItem {
@@ -64,7 +91,7 @@ enum MainMenuBuilder {
         recentItem.submenu = recentMenu
         menu.addItem(withTitle: String(localized: "Open the Last Book"),
                      action: #selector(ReaderWindowController.openLastBookMenu(_:)),
-                     keyEquivalent: "")
+                     keyEquivalent: "O")  // ⇧⌘O(旧 §8.1 と同じ)
         menu.addItem(.separator())
         // 現在ページの実体ファイル(単体画像/書庫/PDF)を Finder で選択表示
         menu.addItem(withTitle: String(localized: "Show in Finder"),
@@ -176,10 +203,18 @@ enum MainMenuBuilder {
         }
         turnItem.submenu = turnMenu
         menu.addItem(.separator())
+        // 回転のキーは旧 §8.1 と同じ ⌘5/⌘6
         menu.addItem(withTitle: String(localized: "Rotate Left"),
-                     action: #selector(ReaderWindowController.rotateLeft(_:)), keyEquivalent: "")
+                     action: #selector(ReaderWindowController.rotateLeft(_:)),
+                     keyEquivalent: "5")
         menu.addItem(withTitle: String(localized: "Rotate Right"),
-                     action: #selector(ReaderWindowController.rotateRight(_:)), keyEquivalent: "")
+                     action: #selector(ReaderWindowController.rotateRight(_:)),
+                     keyEquivalent: "6")
+        menu.addItem(.separator())
+        // ルーペ(旧実装はキーのみ。メニューからも切り替えられるようにする)
+        menu.addItem(withTitle: String(localized: "Loupe"),
+                     action: #selector(ReaderWindowController.toggleLoupeMenu(_:)),
+                     keyEquivalent: "l")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Enter Full Screen"),
                      action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
