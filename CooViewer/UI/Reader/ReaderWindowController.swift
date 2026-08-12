@@ -104,6 +104,9 @@ final class ReaderWindowController: NSWindowController {
     /// リサンプル進行中インジケーター(ページバーの横。設計書 §5 描画品質)
     private let resampleSpinner = NSProgressIndicator()
     private var resampleSpinnerShowTask: Task<Void, Never>?
+    /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
+    /// キャンセルして ML 実行キューを明け渡す)
+    private var preresampleTask: Task<Void, Never>?
     private var indicatorLayoutSignature = ""
     /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
     private var indicatorHideTimer: Timer?
@@ -908,6 +911,11 @@ final class ReaderWindowController: NSWindowController {
         // ページ送りの向きはこの表示で消費する(未設定ならめくり効果なし)
         let turnForward = pendingTurnForward
         pendingTurnForward = nil
+        // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
+        // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
+        // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
+        // preresampleAdjacentSpread が組み直す
+        preresampleTask?.cancel()
         // 読み込み〜補間完成までの進行表示(表示予約。デコードとリサンプルが
         // 速ければ 250ms の猶予内に ReaderView 側の通知が消すので出ない)
         if book.pageCount > 0 {
@@ -1011,8 +1019,10 @@ final class ReaderWindowController: NSWindowController {
         guard let book, book.pageCount > 0 else { return }
         let forward = book.lastMoveForward
         let generation = displayGeneration
-        Task { [weak self] in
+        preresampleTask?.cancel()
+        preresampleTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
             guard let self, let book = self.book,
                   generation == self.displayGeneration else { return }
             let spreads = await book.predictedAdjacentSpreads(
@@ -1048,6 +1058,7 @@ final class ReaderWindowController: NSWindowController {
                     limitComputed = true
                 }
                 for (position, image) in images.enumerated() {
+                    guard !Task.isCancelled else { return }  // 表示要求を優先
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
                     // キーは ReaderView の実表示時と同一(ML 高画質化の段階も
