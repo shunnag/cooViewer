@@ -146,7 +146,20 @@ final class NoiseReductionTests: XCTestCase {
         events.removeAll()
         view.setPages([], readsFromLeft: false)
         view.layoutSubtreeIfNeeded()
-        XCTAssertTrue(events.isEmpty || events.last == false)
+        XCTAssertEqual(events.last, false,
+            "リサンプル不要でも false を再通知(コントローラの表示予約の解除手段)")
+        // 全ページ事前引き当て済み(キャッシュ命中)でも false が来る
+        events.removeAll()
+        let source = blockyImage(size: 64)
+        let targets = try XCTUnwrap(view.predictedResampleSizes(
+            for: [CGSize(width: source.width, height: source.height)]))
+        let done = try XCTUnwrap(ImageResampler.cgResample(
+            source, width: Int(targets[0].width), height: Int(targets[0].height)))
+        view.setPages([source], readsFromLeft: false,
+                      preResampled: [(targets[0], done)])
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(events.last, false,
+            "事前引き当てで完了済みならスピナー予約は即解除される")
     }
 
     @MainActor
