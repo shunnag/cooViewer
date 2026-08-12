@@ -113,10 +113,33 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 と `BookStates/` の削除の組み合わせ(移行の再実行)は、開発機の実読書データを
 壊すので絶対に行わない。移行テストは一時ディレクトリ+専用 defaults suite で行う。
 
+### ML モデル資産(models-1 リリース)
+
+補間(描画品質)の ML モデルは**すべて**アプリ本体とは別の GitHub リリース
+**`models-1`**(タグ)に資産として置き、アプリが同意後にダウンロードする
+(URL と SHA-256 は `MLSuperResolver.swift` / `MLNoiseReducer.swift` に
+ピン留め。外部リポジトリの構成変更・消失に影響されない自前配信)。
+
+- 再変換する場合: `Scripts/convert-realesrgan.py` を使う。
+  Python 3.12 の venv に `torch` と `coremltools` を入れ、公式チェックポイント
+  `RealESRGAN_x4plus_anime_6B.pth`(xinntao/Real-ESRGAN v0.2.2.4、BSD-3-Clause)を
+  渡すと単一ファイルの .mlmodel(fp16、入力 256 → 出力 1024)を出力し、
+  PyTorch とのパリティ(最大絶対誤差)も表示する。
+  **Python 3.14 は不可**(coremltools のバイナリ拡張が無い)。
+- モデルを差し替えたら: 新しいタグ(models-2 など)で `gh release create` →
+  `MLSuperResolver.swift` の URL と SHA-256 を更新。既存タグの資産を
+  上書きしない(過去バージョンのアプリが SHA 不一致で壊れるため)。
+- waifu2x(超高)のモデルも同じ models-1 リリースから自前配信する
+  (imxieyi/waifu2x-mac(MIT)からの無改変再配布。MIT の条件である
+  著作権表示・ライセンス全文はリリース資産 `LICENSES-models.txt` に同梱。
+  モデル資産を追加・更新したらこのファイルも必ず更新すること)。
+
 ## 5. ハマりどころ早見表
 
 | 症状 | 原因と対処 |
 |---|---|
+| SR 結果にタイル境界の帯・線 | GAN は平坦部のトーンがタイル毎に Δ1-2 階調揺れる。マージン捨てだけでは不十分で、フェザー合成+Bayer ディザ(MLSuperResolver.writeTile)を外さないこと |
+| Xcode コンソールに linkd / appintents のエラー | `Unable to get synchronousRemoteObjectProxy … com.apple.linkd.autoShortcut` 等は AppKit の App Intents 自動登録が **ad-hoc 署名の Debug ビルド**で弾かれる macOS 側のノイズ(XCTest 実行にも出る)。アプリのコードとは無関係で、Developer ID 署名の Release ビルドでは出ない(2026-08 監査: Release はエラー級・fault 級ともゼロ、stdout/stderr もゼロを確認)。アプリ自身のログは MediaSpeedProbe の Logger.info(ボリューム毎 1 回)のみ、という状態を保つ |
 | XADMaster が undefined symbol | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
 | 公証が Invalid | Sparkle 内部の再署名漏れ(sign-sparkle-nested.sh)か、素の Release ビルド |
 | 自動更新が来ない | appcast.xml の `length=` 不一致・資産名が `cooViewer-<ver>.zip` でない |

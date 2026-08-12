@@ -101,6 +101,27 @@ final class ReaderWindowController: NSWindowController {
 
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
+    /// リサンプル進行中インジケーター(ページバーの横。設計書 §5 描画品質)。
+    /// 白いページ上でも見えるよう、半透過の角丸黒背景(box)に載せる
+    private let resampleSpinner = NSProgressIndicator()
+    private let resampleSpinnerBox = NSView()
+    private var resampleSpinnerShowTask: Task<Void, Never>?
+    /// 表示中スプレッドの処理が進行中か(濃い表示)
+    private var displayResampleActive = false
+    /// 先読みの処理が進行中か(薄い表示。ソフト停止で新旧タスクが
+    /// 重なることがあるためカウントで持つ)
+    private var prefetchResampleCount = 0
+    /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
+    /// キャンセルして ML 実行キューを明け渡す)
+    private var preresampleTask: Task<Void, Never>?
+    /// 先読みがいま処理中のエントリ ID(処理中のページへジャンプした場合は
+    /// キャンセルせず完走させて表示に使うための判定材料)
+    private var preresamplingEntryID: Int?
+    /// 先読みの実行番号(ソフト停止用: 旧タスクは処理中の 1 件を完走した
+    /// 後、この番号のずれで自然停止する)
+    private var preresampleRun = 0
+    /// 表示中スプレッドのエントリ ID 集合(上記判定に使う)
+    private var displayedEntryIDs: Set<Int> = []
     private var indicatorLayoutSignature = ""
     /// 自動隠し(仕様書 §3.4: マウス移動で復活+2 秒で非表示)
     private var indicatorHideTimer: Timer?
@@ -151,7 +172,16 @@ final class ReaderWindowController: NSWindowController {
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
+        let filterChanged = readerView.interpolation != settings.interpolation
+            || readerView.noiseReductionLevel != settings.noiseReductionLevel
         readerView.interpolation = settings.interpolation
+        readerView.noiseReductionLevel = settings.noiseReductionLevel
+        // フィルタ(描画品質)切替: 先読みキューも新条件で組み直す。
+        // 処理中の 1 件は完走させ(結果はキャッシュに残る)、残りは停止。
+        // 新キューは表示中スプレッドの補間完了を待ってから積まれる
+        if filterChanged {
+            preresampleAdjacentSpread(sparingInFlight: true)
+        }
         readerView.backgroundColor = settings.viewBackgroundColor
         // ページ番号/ページバーの見た目(仕様書 §3.4, §6.1)
         pageLabel.font = settings.pageNumFont
@@ -220,6 +250,17 @@ final class ReaderWindowController: NSWindowController {
         }
         pinHorizontally(pageLabel, position: numPosition)
         pinHorizontally(pageBar, position: barPosition)
+        // 進行スピナーはページバーの内側(ウインドウ中央寄り)にバーと同じ高さで
+        constraints += [
+            resampleSpinnerBox.widthAnchor.constraint(equalToConstant: barSize.height),
+            resampleSpinnerBox.heightAnchor.constraint(equalToConstant: barSize.height),
+            resampleSpinnerBox.centerYAnchor.constraint(equalTo: pageBar.centerYAnchor),
+            barPosition % 2 == 0
+                ? resampleSpinnerBox.leadingAnchor.constraint(
+                    equalTo: pageBar.trailingAnchor, constant: 6)
+                : resampleSpinnerBox.trailingAnchor.constraint(
+                    equalTo: pageBar.leadingAnchor, constant: -6),
+        ]
         let stacked = numPosition == barPosition
         if numPosition < 2 {
             constraints.append(pageLabel.topAnchor.constraint(
@@ -255,6 +296,52 @@ final class ReaderWindowController: NSWindowController {
             || (settings.pageBarAutoHide && !indicatorsTemporarilyVisible)
     }
 
+    /// 画像の読み込み〜補間(ML 高画質化含む)完成までの控えめな進行表示
+    /// (表示中スプレッドの処理)。ReaderView の通知が実状態を反映する
+    func setResampleIndicator(_ active: Bool) {
+        displayResampleActive = active
+        updateResampleIndicator()
+    }
+
+    /// 先読みの処理開始・終了(薄い表示の駆動源。先読みタスクから呼ぶ)
+    func setPrefetchIndicator(_ active: Bool) {
+        prefetchResampleCount = max(0, prefetchResampleCount + (active ? 1 : -1))
+        updateResampleIndicator()
+    }
+
+    /// 進行表示の実体: 表示中ページの処理が濃い(0.85)、先読みのみは
+    /// 薄い(0.4)。キャッシュ命中等で瞬時に終わるケースでチラつかないよう
+    /// 表示は 250ms 遅らせ、完了時は即座に消す
+    private func updateResampleIndicator() {
+        let visible = displayResampleActive || prefetchResampleCount > 0
+        if visible {
+            let alpha: CGFloat = displayResampleActive ? 0.85 : 0.4
+            if !resampleSpinnerBox.isHidden {
+                resampleSpinnerBox.alphaValue = alpha  // 濃さだけ即時更新
+                return
+            }
+            // 表示予約中なら維持(二重通知で遅延タイマーを巻き戻さない。
+            // 濃さは表示時点の状態から改めて決まる)
+            guard resampleSpinnerShowTask == nil else { return }
+            resampleSpinnerShowTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled else { return }
+                self.resampleSpinnerShowTask = nil
+                guard self.displayResampleActive || self.prefetchResampleCount > 0
+                else { return }
+                self.resampleSpinnerBox.alphaValue =
+                    self.displayResampleActive ? 0.85 : 0.4
+                self.resampleSpinnerBox.isHidden = false
+                self.resampleSpinner.startAnimation(nil)
+            }
+        } else {
+            resampleSpinnerShowTask?.cancel()
+            resampleSpinnerShowTask = nil
+            resampleSpinner.stopAnimation(nil)
+            resampleSpinnerBox.isHidden = true
+        }
+    }
+
     /// 自動隠し: マウス移動で表示を復活させ、2 秒後に隠す(仕様書 §3.4)
     func noteMouseMovedForIndicators() {
         guard settings.pageNumAutoHide || settings.pageBarAutoHide else { return }
@@ -288,8 +375,10 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)。
-    /// 高度設定 OFF のときの先読み深さは、置き場所の速度プロファイルの
-    /// 既定値(遅い媒体ほど深く)を使う。ON なら明示値を尊重する
+    /// 高度設定 OFF のときの先読み深さは、まず置き場所の速度プロファイルの
+    /// 既定値(遅い媒体ほど深く)を初期値にし、ページ実サイズが判明した
+    /// refreshDisplay で updatePrefetchDepth がメモリ予算連動へ引き上げる。
+    /// ON なら明示値を尊重する
     private func applyAdvancedSettings(to book: Book) {
         if settings.advancedSettingsEnabled {
             book.prefetchAhead = settings.prefetchAheadCount
@@ -300,6 +389,38 @@ final class ReaderWindowController: NSWindowController {
         }
         // キャップは raise 時のクリアを通して反映(設定の上限引き上げにも追従)
         refreshDisplayIfCapRaised()
+    }
+
+    /// デコード先読みの深さをメモリ条件に合わせて更新する(設計書 §5)。
+    /// 実測のデコード済みページサイズと表示リサンプルの実効ページ数から、
+    /// 事前リサンプルが常にデコード済みへ命中する深さを確保する
+    /// (固定 12-20 ページのままでは大容量機でリサンプル先読みに追い越され、
+    /// I/O と ML 計算が直列化していた)。高度設定 ON は明示値を尊重
+    private func updatePrefetchDepth(book: Book, images: [CGImage]) {
+        if settings.advancedSettingsEnabled {
+            book.prefetchAhead = settings.prefetchAheadCount
+            book.prefetchBehind = settings.prefetchBehindCount
+            return
+        }
+        guard let first = images.first else { return }
+        let decodedBytes = first.bytesPerRow * first.height
+        // 表示リサンプルの実効ページ数(補間なし/低では事前リサンプル自体が
+        // 無いので 0 = 媒体別下限と PageCache 予算だけで決まる)
+        var resamplePages = 0
+        if let targets = readerView.predictedResampleSizes(
+            for: images.map { CGSize(width: $0.width, height: $0.height) }),
+           let firstTarget = targets.first {
+            resamplePages = PreresamplePolicy.pageBudget(
+                bytesPerPage: Int(firstTarget.width) * Int(firstTarget.height) * 4,
+                physicalMemory: ProcessInfo.processInfo.physicalMemory)
+        }
+        book.prefetchAhead = PreresamplePolicy.decodeAhead(
+            resamplePages: resamplePages,
+            decodedPageBytes: decodedBytes,
+            pageCacheByteLimit: settings.pageCacheByteLimit,
+            mediaFloor: book.mediaProfile.defaultPrefetchAhead)
+        book.prefetchBehind = PreresamplePolicy.decodeBehind(
+            ahead: book.prefetchAhead)
     }
 
     /// いまのウインドウ実寸・原寸表示設定から適切なデコード上限を求める
@@ -345,6 +466,35 @@ final class ReaderWindowController: NSWindowController {
         pageBar.translatesAutoresizingMaskIntoConstraints = false
         pageBar.isHidden = true
         contentView.addSubview(pageBar)
+
+        // リサンプル(ML 高画質化含む)進行中の控えめなスピナー。
+        // ページバーの横に同じ高さで置く(layoutPageIndicators が制約を組む)。
+        // 白いページ上でも見えるよう半透過の角丸黒背景に載せ、濃さは
+        // 表示中ページ処理=濃い/先読みのみ=薄い の 2 段階
+        resampleSpinnerBox.wantsLayer = true
+        resampleSpinnerBox.layer?.backgroundColor =
+            CGColor(gray: 0, alpha: 0.35)
+        resampleSpinnerBox.layer?.cornerRadius = 4
+        // 黒背景の上ではスピナーを明色で描かせる
+        resampleSpinnerBox.appearance = NSAppearance(named: .darkAqua)
+        resampleSpinnerBox.translatesAutoresizingMaskIntoConstraints = false
+        resampleSpinnerBox.isHidden = true
+        contentView.addSubview(resampleSpinnerBox)
+        resampleSpinner.style = .spinning
+        resampleSpinner.isIndeterminate = true
+        resampleSpinner.isDisplayedWhenStopped = false
+        resampleSpinner.translatesAutoresizingMaskIntoConstraints = false
+        resampleSpinnerBox.addSubview(resampleSpinner)
+        NSLayoutConstraint.activate([
+            resampleSpinner.centerXAnchor.constraint(
+                equalTo: resampleSpinnerBox.centerXAnchor),
+            resampleSpinner.centerYAnchor.constraint(
+                equalTo: resampleSpinnerBox.centerYAnchor),
+            resampleSpinner.widthAnchor.constraint(
+                equalTo: resampleSpinnerBox.widthAnchor, constant: -4),
+            resampleSpinner.heightAnchor.constraint(
+                equalTo: resampleSpinnerBox.heightAnchor, constant: -4),
+        ])
 
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.alignment = .center
@@ -434,6 +584,9 @@ final class ReaderWindowController: NSWindowController {
 
         pageBar.onHover = { [weak self] info in
             self?.handlePageBarHover(info)
+        }
+        readerView.onResampleActivityChanged = { [weak self] active in
+            self?.setResampleIndicator(active)
         }
         pageBar.onJump = { [weak self] fraction in
             guard let self, let book = self.book else { return }
@@ -857,6 +1010,21 @@ final class ReaderWindowController: NSWindowController {
         // ページ送りの向きはこの表示で消費する(未設定ならめくり効果なし)
         let turnForward = pendingTurnForward
         pendingTurnForward = nil
+        // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
+        // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
+        // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
+        // preresampleAdjacentSpread が組み直す。
+        // ただしページを処理中の場合は、それが「これから表示するページ」かも
+        // しれない(処理中のページへのジャンプ)ため、表示対象が判明する
+        // まで判断を保留する(下の displayedEntryIDs 確定後に判定)
+        if preresamplingEntryID == nil {
+            preresampleTask?.cancel()
+        }
+        // 読み込み〜補間完成までの進行表示(表示予約。デコードとリサンプルが
+        // 速ければ 250ms の猶予内に ReaderView 側の通知が消すので出ない)
+        if book.pageCount > 0 {
+            setResampleIndicator(true)
+        }
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
         _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
@@ -897,6 +1065,15 @@ final class ReaderWindowController: NSWindowController {
         let ids = spread.indices.map { index in
             book.entries.indices.contains(index) ? book.entries[index].id : index
         }
+        displayedEntryIDs = Set(ids)
+        // デコード先読みの深さを実ページサイズ・メモリ条件へ追従させる
+        updatePrefetchDepth(book: book, images: images)
+        // 保留していた先読みキャンセルの確定: 処理中のページが表示対象なら
+        // 完走させて結果をそのまま表示に使う(途中まで進んだ推論を捨てて
+        // 最初からやり直すより速い。タスクは世代チェックで自然停止する)
+        if let current = preresamplingEntryID, !displayedEntryIDs.contains(current) {
+            preresampleTask?.cancel()
+        }
         // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
         let turn: ReaderView.PageTurn? = {
             guard let turnForward else { return nil }
@@ -906,8 +1083,25 @@ final class ReaderWindowController: NSWindowController {
             else { return nil }
             return ReaderView.PageTurn(animation: animation, forward: turnForward)
         }()
+        // リサンプル済みキャッシュの事前引き当て(照会のみ。事前リサンプルが
+        // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
+        // からフィルタ済みの絵を使える)
+        var preResampled: [(size: CGSize, image: CGImage)?] = []
+        if let targets = readerView.predictedResampleSizes(
+            for: images.map { CGSize(width: $0.width, height: $0.height) }) {
+            let useMetalFX = settings.interpolation == .high
+            let level = settings.noiseReductionLevel
+            for (position, image) in images.enumerated() {
+                let hit = await ImageResampler.shared.cached(
+                    image, to: targets[position],
+                    cacheKey: "\(book.cacheKey)#\(ids[position])",
+                    upscaleWithMetalFX: useMetalFX, noiseReduction: level)
+                preResampled.append(hit.map { (targets[position], $0) })
+            }
+        }
         readerView.setPages(images, ids: ids,
                             readsFromLeft: book.readMode.readsFromLeft,
+                            preResampled: preResampled,
                             turn: turn)
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
@@ -929,22 +1123,46 @@ final class ReaderWindowController: NSWindowController {
     /// ImageResampler の LRU に載せる(設計書 §5 描画品質)。めくった直後の
     /// 最初の描画から等倍のシャープな画像になる(従来は一瞬 CALayer の
     /// trilinear 表示 → リサンプル完成後に差し替えだった)。
-    /// 先へ進む量は最大 5 ページ、ただしメモリ予算(PreresamplePolicy:
-    /// 1 ページの表示サイズ × 枚数が物理メモリの 1/32・最大 512MB に収まる数)
-    /// まで。近いスプレッドから順に行い、現スプレッドのリサンプル
+    /// 先へ進む量はメモリ予算(PreresamplePolicy: 1 ページの表示サイズ ×
+    /// 枚数が物理メモリの 1/8・最大 4GB に収まる数。ページ数上限 64 は
+    /// 小さすぎるページでの保険)まで。近いスプレッドから順に行い、現スプレッドのリサンプル
     /// (scheduleHighQualityResample)と GPU を奪い合わないよう少し遅らせて
     /// 始め、表示が先へ進んでいたら残りを捨てる
-    private func preresampleAdjacentSpread() {
+    private func preresampleAdjacentSpread(sparingInFlight: Bool = false) {
         guard let book, book.pageCount > 0 else { return }
         let forward = book.lastMoveForward
         let generation = displayGeneration
-        Task { [weak self] in
+        // 実行番号を進めて旧タスクを(ソフト)停止させる。
+        // sparingInFlight(フィルタ切替)と「表示対象を処理中」の場合は
+        // 切らずに完走させ(結果はキャッシュへ)、現在のページの後に
+        // 実行番号チェックで自然停止させる。それ以外は即キャンセル
+        preresampleRun += 1
+        let run = preresampleRun
+        let sparesInFlight = sparingInFlight
+            || preresamplingEntryID.map { displayedEntryIDs.contains($0) } == true
+        if !sparesInFlight {
+            preresampleTask?.cancel()
+        }
+        preresampleTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
             guard let self, let book = self.book,
                   generation == self.displayGeneration else { return }
+            // 表示中スプレッドの補間(ML 含む)完了を待ってから積む:
+            // ML 実行は actor の FIFO のため、ここで先に並ぶと見開き
+            // 2 枚目の表示処理が先読み 1 ページ分待たされてしまう
+            while self.readerViewForInput.isResamplingDisplayedPages,
+                  !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, generation == self.displayGeneration,
+                  run == self.preresampleRun, book === self.book else { return }
             let spreads = await book.predictedAdjacentSpreads(
                 forward: forward, maxPages: PreresamplePolicy.maxPages)
             guard !spreads.isEmpty else { return }
+            // 先読み処理中の薄い進行表示(タスク終了時に必ず対で消す)
+            self.setPrefetchIndicator(true)
+            defer { self.setPrefetchIndicator(false) }
             let useMetalFX = self.settings.interpolation == .high
             // ページ数の予算は最初のスプレッドの表示サイズが判明した時点で確定する
             var pageLimit = PreresamplePolicy.maxPages
@@ -975,13 +1193,25 @@ final class ReaderWindowController: NSWindowController {
                     limitComputed = true
                 }
                 for (position, image) in images.enumerated() {
+                    // 表示要求を優先(キャンセル)。ソフト停止で残した
+                    // 旧タスク(表示対象の完走・フィルタ切替)は世代または
+                    // 実行番号のずれでここで止まる
+                    guard !Task.isCancelled,
+                          generation == self.displayGeneration,
+                          run == self.preresampleRun else { return }
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
-                    // キーは ReaderView の実表示時と同一(そこでキャッシュ命中する)
+                    // キーは ReaderView の実表示時と同一(ML 高画質化の段階も
+                    // 含めて同一条件で先行計算し、そこでキャッシュ命中する)。
+                    // 処理中エントリを公開して「そのページへのジャンプ時は
+                    // キャンセルせず完走」判定に使わせる
+                    self.preresamplingEntryID = book.entries[index].id
                     _ = await ImageResampler.shared.resample(
                         image, to: targets[position],
                         cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
-                        upscaleWithMetalFX: useMetalFX)
+                        upscaleWithMetalFX: useMetalFX,
+                        noiseReduction: self.settings.noiseReductionLevel)
+                    self.preresamplingEntryID = nil
                 }
                 resampledPages += indices.count
                 guard resampledPages < pageLimit else { return }
@@ -1348,8 +1578,47 @@ final class ReaderWindowController: NSWindowController {
         Task { await refreshDisplay() }
     }
 
+    /// 補間(描画品質)の切替。ML 段階は設定ペインと同じ規則で
+    /// 初回に同意を取ってから設定する(§7.5 メニューと設定の同値性)
     @objc func changeInterpolation(_ sender: NSMenuItem) {
-        UserDefaults.standard.set(sender.tag, forKey: "Interpolation")
+        guard let quality = RenderQuality(rawValue: sender.tag) else { return }
+        let defaults = UserDefaults.standard
+        switch quality {
+        case .mlDenoise:
+            if !defaults.bool(forKey: "NoiseReductionMLAccepted") {
+                guard confirmMLDownload(
+                    title: String(localized: "Use the “Very High (ML denoise)” level?"),
+                    message: String(localized:
+                        "A small model (about 1.2 MB) will be downloaded on first use. This method is much heavier: displaying a page can take a few seconds.")
+                ) else { return }
+                defaults.set(true, forKey: "NoiseReductionMLAccepted")
+            }
+            settings.renderQuality = quality
+            Task { await MLNoiseReducer.shared.ensureModel() }
+        case .mlSuperRes:
+            if !defaults.bool(forKey: "NoiseReductionSRAccepted") {
+                guard confirmMLDownload(
+                    title: String(localized: "Use the “Maximum (×4 ML upscale)” level?"),
+                    message: String(localized:
+                        "A model (about 9 MB) will be downloaded on first use. Each page is upscaled 4× by a neural network — this is the heaviest level: a page can take several seconds, and results are cached on disk.")
+                ) else { return }
+                defaults.set(true, forKey: "NoiseReductionSRAccepted")
+            }
+            settings.renderQuality = quality
+            Task { await MLSuperResolver.shared.ensureModel() }
+        case .none, .standard, .high:
+            settings.renderQuality = quality
+        }
+    }
+
+    /// ML モデルのダウンロード同意ダイアログ(メニュー経由の切替用)
+    private func confirmMLDownload(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: String(localized: "Download and Use"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// 表紙を単ページで表示(見開きモード時のみ効果。設定と同じ defaults を共有)
@@ -1389,7 +1658,7 @@ final class ReaderWindowController: NSWindowController {
             menuItem.state = book?.readMode.rawValue == menuItem.tag ? .on : .off
             return book != nil
         case #selector(changeInterpolation(_:)):
-            menuItem.state = settings.interpolation.rawValue == menuItem.tag ? .on : .off
+            menuItem.state = settings.renderQuality.rawValue == menuItem.tag ? .on : .off
             return true
         case #selector(toggleCoverSingleMenu(_:)):
             menuItem.state = settings.spreadCoverSingle ? .on : .off

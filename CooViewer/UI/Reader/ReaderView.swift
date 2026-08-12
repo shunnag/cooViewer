@@ -63,10 +63,26 @@ final class ReaderView: NSView {
 
     /// ページ毎の高品質リサンプル結果(対象ピクセルサイズ付き。設計書 §5 描画品質)
     private var resampledPages: [(size: CGSize, image: CGImage)?] = []
+    /// 表示中スプレッドのリサンプル(ML 高画質化含む)が進行中かの通知。
+    /// コントローラがページバー横のインジケーター表示に使う
+    var onResampleActivityChanged: ((Bool) -> Void)?
+    /// 表示中スプレッドのリサンプルが進行中か(先読みが ML キューを
+    /// 先取りしないための待機判定にも使う)
+    private(set) var isResamplingDisplayedPages = false
     /// ルーペ表示専用の高解像度画像(ページ index → 画像)。通常表示には使わない
     private var loupeHighResImages: [Int: CGImage] = [:]
     private var resampleTask: Task<Void, Never>?
     private var resampleGeneration = 0
+    /// 進行中リサンプルの要求署名集合(ページ毎のキー・サイズ・条件)。
+    /// レイアウトは頻繁に走るため、新しい要求が進行中の要求の部分集合なら
+    /// 打ち切らず続行させる(ML は 1 ページ数秒かかるのでやり直しは体感
+    /// 遅延に直結する。ページが 1 枚完成するとレイアウトが走って要求が
+    /// 縮むため、完全一致ではなく部分集合で判定する)
+    private var resampleRequestKeys: Set<String> = []
+    /// フィルタ(補間・ML 段階)切替の印。次回のリサンプル予約では
+    /// 進行中の 1 件を完走させ(結果はキャッシュに残る)、残りを世代
+    /// チェックで止めてから新しい要求を積む(即キャンセルしない)
+    private var softRestartRequested = false
 
     var fitMode: FitMode = .fitToScreen {
         didSet { scrollOffset = .zero; needsLayout = true }
@@ -87,6 +103,19 @@ final class ReaderView: NSView {
                 layer.magnificationFilter = interpolation.filter
             }
             if interpolation != oldValue {
+                resampledPages = Array(repeating: nil, count: images.count)
+                softRestartRequested = true
+                needsLayout = true
+            }
+        }
+    }
+
+    /// ML 高画質化の処理段階(設定から注入。全ページ対象)。
+    /// 変更時はリサンプルを作り直す(補間変更と同じ扱い)
+    var noiseReductionLevel: NoiseReductionLevel = .none {
+        didSet {
+            if noiseReductionLevel != oldValue {
+                softRestartRequested = true
                 resampledPages = Array(repeating: nil, count: images.count)
                 needsLayout = true
             }
@@ -156,8 +185,12 @@ final class ReaderView: NSView {
 
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
+    /// preResampled はリサンプル済みキャッシュの事前引き当て(サイズ+画像。
+    /// 未命中は nil): 渡すと最初のレイアウトから完成画像を使うため、
+    /// めくり効果のスナップショットにもフィルタ済みの絵が入る。
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
+                  preResampled: [(size: CGSize, image: CGImage)?] = [],
                   turn: PageTurn? = nil) {
         // スワイプ追従カールの予約(refreshDisplay 前にコントローラが設定)。
         // 自動再生の turn より優先する
@@ -178,7 +211,10 @@ final class ReaderView: NSView {
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
-        resampledPages = Array(repeating: nil, count: images.count)
+        // 事前引き当て分を最初から採用する(サイズが実レイアウトと一致した
+        // ページだけが使われ、不一致・未命中は通常の非同期リサンプルが埋める)
+        resampledPages = preResampled.count == images.count
+            ? preResampled : Array(repeating: nil, count: images.count)
         loupeHighResImages.removeAll()
         for pageLayer in pageLayers {
             pageLayer.removeAnimation(forKey: "pageAnimation")
@@ -445,6 +481,8 @@ final class ReaderView: NSView {
         guard !images.isEmpty, available.width > 0, available.height > 0 else {
             contentSize = .zero
             for layer in pageLayers { layer.isHidden = true }
+            // 表示するものがない=リサンプルも起きない。進行表示の予約を解除する
+            setResampleActivity(false)
             return
         }
 
@@ -502,8 +540,12 @@ final class ReaderView: NSView {
     /// 完成したページから順に等倍画像へ差し替える。
     private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
         guard interpolation == .systemDefault || interpolation == .high,
-              !images.isEmpty else { return }
-        let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String)] =
+              !images.isEmpty else {
+            setResampleActivity(false)
+            return
+        }
+        let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String,
+                        noiseReduction: NoiseReductionLevel)] =
             images.indices.compactMap { index in
                 // レイアウトと setPages の間で配列長が食い違っても落ちないように検証
                 guard scaledSizes.indices.contains(index),
@@ -515,13 +557,35 @@ final class ReaderView: NSView {
                     height: (scaledSizes[index].height * backingScale).rounded())
                 if let done = resampledPages[index], done.size == pixelSize { return nil }
                 return (index, images[index], pixelSize,
-                        "\(resampleKeyPrefix)#\(pageIDs[index])")
+                        "\(resampleKeyPrefix)#\(pageIDs[index])", noiseReductionLevel)
             }
-        // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
-        // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
-        // スプレッドのスロットを汚す穴の修正)
-        resampleTask?.cancel()
-        resampleGeneration += 1
+        // 新しい要求が進行中の要求の部分集合なら打ち切らず続行させる
+        // (レイアウトは頻繁に走るため、無条件にやり直すと ML リサンプルが
+        // 何度も最初からになる)
+        let requestKeys = Set(requests.map {
+            "\($0.key)|\(Int($0.pixelSize.width))x\(Int($0.pixelSize.height))"
+                + "|nr\($0.noiseReduction.rawValue)|mfx\(interpolation == .high)"
+        })
+        if softRestartRequested {
+            // フィルタ切替: 進行中の 1 件は完走させて(結果はキャッシュへ
+            // 残り、レベルを戻したとき等に活きる)、残りの要求は世代
+            // チェックで止める。新しい要求は完走中の 1 件の後ろに並ぶ
+            softRestartRequested = false
+            resampleGeneration += 1
+            resampleTask = nil  // 旧タスクは現要求の完了後に自然停止する
+        } else {
+            if !requests.isEmpty, resampleTask != nil,
+               requestKeys.isSubset(of: resampleRequestKeys) {
+                return
+            }
+            // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
+            // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
+            // スプレッドのスロットを汚す穴の修正)
+            resampleTask?.cancel()
+            resampleGeneration += 1
+        }
+        resampleRequestKeys = requests.isEmpty ? [] : requestKeys
+        setResampleActivity(!requests.isEmpty)
         guard !requests.isEmpty else { return }
 
         let generation = resampleGeneration
@@ -535,15 +599,38 @@ final class ReaderView: NSView {
                 guard !Task.isCancelled else { return }
             }
             for request in requests {
+                // フィルタ切替のソフト停止: 進行中の 1 件の完了後、
+                // 世代が進んでいたら残りを始めずに譲る
+                guard let self, !Task.isCancelled,
+                      generation == self.resampleGeneration else { return }
                 guard let resampled = await ImageResampler.shared.resample(
                     request.image, to: request.pixelSize,
-                    cacheKey: request.key, upscaleWithMetalFX: useMetalFX) else { continue }
-                guard let self, !Task.isCancelled else { return }
+                    cacheKey: request.key, upscaleWithMetalFX: useMetalFX,
+                    noiseReduction: request.noiseReduction) else { continue }
+                guard !Task.isCancelled else { return }
                 self.applyResampled(resampled, size: request.pixelSize,
                                     at: request.index, generation: generation,
                                     key: request.key)
             }
+            // このスプレッドの計算が最後まで走り切ったら進行表示を消し、
+            // 完了済みタスクへの参照と署名を片付ける(残すと同じ要求の
+            // 再リサンプルが「進行中」と誤判定されて抑止されてしまう)
+            if let self, !Task.isCancelled, generation == self.resampleGeneration {
+                self.setResampleActivity(false)
+                self.resampleTask = nil
+                self.resampleRequestKeys = []
+            }
         }
+    }
+
+    /// リサンプル進行状態をコントローラへ通知する。
+    /// 同値でも毎回通知する: コントローラは refreshDisplay 開始時に
+    /// 「表示予約」を出しており、リサンプル不要のスプレッド(全ページ
+    /// 事前引き当て済み・HDR ページ等)では false の再通知が予約解除の
+    /// 唯一の手段になる(抑制するとスピナーが出っぱなしになる)
+    private func setResampleActivity(_ active: Bool) {
+        isResamplingDisplayedPages = active
+        onResampleActivityChanged?(active)
     }
 
     private func applyResampled(_ image: CGImage, size: CGSize,

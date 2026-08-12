@@ -422,7 +422,12 @@ extension ReaderWindowController {
             let spread = await book.currentSpread()
             guard let index = displayedIndex(in: spread, leftSide: leftSide),
                   // 原寸表示は表示上限(displayPixelCap)を介さないフル解像度で
-                  let image = await book.fullResolutionImage(at: index) else { return }
+                  var image = await book.fullResolutionImage(at: index) else { return }
+            // ML 高画質化(適用範囲が原寸表示を含むとき。全ページ対象)
+            if settings.noiseReductionScope.includesOriginalSize {
+                image = await ImageResampler.shared.reduceNoise(
+                    image, level: settings.noiseReductionLevel)
+            }
             presentOriginalSizePanel(
                 image: image,
                 title: book.entries[index].displayTitle(

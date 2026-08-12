@@ -91,12 +91,25 @@ final class SettingsStoreAdvancedTests: XCTestCase {
     }
 
     func testMemoryLimitKeepsLegacyBehaviorWhenOff() {
-        // OFF: 15% を 6GB 上限で丸める標準動作
+        // OFF: 15% を 16GB 上限で丸める標準動作
         let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
-        XCTAssertEqual(store.pageCacheByteLimit,
-                       min(6 * 1024 * 1024 * 1024, physical / 100 * 15))
-        // OFF でも旧 PageCacheMegabytes の逃げ道は生かす
+        let standard = min(16 * 1024 * 1024 * 1024, physical / 100 * 15)
+        XCTAssertEqual(store.pageCacheByteLimit, standard)
+        // OFF では明示指定(PageCacheMegabytes)も無視して標準へ戻る
+        defaults.set(256, forKey: "PageCacheMegabytes")
+        XCTAssertEqual(store.pageCacheByteLimit, standard)
+    }
+
+    func testMemoryLimitExplicitMegabytesRequiresAdvancedOn() {
+        // ON: MB 直指定 > メモリ%指定 の順で上書きできる
+        defaults.set(true, forKey: "AdvancedSettingsEnabled")
+        defaults.set(30, forKey: "AdvancedMemoryPercent")
         defaults.set(256, forKey: "PageCacheMegabytes")
         XCTAssertEqual(store.pageCacheByteLimit, 256 * 1024 * 1024)
+        // OFF へ戻すと明示指定ごと標準動作へ復帰する
+        defaults.set(false, forKey: "AdvancedSettingsEnabled")
+        let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
+        XCTAssertEqual(store.pageCacheByteLimit,
+                       min(16 * 1024 * 1024 * 1024, physical / 100 * 15))
     }
 }

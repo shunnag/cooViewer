@@ -7,8 +7,8 @@ import Foundation
 /// 縮小は GPU の Lanczos(CG はフォールバック)、拡大は MetalFX Spatial
 /// (任意)で事前リサンプルした等倍画像を作る。
 /// 結果はバイト基準の LRU に保持する: 現スプレッド+先行リサンプル
-/// (最大 5 ページ)+ルーペ超解像が互いに追い出し合わない量を確保しつつ、
-/// メモリ圧迫通知で半分に自動トリムする。
+/// (PreresamplePolicy の予算・最大 4GB)+ルーペ超解像が互いに
+/// 追い出し合わない量を確保しつつ、メモリ圧迫通知で半分に自動トリムする。
 actor ImageResampler {
     static let shared = ImageResampler()
 
@@ -16,15 +16,17 @@ actor ImageResampler {
     private var order: [String] = []  // 末尾が最新(MRU)
     private var costs: [String: Int] = [:]
     private var totalCost = 0
-    /// 合計バイト上限(既定: 物理メモリの 1/16、最大 512MB)
+    /// 合計バイト上限(既定: 物理メモリの 1/6、最大 4.5GB。
+    /// 先読み予算(1/8・最大 4GB)+表示中スプレッド・ルーペ分の余裕)
     private let byteLimit: Int
     private var pressureSource: (any DispatchSourceMemoryPressure)?
     private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
     private lazy var lanczos: LanczosDownscaler? = LanczosDownscaler()
+    private lazy var noiseReducer: NoiseReducer? = NoiseReducer()
 
     init(byteLimit: Int = min(
-        512 << 20,
-        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 16)) {
+        4608 << 20,
+        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 6)) {
         self.byteLimit = max(1, byteLimit)
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))
@@ -40,40 +42,121 @@ actor ImageResampler {
     }
 
     /// image を pixelSize(デバイスピクセル)へリサンプルする。
-    /// 同サイズなら image をそのまま返す。upscaleWithMetalFX は拡大時のみ有効で、
-    /// 使えない場合は CG へフォールバックする。
+    /// 同サイズ(かつノイズ低減なし)なら image をそのまま返す。
+    /// upscaleWithMetalFX は拡大時のみ有効で、使えない場合は CG へ
+    /// フォールバックする。noiseReduction を指定するとリサンプルの前に
+    /// 圧縮ノイズ低減を掛ける(拡大時にノイズを増幅させないため前段で行う)
     func resample(_ image: CGImage, to pixelSize: CGSize,
-                  cacheKey: String, upscaleWithMetalFX: Bool) -> CGImage? {
+                  cacheKey: String, upscaleWithMetalFX: Bool,
+                  noiseReduction: NoiseReductionLevel = .none) async -> CGImage? {
         let width = Int(pixelSize.width.rounded())
         let height = Int(pixelSize.height.rounded())
         guard width > 0, height > 0 else { return nil }
-        if width == image.width, height == image.height { return image }
+        if width == image.width, height == image.height,
+           noiseReduction == .none { return image }
 
-        let key = "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)|\(upscaleWithMetalFX)"
-        if let hit = cache[key] {
-            if let index = order.firstIndex(of: key) {
-                order.remove(at: index)
-                order.append(key)
-            }
-            return hit
-        }
+        let key = Self.makeKey(cacheKey: cacheKey, image: image,
+                               width: width, height: height,
+                               upscaleWithMetalFX: upscaleWithMetalFX,
+                               noiseReduction: noiseReduction)
+        if let hit = touch(key) { return hit }
 
-        let isUpscale = width > image.width || height > image.height
+        // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
+        // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
+        let source = await reducedSource(of: image, level: noiseReduction,
+                                         cacheKey: cacheKey)
+        // キャンセルされた呼び出しの結果は捨てる: ML がキャンセルで nil を
+        // 返すと source は CI フォールバックの絵になっており、これを
+        // キャッシュすると ML 用キーに非 ML の結果が残る(先読みの
+        // 表示優先キャンセルで顕在化する汚染の防止)
+        if Task.isCancelled { return nil }
+        // モデル推論の await 中に同じキーの計算が完了していたら使い回す
+        if let hit = cache[key] { return hit }
+
+        let isUpscale = width > source.width || height > source.height
         var result: CGImage?
-        if isUpscale, upscaleWithMetalFX {
-            result = metalFXUpscale(image, width: width, height: height)
+        if width == source.width, height == source.height {
+            result = source  // ノイズ低減のみ(サイズ変更なし)
+        }
+        if result == nil, isUpscale, upscaleWithMetalFX {
+            result = metalFXUpscale(source, width: width, height: height)
         }
         // 縮小は GPU の Lanczos を最優先(CPU の CG 高品質補間はフォールバック)
         if result == nil, !isUpscale {
-            result = lanczos?.downscale(image, to: CGSize(width: width, height: height))
+            result = lanczos?.downscale(source, to: CGSize(width: width, height: height))
         }
         if result == nil {
-            result = Self.cgResample(image, width: width, height: height)
+            result = Self.cgResample(source, width: width, height: height)
         }
         if let result {
             insert(result, for: key)
         }
         return result
+    }
+
+    /// リサンプル済みキャッシュの照会のみ(計算はしない。命中は MRU 更新)。
+    /// ページめくり効果の最初のフレームから完成画像を使うための引き当てで、
+    /// resample と同じ引数から同じキーを組み立てる
+    func cached(_ image: CGImage, to pixelSize: CGSize,
+                cacheKey: String, upscaleWithMetalFX: Bool,
+                noiseReduction: NoiseReductionLevel = .none) -> CGImage? {
+        let width = Int(pixelSize.width.rounded())
+        let height = Int(pixelSize.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+        return touch(Self.makeKey(cacheKey: cacheKey, image: image,
+                                  width: width, height: height,
+                                  upscaleWithMetalFX: upscaleWithMetalFX,
+                                  noiseReduction: noiseReduction))
+    }
+
+    /// キャッシュキー(resample / cached で共通)
+    private static func makeKey(cacheKey: String, image: CGImage,
+                                width: Int, height: Int,
+                                upscaleWithMetalFX: Bool,
+                                noiseReduction: NoiseReductionLevel) -> String {
+        "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)"
+            + "|\(upscaleWithMetalFX)|nr\(noiseReduction.rawValue)"
+    }
+
+    /// 命中エントリを MRU に上げて返す
+    private func touch(_ key: String) -> CGImage? {
+        guard let hit = cache[key] else { return nil }
+        if let index = order.firstIndex(of: key) {
+            order.remove(at: index)
+            order.append(key)
+        }
+        return hit
+    }
+
+    /// リサイズを伴わない圧縮ノイズ低減(ルーペ・原寸表示用)。
+    /// なし指定・失敗時はそのまま返す。「最高」は縮小表示前の ×4 拡大が
+    /// 前提の仕組みのため、等倍系のこの経路では「強」として扱う
+    func reduceNoise(_ image: CGImage, level: NoiseReductionLevel) async -> CGImage {
+        await reducedSource(of: image, level: level.cappedForOriginalSize,
+                            cacheKey: nil)
+    }
+
+    /// ノイズ低減の実処理の振り分け。
+    /// 最高 = Real-ESRGAN ×4 超解像(結果は 4 倍サイズ。後段の縮小で画質向上)、
+    /// 強 = waifu2x ノイズ除去。ML 系は未導入・失敗・画像過大で 1 段ずつ
+    /// フォールバックする(最高→強→中相当の CI)
+    private func reducedSource(of image: CGImage,
+                               level: NoiseReductionLevel,
+                               cacheKey: String?) async -> CGImage {
+        guard level != .none else { return image }
+        if level == .maximum {
+            // ディスクキャッシュのキーは元画像サイズまで含めて一意にする
+            let srKey = cacheKey.map { "\($0)|\(image.width)x\(image.height)|sr4" }
+            if let upscaled = await MLSuperResolver.shared.upscale(
+                image, cacheKey: srKey) {
+                return upscaled
+            }
+        }
+        if level == .strong || level == .maximum,
+           let reduced = await MLNoiseReducer.shared.reduce(image) {
+            return reduced
+        }
+        return noiseReducer?.reduce(image, level: level) ?? image
     }
 
     // MARK: - バイト基準 LRU(PageCache と同じ方針)

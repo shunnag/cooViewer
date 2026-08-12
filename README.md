@@ -46,8 +46,11 @@ $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Relea
   単一の画像ファイルを開くと親フォルダを本として開きます
 - 読み方向 4 種(右→左・左→右 × 見開き・単ページ)、見開き自動判定
   (縦横比しきい値+ページ毎の強制指定)、表紙だけ単ページにする設定(既定オフ)
-- 表示モード 4 種(全体フィット / 幅フィット / 原寸 / 幅フィット(横長分割))、回転、補間設定
+- 表示モード 4 種(全体フィット / 幅フィット / 原寸 / 幅フィット(横長分割))、回転
 - ページめくり効果(フェード / スライド / ズームフェード / ページカール。既定オフ)
+- 補間(描画品質)5 段階: なし / 標準 / 高(MetalFX)/ 超高(waifu2x の ML ノイズ除去、
+  MIT License)/ 最高(Real-ESRGAN の ×4 ML 超解像、BSD-3-Clause)。ML モデルは
+  初回同意のうえ必要時にダウンロードして CoreML で全ページに適用
 - Finder 互換の自然順ソート / 日付順 / シャッフル
 - 書庫ファイル名の文字コード自動判定(Shift-JIS の zip も文字化けしません)、
   パスワード付き書庫・PDF、書庫の中の書庫/PDF(ネスト)に対応
@@ -169,9 +172,17 @@ MacPaw), which power archive extraction and filename-encoding detection.
 - [XADMaster](https://github.com/MacPaw/XADMaster) /
   [UniversalDetector](https://github.com/MacPaw/universal-detector): **LGPL 2.1**
   (動的リンクの .framework として同梱。各サブモジュールの LICENSE を参照)
-- 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みですが、
-  ライセンス文書は参照用に [Licence_RemoteControlWrapper.txt](Licence_RemoteControlWrapper.txt)
-  として残しています
+- 補間(描画品質)の ML モデル(必要時にダウンロード): waifu2x anime_noise2 は
+  [imxieyi/waifu2x-mac](https://github.com/imxieyi/waifu2x-mac)(MIT、元重みは
+  [nagadomi/waifu2x](https://github.com/nagadomi/waifu2x)、MIT)からの無改変再配布、
+  Real-ESRGAN x4plus anime 6B は [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
+  (BSD 3-Clause)の自前 CoreML 変換。いずれも本リポジトリの
+  [models-1 リリース](https://github.com/shunnag/cooViewer/releases/tag/models-1)から
+  配信し、ライセンス全文は同リリースの `LICENSES-models.txt` に同梱
+- 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みです。旧版由来の
+  ライセンス文書([Licence_RemoteControlWrapper.txt](legacy/Licence_RemoteControlWrapper.txt)、
+  [Licence_xad.txt](legacy/Licence_xad.txt) — 現行の正式なライセンスはサブモジュール
+  `XADMaster/LICENSE` / `UniversalDetector/LICENSE`)は参照用に [legacy/](legacy/) にあります
 
 旧版の README・操作説明は [docs/](docs/)(原作者による GitHub Pages)と
 [`legacy/`](legacy/) を参照してください。
