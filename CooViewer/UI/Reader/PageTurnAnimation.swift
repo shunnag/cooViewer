@@ -55,11 +55,15 @@ enum PageCurlGeometry {
     /// θ 時点の全ストリップ配置。
     /// - towardRight: リーフがノドから右へ伸びているか(左リーフは false)。
     ///   回転はリーフが反対側の半面へ倒れる向きに進む。
-    /// - 各ストリップの角: α_j = min(π, θ × (1 + curl × 外側度))。
+    /// - 各ストリップの角: α_j = min(π, θ × (1 + curl × 外側度) × (1 + lift))。
     ///   自由端に近いほど先行して立ち上がり π で止まる(=先に裏返って
     ///   丸まっていき、ノド側が追いつく)。θ=0 で全て 0、θ=π で全て π
-    ///   なので始端・終端は正確に平らになる
+    ///   なので始端・終端は正確に平らになる。
+    /// - lift: 帯(横割り)ごとの先行度。下の帯ほど大きくして「下の角から
+    ///   めくれる」ねじれを作る。**連結は常にノド(原点)から始まる**ため、
+    ///   どの帯もノドに縫い留められたまま(綴じが離れない)
     static func strips(theta: CGFloat, curl: CGFloat = defaultCurl,
+                       lift: CGFloat = 0,
                        count: Int, stripLength: CGFloat,
                        towardRight: Bool) -> [Strip] {
         guard count > 0 else { return [] }
@@ -69,7 +73,7 @@ enum PageCurlGeometry {
         var z: CGFloat = 0
         for index in 0..<count {
             let outward = (CGFloat(index) + 0.5) / CGFloat(count)
-            let angle = min(.pi, max(0, theta * (1 + curl * outward)))
+            let angle = min(.pi, max(0, theta * (1 + curl * outward) * (1 + lift)))
             result.append(Strip(offsetX: x, offsetZ: z, angle: angle))
             x += stripLength * sign * cos(angle)
             z += stripLength * sin(angle)

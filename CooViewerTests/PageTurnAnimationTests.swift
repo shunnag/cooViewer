@@ -64,6 +64,36 @@ final class PageTurnAnimationTests: XCTestCase {
         XCTAssertEqual(strips.map(\.offsetX), [0, -10, -20])
     }
 
+    func testCurlStripsStayAnchoredAtSpine() {
+        // どの θ・lift でも連結はノド(原点)から始まる(綴じは離れない)
+        for theta in stride(from: CGFloat(0), through: .pi, by: .pi / 7) {
+            for lift: CGFloat in [0, 0.25, 0.5] {
+                let strips = PageCurlGeometry.strips(
+                    theta: theta, lift: lift, count: 8,
+                    stripLength: 10, towardRight: true)
+                XCTAssertEqual(strips[0].offsetX, 0)
+                XCTAssertEqual(strips[0].offsetZ, 0)
+            }
+        }
+    }
+
+    func testLiftAdvancesAnglesButClampsAtPi() {
+        // lift(帯の先行)は角を増やすが π で止まり、終端の整合は崩れない
+        let base = PageCurlGeometry.strips(
+            theta: 1, count: 4, stripLength: 10, towardRight: true)
+        let lifted = PageCurlGeometry.strips(
+            theta: 1, lift: 0.5, count: 4, stripLength: 10, towardRight: true)
+        for (baseStrip, liftedStrip) in zip(base, lifted) {
+            XCTAssertGreaterThanOrEqual(liftedStrip.angle, baseStrip.angle)
+            XCTAssertLessThanOrEqual(liftedStrip.angle, .pi)
+        }
+        let ended = PageCurlGeometry.strips(
+            theta: .pi, lift: 0.5, count: 4, stripLength: 10, towardRight: true)
+        for strip in ended {
+            XCTAssertEqual(strip.angle, .pi, accuracy: 1e-9)
+        }
+    }
+
     func testBackfaceKeyTimeFindsCrossing() {
         // π/2 を最初に跨いだサンプル位置がキータイムになる
         let samples: [CGFloat] = [0, 0.5, 1.0, 1.6, 2.2, 3.0]
