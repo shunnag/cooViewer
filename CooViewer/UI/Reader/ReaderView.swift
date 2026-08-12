@@ -103,6 +103,10 @@ final class ReaderView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    /// メモリ圧迫時にカールオーバーレイ(スナップショット 2 枚を保持)を
+    /// 即時解放するための監視
+    private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -121,6 +125,20 @@ final class ReaderView: NSView {
             containerLayer.addSublayer(pageLayer)
         }
         registerForDraggedTypes([.fileURL])
+
+        let pressure = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        memoryPressureSource = pressure
+        pressure.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.removeCurlOverlay()
+            }
+        }
+        pressure.activate()
+    }
+
+    deinit {
+        memoryPressureSource?.cancel()
     }
 
     @available(*, unavailable)
