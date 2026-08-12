@@ -55,10 +55,10 @@ final class PageCurlRenderTests: XCTestCase {
         return context.makeImage()!
     }
 
-    /// 4 象限ページを表示した実物の ReaderView(ウインドウなしでレイアウト済み)
-    private func makeReaderView() -> ReaderView {
+    /// ページを表示した実物の ReaderView(ウインドウなしでレイアウト済み)
+    private func makeReaderView(image: CGImage? = nil) -> ReaderView {
         let view = ReaderView(frame: CGRect(origin: .zero, size: size))
-        view.setPages([quadrantImage()], readsFromLeft: false)
+        view.setPages([image ?? quadrantImage()], readsFromLeft: false)
         view.layoutSubtreeIfNeeded()
         return view
     }
@@ -184,9 +184,48 @@ final class PageCurlRenderTests: XCTestCase {
         }
     }
 
-    /// めくり途中(progress=0.35)は「下の角が先行して」空くこと。
+    /// めくり途中に帯の継ぎ目が横線(暗い筋)として見えないこと。
+    /// 白一色ページなら、どの行の平均輝度も近傍の行と大きく違わないはず
+    /// (帯間の隙間・陰の段差があると特定の行だけ暗く沈む)
+    func testCurlMidTurnHasNoHorizontalSeamLines() throws {
+        let white = solidImage(gray: 1)
+        let view = makeReaderView(image: white)
+        let content = try XCTUnwrap(view.snapshotContent())
+        for progress in [CGFloat(0.25), 0.45, 0.65] {
+            let overlay = try XCTUnwrap(PageCurlOverlay.makeStatic(
+                .init(bounds: view.bounds, leafOnLeft: false,
+                      oldContent: content, newContent: content),
+                progress: progress))
+            view.layer!.addSublayer(overlay)
+            defer { overlay.removeFromSuperlayer() }
+            let bytes = try render(view.layer!)
+
+            // 行ごとの平均輝度(R チャンネルで十分)
+            let height = Int(size.height)
+            let width = Int(size.width)
+            let rowMeans = (0..<height).map { row -> Int in
+                var sum = 0
+                for x in 0..<width {
+                    sum += Int(bytes[(row * width + x) * 4])
+                }
+                return sum / width
+            }
+            var seamRows: [Int] = []
+            for row in 6..<(height - 6) {
+                let neighbors = min(rowMeans[row - 3], rowMeans[row + 3])
+                if rowMeans[row] < neighbors - 12 {
+                    seamRows.append(row)
+                }
+            }
+            XCTAssertTrue(seamRows.isEmpty,
+                "progress=\(progress) で横線ノイズ検出: 行 \(seamRows)")
+        }
+    }
+
+    /// めくり始め(progress=0.2)は「下の角が先行して」空くこと。
     /// リーフ元位置で、ライブ内容(新しいページ)が見えている割合が
     /// 下の帯のほうが上の帯より多い。両リーフ方向で確認する
+    /// (ねじれは序盤に集中させ中盤でフェードアウトするため、序盤で見る)
     func testCurlMidTurnLiftsBottomCornerFirst() throws {
         for leafOnLeft in [false, true] {
             let view = makeReaderView()
@@ -197,7 +236,7 @@ final class PageCurlRenderTests: XCTestCase {
                 .init(bounds: view.bounds, leafOnLeft: leafOnLeft,
                       oldContent: solidImage(gray: 0.5),
                       newContent: newContent),
-                progress: 0.35))
+                progress: 0.2))
             view.layer!.addSublayer(overlay)
             defer { overlay.removeFromSuperlayer() }
             let rendered = try render(view.layer!)
