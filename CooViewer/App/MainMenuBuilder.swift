@@ -165,7 +165,7 @@ enum MainMenuBuilder {
             (String(localized: "Fade"), 1),
             (String(localized: "Slide"), 2),
             (String(localized: "Zoom Fade"), 3),
-            (String(localized: "Flip"), 4),
+            (String(localized: "Page Curl"), 4),
         ]
         for (title, tag) in turnTitles {
             let item = turnMenu.addItem(
