@@ -115,9 +115,10 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 
 ### ML モデル資産(models-1 リリース)
 
-補間(描画品質)「最高」の Real-ESRGAN モデルは、アプリ本体とは別の
-GitHub リリース **`models-1`**(タグ)に資産として置き、アプリが同意後に
-ダウンロードする(URL と SHA-256 は `MLSuperResolver.swift` にピン留め)。
+補間(描画品質)の ML モデルは**すべて**アプリ本体とは別の GitHub リリース
+**`models-1`**(タグ)に資産として置き、アプリが同意後にダウンロードする
+(URL と SHA-256 は `MLSuperResolver.swift` / `MLNoiseReducer.swift` に
+ピン留め。外部リポジトリの構成変更・消失に影響されない自前配信)。
 
 - 再変換する場合: `Scripts/convert-realesrgan.py` を使う。
   Python 3.12 の venv に `torch` と `coremltools` を入れ、公式チェックポイント
@@ -128,7 +129,10 @@ GitHub リリース **`models-1`**(タグ)に資産として置き、アプリ�
 - モデルを差し替えたら: 新しいタグ(models-2 など)で `gh release create` →
   `MLSuperResolver.swift` の URL と SHA-256 を更新。既存タグの資産を
   上書きしない(過去バージョンのアプリが SHA 不一致で壊れるため)。
-- waifu2x(強)のモデルは外部配布元(imxieyi/waifu2x-mac、MIT)から直接 DL。
+- waifu2x(超高)のモデルも同じ models-1 リリースから自前配信する
+  (imxieyi/waifu2x-mac(MIT)からの無改変再配布。MIT の条件である
+  著作権表示・ライセンス全文はリリース資産 `LICENSES-models.txt` に同梱。
+  モデル資産を追加・更新したらこのファイルも必ず更新すること)。
 
 ## 5. ハマりどころ早見表
 

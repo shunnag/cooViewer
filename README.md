@@ -172,6 +172,13 @@ MacPaw), which power archive extraction and filename-encoding detection.
 - [XADMaster](https://github.com/MacPaw/XADMaster) /
   [UniversalDetector](https://github.com/MacPaw/universal-detector): **LGPL 2.1**
   (動的リンクの .framework として同梱。各サブモジュールの LICENSE を参照)
+- 補間(描画品質)の ML モデル(必要時にダウンロード): waifu2x anime_noise2 は
+  [imxieyi/waifu2x-mac](https://github.com/imxieyi/waifu2x-mac)(MIT、元重みは
+  [nagadomi/waifu2x](https://github.com/nagadomi/waifu2x)、MIT)からの無改変再配布、
+  Real-ESRGAN x4plus anime 6B は [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
+  (BSD 3-Clause)の自前 CoreML 変換。いずれも本リポジトリの
+  [models-1 リリース](https://github.com/shunnag/cooViewer/releases/tag/models-1)から
+  配信し、ライセンス全文は同リリースの `LICENSES-models.txt` に同梱
 - 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みですが、
   ライセンス文書は参照用に [Licence_RemoteControlWrapper.txt](Licence_RemoteControlWrapper.txt)
   として残しています
