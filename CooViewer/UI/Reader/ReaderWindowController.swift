@@ -1367,6 +1367,11 @@ final class ReaderWindowController: NSWindowController {
         settings.pageTurnAnimation = animation
     }
 
+    /// ルーペの切替(キー割当 l と同じ toggleLoupe。⌘L)
+    @objc func toggleLoupeMenu(_ sender: Any?) {
+        toggleLoupe()
+    }
+
     @objc func rotateLeft(_ sender: Any?) {
         readerView.rotation += 1  // 仕様書 §4.15: rotateLeft はインクリメント
     }
@@ -1393,6 +1398,9 @@ final class ReaderWindowController: NSWindowController {
             menuItem.state = settings.pageTurnAnimation.rawValue == menuItem.tag
                 ? .on : .off
             return true
+        case #selector(toggleLoupeMenu(_:)):
+            menuItem.state = readerView.isLoupeEnabled ? .on : .off
+            return (book?.pageCount ?? 0) > 0
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
              #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)),

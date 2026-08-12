@@ -434,12 +434,102 @@
         }
       }
     },
+    "Copy" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コピー"
+          }
+        }
+      }
+    },
+    "Cut" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カット"
+          }
+        }
+      }
+    },
+    "Delete" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "削除"
+          }
+        }
+      }
+    },
+    "Edit" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "編集"
+          }
+        }
+      }
+    },
     "Fade" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "フェード"
+          }
+        }
+      }
+    },
+    "Loupe" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ルーペ"
+          }
+        }
+      }
+    },
+    "Paste" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ペースト"
+          }
+        }
+      }
+    },
+    "Redo" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "やり直す"
+          }
+        }
+      }
+    },
+    "Select All" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "すべてを選択"
+          }
+        }
+      }
+    },
+    "Undo" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取り消す"
           }
         }
       }
