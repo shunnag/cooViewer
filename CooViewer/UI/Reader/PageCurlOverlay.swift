@@ -26,8 +26,9 @@ enum PageCurlOverlay {
         var newContent: CGImage
         /// 縦割り(カールの丸み)の分割数
         var stripCount = 12
-        /// 横割り(ねじれ)の分割数
-        var bandCount = 6
+        /// 横割り(ねじれ)の分割数。ねじれによる帯間の食い違いは
+        /// 1 帯あたり数 pt 以下に収まるよう細かめにする
+        var bandCount = 24
         var duration: CFTimeInterval = 0.45
         /// キーフレームの時間分割数
         var timeSteps = 30
@@ -35,7 +36,16 @@ enum PageCurlOverlay {
 
     /// 下の角の先行度。下端の帯ほど角を増やす倍率で、ノドは全帯で
     /// 縫い留められたまま下の角から持ち上がる(符号・向きは実描画テストで確認)
-    static let cornerLead: CGFloat = 0.5
+    static let cornerLead: CGFloat = 0.35
+
+    /// ねじれのフェードアウト境界。角を掴む感じが要るのは序盤だけなので、
+    /// θ がここへ近づくにつれ帯間の角度差を二乗カーブで 0 に戻す
+    /// (中盤以降の帯間の食い違い=階段状の隙間・横線ノイズを消す)
+    static let leadFadeEndTheta: CGFloat = 0.6 * .pi
+
+    /// パッチの重なり(pt)。丸めやアンチエイリアスで帯・ストリップ境界に
+    /// 出るヘアライン(横線/縦線)を隠す
+    static let patchOverlap: CGFloat = 1.2
 
     // MARK: - 構築
 
@@ -86,10 +96,10 @@ enum PageCurlOverlay {
                 patch.add(contentsSwap, forKey: "curlContents")
                 patch.add(rectSwap, forKey: "curlRect")
 
-                // カールの丸みの陰(角に応じた濃さ)
+                // カールの丸みの陰(帯に依存しない角で計算=横縞を作らない)
                 let shade = CAKeyframeAnimation(keyPath: "opacity")
                 shade.values = timeline.map {
-                    NSNumber(value: shadeOpacity(for: $0.angles[band][strip]))
+                    NSNumber(value: shadeOpacity(for: $0.shadeAngles[strip]))
                 }
                 shade.duration = config.duration
                 shade.isRemovedOnCompletion = false
@@ -119,7 +129,7 @@ enum PageCurlOverlay {
                     patch.contentsRect = parts.backRects[band][strip]
                 }
                 parts.patchShades[band][strip].opacity =
-                    shadeOpacity(for: frame.angles[band][strip])
+                    shadeOpacity(for: frame.shadeAngles[strip])
             }
         }
         return parts.overlay
@@ -140,15 +150,27 @@ enum PageCurlOverlay {
         let backContent: CGImage
     }
 
-    /// ある進行度の全パッチ配置(トランスフォームと角。[帯][ストリップ])
+    /// ある進行度の全パッチ配置(トランスフォームと角。[帯][ストリップ])。
+    /// shadeAngles は陰の計算専用に帯へ依存しない角(帯ごとに陰の濃さが
+    /// 段差になって横縞に見えるのを防ぐ)
     private struct FrameGeometry {
         let transforms: [[CATransform3D]]
         let angles: [[CGFloat]]
+        let shadeAngles: [CGFloat]
     }
 
     /// ストリップの角 α に応じた陰の濃さ(edge-on で最も暗く、平らで 0)
     private static func shadeOpacity(for angle: CGFloat) -> Float {
         Float(0.30 * sin(angle))
+    }
+
+    /// 単位矩形(0-1)へのクランプ(境界の重なりぶんのはみ出しを丸める)
+    private static func clampedUnitRect(_ rect: CGRect) -> CGRect {
+        let minX = max(0, rect.minX)
+        let minY = max(0, rect.minY)
+        return CGRect(x: minX, y: minY,
+                      width: min(1, rect.maxX) - minX,
+                      height: min(1, rect.maxY) - minY)
     }
 
     private static func makeParts(_ config: Configuration) -> Parts? {
@@ -191,6 +213,10 @@ enum PageCurlOverlay {
         let bandHeight = height / CGFloat(config.bandCount)
         let xSpan = 0.5 / CGFloat(config.stripCount)
         let ySpan = 1.0 / CGFloat(config.bandCount)
+        // 境界のヘアライン対策: パッチを外側+上下に patchOverlap ぶん広げ、
+        // 切り出し範囲も同じだけ広げる(後着のレイヤーが上に重なり隙間が消える)
+        let xPad = patchOverlap / width
+        let yPad = patchOverlap / height
         for band in 0..<config.bandCount {
             var bandPatches: [CALayer] = []
             var bandShades: [CALayer] = []
@@ -202,8 +228,10 @@ enum PageCurlOverlay {
                 // アンカーをノド側の縦エッジに置き、位置は帯の中央高さの
                 // 画面中央。配置は transform で与える(キーフレーム/静止値)
                 patch.anchorPoint = CGPoint(x: leafOnLeft ? 1 : 0, y: 0.5)
-                patch.bounds = CGRect(x: 0, y: 0,
-                                      width: stripLength, height: bandHeight)
+                patch.bounds = CGRect(
+                    x: 0, y: 0,
+                    width: stripLength + patchOverlap,
+                    height: bandHeight + patchOverlap)
                 patch.position = CGPoint(
                     x: half, y: bandHeight * (CGFloat(band) + 0.5))
                 patch.isDoubleSided = true
@@ -211,18 +239,23 @@ enum PageCurlOverlay {
                 patch.contents = config.oldContent
 
                 // 表面: 旧内容の「空く側半面」の、この帯・この距離帯の切り出し
-                let frontRect = CGRect(
-                    x: leafOnLeft ? 0.5 - CGFloat(stripIndex + 1) * xSpan
-                                  : 0.5 + CGFloat(stripIndex) * xSpan,
-                    y: yOrigin, width: xSpan, height: ySpan)
+                let frontRect = clampedUnitRect(CGRect(
+                    x: leafOnLeft
+                        ? 0.5 - CGFloat(stripIndex + 1) * xSpan - xPad
+                        : 0.5 + CGFloat(stripIndex) * xSpan,
+                    y: yOrigin - yPad / 2,
+                    width: xSpan + xPad, height: ySpan + yPad))
                 // 裏面: 新内容の「着地側半面」の同じ帯・同じ距離帯。
                 // 水平鏡像画像から切り出す(裏面描画の反転で正像に戻る)
                 let landingRect = CGRect(
-                    x: leafOnLeft ? 0.5 + CGFloat(stripIndex) * xSpan
-                                  : 0.5 - CGFloat(stripIndex + 1) * xSpan,
-                    y: yOrigin, width: xSpan, height: ySpan)
-                let backRect = CGRect(x: 1 - landingRect.maxX, y: yOrigin,
-                                      width: xSpan, height: ySpan)
+                    x: leafOnLeft
+                        ? 0.5 + CGFloat(stripIndex) * xSpan
+                        : 0.5 - CGFloat(stripIndex + 1) * xSpan - xPad,
+                    y: yOrigin - yPad / 2,
+                    width: xSpan + xPad, height: ySpan + yPad)
+                let backRect = clampedUnitRect(
+                    CGRect(x: 1 - landingRect.maxX, y: landingRect.minY,
+                           width: landingRect.width, height: landingRect.height))
                 patch.contentsRect = frontRect
                 bandFronts.append(frontRect)
                 bandBacks.append(backRect)
@@ -256,13 +289,16 @@ enum PageCurlOverlay {
         let half = config.bounds.width / 2
         let stripLength = half / CGFloat(config.stripCount)
         let sign: CGFloat = config.leafOnLeft ? -1 : 1
+        // ねじれは序盤に集中させ、中盤で 0 に戻す(帯間の食い違い防止)
+        let fade = max(0, 1 - theta / leadFadeEndTheta)
+        let leadNow = cornerLead * fade * fade
         var transforms: [[CATransform3D]] = []
         var angles: [[CGFloat]] = []
         for band in 0..<config.bandCount {
             // 帯 index は画面の上から下(向きは実描画テストで確認)
             let bottomness = (CGFloat(band) + 0.5) / CGFloat(config.bandCount)
             let placements = PageCurlGeometry.strips(
-                theta: theta, lift: cornerLead * bottomness,
+                theta: theta, lift: leadNow * bottomness,
                 count: config.stripCount, stripLength: stripLength,
                 towardRight: !config.leafOnLeft)
             transforms.append(placements.map { placement in
@@ -274,7 +310,13 @@ enum PageCurlOverlay {
             })
             angles.append(placements.map(\.angle))
         }
-        return FrameGeometry(transforms: transforms, angles: angles)
+        // 陰は帯中央の角で全帯共通に計算する(帯ごとの明度段差を作らない)
+        let shadePlacements = PageCurlGeometry.strips(
+            theta: theta, lift: leadNow * 0.5,
+            count: config.stripCount, stripLength: stripLength,
+            towardRight: !config.leafOnLeft)
+        return FrameGeometry(transforms: transforms, angles: angles,
+                             shadeAngles: shadePlacements.map(\.angle))
     }
 
     /// 水平反転した複製(カール裏面用)。y 軸回転の裏面描画は内容が水平に
