@@ -87,6 +87,18 @@ final class ReaderWindowController: NSWindowController {
     /// 設定変更等)ではめくり効果を付けない
     var pendingTurnForward: Bool?
 
+    /// スワイプ追従カールの状態(+Input.swift の状態機械)
+    enum InteractiveCurlPhase {
+        case starting(forward: Bool)  // モデル移動と準備が非同期進行中
+        case active(forward: Bool)    // オーバーレイを指に追従中
+        case finished                 // オーバーレイなしで切替済み(以後何もしない)
+        case unavailable              // この操作では従来動作(離した時に判定)
+    }
+    var interactiveCurlPhase: InteractiveCurlPhase?
+    var interactiveCurlProgress: CGFloat = 0
+    /// 準備完了前にジェスチャが終わった場合の確定/取消の予約
+    var interactiveCurlEndDecision: Bool?
+
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
     private var indicatorLayoutSignature = ""

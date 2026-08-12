@@ -125,15 +125,19 @@ extension ReaderWindowController {
             swipeTrackingActive =
                 abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
             swipeTrackingDeltaX = event.scrollingDeltaX
+            interactiveCurlPhase = nil
+            interactiveCurlEndDecision = nil
             return swipeTrackingActive
         case .changed:
             guard swipeTrackingActive else { return false }
             swipeTrackingDeltaX += event.scrollingDeltaX
+            driveInteractiveCurl(event)
             return true
         case .ended, .cancelled:
             guard swipeTrackingActive else { return false }
             swipeTrackingActive = false
             swipeConsumeMomentum = true
+            if settleInteractiveCurlOnGestureEnd() { return true }
             if abs(swipeTrackingDeltaX) > 60 {
                 let virtualButton = swipeTrackingDeltaX > 0
                     ? VirtualButton.swipeRight : VirtualButton.swipeLeft
@@ -143,6 +147,138 @@ extension ReaderWindowController {
             return true
         default:
             return swipeTrackingActive  // 慣性イベント等はスワイプ中なら消費
+        }
+    }
+
+    // MARK: - スワイプ追従カール(設定「ページカール」時のみ)
+
+    /// スワイプ中の移動量からカールの進行度を駆動する。
+    /// スワイプの向きが「次/前のページ」に割り当てられている場合だけ追従し、
+    /// それ以外の割当・修飾キー付きは従来動作(離した時に一括実行)のまま
+    private func driveInteractiveCurl(_ event: NSEvent) {
+        guard settings.pageTurnAnimation == .curl,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        else { return }
+        let delta = swipeTrackingDeltaX
+        switch interactiveCurlPhase {
+        case .finished, .unavailable:
+            return
+        case nil:
+            guard abs(delta) > 12 else { return }
+            guard LegacyModifier.encode(flags: event.modifierFlags) == 0,
+                  let forward = swipeTurnDirection(deltaX: delta) else {
+                interactiveCurlPhase = .unavailable
+                return
+            }
+            interactiveCurlPhase = .starting(forward: forward)
+            interactiveCurlProgress = curlProgress(for: delta)
+            Task { await self.startInteractiveCurl(forward: forward) }
+        case .starting:
+            interactiveCurlProgress = curlProgress(for: delta)
+        case .active:
+            interactiveCurlProgress = curlProgress(for: delta)
+            readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
+        }
+    }
+
+    /// 移動量 → 進行度(350pt のスワイプでめくり切り)
+    private func curlProgress(for delta: CGFloat) -> CGFloat {
+        min(1, max(0, abs(delta) / 350))
+    }
+
+    /// スワイプの向きに割り当てられたアクションが次/前のページなら進行方向を返す
+    private func swipeTurnDirection(deltaX: CGFloat) -> Bool? {
+        var button = deltaX > 0 ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+        if settings.flipSwipeDirection {
+            button = button == VirtualButton.swipeLeft
+                ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+        }
+        guard let binding = bindings.resolveMouse(
+            button: button, modifiers: 0,
+            fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
+            let action = binding.action else { return nil }
+        switch action {
+        case .nextPage: return true
+        case .previousPage: return false
+        default: return nil
+        }
+    }
+
+    /// モデルを先に進め、旧内容のスナップショットで追従用オーバーレイを組む。
+    /// 画面は progress=0 のオーバーレイ(旧内容)のまま=見た目は変わらない
+    private func startInteractiveCurl(forward: Bool) async {
+        guard let book, case .starting = interactiveCurlPhase else { return }
+        let oldContent = readerViewForInput.snapshotContent()
+        let moved = forward ? book.moveNext() : await book.movePrevious()
+        guard moved == .moved else {
+            // 端に達した: 従来動作(離した時の端処理=ループ/次の本)へ
+            interactiveCurlPhase = .unavailable
+            return
+        }
+        pendingTurnForward = nil
+        if let oldContent {
+            readerViewForInput.pendingInteractiveCurl = (oldContent, forward)
+        }
+        await refreshDisplay()
+        if readerViewForInput.hasInteractiveCurl {
+            interactiveCurlPhase = .active(forward: forward)
+            readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
+        } else {
+            // オーバーレイを組めない状態(回転・ルーペ等): 即時切替済み
+            interactiveCurlPhase = .finished
+        }
+        settleInteractiveCurlIfGestureEnded()
+    }
+
+    /// ジェスチャ終了時の確定/取消。追従に入っていたら true(従来動作を抑止)
+    private func settleInteractiveCurlOnGestureEnd() -> Bool {
+        switch interactiveCurlPhase {
+        case nil, .unavailable:
+            interactiveCurlPhase = nil
+            return false
+        case .finished:
+            interactiveCurlPhase = nil
+            return true
+        case .starting:
+            // 準備完了時(startInteractiveCurl の末尾)に判定を適用する
+            interactiveCurlEndDecision = abs(swipeTrackingDeltaX) > 60
+            return true
+        case .active(let forward):
+            let complete = abs(swipeTrackingDeltaX) > 60
+                || interactiveCurlProgress > 0.35
+            resolveActiveCurl(forward: forward, complete: complete)
+            return true
+        }
+    }
+
+    /// 準備完了前にジェスチャが終わっていた場合の後始末
+    private func settleInteractiveCurlIfGestureEnded() {
+        guard let decision = interactiveCurlEndDecision else { return }
+        interactiveCurlEndDecision = nil
+        if case .active(let forward) = interactiveCurlPhase {
+            resolveActiveCurl(forward: forward, complete: decision)
+        } else {
+            interactiveCurlPhase = nil
+        }
+    }
+
+    /// 追従中カールの確定(残り再生)または取消(巻き戻し+モデルを戻す)
+    private func resolveActiveCurl(forward: Bool, complete: Bool) {
+        interactiveCurlPhase = nil
+        if complete {
+            readerViewForInput.finishInteractiveCurl()
+        } else {
+            readerViewForInput.cancelInteractiveCurl { [weak self] in
+                guard let self, let book = self.book else { return }
+                Task {
+                    if forward {
+                        _ = await book.movePrevious()
+                    } else {
+                        _ = book.moveNext()
+                    }
+                    await self.refreshDisplay()
+                }
+            }
         }
     }
 

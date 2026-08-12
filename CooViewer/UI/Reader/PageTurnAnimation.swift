@@ -39,8 +39,10 @@ enum PageCurlGeometry {
         var angle: CGFloat
     }
 
-    /// 曲げの最大角(ラジアン)。大きいほど紙が柔らかく見える
-    static let defaultBend: CGFloat = 0.35
+    /// 巻き込みの強さ。外側(自由端)ほど角が大きくなる倍率で、
+    /// めくり始めに自由端が先に裏返る「紙が剥がれてめくれる」動きになる
+    /// (Apple Books 風)。0 なら板のような一様回転
+    static let defaultCurl: CGFloat = 1.6
 
     /// 進行度 progress(0-1)→ リーフの基本角 θ(0-π)。ease-in-out
     static func easedTheta(progress: CGFloat) -> CGFloat {
@@ -53,10 +55,11 @@ enum PageCurlGeometry {
     /// θ 時点の全ストリップ配置。
     /// - towardRight: リーフがノドから右へ伸びているか(左リーフは false)。
     ///   回転はリーフが反対側の半面へ倒れる向きに進む。
-    /// - 各ストリップの角 α は θ に「外側ほど大きい曲げ」を加えたもの
-    ///   (めくり始めは自由端が先行して持ち上がる)。sin(θ) 比例なので
-    ///   始端(θ=0)と終端(θ=π)では平らに戻る
-    static func strips(theta: CGFloat, bend: CGFloat = defaultBend,
+    /// - 各ストリップの角: α_j = min(π, θ × (1 + curl × 外側度))。
+    ///   自由端に近いほど先行して立ち上がり π で止まる(=先に裏返って
+    ///   丸まっていき、ノド側が追いつく)。θ=0 で全て 0、θ=π で全て π
+    ///   なので始端・終端は正確に平らになる
+    static func strips(theta: CGFloat, curl: CGFloat = defaultCurl,
                        count: Int, stripLength: CGFloat,
                        towardRight: Bool) -> [Strip] {
         guard count > 0 else { return [] }
@@ -65,8 +68,8 @@ enum PageCurlGeometry {
         var x: CGFloat = 0
         var z: CGFloat = 0
         for index in 0..<count {
-            let centered = (CGFloat(index) + 0.5) / CGFloat(count) - 0.5
-            let angle = min(.pi, max(0, theta + bend * sin(theta) * centered * 2))
+            let outward = (CGFloat(index) + 0.5) / CGFloat(count)
+            let angle = min(.pi, max(0, theta * (1 + curl * outward)))
             result.append(Strip(offsetX: x, offsetZ: z, angle: angle))
             x += stripLength * sign * cos(angle)
             z += stripLength * sin(angle)
