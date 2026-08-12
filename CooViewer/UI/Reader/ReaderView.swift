@@ -79,6 +79,10 @@ final class ReaderView: NSView {
     /// 遅延に直結する。ページが 1 枚完成するとレイアウトが走って要求が
     /// 縮むため、完全一致ではなく部分集合で判定する)
     private var resampleRequestKeys: Set<String> = []
+    /// フィルタ(補間・ML 段階)切替の印。次回のリサンプル予約では
+    /// 進行中の 1 件を完走させ(結果はキャッシュに残る)、残りを世代
+    /// チェックで止めてから新しい要求を積む(即キャンセルしない)
+    private var softRestartRequested = false
 
     var fitMode: FitMode = .fitToScreen {
         didSet { scrollOffset = .zero; needsLayout = true }
@@ -100,6 +104,7 @@ final class ReaderView: NSView {
             }
             if interpolation != oldValue {
                 resampledPages = Array(repeating: nil, count: images.count)
+                softRestartRequested = true
                 needsLayout = true
             }
         }
@@ -110,6 +115,7 @@ final class ReaderView: NSView {
     var noiseReductionLevel: NoiseReductionLevel = .none {
         didSet {
             if noiseReductionLevel != oldValue {
+                softRestartRequested = true
                 resampledPages = Array(repeating: nil, count: images.count)
                 needsLayout = true
             }
@@ -560,15 +566,24 @@ final class ReaderView: NSView {
             "\($0.key)|\(Int($0.pixelSize.width))x\(Int($0.pixelSize.height))"
                 + "|nr\($0.noiseReduction.rawValue)|mfx\(interpolation == .high)"
         })
-        if !requests.isEmpty, resampleTask != nil,
-           requestKeys.isSubset(of: resampleRequestKeys) {
-            return
+        if softRestartRequested {
+            // フィルタ切替: 進行中の 1 件は完走させて(結果はキャッシュへ
+            // 残り、レベルを戻したとき等に活きる)、残りの要求は世代
+            // チェックで止める。新しい要求は完走中の 1 件の後ろに並ぶ
+            softRestartRequested = false
+            resampleGeneration += 1
+            resampleTask = nil  // 旧タスクは現要求の完了後に自然停止する
+        } else {
+            if !requests.isEmpty, resampleTask != nil,
+               requestKeys.isSubset(of: resampleRequestKeys) {
+                return
+            }
+            // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
+            // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
+            // スプレッドのスロットを汚す穴の修正)
+            resampleTask?.cancel()
+            resampleGeneration += 1
         }
-        // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
-        // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
-        // スプレッドのスロットを汚す穴の修正)
-        resampleTask?.cancel()
-        resampleGeneration += 1
         resampleRequestKeys = requests.isEmpty ? [] : requestKeys
         setResampleActivity(!requests.isEmpty)
         guard !requests.isEmpty else { return }
@@ -584,11 +599,15 @@ final class ReaderView: NSView {
                 guard !Task.isCancelled else { return }
             }
             for request in requests {
+                // フィルタ切替のソフト停止: 進行中の 1 件の完了後、
+                // 世代が進んでいたら残りを始めずに譲る
+                guard let self, !Task.isCancelled,
+                      generation == self.resampleGeneration else { return }
                 guard let resampled = await ImageResampler.shared.resample(
                     request.image, to: request.pixelSize,
                     cacheKey: request.key, upscaleWithMetalFX: useMetalFX,
                     noiseReduction: request.noiseReduction) else { continue }
-                guard let self, !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return }
                 self.applyResampled(resampled, size: request.pixelSize,
                                     at: request.index, generation: generation,
                                     key: request.key)

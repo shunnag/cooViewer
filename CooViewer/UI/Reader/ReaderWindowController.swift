@@ -110,6 +110,9 @@ final class ReaderWindowController: NSWindowController {
     /// 先読みがいま処理中のエントリ ID(処理中のページへジャンプした場合は
     /// キャンセルせず完走させて表示に使うための判定材料)
     private var preresamplingEntryID: Int?
+    /// 先読みの実行番号(ソフト停止用: 旧タスクは処理中の 1 件を完走した
+    /// 後、この番号のずれで自然停止する)
+    private var preresampleRun = 0
     /// 表示中スプレッドのエントリ ID 集合(上記判定に使う)
     private var displayedEntryIDs: Set<Int> = []
     private var indicatorLayoutSignature = ""
@@ -162,8 +165,16 @@ final class ReaderWindowController: NSWindowController {
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
+        let filterChanged = readerView.interpolation != settings.interpolation
+            || readerView.noiseReductionLevel != settings.noiseReductionLevel
         readerView.interpolation = settings.interpolation
         readerView.noiseReductionLevel = settings.noiseReductionLevel
+        // フィルタ(描画品質)切替: 先読みキューも新条件で組み直す。
+        // 処理中の 1 件は完走させ(結果はキャッシュに残る)、残りは停止。
+        // 新キューは表示中スプレッドの補間完了を待ってから積まれる
+        if filterChanged {
+            preresampleAdjacentSpread(sparingInFlight: true)
+        }
         readerView.backgroundColor = settings.viewBackgroundColor
         // ページ番号/ページバーの見た目(仕様書 §3.4, §6.1)
         pageLabel.font = settings.pageNumFont
@@ -1032,15 +1043,19 @@ final class ReaderWindowController: NSWindowController {
     /// 小さすぎるページでの保険)まで。近いスプレッドから順に行い、現スプレッドのリサンプル
     /// (scheduleHighQualityResample)と GPU を奪い合わないよう少し遅らせて
     /// 始め、表示が先へ進んでいたら残りを捨てる
-    private func preresampleAdjacentSpread() {
+    private func preresampleAdjacentSpread(sparingInFlight: Bool = false) {
         guard let book, book.pageCount > 0 else { return }
         let forward = book.lastMoveForward
         let generation = displayGeneration
-        // 表示対象を処理中の先読みは切らずに完走させる(結果を表示に使う。
-        // 旧タスクは世代チェックで現在のページの後に自然停止する)
-        if let current = preresamplingEntryID, displayedEntryIDs.contains(current) {
-            // 完走待ち
-        } else {
+        // 実行番号を進めて旧タスクを(ソフト)停止させる。
+        // sparingInFlight(フィルタ切替)と「表示対象を処理中」の場合は
+        // 切らずに完走させ(結果はキャッシュへ)、現在のページの後に
+        // 実行番号チェックで自然停止させる。それ以外は即キャンセル
+        preresampleRun += 1
+        let run = preresampleRun
+        let sparesInFlight = sparingInFlight
+            || preresamplingEntryID.map { displayedEntryIDs.contains($0) } == true
+        if !sparesInFlight {
             preresampleTask?.cancel()
         }
         preresampleTask = Task { [weak self] in
@@ -1056,7 +1071,7 @@ final class ReaderWindowController: NSWindowController {
                 try? await Task.sleep(for: .milliseconds(50))
             }
             guard !Task.isCancelled, generation == self.displayGeneration,
-                  book === self.book else { return }
+                  run == self.preresampleRun, book === self.book else { return }
             let spreads = await book.predictedAdjacentSpreads(
                 forward: forward, maxPages: PreresamplePolicy.maxPages)
             guard !spreads.isEmpty else { return }
@@ -1090,10 +1105,12 @@ final class ReaderWindowController: NSWindowController {
                     limitComputed = true
                 }
                 for (position, image) in images.enumerated() {
-                    // 表示要求を優先(キャンセル)。世代遅れの旧タスク
-                    // (表示対象の完走のため切らずに残した場合)もここで止まる
+                    // 表示要求を優先(キャンセル)。ソフト停止で残した
+                    // 旧タスク(表示対象の完走・フィルタ切替)は世代または
+                    // 実行番号のずれでここで止まる
                     guard !Task.isCancelled,
-                          generation == self.displayGeneration else { return }
+                          generation == self.displayGeneration,
+                          run == self.preresampleRun else { return }
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
                     // キーは ReaderView の実表示時と同一(ML 高画質化の段階も
