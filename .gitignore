@@ -79,3 +79,6 @@ iOSInjectionProject/
 # macOS noise
 .DS_Store
 build/
+
+# ローカルの受け渡し用(参考資料 PDF など)。git には入れない
+inbox/

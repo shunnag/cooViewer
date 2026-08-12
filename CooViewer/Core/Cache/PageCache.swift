@@ -5,12 +5,9 @@ import Foundation
 /// デコード済みページ画像の LRU キャッシュ(仕様書 §4.5.1 の cacheArray に相当)。
 /// 旧実装の「枚数基準(設定値+4)」を廃し、バイト基準で管理する
 /// (設計書「キャッシュ・先読み設計」)。メモリ圧迫通知で自動トリムする。
-/// EN: Byte-based LRU cache of decoded page images; trims itself on
-/// EN: memory-pressure notifications.
 actor PageCache {
     private var storage: [Int: CGImage] = [:]
     private var order: [Int] = []  // 末尾が最新(MRU)
-    // EN: `order` keeps ids oldest-first; the last element is most recent.
     private var costs: [Int: Int] = [:]
     private var totalCost = 0
     private var byteLimit: Int
@@ -21,7 +18,6 @@ actor PageCache {
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))
         self.pressureSource = source  // self を閉包に渡す前に全プロパティを初期化する
-        // EN: All stored properties must be set before self escapes below.
         source.setEventHandler { [weak self] in
             Task { await self?.trimToHalf() }
         }
@@ -40,7 +36,6 @@ actor PageCache {
     func image(for id: Int) -> CGImage? {
         guard let image = storage[id] else { return nil }
         // ヒット時は MRU へ移動(仕様書 §4.5.1)
-        // EN: Move to most-recently-used position on hit.
         if let index = order.firstIndex(of: id) {
             order.remove(at: index)
             order.append(id)
@@ -69,7 +64,6 @@ actor PageCache {
     var currentCost: Int { totalCost }
 
     /// メモリ圧迫時: 使用量を半分まで削る
-    /// EN: On memory pressure, evict oldest entries down to half the usage.
     func trimToHalf() {
         let target = totalCost / 2
         while totalCost > target, order.count > 1 {
@@ -88,8 +82,6 @@ actor PageCache {
 
     /// 上限超過分を古い順に破棄。1 枚だけで超過する場合はその 1 枚は保持する
     /// (再デコードの繰り返しを防ぐ)。
-    /// EN: Evict oldest-first over the byte limit, but always keep at least one
-    /// EN: image to avoid re-decoding the current page forever.
     private func evictIfNeeded() {
         while totalCost > byteLimit, order.count > 1 {
             removeEntry(order[0])

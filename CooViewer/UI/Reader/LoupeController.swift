@@ -9,8 +9,6 @@ import AppKit
 /// 仕様変更: 旧実装の LoupeRate=1.0 は「原寸/表示縮尺のピクセル等倍」だったが
 /// (仕様書 §4.10)、新実装の rate は「表示中コンテンツの何倍か」とする
 /// (既定 2.0。SettingsStore.loupeRate 参照)。
-/// EN: Loupe as an overlay CALayer that magnifies replicas of the already
-/// EN: rendered page layers, so it works in every fit/rotation/scroll state.
 @MainActor
 final class LoupeController {
     struct Page {
@@ -100,8 +98,6 @@ final class LoupeController {
     /// マウス位置 p を中心とする拡大写像 q → (q − p)·rate + ルーペ中心 を、
     /// container 複製の位置・変換(回転 × rate 倍)として与える。
     /// ページ layer の複製は container 複製の子なので座標変換はそのまま流用できる。
-    /// EN: Apply a mouse-centered scale map to the container replica so the
-    /// EN: page replicas line up under the loupe automatically.
     private func relayout() {
         guard isEnabled else { return }
         CATransaction.begin()
@@ -144,8 +140,6 @@ extension ReaderWindowController {
 
     /// 表示中ページのルーペ用高解像度画像を非同期取得して差し込む。
     /// 実効倍率=表示 2 倍 × ルーペ倍率(上限 6 倍)。
-    /// EN: Fetch sharper images just for the loupe (vector re-render for PDFs,
-    /// EN: MetalFX upscale for low-res rasters).
     func requestLoupeHighResolution() {
         guard let book, readerViewForInput.isLoupeEnabled else { return }
         let scale = min(6.0, 2.0 * max(1.0, settings.loupeRate))

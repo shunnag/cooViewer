@@ -4,8 +4,6 @@ import XCTest
 
 /// メディア速度プロファイル(設計書 キャッシュ節の自動適応)のテスト。
 /// 分類の純粋関数・方針表・読み取りゲート・実機プローブの基本動作を確認する。
-/// EN: Volume-speed profile: pure classification, policy table, read gate,
-/// EN: and a basic probe smoke test.
 final class MediaProfileTests: XCTestCase {
     // MARK: - 分類(純粋関数)
 
@@ -182,7 +180,6 @@ final class MediaProfileTests: XCTestCase {
 }
 
 /// 実行順を記録する計測用 actor
-/// EN: Records completion order for the priority-lane test.
 private actor OrderRecorder {
     private(set) var sequence: [String] = []
 
@@ -192,7 +189,6 @@ private actor OrderRecorder {
 }
 
 /// 同時実行数の頂点を数える計測用 actor
-/// EN: Tracks peak concurrency for the gate test.
 private actor ConcurrencyCounter {
     private var active = 0
     private(set) var peak = 0

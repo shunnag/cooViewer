@@ -21,12 +21,9 @@ protocol ReaderViewDelegate: AnyObject {
 /// 旧 CustomImageView の BufferingMode=New 相当: 1/2 ページを CALayer で並置描画する。
 /// スクロールは NSScrollView を使わず内部オフセットで管理する
 /// (端到達判定 §4.16 をページ送りに使うため)。
-/// EN: Layer-backed page view: renders 1-2 pages side by side and manages
-/// EN: fit modes, rotation, and internal scrolling with edge detection.
 @MainActor
 final class ReaderView: NSView {
     /// 表示モード(仕様書 §3.2)。旧 fitScreenMode の整数値を維持。
-    /// EN: Fit modes; raw values match the legacy integers.
     enum FitMode: Int, CaseIterable {
         case fitToScreen = 0      // 全体フィット・スクロールなし
         case fitWidth = 1         // 幅フィット・縦スクロール
@@ -59,10 +56,8 @@ final class ReaderView: NSView {
     private(set) var images: [CGImage] = []
     private(set) var pageIDs: [Int] = []
     /// リサンプルキャッシュの名前空間(本の cacheKey。本切替時の取り違え防止)
-    /// EN: Cache namespace (book cacheKey) so ids never collide across books.
     var resampleKeyPrefix = ""
     /// 見開きしきい値(横長判定。fitWidthDivide 用。設定から注入される)
-    /// EN: Spread threshold used by the divide fit mode; injected from settings.
     var singleSetting = PageLayout.defaultSingleSetting
     private(set) var readsFromLeft = false
 
@@ -108,6 +103,10 @@ final class ReaderView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    /// メモリ圧迫時にカールオーバーレイ(スナップショット 2 枚を保持)を
+    /// 即時解放するための監視
+    private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -126,6 +125,20 @@ final class ReaderView: NSView {
             containerLayer.addSublayer(pageLayer)
         }
         registerForDraggedTypes([.fileURL])
+
+        let pressure = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        memoryPressureSource = pressure
+        pressure.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.removeCurlOverlay()
+            }
+        }
+        pressure.activate()
+    }
+
+    deinit {
+        memoryPressureSource?.cancel()
     }
 
     @available(*, unavailable)
@@ -135,10 +148,33 @@ final class ReaderView: NSView {
 
     // MARK: - コンテンツ設定
 
+    /// ページ送りのめくり効果の指定(効果の種類+進行方向)
+    struct PageTurn {
+        let animation: PageTurnAnimation
+        let forward: Bool
+    }
+
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
-    /// EN: Show the given pages in reading order; ids key the resample cache.
-    func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool) {
+    /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
+    func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
+                  turn: PageTurn? = nil) {
+        // スワイプ追従カールの予約(refreshDisplay 前にコントローラが設定)。
+        // 自動再生の turn より優先する
+        let interactive = pendingInteractiveCurl
+        pendingInteractiveCurl = nil
+        // 進行中のカールは即終了(連打時は最後のめくりだけが動く)
+        removeCurlOverlay()
+        // カールは差し替え前の見た目(旧内容)のスナップショットが要る
+        var oldContentForCurl: CGImage?
+        if interactive == nil, let turn, turn.animation == .curl, canRunCurl {
+            oldContentForCurl = snapshotContent()
+        }
+        // フェード/スライドは内容差し替えを挟んで補間する CATransition なので
+        // 差し替えの前に仕込む
+        if interactive == nil, let turn {
+            addTurnTransitionIfNeeded(turn, newReadsFromLeft: readsFromLeft)
+        }
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
@@ -151,6 +187,226 @@ final class ReaderView: NSView {
         needsLayout = true
         layoutSubtreeIfNeeded()
         scrollToHome()
+        // ズームフェードは新内容のレイアウト確定後に container へ掛ける。
+        // カールは旧内容と新内容のスナップショットからオーバーレイを組む
+        if let interactive {
+            if canRunCurl {
+                startInteractiveCurlOverlay(oldContent: interactive.oldContent,
+                                            forward: interactive.forward)
+            }
+        } else if let turn {
+            if turn.animation == .curl {
+                if let old = oldContentForCurl, let new = snapshotContent() {
+                    runCurlAnimation(oldContent: old, newContent: new,
+                                     forward: turn.forward)
+                }
+            } else {
+                addTurnContainerAnimationIfNeeded(turn)
+            }
+        }
+    }
+
+    // MARK: - ページめくり効果(設計書 §2.4。既定オフ)
+
+    /// フェード/スライド: レイヤーツリーの差し替え前後を CATransition で補間する
+    private func addTurnTransitionIfNeeded(_ turn: PageTurn, newReadsFromLeft: Bool) {
+        guard let layer else { return }
+        let transition = CATransition()
+        transition.duration = 0.20
+        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        switch turn.animation {
+        case .fade:
+            transition.type = .fade
+        case .slide:
+            transition.type = .push
+            transition.subtype = PageTurnAnimation.entersFromLeft(
+                forward: turn.forward, readsFromLeft: newReadsFromLeft)
+                ? .fromLeft : .fromRight
+        case .none, .zoomFade, .curl:
+            return
+        }
+        layer.add(transition, forKey: "pageTurn")
+    }
+
+    /// ズームフェード: 新しい内容の container に入場アニメーションを掛ける。
+    /// relayout は position と 2D 変換(モデル値)しか触らないため、
+    /// from/to 明示のアニメーションはリサイズ等と競合しない
+    private func addTurnContainerAnimationIfNeeded(_ turn: PageTurn) {
+        guard turn.animation == .zoomFade else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.2
+        fade.toValue = 1
+        let zoom = CABasicAnimation(keyPath: "transform.scale")
+        zoom.fromValue = 0.98
+        zoom.toValue = 1
+        let group = CAAnimationGroup()
+        group.animations = [fade, zoom]
+        group.duration = 0.18
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        containerLayer.add(group, forKey: "pageTurnZoom")
+    }
+
+    // MARK: - ページカール(設計書 §2.4)
+
+    /// 進行中のカールオーバーレイ(nil なら非表示)。
+    /// 本のノド=画面中央として、めくれる半面をストリップ列で 3D 湾曲させる
+    private var curlOverlay: CALayer?
+
+    /// カールを実行できる状態か。回転表示中は軸の幾何が合わず、ルーペ表示中は
+    /// スナップショットにルーペが写り込むため省略する
+    private var canRunCurl: Bool {
+        rotation == 0 && !loupe.isEnabled
+            && bounds.width > 1 && bounds.height > 1
+    }
+
+    /// 現在の描画内容(背景+ページ)をピクセルスケールでスナップショットする
+    /// (internal: PageCurlRenderTests が実経路の向き検証に使う)。
+    /// flipped ビューの layer を直接 render すると上下逆の像になるため
+    /// 補正する(設定ウインドウの NSHostingView スナップショットと同じ癖。
+    /// 向きは PageCurlRenderTests の実描画比較で担保)
+    func snapshotContent() -> CGImage? {
+        guard let layer else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        let width = Int(bounds.width * scale)
+        let height = Int(bounds.height * scale)
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: 0, y: bounds.height)
+        context.scaleBy(x: 1, y: -1)
+        layer.render(in: context)
+        return context.makeImage()
+    }
+
+    func removeCurlOverlay() {
+        curlScrubTimer?.invalidate()
+        curlScrubTimer = nil
+        curlOverlay?.removeFromSuperlayer()
+        curlOverlay = nil
+    }
+
+    // MARK: - スワイプ追従カール(指の移動量で進行度を駆動する)
+
+    /// setPages 前にコントローラが設定する予約(旧内容+進行方向)。
+    /// 設定されていると、自動再生の代わりに speed=0 のオーバーレイを組み、
+    /// updateInteractiveCurl(progress:) の timeOffset 駆動で指に追従させる
+    var pendingInteractiveCurl: (oldContent: CGImage, forward: Bool)?
+    private var interactiveCurlDuration: CFTimeInterval = 0.45
+    private var curlScrubTimer: Timer?
+
+    /// スワイプ追従カールが有効か(オーバーレイが停止状態で存在する)
+    var hasInteractiveCurl: Bool {
+        curlOverlay != nil && curlOverlay?.speed == 0
+    }
+
+    private func startInteractiveCurlOverlay(oldContent: CGImage, forward: Bool) {
+        guard let layer, let newContent = snapshotContent() else { return }
+        let configuration = PageCurlOverlay.Configuration(
+            bounds: bounds,
+            leafOnLeft: PageTurnAnimation.entersFromLeft(
+                forward: forward, readsFromLeft: readsFromLeft),
+            oldContent: oldContent,
+            newContent: newContent)
+        guard let overlay = PageCurlOverlay.makeAnimated(configuration) else { return }
+        // speed=0 で止めて timeOffset をスクラブする(標準的な手法)
+        overlay.speed = 0
+        overlay.timeOffset = 0
+        layer.addSublayer(overlay)
+        curlOverlay = overlay
+        interactiveCurlDuration = configuration.duration
+    }
+
+    /// 進行度(0-1)を反映する。1.0 は完了直前で止める(確定は finish で)
+    func updateInteractiveCurl(progress: CGFloat) {
+        guard let curlOverlay, curlOverlay.speed == 0 else { return }
+        curlOverlay.timeOffset =
+            Double(min(max(progress, 0), 0.999)) * interactiveCurlDuration
+    }
+
+    /// 指を離した後、残りを再生してめくりを確定する(モデルは進んでいる前提)
+    func finishInteractiveCurl() {
+        guard let overlay = curlOverlay, overlay.speed == 0 else { return }
+        let offset = overlay.timeOffset
+        overlay.speed = 1
+        overlay.timeOffset = 0
+        overlay.beginTime = CACurrentMediaTime() - offset
+        let remaining = max(0.02, interactiveCurlDuration - offset)
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.03) {
+            [weak self, weak overlay] in
+            guard let self, let overlay, self.curlOverlay === overlay else { return }
+            self.removeCurlOverlay()
+        }
+    }
+
+    /// 指を離した後、巻き戻して取りやめる。巻き戻し完了時に completion
+    /// (呼び出し側がモデルを元のページへ戻し、その再表示でオーバーレイが畳まれる)
+    func cancelInteractiveCurl(completion: @escaping @MainActor () -> Void) {
+        guard let overlay = curlOverlay, overlay.speed == 0,
+              overlay.timeOffset > 0.01 else {
+            completion()
+            return
+        }
+        curlScrubTimer?.invalidate()
+        let start = overlay.timeOffset
+        let rewindDuration = 0.05 + 0.15 * start / interactiveCurlDuration
+        let startTime = CACurrentMediaTime()
+        curlScrubTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0 / 120, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                // オーバーレイが差し替え等で消えていたら巻き戻しをやめる
+                guard let overlay = self.curlOverlay, overlay.speed == 0 else {
+                    self.curlScrubTimer?.invalidate()
+                    self.curlScrubTimer = nil
+                    return
+                }
+                let progress = (CACurrentMediaTime() - startTime) / rewindDuration
+                if progress >= 1 {
+                    self.curlScrubTimer?.invalidate()
+                    self.curlScrubTimer = nil
+                    overlay.timeOffset = 0
+                    completion()
+                } else {
+                    overlay.timeOffset = start * (1 - progress)
+                }
+            }
+        }
+    }
+
+    /// 本式のページめくり: 画面をノド(中央)で左右に分割し、空く側の半面が
+    /// リーフとしてカールしながら反対側へ倒れる(構築は PageCurlOverlay)。
+    /// 空いていく側は下にある live コンテンツ(新内容)がそのまま現れる
+    private func runCurlAnimation(oldContent: CGImage, newContent: CGImage,
+                                  forward: Bool) {
+        guard let layer else { return }
+        let configuration = PageCurlOverlay.Configuration(
+            bounds: bounds,
+            leafOnLeft: PageTurnAnimation.entersFromLeft(
+                forward: forward, readsFromLeft: readsFromLeft),
+            oldContent: oldContent,
+            newContent: newContent)
+        guard let overlay = PageCurlOverlay.makeAnimated(configuration) else { return }
+        layer.addSublayer(overlay)
+        curlOverlay = overlay
+
+        // 完了でオーバーレイごと畳む(下は既に新内容なので切れ目なし)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self, weak overlay] in
+            guard let self, let overlay, self.curlOverlay === overlay else { return }
+            self.removeCurlOverlay()
+        }
+        let lifetime = CABasicAnimation(keyPath: "opacity")
+        lifetime.fromValue = 1
+        lifetime.toValue = 1
+        lifetime.duration = configuration.duration
+        overlay.add(lifetime, forKey: "curlLifetime")
+        CATransaction.commit()
     }
 
     // MARK: - レイアウト
@@ -164,6 +420,10 @@ final class ReaderView: NSView {
 
     override func layout() {
         super.layout()
+        // リサイズでオーバーレイの幾何が古くなったらカールは打ち切る
+        if let curlOverlay, curlOverlay.frame.size != bounds.size {
+            removeCurlOverlay()
+        }
         relayout()
         // レイアウト変化(ページ切替・スクロール・リサイズ)をルーペにも反映
         if loupe.isEnabled {
@@ -206,13 +466,10 @@ final class ReaderView: NSView {
         )
 
         // 画面上の並び: 読み順先頭ページは、左綴じなら左、右綴じなら右(仕様書 §4.2.5)
-        // EN: The first page in reading order sits on the right for
-        // EN: right-to-left books.
         let backingScale = window?.backingScaleFactor ?? 2
         let screenOrder = readsFromLeft ? Array(scaled.indices) : scaled.indices.reversed()
         var x = pad.x - scrollOffset.x
-        for (position, imageIndex) in screenOrder.enumerated() {
-            _ = position
+        for imageIndex in screenOrder {
             let size = scaled[imageIndex]
             let layer = pageLayers[imageIndex]
             layer.isHidden = false
@@ -243,8 +500,6 @@ final class ReaderView: NSView {
     /// 予約する(縮小=CG Lanczos 相当、「高」は拡大に MetalFX)。
     /// ライブリサイズ中の洪水を避けるため短いデバウンスを挟み、
     /// 完成したページから順に等倍画像へ差し替える。
-    /// EN: Debounced pre-resample to exact display pixels (high-quality CG for
-    /// EN: downscale, MetalFX for upscale); finished pages swap in 1:1.
     private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
         guard interpolation == .systemDefault || interpolation == .high,
               !images.isEmpty else { return }
@@ -265,8 +520,6 @@ final class ReaderView: NSView {
         // 旧スプレッドの進行中リサンプルは、今回の対象が空でも必ず打ち切る
         // (>8bit ページ等で対象ゼロのとき、旧タスクの遅延書込が新しい
         // スプレッドのスロットを汚す穴の修正)
-        // EN: Cancel the previous in-flight resample even when this spread has
-        // EN: no targets; otherwise its late write lands in the new spread.
         resampleTask?.cancel()
         resampleGeneration += 1
         guard !requests.isEmpty else { return }
@@ -275,8 +528,6 @@ final class ReaderView: NSView {
         let useMetalFX = interpolation == .high
         // デバウンスはライブリサイズ中の洪水対策。ページ送りでは待たずに
         // 即リサンプルして、最初の描画から等倍のシャープな画像に近づける
-        // EN: Debounce only during live resize; page turns resample
-        // EN: immediately so the crisp 1:1 image lands as soon as possible.
         let debounce: Bool = inLiveResize
         resampleTask = Task { [weak self] in
             if debounce {
@@ -298,7 +549,6 @@ final class ReaderView: NSView {
     private func applyResampled(_ image: CGImage, size: CGSize,
                                 at index: Int, generation: Int, key: String) {
         // 世代に加えてページの同一性(キャッシュキー)も照合する(遅延書込対策)
-        // EN: Verify the page identity (cache key) besides the generation.
         guard generation == resampleGeneration,
               resampledPages.indices.contains(index),
               pageIDs.indices.contains(index),
@@ -307,8 +557,24 @@ final class ReaderView: NSView {
         needsLayout = true
     }
 
+    /// まだ表示していないページの表示ピクセルサイズを予測する(次スプレッドの
+    /// 事前リサンプル用)。現在のフィットモード・回転・ウインドウ実寸で、
+    /// このサイズのページを表示したときのリサンプル目標と同じ値を返す。
+    /// 事前リサンプルが不要な補間モード(なし/低)や未レイアウトでは nil
+    func predictedResampleSizes(for sizes: [CGSize]) -> [CGSize]? {
+        guard interpolation == .systemDefault || interpolation == .high,
+              !sizes.isEmpty else { return nil }
+        let available = availableSize
+        guard available.width > 0, available.height > 0 else { return nil }
+        let backingScale = window?.backingScaleFactor ?? 2
+        let scales = pageScales(for: sizes, available: available)
+        return zip(sizes, scales).map {
+            CGSize(width: ($0.width * $1 * backingScale).rounded(),
+                   height: ($0.height * $1 * backingScale).rounded())
+        }
+    }
+
     /// ページ毎のスケール(仕様書 §4.2.3, §3.2)
-    /// EN: Per-page scale factors for the current fit mode.
     private func pageScales(for sizes: [CGSize], available: CGSize) -> [CGFloat] {
         let pageCount = CGFloat(sizes.count)
         switch fitMode {
@@ -345,7 +611,6 @@ final class ReaderView: NSView {
     }
 
     /// delta 分スクロールする。1px も動けなかったら false(端到達。仕様書 §4.16)。
-    /// EN: Returns false when already at the edge (used to trigger page turns).
     @discardableResult
     func scroll(by delta: CGPoint) -> Bool {
         let before = scrollOffset
@@ -402,8 +667,6 @@ final class ReaderView: NSView {
 
     /// アニメーション画像の再生(設計書 §5)。CAKeyframeAnimation の discrete
     /// 補間でフレームを切り替える。ページが替わっていたら無視する。
-    /// EN: Play animated frames via a discrete keyframe animation; the id check
-    /// EN: ignores results that arrive after the page changed.
     func applyAnimation(frames: [CGImage], delays: [Double],
                         forPageAt index: Int, id: Int) {
         guard pageIDs.indices.contains(index), pageIDs[index] == id,
@@ -439,10 +702,8 @@ final class ReaderView: NSView {
     /// ルーペにだけ高解像度画像を差し込む(通常表示・先読みには影響しない)。
     /// 表示中の画像より低解像度なら採用しない(SVG のフォールバック既定
     /// 2048px が表示用 4096px を下回るケースの逆転防止)。
-    /// EN: Inject a loupe-only high-res image without touching normal display.
     func setLoupeHighResImage(_ image: CGImage, forPageAt index: Int, entryID: Int) {
         // ページめくり直後に届いた古いページの結果は捨てる(id 照合)
-        // EN: Drop stale results delivered after a page turn (id check).
         guard pageIDs.indices.contains(index), pageIDs[index] == entryID else { return }
         if images.indices.contains(index),
            image.width * image.height < images[index].width * images[index].height {
@@ -512,8 +773,6 @@ final class ReaderView: NSView {
 
         if max(abs(dx), abs(dy)) >= 30 {
             // ドラッグジェスチャ(±30px。仕様書 §5.9)。isFlipped のため dy>0 は下方向
-            // EN: Drags of 30 px or more become directional gestures;
-            // EN: shorter ones are treated as clicks.
             let direction: Int
             if abs(dx) >= abs(dy) {
                 direction = dx < 0 ? LegacyModifier.dragLeft : LegacyModifier.dragRight
@@ -566,7 +825,6 @@ final class ReaderView: NSView {
 
     override func magnify(with event: NSEvent) {
         // キャンセルされたジェスチャの残滓が次回に混ざらないよう開始時に捨てる
-        // EN: Reset on .began so a cancelled gesture's residue never carries over.
         if event.phase == .began { magnificationSum = 0 }
         magnificationSum += event.magnification
         guard event.phase == .ended else { return }

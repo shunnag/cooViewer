@@ -1,416 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Built-in image decoders" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "独自デコーダの対応形式"
-          }
-        }
-      }
-    },
-    "Formats decoded by cooViewer itself rather than macOS. Changes apply when the next book is opened." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "macOS ではなく cooViewer 自身がデコードする形式です。変更は次に本を開いたときから適用されます。"
-          }
-        }
-      }
-    },
-    "Left Page" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "左ページ"
-          }
-        }
-      }
-    },
-    "Right Page" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "右ページ"
-          }
-        }
-      }
-    },
-    "Show the Other Page in Finder" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "もう一方のページを Finder で表示"
-          }
-        }
-      }
-    },
-    "Show the Cover Page Alone" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "表紙を単ページで表示"
-          }
-        }
-      }
-    },
-    "Takes effect in two-page (spread) modes." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "見開き表示のときのみ効果があります。"
-          }
-        }
-      }
-    },
-    "Image" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "画像"
-          }
-        }
-      }
-    },
-    "File" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ファイル"
-          }
-        }
-      }
-    },
-    "GPS" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "位置情報"
-          }
-        }
-      }
-    },
-    "Date Taken" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "撮影日時"
-          }
-        }
-      }
-    },
-    "Camera" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "カメラ"
-          }
-        }
-      }
-    },
-    "Lens" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "レンズ"
-          }
-        }
-      }
-    },
-    "Exposure Time" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "露出時間"
-          }
-        }
-      }
-    },
-    "Aperture" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "絞り"
-          }
-        }
-      }
-    },
-    "ISO" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ISO 感度"
-          }
-        }
-      }
-    },
-    "Focal Length" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "焦点距離"
-          }
-        }
-      }
-    },
-    "Software" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ソフトウェア"
-          }
-        }
-      }
-    },
-    "Latitude" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "緯度"
-          }
-        }
-      }
-    },
-    "Longitude" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "経度"
-          }
-        }
-      }
-    },
-    "Altitude" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "高度"
-          }
-        }
-      }
-    },
-    "Alpha Channel" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "アルファチャンネル"
-          }
-        }
-      }
-    },
-    "Bit Depth" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ビット深度"
-          }
-        }
-      }
-    },
-    "Color Model" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "カラーモデル"
-          }
-        }
-      }
-    },
-    "Color Profile" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "カラープロファイル"
-          }
-        }
-      }
-    },
-    "Created" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "作成日時"
-          }
-        }
-      }
-    },
-    "Data Size" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "データサイズ"
-          }
-        }
-      }
-    },
-    "Dimensions" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ピクセル寸法"
-          }
-        }
-      }
-    },
-    "File Name" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ファイル名"
-          }
-        }
-      }
-    },
-    "File Size" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ファイルサイズ"
-          }
-        }
-      }
-    },
-    "Format" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "形式"
-          }
-        }
-      }
-    },
-    "Frames" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "フレーム数"
-          }
-        }
-      }
-    },
-    "Location" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "場所"
-          }
-        }
-      }
-    },
-    "Modified" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "更新日時"
-          }
-        }
-      }
-    },
-    "Page" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ページ"
-          }
-        }
-      }
-    },
-    "Path in Book" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "本の中のパス"
-          }
-        }
-      }
-    },
-    "Resolution" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "解像度"
-          }
-        }
-      }
-    },
-    "Show File Info" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ファイル情報を表示"
-          }
-        }
-      }
-    },
-    "Show in Finder" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Finder で表示"
-          }
-        }
-      }
-    },
-    "Yes" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "はい"
-          }
-        }
-      }
-    },
-    "No" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "いいえ"
-          }
-        }
-      }
-    },
     "" : {
 
     },
@@ -464,6 +54,26 @@
         }
       }
     },
+    "Alpha Channel" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アルファチャンネル"
+          }
+        }
+      }
+    },
+    "Altitude" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高度"
+          }
+        }
+      }
+    },
     "Always" : {
       "localizations" : {
         "ja" : {
@@ -490,6 +100,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "常にページをめくる"
+          }
+        }
+      }
+    },
+    "Aperture" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "絞り"
           }
         }
       }
@@ -554,6 +174,26 @@
         }
       }
     },
+    "Bit Depth" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビット深度"
+          }
+        }
+      }
+    },
+    "Books" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本"
+          }
+        }
+      }
+    },
     "Border color:" : {
       "localizations" : {
         "ja" : {
@@ -594,12 +234,32 @@
         }
       }
     },
+    "Built-in image decoders" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "独自デコーダの対応形式"
+          }
+        }
+      }
+    },
     "Cache and spool sizes apply when the next book is opened." : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "キャッシュ・一時展開の上限は次に本を開いたときに反映されます。"
+          }
+        }
+      }
+    },
+    "Camera" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カメラ"
           }
         }
       }
@@ -654,6 +314,26 @@
         }
       }
     },
+    "Color Model" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カラーモデル"
+          }
+        }
+      }
+    },
+    "Color Profile" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カラープロファイル"
+          }
+        }
+      }
+    },
     "Control" : {
       "localizations" : {
         "ja" : {
@@ -670,6 +350,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "cooViewer ヘルプ"
+          }
+        }
+      }
+    },
+    "Created" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "作成日時"
           }
         }
       }
@@ -714,6 +404,96 @@
         }
       }
     },
+    "Data Size" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "データサイズ"
+          }
+        }
+      }
+    },
+    "Date Taken" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撮影日時"
+          }
+        }
+      }
+    },
+    "Decoders" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "デコーダ"
+          }
+        }
+      }
+    },
+    "Fade" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "フェード"
+          }
+        }
+      }
+    },
+    "Page Curl" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページカール"
+          }
+        }
+      }
+    },
+    "Page Turn Effect" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページめくり効果"
+          }
+        }
+      }
+    },
+    "Page turn effect:" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページめくり効果:"
+          }
+        }
+      }
+    },
+    "Slide" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スライド"
+          }
+        }
+      }
+    },
+    "Zoom Fade" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ズームフェード"
+          }
+        }
+      }
+    },
     "Default" : {
       "localizations" : {
         "ja" : {
@@ -740,6 +520,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "本の置き場所を判定して、読み込み・先読み・書庫の一時展開を自動調整します。下で明示した値は常に自動調整より優先されます。次に本を開いたときから有効になります。"
+          }
+        }
+      }
+    },
+    "Dimensions" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ピクセル寸法"
           }
         }
       }
@@ -836,12 +626,32 @@
         }
       }
     },
+    "Exposure Time" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "露出時間"
+          }
+        }
+      }
+    },
     "File" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "ファイル"
+          }
+        }
+      }
+    },
+    "File Name" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファイル名"
           }
         }
       }
@@ -862,6 +672,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ファイル名のみ"
+          }
+        }
+      }
+    },
+    "File Size" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファイルサイズ"
           }
         }
       }
@@ -906,6 +726,16 @@
         }
       }
     },
+    "Focal Length" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "焦点距離"
+          }
+        }
+      }
+    },
     "Font size: %lld" : {
       "localizations" : {
         "ja" : {
@@ -922,6 +752,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "フォント:"
+          }
+        }
+      }
+    },
+    "Format" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "形式"
+          }
+        }
+      }
+    },
+    "Formats decoded by cooViewer itself rather than macOS. Changes apply when the next book is opened." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS ではなく cooViewer 自身がデコードする形式です。変更は次に本を開いたときから適用されます。"
+          }
+        }
+      }
+    },
+    "Frames" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "フレーム数"
           }
         }
       }
@@ -982,6 +842,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "指定 % へ移動"
+          }
+        }
+      }
+    },
+    "GPS" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "位置情報"
           }
         }
       }
@@ -1076,6 +946,16 @@
         }
       }
     },
+    "Image" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "画像"
+          }
+        }
+      }
+    },
     "Interpolation" : {
       "localizations" : {
         "ja" : {
@@ -1092,6 +972,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "補間:"
+          }
+        }
+      }
+    },
+    "ISO" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ISO 感度"
           }
         }
       }
@@ -1126,6 +1016,26 @@
         }
       }
     },
+    "Latitude" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "緯度"
+          }
+        }
+      }
+    },
+    "Left Page" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "左ページ"
+          }
+        }
+      }
+    },
     "Left to Right" : {
       "localizations" : {
         "ja" : {
@@ -1142,6 +1052,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "左から右(単ページ)"
+          }
+        }
+      }
+    },
+    "Lens" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "レンズ"
+          }
+        }
+      }
+    },
+    "Location" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "場所"
+          }
+        }
+      }
+    },
+    "Longitude" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "経度"
           }
         }
       }
@@ -1232,6 +1172,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "変更日"
+          }
+        }
+      }
+    },
+    "Modified" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新日時"
           }
         }
       }
@@ -1356,6 +1306,16 @@
         }
       }
     },
+    "No" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "いいえ"
+          }
+        }
+      }
+    },
     "No Bookmarks" : {
       "localizations" : {
         "ja" : {
@@ -1382,6 +1342,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "履歴はありません"
+          }
+        }
+      }
+    },
+    "No Results" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "結果なし"
           }
         }
       }
@@ -1466,26 +1436,6 @@
         }
       }
     },
-    "Opening “%@”…" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "“%@” を開いています…"
-          }
-        }
-      }
-    },
-    "Opening “%@”… %lld/%lld books" : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "“%@” を開いています… 書庫 %lld/%lld"
-          }
-        }
-      }
-    },
     "Open the next book (backward: last page)" : {
       "localizations" : {
         "ja" : {
@@ -1516,6 +1466,36 @@
         }
       }
     },
+    "Opening “%@”…" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” を開いています…"
+          }
+        }
+      }
+    },
+    "Opening “%@”… %lld/%lld books" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” を開いています… 書庫 %lld/%lld"
+          }
+        }
+      }
+    },
+    "Page" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページ"
+          }
+        }
+      }
+    },
     "Page %lld" : {
       "localizations" : {
         "ja" : {
@@ -1527,6 +1507,17 @@
       }
     },
     "Page bar" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページバー"
+          }
+        }
+      }
+    },
+    "Page Bar" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
@@ -1547,6 +1538,17 @@
       }
     },
     "Page number" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ページ番号"
+          }
+        }
+      }
+    },
+    "Page Number" : {
       "localizations" : {
         "ja" : {
           "stringUnit" : {
@@ -1572,6 +1574,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "パスワード入力はキャンセルされました。"
+          }
+        }
+      }
+    },
+    "Path in Book" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本の中のパス"
           }
         }
       }
@@ -1786,6 +1798,16 @@
         }
       }
     },
+    "Resolution" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解像度"
+          }
+        }
+      }
+    },
     "Restore Defaults" : {
       "localizations" : {
         "ja" : {
@@ -1812,6 +1834,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "スワイプの方向を反転する"
+          }
+        }
+      }
+    },
+    "Right Page" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右ページ"
           }
         }
       }
@@ -1996,6 +2028,16 @@
         }
       }
     },
+    "Search" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "検索"
+          }
+        }
+      }
+    },
     "Services" : {
       "localizations" : {
         "ja" : {
@@ -2056,6 +2098,16 @@
         }
       }
     },
+    "Show File Info" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファイル情報を表示"
+          }
+        }
+      }
+    },
     "Show from bottom" : {
       "localizations" : {
         "ja" : {
@@ -2072,6 +2124,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ページ先頭から表示"
+          }
+        }
+      }
+    },
+    "Show in Finder" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Finder で表示"
           }
         }
       }
@@ -2112,6 +2174,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ページ番号を表示"
+          }
+        }
+      }
+    },
+    "Show the Cover Page Alone" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表紙を単ページで表示"
+          }
+        }
+      }
+    },
+    "Show the Other Page in Finder" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "もう一方のページを Finder で表示"
           }
         }
       }
@@ -2184,6 +2266,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "スライドショーの間隔(秒):"
+          }
+        }
+      }
+    },
+    "Software" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ソフトウェア"
           }
         }
       }
@@ -2272,6 +2364,16 @@
         }
       }
     },
+    "Takes effect in two-page (spread) modes." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "見開き表示のときのみ効果があります。"
+          }
+        }
+      }
+    },
     "Text color:" : {
       "localizations" : {
         "ja" : {
@@ -2333,7 +2435,6 @@
       }
     },
     "Thumbnails" : {
-      "extractionState" : "stale",
       "localizations" : {
         "ja" : {
           "stringUnit" : {
@@ -2580,6 +2681,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "パスワードが違います(残り %lld 回)。"
+          }
+        }
+      }
+    },
+    "Yes" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "はい"
           }
         }
       }

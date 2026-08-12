@@ -5,8 +5,6 @@ import UniformTypeIdentifiers
 /// 「ファイル情報」パネルの内容を組み立てる(旧実装に無い新規機能)。
 /// 画像メタデータ(EXIF/GPS 含む)は ImageIO のプロパティから、実体ファイルの
 /// 情報は FileManager の属性から取る。表示(パネル)は UI 側の責務。
-/// EN: Builds the File Info panel content: image metadata (EXIF/GPS included)
-/// EN: via ImageIO, on-disk file facts via FileManager. Pure logic, unit-tested.
 enum PageFileInfo {
     struct Row: Equatable {
         let label: String
@@ -14,7 +12,6 @@ enum PageFileInfo {
     }
 
     /// 見出し付きの行グループ(先頭セクションのみ無題)
-    /// EN: Titled group of rows; only the leading section is untitled.
     struct Section: Equatable {
         let title: String?
         let rows: [Row]
@@ -23,7 +20,6 @@ enum PageFileInfo {
     struct Details: Equatable {
         let sections: [Section]
         /// GPS 座標(EXIF に位置情報があるときのみ。地図表示用)
-        /// EN: Signed GPS coordinate when present, for the map view.
         let latitude: Double?
         let longitude: Double?
     }
@@ -150,7 +146,6 @@ enum PageFileInfo {
         let model = (tiff[kCGImagePropertyTIFFModel] as? String)?
             .trimmingCharacters(in: .whitespaces)
         // 機種名にメーカー名が含まれる場合は重ねない(例: "Canon EOS R5")
-        // EN: Skip the make when the model already starts with it.
         if let model {
             let camera: String
             if let make, !model.lowercased().hasPrefix(make.lowercased()) {
@@ -192,7 +187,6 @@ enum PageFileInfo {
     }
 
     /// EXIF の "yyyy:MM:dd HH:mm:ss" をローカライズ表示に直す(失敗時は原文)
-    /// EN: Reformat the EXIF timestamp; falls back to the raw string.
     private static func formatExifDate(_ raw: String) -> String {
         let parser = DateFormatter()
         parser.locale = Locale(identifier: "en_US_POSIX")
@@ -265,8 +259,6 @@ enum PageFileInfo {
     /// 見開きの読み順インデックス列を**画面上の左→右**の並びに直し、
     /// 既定選択(読み順の先頭ページ)の位置を返す(セグメント表示用)。
     /// 右→左読みでは読み順先頭が右ページになるため並びが反転する
-    /// EN: Reorder reading-order spread indices into physical left→right and
-    /// EN: return the position of the reading-first page (segment default).
     static func physicalOrder(readingOrderIndices: [Int], readsFromLeft: Bool)
         -> (ordered: [Int], initialPosition: Int) {
         guard readingOrderIndices.count == 2 else {

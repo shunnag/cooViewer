@@ -2,8 +2,6 @@ import AppKit
 
 /// 型付き設定アクセス。キー名は旧実装(仕様書 §6.1)と同一で、
 /// ドメイン jp.coo.cooViewer を引き継ぐため既存ユーザーの値がそのまま生きる。
-/// EN: Typed accessors over UserDefaults; key names stay legacy-compatible
-/// EN: so existing user settings keep working.
 @MainActor
 final class SettingsStore {
     static let shared = SettingsStore()
@@ -14,7 +12,6 @@ final class SettingsStore {
     }
 
     /// 揮発性既定値(旧 registerDefaults 相当。仕様書 §6.1)
-    /// EN: Volatile defaults, mirroring the legacy registerDefaults set.
     func registerDefaults() {
         defaults.register(defaults: [
             "ShowPageBar": true,
@@ -55,22 +52,28 @@ final class SettingsStore {
     /// 表示モード(仕様書 §3.2 fitScreenMode)。旧実装は永続化せず毎回 0 で
     /// 起動したが、新実装ではグローバル設定として保存する(仕様変更)。
     /// キー "FitMode" は新実装のみのキー(旧実装に同名キーは存在しない)
-    /// EN: Fit mode. The legacy app never persisted it (always relaunched at 0);
-    /// EN: the rewrite stores it globally under the new-only key "FitMode".
     var fitMode: ReaderView.FitMode {
         get { ReaderView.FitMode(rawValue: defaults.integer(forKey: "FitMode")) ?? .fitToScreen }
         set { defaults.set(newValue.rawValue, forKey: "FitMode") }
     }
 
     /// 見開きモードで先頭ページ(表紙)を単ページにする(新機能・既定オフ)
-    /// EN: Keep the first page (cover) single in spread modes (new; default off).
     var spreadCoverSingle: Bool {
         get { defaults.bool(forKey: "SpreadCoverSingle") }
         set { defaults.set(newValue, forKey: "SpreadCoverSingle") }
     }
 
+    /// ページめくり効果(新設キー・既定なし)。0=なし/1=フェード/2=スライド/
+    /// 3=ズームフェード/4=フリップ
+    var pageTurnAnimation: PageTurnAnimation {
+        get {
+            PageTurnAnimation(rawValue: defaults.integer(forKey: "PageTurnAnimation"))
+                ?? .none
+        }
+        set { defaults.set(newValue.rawValue, forKey: "PageTurnAnimation") }
+    }
+
     /// 見開き判定しきい値×1000(0 は 740 に補正。仕様書 §6.1)
-    /// EN: Spread aspect threshold x1000; 0 self-repairs to 740.
     var singleSetting: Int {
         let value = defaults.integer(forKey: "SingleSetting")
         return value == 0 ? PageLayout.defaultSingleSetting : value
@@ -82,7 +85,6 @@ final class SettingsStore {
     }
 
     /// 補間なし ⇔ 直前の補間を切り替える(直前が未保存なら「高」へ)
-    /// EN: Toggle between "none" and the previously used interpolation.
     func toggleInterpolationNone() {
         let current = defaults.integer(forKey: "Interpolation")
         if current == ReaderView.Interpolation.none.rawValue {
@@ -146,8 +148,6 @@ final class SettingsStore {
     /// ページキャッシュ上限(バイト)。既定は物理メモリの 15%(上限 6GB)。
     /// "PageCacheMegabytes" で明示指定可(0/未設定=自動)。
     /// 旧 ImageCache(枚数)は廃止(設計書「キャッシュ・先読み設計」)。
-    /// EN: Page cache budget in bytes: advanced percent when enabled, else
-    /// EN: legacy megabyte override, else 15% of RAM capped at 6GB.
     var pageCacheByteLimit: Int {
         let physical = Int(clamping: ProcessInfo.processInfo.physicalMemory)
         if advancedSettingsEnabled {
@@ -164,7 +164,6 @@ final class SettingsStore {
     // MARK: - 高度な設定(新設。設定タブ「高度」)
 
     /// 高度な設定の既定値。マスタースイッチ OFF のとき・リセット時はこの値
-    /// EN: Single source of truth for Advanced-tab defaults.
     enum AdvancedDefault {
         static let memoryPercent = 15
         static let prefetchAhead = 12
@@ -176,7 +175,6 @@ final class SettingsStore {
     }
 
     /// マスタースイッチ。OFF の間は下記アクセサすべてが既定値を返す
-    /// EN: Master switch; while off every accessor below returns its default.
     var advancedSettingsEnabled: Bool {
         defaults.bool(forKey: "AdvancedSettingsEnabled")
     }
@@ -227,8 +225,6 @@ final class SettingsStore {
     /// 読み込み・キャッシュ構築を自動調整する(既定 ON。設計書 キャッシュ節)。
     /// OFF では従来の固定動作(unknown プロファイル)になる。
     /// 高度設定で明示した値(先読み枚数・スプール方針)は常に自動より優先
-    /// EN: Adapt reading/caching to the volume speed (default on); off keeps
-    /// EN: the legacy fixed behavior. Explicit Advanced values always win.
     var adaptiveMediaTuning: Bool {
         get {
             defaults.object(forKey: "AdaptiveMediaTuning") == nil
@@ -240,7 +236,6 @@ final class SettingsStore {
     /// 書庫スプールの方針(高度設定の三択)。
     /// automatic=メディア速度で判断 / always=常に展開 / never=展開しない。
     /// マスタースイッチ OFF の間は automatic
-    /// EN: Archive-spool policy: automatic (by media speed) / always / never.
     enum SpoolPolicy: Int {
         case automatic = 0
         case always = 1
@@ -253,7 +248,6 @@ final class SettingsStore {
     }
 
     /// マスタースイッチ ON かつ保存済みのときだけ保存値(範囲内に丸める)を返す
-    /// EN: Stored value only when the switch is on and the key exists; clamped.
     private func advancedInt(_ key: String, default defaultValue: Int,
                              in range: ClosedRange<Int>) -> Int {
         guard advancedSettingsEnabled, defaults.object(forKey: key) != nil else {
@@ -264,7 +258,6 @@ final class SettingsStore {
 
     /// 背景色。新形式(sRGB 成分)を優先し、旧 NSArchiver データは一度だけ読み替える
     /// (仕様書 §13.5)。読めなければ黒。
-    /// EN: New sRGB-component key first, then legacy NSArchiver data, else black.
     var viewBackgroundColor: NSColor {
         get {
             if let components = defaults.array(forKey: "ViewBackgroundColorSRGB") as? [Double],
@@ -289,8 +282,6 @@ final class SettingsStore {
     /// NSArchiver 形式のオブジェクト(NSColor/NSFont)を読む。NSUnarchiver は
     /// Swift から直接使えないためランタイム経由で呼ぶ。失敗したら nil
     /// (既定値へフォールバック。設計書 §6 リスク表)。
-    /// EN: Decodes legacy NSArchiver blobs via NSUnarchiver through the
-    /// EN: ObjC runtime (not exposed to Swift); nil on any failure.
     private static func legacyUnarchivedObject(_ data: Data) -> AnyObject? {
         guard let unarchiverClass = NSClassFromString("NSUnarchiver") as? NSObject.Type else {
             return nil
@@ -336,7 +327,6 @@ final class SettingsStore {
 
     /// バブルのサムネイル表示。旧既定は OFF だったが新実装では ON を既定にする
     /// (明示保存された旧値は尊重。設計書 §2.4)
-    /// EN: Defaults to ON in the rewrite; an explicitly stored legacy 0 wins.
     var pageBarShowThumbnail: Bool {
         get {
             guard defaults.object(forKey: "PageBarShowThumbnail") != nil else { return true }
@@ -346,7 +336,6 @@ final class SettingsStore {
     }
 
     /// ページバー寸法(旧 {width,height} 辞書。0 値は旧実装同様補正 §6.2)
-    /// EN: Legacy {width,height} dict; zero values self-repair to 200x15.
     var pageBarSize: CGSize {
         get {
             let dict = defaults.dictionary(forKey: "PageBarSize")
@@ -363,8 +352,6 @@ final class SettingsStore {
 
     /// ページ番号フォント。新キー(ファミリー+サイズ)優先、旧 TextFont
     /// (NSArchiver)を読み替え、無ければ等幅数字のシステムフォント 11pt
-    /// EN: New family+size keys first, then legacy archived font, then the
-    /// EN: monospaced-digit system font.
     var pageNumFont: NSFont {
         let size = pageNumFontSize
         let family = defaults.string(forKey: "PageNumFontFamily") ?? ""
@@ -430,7 +417,6 @@ final class SettingsStore {
     }
 
     /// 色設定の共通経路: 新キー(sRGB 4 成分)→ 旧 NSArchiver データ → 既定値
-    /// EN: Shared color path: new sRGBA key -> legacy archived color -> default.
     private func color(newKey: String, legacyKey: String,
                        default defaultColor: NSColor) -> NSColor {
         if let components = defaults.array(forKey: newKey) as? [Double],
