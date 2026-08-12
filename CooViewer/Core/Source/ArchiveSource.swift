@@ -56,6 +56,18 @@ actor ArchiveSource: BookSource {
     /// エントリ独立圧縮の形式(並列展開しても solid ストリームの巻き戻しがない)
     private static let nonSolidExtensions: Set<String> = ["zip", "cbz"]
 
+    /// 展開プール(エントリ独立圧縮の形式のみ。PDFSource のレンダラープールと
+    /// 同型)。XADArchive は非スレッド安全なので actor 毎に独立の書庫を開き、
+    /// 未スプールのページ展開をエントリ間で並列化する(最大 3)。
+    /// 空きの再利用が最優先で、**全員使用中のときだけ**成長する:
+    /// 直列読み(HDD プロファイル等)では 1 つのままで余計に開かない。
+    /// 作成失敗(差し替え・削除)やエントリ数不一致は成長を恒久停止して
+    /// メイン書庫の直列展開に戻す(従来と同じ挙動)
+    private var extractors: [ArchiveEntryExtractor] = []
+    private var extractorBusyCounts: [Int] = []
+    private var extractorGrowthDisabled = false
+    private static let extractorPoolSize = 3
+
     /// いまの状態での並列可否: 全ページスプール済み(ローカル読みのみ)か、
     /// エントリ独立圧縮の形式のみ true。solid 書庫(rar/7z 等)は順不同展開で
     /// ストリームが巻き戻るため、未スプールの間は従来どおり直列
@@ -250,6 +262,14 @@ actor ArchiveSource: BookSource {
             // nonisolated async はグローバル実行系で走るため、このデコードは
             // actor の外。展開・スプールと画像デコードが並行できる
             return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
+        case .pooled(let poolIndex, let extractor, let entryIndex):
+            // 展開は貸し出された係の隔離で走る(本 actor と他の係に対して並列)
+            let data = await extractor.contents(ofEntry: entryIndex)
+            await releaseExtractor(poolIndex)
+            guard let data else {
+                throw BookSourceError.pageLoadFailed(entry.name)
+            }
+            return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
         }
     }
 
@@ -266,10 +286,13 @@ actor ArchiveSource: BookSource {
             at: directory.appendingPathComponent(String(entry.id)))
     }
 
-    /// ページの中身: 子ソースへの委譲か、生データ(actor 内で取り出す)
+    /// ページの中身の取り出し方(actor 内で決定する)。
+    /// pooled はプールの展開係を貸し出し、実際の展開は actor の外
+    /// (extractor 自身の隔離)で行う — 展開どうし・スプールと並列になる
     private enum PageContent {
         case data(Data)
         case child(any BookSource, PageEntry)
+        case pooled(poolIndex: Int, extractor: ArchiveEntryExtractor, entryIndex: Int32)
     }
 
     private func pageContent(for entry: PageEntry) throws -> PageContent {
@@ -279,12 +302,57 @@ actor ArchiveSource: BookSource {
         if let spooled = spooledData(for: entry.id) {
             return .data(spooled)
         }
-        if let index = Int32(exactly: entry.id),
-           let extracted = archive.contents(ofEntry: index) {
-            return .data(extracted)
+        guard let index = Int32(exactly: entry.id) else {
+            throw BookSourceError.pageLoadFailed(entry.name)
         }
-        throw BookSourceError.pageLoadFailed(entry.name)
+        if let (poolIndex, extractor) = acquireExtractor() {
+            return .pooled(poolIndex: poolIndex, extractor: extractor,
+                           entryIndex: index)
+        }
+        guard let extracted = archive.contents(ofEntry: index) else {
+            throw BookSourceError.pageLoadFailed(entry.name)
+        }
+        return .data(extracted)
     }
+
+    /// 展開係の貸し出し(エントリ独立圧縮の形式のみ)。空き優先・
+    /// 全員使用中のときだけ成長・成長不能時はいちばん空いている係に相乗り
+    private func acquireExtractor() -> (Int, ArchiveEntryExtractor)? {
+        guard Self.nonSolidExtensions.contains(url.pathExtension.lowercased())
+        else { return nil }
+        if let idle = extractorBusyCounts.indices.first(
+            where: { extractorBusyCounts[$0] == 0 }) {
+            extractorBusyCounts[idle] += 1
+            return (idle, extractors[idle])
+        }
+        if !extractorGrowthDisabled, extractors.count < Self.extractorPoolSize {
+            // エントリ数の一致を検証してから採用する(開いた後にファイルが
+            // 差し替えられた場合、一覧と食い違う内容を展開しないため)
+            if let extractor = ArchiveEntryExtractor(
+                url: url, password: password,
+                expectedEntryCount: archive.numberOfEntries()) {
+                extractors.append(extractor)
+                extractorBusyCounts.append(1)
+                return (extractors.count - 1, extractor)
+            }
+            extractorGrowthDisabled = true
+        }
+        guard !extractors.isEmpty else { return nil }
+        var index = 0
+        for i in extractorBusyCounts.indices
+            where extractorBusyCounts[i] < extractorBusyCounts[index] { index = i }
+        extractorBusyCounts[index] += 1
+        return (index, extractors[index])
+    }
+
+    private func releaseExtractor(_ index: Int) {
+        if extractorBusyCounts.indices.contains(index) {
+            extractorBusyCounts[index] -= 1
+        }
+    }
+
+    /// テスト用: 生成済みの展開係の数
+    var extractorCount: Int { extractors.count }
 
     /// ルーペ用。ネストした PDF はベクトルから倍率連動で描き直せるよう子へ委譲する
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
@@ -389,5 +457,28 @@ actor ArchiveSource: BookSource {
         // 大きなページのコピーを 1 回分省く
         return try? Data(contentsOf: directory.appendingPathComponent(String(id)),
                          options: .mappedIfSafe)
+    }
+}
+
+/// 書庫エントリの展開係(独立した XADArchive を actor で直列化)。
+/// ArchiveSource がプールとして複数持ち、エントリ独立圧縮の形式(zip 系)で
+/// エントリ間の並列展開を実現する(PDFPageRenderer と同型)
+actor ArchiveEntryExtractor {
+    private let archive: XADArchive
+
+    /// expectedEntryCount: メイン書庫のエントリ数。開いた後にファイルが
+    /// 差し替えられていた場合に、一覧と食い違う内容を展開しないための検証
+    /// (エントリ数が同じ差し替えまでは検出しない割り切り。PDF 側と同じ)
+    init?(url: URL, password: String?, expectedEntryCount: Int32) {
+        guard let archive = XADArchive(file: url.path) else { return nil }
+        if let password {
+            archive.setPassword(password)
+        }
+        guard archive.numberOfEntries() == expectedEntryCount else { return nil }
+        self.archive = archive
+    }
+
+    func contents(ofEntry index: Int32) -> Data? {
+        archive.contents(ofEntry: index)
     }
 }

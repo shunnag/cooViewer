@@ -131,6 +131,53 @@ final class ImageResamplerTests: XCTestCase {
         XCTAssertLessThan(Int(data[offset + 2]), 120)     // B
     }
 
+    func testDownscalePreservesColor() async throws {
+        // GPU(Lanczos)縮小経路でも色が化けないこと
+        let source = try ImageDecoding.decode(
+            TestFixtures.pngData(width: 100, height: 100, red: 0.9, green: 0.2, blue: 0.2))
+        let resampled = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 50, height: 50),
+            cacheKey: "t-down-color", upscaleWithMetalFX: false)
+        let result = try XCTUnwrap(resampled)
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let offset = 25 * result.bytesPerRow + 25 * (result.bitsPerPixel / 8)
+        XCTAssertGreaterThan(Int(data[offset]), 180)      // R
+        XCTAssertLessThan(Int(data[offset + 1]), 120)     // G
+        XCTAssertLessThan(Int(data[offset + 2]), 120)     // B
+    }
+
+    /// 上半分が赤・下半分が青の画像(メモリ先頭行=画像上端)
+    private func twoToneImage(width: Int, height: Int) -> CGImage {
+        let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        // CG の描画座標は下原点: y 上半分の矩形がメモリ先頭側(画像上端)になる
+        context.setFillColor(CGColor(srgbRed: 0.9, green: 0.1, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: height / 2, width: width, height: height / 2))
+        context.setFillColor(CGColor(srgbRed: 0.1, green: 0.1, blue: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height / 2))
+        return context.makeImage()!
+    }
+
+    func testDownscaleKeepsOrientation() async throws {
+        // CIImage 経路で上下が反転しないこと(向きの回帰防止)
+        let source = twoToneImage(width: 64, height: 64)
+        let resampled = await ImageResampler.shared.resample(
+            source, to: CGSize(width: 32, height: 32),
+            cacheKey: "t-down-orient", upscaleWithMetalFX: false)
+        let result = try XCTUnwrap(resampled)
+        let data = try XCTUnwrap(result.dataProvider?.data as Data?)
+        let pixelBytes = result.bitsPerPixel / 8
+        let top = 4 * result.bytesPerRow + 16 * pixelBytes
+        let bottom = 28 * result.bytesPerRow + 16 * pixelBytes
+        XCTAssertGreaterThan(Int(data[top]), 150, "上端は赤のはず")
+        XCTAssertLessThan(Int(data[top + 2]), 100)
+        XCTAssertGreaterThan(Int(data[bottom + 2]), 150, "下端は青のはず")
+        XCTAssertLessThan(Int(data[bottom]), 100)
+    }
+
     func testSameSizeReturnsOriginal() async {
         let source = image(width: 30, height: 30)
         let result = await ImageResampler.shared.resample(

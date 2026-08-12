@@ -291,6 +291,23 @@ final class ReaderView: NSView {
         needsLayout = true
     }
 
+    /// まだ表示していないページの表示ピクセルサイズを予測する(次スプレッドの
+    /// 事前リサンプル用)。現在のフィットモード・回転・ウインドウ実寸で、
+    /// このサイズのページを表示したときのリサンプル目標と同じ値を返す。
+    /// 事前リサンプルが不要な補間モード(なし/低)や未レイアウトでは nil
+    func predictedResampleSizes(for sizes: [CGSize]) -> [CGSize]? {
+        guard interpolation == .systemDefault || interpolation == .high,
+              !sizes.isEmpty else { return nil }
+        let available = availableSize
+        guard available.width > 0, available.height > 0 else { return nil }
+        let backingScale = window?.backingScaleFactor ?? 2
+        let scales = pageScales(for: sizes, available: available)
+        return zip(sizes, scales).map {
+            CGSize(width: ($0.width * $1 * backingScale).rounded(),
+                   height: ($0.height * $1 * backingScale).rounded())
+        }
+    }
+
     /// ページ毎のスケール(仕様書 §4.2.3, §3.2)
     private func pageScales(for sizes: [CGSize], available: CGSize) -> [CGFloat] {
         let pageCount = CGFloat(sizes.count)

@@ -892,6 +892,50 @@ final class ReaderWindowController: NSWindowController {
         if isThumbnailOverlayVisible {
             thumbnailOverlayModel.follow(book: book, displayedIndices: spread.indices)
         }
+        preresampleAdjacentSpread()
+    }
+
+    /// 進行方向の隣のスプレッドを表示ピクセルサイズへ事前リサンプルして
+    /// ImageResampler の LRU に載せる(設計書 §5 描画品質)。めくった直後の
+    /// 最初の描画から等倍のシャープな画像になる(従来は一瞬 CALayer の
+    /// trilinear 表示 → リサンプル完成後に差し替えだった)。
+    /// 現スプレッドのリサンプル(scheduleHighQualityResample)と GPU を
+    /// 奪い合わないよう少し遅らせて始め、表示が先へ進んでいたら捨てる
+    private func preresampleAdjacentSpread() {
+        guard let book, book.pageCount > 0 else { return }
+        let forward = book.lastMoveForward
+        let generation = displayGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, let book = self.book,
+                  generation == self.displayGeneration else { return }
+            let indices = await book.predictedAdjacentSpreadIndices(forward: forward)
+            guard !indices.isEmpty else { return }
+            var images: [CGImage] = []
+            for index in indices {
+                // 先読み済みならキャッシュ命中、未了なら進行中のデコードに合流。
+                // HDR(>8bit)ページは通常表示側もリサンプルしないので対象外
+                guard let image = await book.image(at: index),
+                      image.bitsPerComponent <= 8 else { return }
+                images.append(image)
+            }
+            // デコード待ちの間に表示が進んでいたら破棄する
+            // (次の refreshDisplay が改めて予約する)
+            guard generation == self.displayGeneration, book === self.book else { return }
+            let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
+            guard let targets = self.readerViewForInput.predictedResampleSizes(
+                for: sizes) else { return }
+            let useMetalFX = self.settings.interpolation == .high
+            for (position, image) in images.enumerated() {
+                let index = indices[position]
+                guard book.entries.indices.contains(index) else { continue }
+                // キーは ReaderView の実表示時と同一(そこでキャッシュ命中する)
+                _ = await ImageResampler.shared.resample(
+                    image, to: targets[position],
+                    cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
+                    upscaleWithMetalFX: useMetalFX)
+            }
+        }
     }
 
     /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)
