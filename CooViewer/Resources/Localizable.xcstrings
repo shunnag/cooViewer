@@ -2785,6 +2785,26 @@
         }
       }
     },
+    "While advanced settings are off, prefetch depth is set automatically from memory size, window size, and media speed (minimums: SSD 12, HDD 16, network 20 pages)." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高度な設定がオフの間は、メモリ量・ウインドウサイズ・メディア速度から先読みページ数を自動決定します(下限: SSD 12 / HDD 16 / ネットワーク 20 ページ)。"
+          }
+        }
+      }
+    },
+    "While advanced settings are off: 15% of physical memory (up to 16 GB)." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高度な設定がオフの間は物理メモリの 15%(上限 16 GB)です。"
+          }
+        }
+      }
+    },
     "Use advanced settings" : {
       "localizations" : {
         "ja" : {
@@ -2881,16 +2901,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "前のページに戻ったとき:"
-          }
-        }
-      }
-    },
-    "While advanced settings are off, prefetch depth follows the media speed: SSD 12/3, HDD 16/4, network 20/4." : {
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "高度な設定がオフの間、先読みの深さはメディア速度に追従します(SSD 12/3・HDD 16/4・ネットワーク 20/4)。"
           }
         }
       }

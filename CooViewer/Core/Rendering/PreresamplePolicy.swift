@@ -22,4 +22,24 @@ enum PreresamplePolicy {
         let budget = byteBudget(physicalMemory: physicalMemory)
         return min(maxPages, max(1, budget / bytesPerPage))
     }
+
+    // MARK: - デコード先読み(PageCache 側)の深さ
+
+    /// デコード先読み(進行方向)のページ数。
+    /// 「リサンプル先読み+4」(事前リサンプルが常にデコード済みへ命中し、
+    /// I/O と ML 計算が直列化しない深さ)と「PageCache 予算の 1/3 に収まる
+    /// 深さ」(現スプレッド・戻り分・ルーペの余裕を残す)の大きい方を採り、
+    /// 媒体別下限(SSD 12/HDD 16/ネットワーク 20)〜maxPages に丸める
+    static func decodeAhead(resamplePages: Int, decodedPageBytes: Int,
+                            pageCacheByteLimit: Int, mediaFloor: Int) -> Int {
+        let byBudget = decodedPageBytes > 0
+            ? pageCacheByteLimit / 3 / decodedPageBytes : 0
+        let wanted = max(resamplePages + 4, byBudget)
+        return min(maxPages, max(mediaFloor, wanted))
+    }
+
+    /// デコード先読み(逆方向)。戻り読みの体感用に進行方向の 1/4(3...16)
+    static func decodeBehind(ahead: Int) -> Int {
+        min(16, max(3, ahead / 4))
+    }
 }

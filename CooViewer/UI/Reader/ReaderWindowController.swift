@@ -345,8 +345,10 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 設定「高度」の値を本へ反映する(キャッシュ上限は開き直しで反映)。
-    /// 高度設定 OFF のときの先読み深さは、置き場所の速度プロファイルの
-    /// 既定値(遅い媒体ほど深く)を使う。ON なら明示値を尊重する
+    /// 高度設定 OFF のときの先読み深さは、まず置き場所の速度プロファイルの
+    /// 既定値(遅い媒体ほど深く)を初期値にし、ページ実サイズが判明した
+    /// refreshDisplay で updatePrefetchDepth がメモリ予算連動へ引き上げる。
+    /// ON なら明示値を尊重する
     private func applyAdvancedSettings(to book: Book) {
         if settings.advancedSettingsEnabled {
             book.prefetchAhead = settings.prefetchAheadCount
@@ -357,6 +359,38 @@ final class ReaderWindowController: NSWindowController {
         }
         // キャップは raise 時のクリアを通して反映(設定の上限引き上げにも追従)
         refreshDisplayIfCapRaised()
+    }
+
+    /// デコード先読みの深さをメモリ条件に合わせて更新する(設計書 §5)。
+    /// 実測のデコード済みページサイズと表示リサンプルの実効ページ数から、
+    /// 事前リサンプルが常にデコード済みへ命中する深さを確保する
+    /// (固定 12-20 ページのままでは大容量機でリサンプル先読みに追い越され、
+    /// I/O と ML 計算が直列化していた)。高度設定 ON は明示値を尊重
+    private func updatePrefetchDepth(book: Book, images: [CGImage]) {
+        if settings.advancedSettingsEnabled {
+            book.prefetchAhead = settings.prefetchAheadCount
+            book.prefetchBehind = settings.prefetchBehindCount
+            return
+        }
+        guard let first = images.first else { return }
+        let decodedBytes = first.bytesPerRow * first.height
+        // 表示リサンプルの実効ページ数(補間なし/低では事前リサンプル自体が
+        // 無いので 0 = 媒体別下限と PageCache 予算だけで決まる)
+        var resamplePages = 0
+        if let targets = readerView.predictedResampleSizes(
+            for: images.map { CGSize(width: $0.width, height: $0.height) }),
+           let firstTarget = targets.first {
+            resamplePages = PreresamplePolicy.pageBudget(
+                bytesPerPage: Int(firstTarget.width) * Int(firstTarget.height) * 4,
+                physicalMemory: ProcessInfo.processInfo.physicalMemory)
+        }
+        book.prefetchAhead = PreresamplePolicy.decodeAhead(
+            resamplePages: resamplePages,
+            decodedPageBytes: decodedBytes,
+            pageCacheByteLimit: settings.pageCacheByteLimit,
+            mediaFloor: book.mediaProfile.defaultPrefetchAhead)
+        book.prefetchBehind = PreresamplePolicy.decodeBehind(
+            ahead: book.prefetchAhead)
     }
 
     /// いまのウインドウ実寸・原寸表示設定から適切なデコード上限を求める
@@ -983,6 +1017,8 @@ final class ReaderWindowController: NSWindowController {
             book.entries.indices.contains(index) ? book.entries[index].id : index
         }
         displayedEntryIDs = Set(ids)
+        // デコード先読みの深さを実ページサイズ・メモリ条件へ追従させる
+        updatePrefetchDepth(book: book, images: images)
         // 保留していた先読みキャンセルの確定: 処理中のページが表示対象なら
         // 完走させて結果をそのまま表示に使う(途中まで進んだ推論を捨てて
         // 最初からやり直すより速い。タスクは世代チェックで自然停止する)
