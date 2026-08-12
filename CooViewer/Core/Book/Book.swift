@@ -30,7 +30,8 @@ final class Book {
     private let cache: PageCache
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
-    private var lastMoveForward = true
+    /// 直近の移動方向(先読み・事前リサンプルの向きの決定に使う)
+    private(set) var lastMoveForward = true
 
     /// アニメーション判定で「静止画」と分かったページ(entry.id)。
     /// 表示のたびに生データを読み直して判定し直すのを防ぐ
@@ -371,6 +372,33 @@ final class Book {
             start += length
         }
         currentIndex = start
+    }
+
+    /// 次(forward)または前のスプレッドの予測インデックス列。現在位置は
+    /// 動かさない(事前リサンプル用。ReaderWindowController が表示ピクセル
+    /// サイズへの先行リサンプルに使う)。ペア判定は moveNext/movePrevious と
+    /// 同じ規則だが、サイズ索引で確定できない場合はデコードせず単ページと
+    /// 予測する(先読みの完了後に確定するので外れても実害はない)。
+    /// 端(次/前が無い)では空を返す
+    func predictedAdjacentSpreadIndices(forward: Bool) async -> [Int] {
+        guard !entries.isEmpty else { return [] }
+        if forward {
+            let start = currentIndex + lastDisplayCount
+            guard start < entries.count else { return [] }
+            if readMode.isSpread, start + 1 < entries.count,
+               await isSmallFromIndex(at: start) == true,
+               await isSmallFromIndex(at: start + 1) == true {
+                return [start, start + 1]
+            }
+            return [start]
+        }
+        guard currentIndex > 0 else { return [] }
+        if readMode.isSpread, currentIndex >= 2,
+           await isSmallFromIndex(at: currentIndex - 2) == true,
+           await isSmallFromIndex(at: currentIndex - 1) == true {
+            return [currentIndex - 2, currentIndex - 1]
+        }
+        return [currentIndex - 1]
     }
 
     /// パーセントジャンプ(旧 goToPar)。上限クランプなしの旧仕様を維持し、

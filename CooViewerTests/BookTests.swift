@@ -174,6 +174,52 @@ final class BookTests: XCTestCase {
         XCTAssertEqual(single.currentIndex, 2)
     }
 
+    /// 次スプレッドの予測: サイズ判明済みならペア、端では空
+    func testPredictedAdjacentSpreadForward() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait, portrait])
+        _ = await book.currentSpread()               // (0,1) 表示
+        // サイズ未取得のうちは単ページと保守的に予測する
+        var predicted = await book.predictedAdjacentSpreadIndices(forward: true)
+        XCTAssertEqual(predicted, [2])
+        // デコードでサイズ索引が埋まればペアと予測する
+        _ = await book.image(at: 2)
+        _ = await book.image(at: 3)
+        predicted = await book.predictedAdjacentSpreadIndices(forward: true)
+        XCTAssertEqual(predicted, [2, 3])
+        // 末尾のスプレッド表示中は次が無い
+        book.goTo(index: 2)
+        _ = await book.currentSpread()
+        predicted = await book.predictedAdjacentSpreadIndices(forward: true)
+        XCTAssertEqual(predicted, [])
+    }
+
+    /// 前スプレッドの予測: ペア判定は movePrevious と同じ規則、先頭では空
+    func testPredictedAdjacentSpreadBackward() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait, portrait])
+        _ = await book.image(at: 0)
+        _ = await book.image(at: 1)
+        book.goTo(index: 2)
+        _ = await book.currentSpread()
+        let predicted = await book.predictedAdjacentSpreadIndices(forward: false)
+        XCTAssertEqual(predicted, [0, 1])
+        book.goTo(index: 0)
+        let atStart = await book.predictedAdjacentSpreadIndices(forward: false)
+        XCTAssertEqual(atStart, [])
+    }
+
+    /// 単ページモードの予測は常に 1 ページ
+    func testPredictedAdjacentSpreadInSingleMode() async throws {
+        let book = try await makeBook(
+            [portrait, portrait, portrait], readMode: .rightToLeftSingle)
+        _ = await book.currentSpread()
+        _ = await book.image(at: 1)
+        _ = await book.image(at: 2)
+        let predicted = await book.predictedAdjacentSpreadIndices(forward: true)
+        XCTAssertEqual(predicted, [1])
+    }
+
     func testMoveNextAdvancesBySpreadWidthAndDetectsEnd() async throws {
         let book = try await makeBook([portrait, portrait, portrait])
         _ = await book.currentSpread()               // [0,1]

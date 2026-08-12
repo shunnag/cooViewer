@@ -12,6 +12,7 @@ actor ImageResampler {
     private var order: [String] = []
     private let countLimit = 8
     private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
+    private lazy var lanczos: LanczosDownscaler? = LanczosDownscaler()
 
     /// image を pixelSize(デバイスピクセル)へリサンプルする。
     /// 同サイズなら image をそのまま返す。upscaleWithMetalFX は拡大時のみ有効で、
@@ -36,6 +37,10 @@ actor ImageResampler {
         var result: CGImage?
         if isUpscale, upscaleWithMetalFX {
             result = metalFXUpscale(image, width: width, height: height)
+        }
+        // 縮小は GPU の Lanczos を最優先(CPU の CG 高品質補間はフォールバック)
+        if result == nil, !isUpscale {
+            result = lanczos?.downscale(image, to: CGSize(width: width, height: height))
         }
         if result == nil {
             result = Self.cgResample(image, width: width, height: height)
