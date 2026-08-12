@@ -6,10 +6,12 @@ import Foundation
 /// アニメ・マンガ絵の JPEG ノイズ除去に特化した小さな CNN で、
 /// CINoiseReduction より大幅に高品質(1 タイル 128×128 を約 2ms で処理)。
 ///
-/// モデル(約 1.2MB)はアプリに同梱せず、「強」を初回選択して同意した後の
-/// **必要時にのみ**配布元(imxieyi/waifu2x-mac、MIT ライセンス)から
+/// モデル(約 1.2MB)はアプリに同梱せず、「超高」を初回選択して同意した後の
+/// **必要時にのみ**本リポジトリのリリース資産(models-1 タグ。外部リポジトリの
+/// 構成変更に影響されない自前配信。元は imxieyi/waifu2x-mac、MIT ライセンス。
+/// 帰属表示とライセンス全文はリリース側の LICENSES-models.txt)から
 /// ダウンロードする(取得・検証・コンパイルは MLModelInstaller が共通処理)。
-/// 未導入・失敗時の「強」は CINoiseReduction(中相当)へフォールバックする
+/// 未導入・失敗時の「超高」は CINoiseReduction(中相当)へフォールバックする
 /// (ImageResampler 側)。
 actor MLNoiseReducer {
     static let shared = MLNoiseReducer()
@@ -20,7 +22,7 @@ actor MLNoiseReducer {
     private let installer = MLModelInstaller(
         specification: .init(
             downloadURL: URL(string:
-                "https://raw.githubusercontent.com/imxieyi/waifu2x-mac/master/waifu2x-mac/models/anime_noise2_model.mlmodel")!,
+                "https://github.com/shunnag/cooViewer/releases/download/models-1/anime_noise2_model.mlmodel")!,
             sha256: "bda49fe8993393ae7f90333ce7c92455736c26f740f9d65edf3e1c55494af57f",
             fileName: "anime_noise2_model.mlmodel"),
         status: MLModelInstallStatus.noise)
