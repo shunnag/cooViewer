@@ -1002,9 +1002,9 @@ final class ReaderWindowController: NSWindowController {
     /// ImageResampler の LRU に載せる(設計書 §5 描画品質)。めくった直後の
     /// 最初の描画から等倍のシャープな画像になる(従来は一瞬 CALayer の
     /// trilinear 表示 → リサンプル完成後に差し替えだった)。
-    /// 先へ進む量は最大 5 ページ、ただしメモリ予算(PreresamplePolicy:
-    /// 1 ページの表示サイズ × 枚数が物理メモリの 1/32・最大 512MB に収まる数)
-    /// まで。近いスプレッドから順に行い、現スプレッドのリサンプル
+    /// 先へ進む量はメモリ予算(PreresamplePolicy: 1 ページの表示サイズ ×
+    /// 枚数が物理メモリの 1/8・最大 4GB に収まる数。ページ数上限 64 は
+    /// 小さすぎるページでの保険)まで。近いスプレッドから順に行い、現スプレッドのリサンプル
     /// (scheduleHighQualityResample)と GPU を奪い合わないよう少し遅らせて
     /// 始め、表示が先へ進んでいたら残りを捨てる
     private func preresampleAdjacentSpread() {

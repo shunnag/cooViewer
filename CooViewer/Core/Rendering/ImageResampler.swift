@@ -7,8 +7,8 @@ import Foundation
 /// 縮小は GPU の Lanczos(CG はフォールバック)、拡大は MetalFX Spatial
 /// (任意)で事前リサンプルした等倍画像を作る。
 /// 結果はバイト基準の LRU に保持する: 現スプレッド+先行リサンプル
-/// (最大 5 ページ)+ルーペ超解像が互いに追い出し合わない量を確保しつつ、
-/// メモリ圧迫通知で半分に自動トリムする。
+/// (PreresamplePolicy の予算・最大 4GB)+ルーペ超解像が互いに
+/// 追い出し合わない量を確保しつつ、メモリ圧迫通知で半分に自動トリムする。
 actor ImageResampler {
     static let shared = ImageResampler()
 
@@ -16,7 +16,8 @@ actor ImageResampler {
     private var order: [String] = []  // 末尾が最新(MRU)
     private var costs: [String: Int] = [:]
     private var totalCost = 0
-    /// 合計バイト上限(既定: 物理メモリの 1/16、最大 512MB)
+    /// 合計バイト上限(既定: 物理メモリの 1/6、最大 4.5GB。
+    /// 先読み予算(1/8・最大 4GB)+表示中スプレッド・ルーペ分の余裕)
     private let byteLimit: Int
     private var pressureSource: (any DispatchSourceMemoryPressure)?
     private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
@@ -24,8 +25,8 @@ actor ImageResampler {
     private lazy var noiseReducer: NoiseReducer? = NoiseReducer()
 
     init(byteLimit: Int = min(
-        512 << 20,
-        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 16)) {
+        4608 << 20,
+        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 6)) {
         self.byteLimit = max(1, byteLimit)
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))
