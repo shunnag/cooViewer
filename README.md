@@ -179,9 +179,10 @@ MacPaw), which power archive extraction and filename-encoding detection.
   (BSD 3-Clause)の自前 CoreML 変換。いずれも本リポジトリの
   [models-1 リリース](https://github.com/shunnag/cooViewer/releases/tag/models-1)から
   配信し、ライセンス全文は同リリースの `LICENSES-models.txt` に同梱
-- 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みですが、
-  ライセンス文書は参照用に [Licence_RemoteControlWrapper.txt](Licence_RemoteControlWrapper.txt)
-  として残しています
+- 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みです。旧版由来の
+  ライセンス文書([Licence_RemoteControlWrapper.txt](legacy/Licence_RemoteControlWrapper.txt)、
+  [Licence_xad.txt](legacy/Licence_xad.txt) — 現行の正式なライセンスはサブモジュール
+  `XADMaster/LICENSE` / `UniversalDetector/LICENSE`)は参照用に [legacy/](legacy/) にあります
 
 旧版の README・操作説明は [docs/](docs/)(原作者による GitHub Pages)と
 [`legacy/`](legacy/) を参照してください。
