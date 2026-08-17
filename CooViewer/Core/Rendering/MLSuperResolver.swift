@@ -307,7 +307,7 @@ actor MLSuperResolver {
 
     private nonisolated static var cacheDirectory: URL {
         FileManager.default
-            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .userDomainDirectory(.cachesDirectory)
             .appendingPathComponent("jp.coo.cooViewer/SuperRes")
     }
 

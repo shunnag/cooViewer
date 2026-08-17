@@ -31,7 +31,7 @@ actor ThumbnailCache {
 
     init(diskRoot: URL? = nil) {
         self.diskRoot = diskRoot ?? FileManager.default
-            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .userDomainDirectory(.cachesDirectory)
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails-v2")
     }
 
@@ -121,7 +121,7 @@ actor ThumbnailCache {
     /// キャッシュは使い捨て可能なので変換はせず作り直す
     nonisolated static func removeLegacyCacheDirectory() {
         let legacy = FileManager.default
-            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .userDomainDirectory(.cachesDirectory)
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails")
         try? FileManager.default.removeItem(at: legacy)
     }

@@ -24,7 +24,7 @@ final class BookHistoryStore {
     init(defaults: UserDefaults = .standard, directory: URL? = nil) {
         self.defaults = defaults
         self.directory = directory ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .userDomainDirectory(.applicationSupportDirectory)
             .appendingPathComponent("jp.coo.cooViewer/BookStates")
     }
 
