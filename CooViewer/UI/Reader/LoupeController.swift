@@ -169,7 +169,9 @@ extension ReaderWindowController {
                         if let upscaled = await ImageResampler.shared.resample(
                             image, to: target,
                             cacheKey: "loupe-sr-\(book.cacheKey)-\(book.entries[index].id)",
-                            upscaleWithMetalFX: true) {
+                            upscaleWithMetalFX: true,
+                            // パスワード付き書庫の復号済みページを平文で残さない(CWE-312)
+                            superResEncrypted: currentBookIsEncrypted) {
                             image = upscaled
                         }
                     }

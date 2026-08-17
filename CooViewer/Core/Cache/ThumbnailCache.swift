@@ -170,19 +170,29 @@ actor ThumbnailCache {
         }
     }
 
-    /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)
+    /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)。
+    /// パスワード付き書庫はディスク層を素通りしメモリのみで扱う(下記)。
     private static func loadOrGenerate(entry: PageEntry, source: any BookSource,
                                        fileURL: URL) async -> CGImage? {
         // 実行に入る前にキャンセル済みなら何もしない(遠いページの早期破棄)。
         // ソース呼び出しが始まった後は完走させてキャッシュに残す
         guard !Task.isCancelled else { return nil }
-        if let data = try? Data(contentsOf: fileURL),
+        // パスワード付き書庫の復号済みページを平文でディスクに残さない(CWE-312)。
+        // 暗号化ソースはディスク層(読み取りも書き込みも)を素通りさせ、生成物は
+        // 呼び出し元のメモリキャッシュにだけ載せる。これでセッション内の性能は
+        // 保ちつつ、Caches/ に平文サムネイルを残さない。キャンセル判定の後に
+        // 一度だけ await するので、キャンセル意味論もホットパスの await 回数も変えない。
+        let encrypted = await source.isEncrypted()
+        if !encrypted,
+           let data = try? Data(contentsOf: fileURL),
            let image = try? ImageDecoding.decode(data) {
             return image
         }
         guard let image = try? await source.image(
             for: entry, maxPixelSize: maxPixelSize) else { return nil }
-        writeToDisk(image, at: fileURL)
+        if !encrypted {
+            writeToDisk(image, at: fileURL)
+        }
         return image
     }
 

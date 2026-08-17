@@ -57,6 +57,10 @@ final class ReaderView: NSView {
     private(set) var pageIDs: [Int] = []
     /// リサンプルキャッシュの名前空間(本の cacheKey。本切替時の取り違え防止)
     var resampleKeyPrefix = ""
+    /// 超解像(最高)のディスクキャッシュを暗号化して残すか。パスワード付き書庫では
+    /// true を注入し、復号済みページをキーチェーン鍵で暗号化して SuperRes/ に
+    /// 残す(平文で残さない。CWE-312)。既定 false(通常本は従来どおり平文)
+    var superResDiskCacheEncrypted = false
     /// 見開きしきい値(横長判定。fitWidthDivide 用。設定から注入される)
     var singleSetting = PageLayout.defaultSingleSetting
     private(set) var readsFromLeft = false
@@ -606,7 +610,8 @@ final class ReaderView: NSView {
                 guard let resampled = await ImageResampler.shared.resample(
                     request.image, to: request.pixelSize,
                     cacheKey: request.key, upscaleWithMetalFX: useMetalFX,
-                    noiseReduction: request.noiseReduction) else { continue }
+                    noiseReduction: request.noiseReduction,
+                    superResEncrypted: superResDiskCacheEncrypted) else { continue }
                 guard !Task.isCancelled else { return }
                 self.applyResampled(resampled, size: request.pixelSize,
                                     at: request.index, generation: generation,

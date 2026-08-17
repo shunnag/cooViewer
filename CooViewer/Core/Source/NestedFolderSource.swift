@@ -230,6 +230,14 @@ actor NestedFolderSource: BookSource {
         await unlocker.sawSkippedChild
     }
 
+    /// フォルダ自体は暗号化されないが、組み立て時に暗号化された子(書庫/PDF)を
+    /// 解除して束ねていれば、復号済み保護コンテンツを含む本になる(CWE-312)。
+    /// 判定は子の解除が終わる build 後に確定する
+    func containsProtectedContent() async -> Bool {
+        await buildIfNeeded()
+        return await unlocker.sawUnlockedChild
+    }
+
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {
         await unlocker.setProvider(provider)
     }

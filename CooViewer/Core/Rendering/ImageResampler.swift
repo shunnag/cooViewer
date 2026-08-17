@@ -48,7 +48,8 @@ actor ImageResampler {
     /// 圧縮ノイズ低減を掛ける(拡大時にノイズを増幅させないため前段で行う)
     func resample(_ image: CGImage, to pixelSize: CGSize,
                   cacheKey: String, upscaleWithMetalFX: Bool,
-                  noiseReduction: NoiseReductionLevel = .none) async -> CGImage? {
+                  noiseReduction: NoiseReductionLevel = .none,
+                  superResEncrypted: Bool = false) async -> CGImage? {
         let width = Int(pixelSize.width.rounded())
         let height = Int(pixelSize.height.rounded())
         guard width > 0, height > 0 else { return nil }
@@ -64,7 +65,8 @@ actor ImageResampler {
         // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
         // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
         let source = await reducedSource(of: image, level: noiseReduction,
-                                         cacheKey: cacheKey)
+                                         cacheKey: cacheKey,
+                                         encrypted: superResEncrypted)
         // キャンセルされた呼び出しの結果は捨てる: ML がキャンセルで nil を
         // 返すと source は CI フォールバックの絵になっており、これを
         // キャッシュすると ML 用キーに非 ML の結果が残る(先読みの
@@ -142,13 +144,14 @@ actor ImageResampler {
     /// フォールバックする(最高→強→中相当の CI)
     private func reducedSource(of image: CGImage,
                                level: NoiseReductionLevel,
-                               cacheKey: String?) async -> CGImage {
+                               cacheKey: String?,
+                               encrypted: Bool = false) async -> CGImage {
         guard level != .none else { return image }
         if level == .maximum {
             // ディスクキャッシュのキーは元画像サイズまで含めて一意にする
             let srKey = cacheKey.map { "\($0)|\(image.width)x\(image.height)|sr4" }
             if let upscaled = await MLSuperResolver.shared.upscale(
-                image, cacheKey: srKey) {
+                image, cacheKey: srKey, encrypted: encrypted) {
                 return upscaled
             }
         }
