@@ -303,19 +303,18 @@ final class SettingsStore {
         return min(range.upperBound, max(range.lowerBound, defaults.integer(forKey: key)))
     }
 
-    /// 背景色。新形式(sRGB 成分)を優先し、旧 NSArchiver データは一度だけ読み替える
-    /// (仕様書 §13.5)。読めなければ黒。
+    /// 背景色。新形式(sRGB 成分)のみを読む。読めなければ黒。
+    /// 旧 NSArchiver 形式(§13.5 の一度きり読み替え)は廃止した: 復元に必要な
+    /// NSUnarchiver は壊れた/古い blob で ObjC 例外を raise し、Swift では捕捉できず
+    /// 初回起動でクラッシュする(1.x で色/フォントをカスタムしたユーザーが、blob を
+    /// 1 つでも壊れた状態で持っていると毎起動で落ちる)。純 Swift 方針を保つため
+    /// レガシー色/フォントの読み替えは行わず、未設定時は既定へフォールバックする。
     var viewBackgroundColor: NSColor {
         get {
             if let components = defaults.array(forKey: "ViewBackgroundColorSRGB") as? [Double],
                components.count == 3 {
                 return NSColor(srgbRed: components[0], green: components[1],
                                blue: components[2], alpha: 1)
-            }
-            if let data = defaults.data(forKey: "ViewBackGroundColor"),
-               let legacy = Self.legacyUnarchivedColor(data) {
-                // 旧実装同様 alpha は 1 に強制(仕様書 §6.1)
-                return legacy.withAlphaComponent(1)
             }
             return .black
         }
@@ -324,22 +323,6 @@ final class SettingsStore {
             defaults.set([srgb.redComponent, srgb.greenComponent, srgb.blueComponent],
                          forKey: "ViewBackgroundColorSRGB")
         }
-    }
-
-    /// NSArchiver 形式のオブジェクト(NSColor/NSFont)を読む。NSUnarchiver は
-    /// Swift から直接使えないためランタイム経由で呼ぶ。失敗したら nil
-    /// (既定値へフォールバック。設計書 §6 リスク表)。
-    private static func legacyUnarchivedObject(_ data: Data) -> AnyObject? {
-        guard let unarchiverClass = NSClassFromString("NSUnarchiver") as? NSObject.Type else {
-            return nil
-        }
-        let selector = NSSelectorFromString("unarchiveObjectWithData:")
-        guard unarchiverClass.responds(to: selector) else { return nil }
-        return unarchiverClass.perform(selector, with: data)?.takeUnretainedValue()
-    }
-
-    private static func legacyUnarchivedColor(_ data: Data) -> NSColor? {
-        legacyUnarchivedObject(data) as? NSColor
     }
 
     /// ページ名の表示: false=ファイル名のみ / true=本の中の相対パス(新設キー)
@@ -405,11 +388,8 @@ final class SettingsStore {
         if !family.isEmpty, let font = NSFont(name: family, size: size) {
             return font
         }
-        if defaults.object(forKey: "PageNumFontSize") == nil,
-           let data = defaults.data(forKey: "TextFont"),
-           let legacy = Self.legacyUnarchivedObject(data) as? NSFont {
-            return legacy
-        }
+        // 旧 NSArchiver 形式(TextFont)は読まない(viewBackgroundColor のコメント参照:
+        // NSUnarchiver が壊れた blob で ObjC 例外→起動クラッシュ)。未設定時は等幅数字へ
         return .monospacedDigitSystemFont(ofSize: size, weight: .regular)
     }
 
@@ -419,13 +399,13 @@ final class SettingsStore {
     }
 
     var pageNumTextColor: NSColor {
-        get { color(newKey: "TextColorSRGBA", legacyKey: "TextColor", default: .white) }
+        get { color(newKey: "TextColorSRGBA", default: .white) }
         set { setColor(newValue, newKey: "TextColorSRGBA") }
     }
 
     var pageNumBackgroundColor: NSColor {
         get {
-            color(newKey: "TextBGColorSRGBA", legacyKey: "TextBGColor",
+            color(newKey: "TextBGColorSRGBA",
                   default: .black.withAlphaComponent(0.8))
         }
         set { setColor(newValue, newKey: "TextBGColorSRGBA") }
@@ -433,7 +413,7 @@ final class SettingsStore {
 
     var pageNumBorderColor: NSColor {
         get {
-            color(newKey: "TextBorderColorSRGBA", legacyKey: "TextBorderColor",
+            color(newKey: "TextBorderColorSRGBA",
                   default: .white)
         }
         set { setColor(newValue, newKey: "TextBorderColorSRGBA") }
@@ -441,7 +421,7 @@ final class SettingsStore {
 
     var pageBarBackgroundColor: NSColor {
         get {
-            color(newKey: "PageBarBGColorSRGBA", legacyKey: "PageBarBGColor",
+            color(newKey: "PageBarBGColorSRGBA",
                   default: .black.withAlphaComponent(0.8))
         }
         set { setColor(newValue, newKey: "PageBarBGColorSRGBA") }
@@ -449,7 +429,7 @@ final class SettingsStore {
 
     var pageBarBorderColor: NSColor {
         get {
-            color(newKey: "PageBarBorderColorSRGBA", legacyKey: "PageBarBorderColor",
+            color(newKey: "PageBarBorderColorSRGBA",
                   default: .white)
         }
         set { setColor(newValue, newKey: "PageBarBorderColorSRGBA") }
@@ -457,23 +437,21 @@ final class SettingsStore {
 
     var pageBarReadColor: NSColor {
         get {
-            color(newKey: "PageBarReadedColorSRGBA", legacyKey: "PageBarReadedColor",
+            color(newKey: "PageBarReadedColorSRGBA",
                   default: .white.withAlphaComponent(0.5))
         }
         set { setColor(newValue, newKey: "PageBarReadedColorSRGBA") }
     }
 
-    /// 色設定の共通経路: 新キー(sRGB 4 成分)→ 旧 NSArchiver データ → 既定値
-    private func color(newKey: String, legacyKey: String,
+    /// 色設定の共通経路: 新キー(sRGB 4 成分)→ 既定値。旧 NSArchiver 形式は
+    /// 読まない(viewBackgroundColor のコメント参照: NSUnarchiver が壊れた blob で
+    /// ObjC 例外を raise し起動クラッシュになるため)
+    private func color(newKey: String,
                        default defaultColor: NSColor) -> NSColor {
         if let components = defaults.array(forKey: newKey) as? [Double],
            components.count == 4 {
             return NSColor(srgbRed: components[0], green: components[1],
                            blue: components[2], alpha: components[3])
-        }
-        if let data = defaults.data(forKey: legacyKey),
-           let legacy = Self.legacyUnarchivedColor(data) {
-            return legacy
         }
         return defaultColor
     }
