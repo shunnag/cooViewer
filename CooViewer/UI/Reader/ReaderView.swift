@@ -548,6 +548,11 @@ final class ReaderView: NSView {
     /// 予約する(縮小=CG Lanczos 相当、「高」は拡大に MetalFX)。
     /// ライブリサイズ中の洪水を避けるため短いデバウンスを挟み、
     /// 完成したページから順に等倍画像へ差し替える。
+    /// [#4] キャップデコード画像が表示目標に対しこの倍率以内の「僅かな縮小」なら、
+    /// Lanczos/MetalFX の高品質リサンプル(GPU 二重処理)を省いて CALayer のトリリニア
+    /// 縮小に委ねる。5% 差は見た目に判別できず、長時間読書での GPU/電力・発熱を抑える。
+    private static let resampleSkipTolerance = 1.05
+
     private func scheduleHighQualityResample(scaledSizes: [CGSize], backingScale: CGFloat) {
         guard interpolation == .systemDefault || interpolation == .high,
               !images.isEmpty else {
@@ -566,6 +571,18 @@ final class ReaderView: NSView {
                     width: (scaledSizes[index].width * backingScale).rounded(),
                     height: (scaledSizes[index].height * backingScale).rounded())
                 if let done = resampledPages[index], done.size == pixelSize { return nil }
+                // [#4] キャップ画像が目標に十分近い(僅かな縮小・拡大ではない・ノイズ低減
+                // なし)なら高品質リサンプルを省き、CALayer のトリリニア縮小に委ねる。
+                // 「そのキャップ画像で目標サイズを満たした」と記録して再要求を防ぐ
+                // (ページ切替で resampledPages はリセットされるので stale にならない)。
+                let cap = images[index]
+                if noiseReductionLevel == .none,
+                   cap.width >= Int(pixelSize.width), cap.height >= Int(pixelSize.height),
+                   Double(cap.width) <= pixelSize.width * Self.resampleSkipTolerance,
+                   Double(cap.height) <= pixelSize.height * Self.resampleSkipTolerance {
+                    resampledPages[index] = (pixelSize, cap)
+                    return nil
+                }
                 return (index, images[index], pixelSize,
                         "\(resampleKeyPrefix)#\(pageIDs[index])", noiseReductionLevel)
             }
