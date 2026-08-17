@@ -1,36 +1,13 @@
 import XCTest
 @testable import cooViewer
 
-/// ウインドウ位置復元の判定(終了時と画面解像度が一致するときのみ復元)
+/// ウインドウ位置の永続化(タイル状態除去)の検証。
+///
+/// 位置・サイズの復元自体は AppKit の setFrameAutosaveName に委ねる(復元時に
+/// constrainFrameRect で必ず画面内へ収まる)。以前あった独自の画面解像度ゲートは
+/// 不一致時に window.center() が保存位置を破壊していた(クラッシュ/強制終了で解像度
+/// 記録が残らないと毎回リセット)ため撤去した。ここではタイル状態除去のみを検証する。
 final class WindowFrameRestoreTests: XCTestCase {
-    private let laptop = CGSize(width: 1728, height: 1117)
-    private let external = CGSize(width: 2560, height: 1440)
-
-    func testMatchingResolutionRestores() {
-        XCTAssertTrue(ReaderWindowController.shouldRestorePosition(
-            savedScreenSize: "{1728, 1117}", screenSizes: [laptop]))
-    }
-
-    func testMatchingAnyAttachedScreenRestores() {
-        // 外部ディスプレイ側の解像度でも、まだ繋がっていれば復元する
-        XCTAssertTrue(ReaderWindowController.shouldRestorePosition(
-            savedScreenSize: "{2560, 1440}", screenSizes: [laptop, external]))
-    }
-
-    func testChangedResolutionRecenters() {
-        XCTAssertFalse(ReaderWindowController.shouldRestorePosition(
-            savedScreenSize: "{2560, 1440}", screenSizes: [laptop]))
-    }
-
-    func testMissingOrGarbageValueRecenters() {
-        XCTAssertFalse(ReaderWindowController.shouldRestorePosition(
-            savedScreenSize: nil, screenSizes: [laptop]))
-        XCTAssertFalse(ReaderWindowController.shouldRestorePosition(
-            savedScreenSize: "not-a-size", screenSizes: [laptop]))
-        XCTAssertFalse(ReaderWindowController.shouldRestorePosition(
-            savedScreenSize: "{0, 0}", screenSizes: [laptop]))
-    }
-
     // MARK: - タイル状態の除去(macOS 26 の tilingState 付き autosave)
 
     func testTiledFrameKeepsFrameAndDropsTilingState() {
