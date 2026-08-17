@@ -156,10 +156,14 @@ final class ReaderWindowController: NSWindowController {
         self.init(window: window)
 
         setUpContentViews(in: window)
-        // 前回終了時と画面解像度が一致するときだけ autosave の位置を生かし、
-        // 解像度が変わっていた(または初回起動の)場合は従来どおり中央へ。
-        // サイズは setFrameAutosaveName がどちらの場合も復元する
-        if !Self.shouldRestoreWindowPosition() {
+        // 初回起動(保存フレームがまだ無い)のときだけ中央へ。以降は
+        // setFrameAutosaveName が前回の位置・サイズを復元する。AppKit は復元時に
+        // constrainFrameRect でウインドウを必ず画面内へ収める(解像度変更・ディスプレイ
+        // 取り外し後も画面外に出ない。隔離クローンで実測確認済み)ので、独自の画面解像度
+        // ゲートは冗長。かつて不一致時に呼んでいた window.center() は autosave の保存位置を
+        // 上書きしてしまい、クラッシュ/強制終了で解像度記録が残らないと毎回中央へ
+        // リセットされていた(b19 の「位置が保存されない・リセットされる」報告の原因)。
+        if UserDefaults.standard.string(forKey: "NSWindow Frame ReaderWindow") == nil {
             window.center()
         }
         window.delegate = self
@@ -903,23 +907,13 @@ final class ReaderWindowController: NSWindowController {
     func windowWillClose(_ notification: Notification) {
         stopSlideshow()
         saveCurrentBookState()
-        saveWindowScreenSize()
     }
 
     func saveStateBeforeTermination() {
         saveCurrentBookState()
-        saveWindowScreenSize()
     }
 
-    // MARK: - ウインドウ位置の復元(解像度一致時のみ)
-
-    /// ウインドウがある画面の解像度(frame サイズ)を保存する。
-    /// 起動時にこの値と一致する画面があれば autosave の位置を復元する
-    private func saveWindowScreenSize() {
-        guard let size = window?.screen?.frame.size else { return }
-        UserDefaults.standard.set(NSStringFromSize(size),
-                                  forKey: "ReaderWindowScreenSize")
-    }
+    // MARK: - ウインドウのタイル状態除去(macOS 26)
 
     /// autosave 文字列にタイル状態(macOS 26 の tilingState JSON)が付いて
     /// いたら、フレーム欄は保存値のまま JSON だけを落とす。フレームを保つので
@@ -946,26 +940,6 @@ final class ReaderWindowController: NSWindowController {
               json["tilingState"] != nil else { return nil }
         // 末尾の空白も AppKit の書式に合わせる
         return fields.joined(separator: " ") + " "
-    }
-
-    /// 保存済みフレームがあり、かつ終了時の画面解像度が現在のいずれかの
-    /// 画面と一致するときだけ位置を復元する(不一致・初回は中央配置)
-    static func shouldRestoreWindowPosition() -> Bool {
-        let defaults = UserDefaults.standard
-        guard defaults.string(forKey: "NSWindow Frame ReaderWindow") != nil
-        else { return false }
-        return shouldRestorePosition(
-            savedScreenSize: defaults.string(forKey: "ReaderWindowScreenSize"),
-            screenSizes: NSScreen.screens.map { $0.frame.size })
-    }
-
-    /// 純粋判定部(テスト用に分離): 保存解像度が候補のいずれかと一致するか
-    nonisolated static func shouldRestorePosition(
-        savedScreenSize: String?, screenSizes: [CGSize]) -> Bool {
-        guard let savedScreenSize else { return false }
-        let size = NSSizeFromString(savedScreenSize)
-        guard size.width > 0, size.height > 0 else { return false }
-        return screenSizes.contains(size)
     }
 
     private enum UnlockResult {
