@@ -162,7 +162,13 @@ final class ReaderView: NSView {
         let pressure = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))
         memoryPressureSource = pressure
-        pressure.setEventHandler { [weak self] in
+        // @Sendable でクロージャの隔離推論を止める。setEventHandler の引数は @Sendable では
+        // ないため、@MainActor の init 内で書いたこのクロージャは @MainActor 隔離と推論される。
+        // DispatchSource はそれを .global(qos: .utility) で呼ぶので、macOS 26.6 の Swift 並行性
+        // ランタイムがクロージャ入口で隔離アサート(dispatch_assert_queue)に失敗し SIGTRAP する
+        // (本を開く前のランダムクラッシュとして報告)。@Sendable なら非隔離になり内側の
+        // Task へ安全に到達する。
+        pressure.setEventHandler { @Sendable [weak self] in
             Task { @MainActor in
                 self?.removeCurlOverlay()
             }

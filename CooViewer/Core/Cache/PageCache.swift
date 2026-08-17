@@ -18,7 +18,10 @@ actor PageCache {
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))
         self.pressureSource = source  // self を閉包に渡す前に全プロパティを初期化する
-        source.setEventHandler { [weak self] in
+        // @Sendable でクロージャの隔離推論を止める(ReaderView のメモリ圧ハンドラ参照:
+        // 非 Sendable な setEventHandler に actor 隔離のクロージャを渡すと utility キューでの
+        // 発火時に隔離アサートで SIGTRAP する。macOS 26.6 のクラッシュ)。
+        source.setEventHandler { @Sendable [weak self] in
             Task { await self?.trimToHalf() }
         }
         source.activate()
