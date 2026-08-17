@@ -56,6 +56,17 @@ final class MediaProfileTests: XCTestCase {
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "rar"))
     }
 
+    func testFastLocalConcurrencyScalesWithCoresWithinBounds() {
+        // 高速ローカルの並列度はコア数連動だが下限 6・上限 12 に収める
+        let concurrency = MediaProfile.fastLocalConcurrency
+        XCTAssertGreaterThanOrEqual(concurrency, 6)
+        XCTAssertLessThanOrEqual(concurrency, 12)
+        let profile = MediaProfile(mediaClass: .fastLocal)
+        XCTAssertEqual(profile.bookPrefetchConcurrency, concurrency)
+        XCTAssertEqual(profile.sourceReadConcurrency, concurrency)
+        XCTAssertEqual(profile.thumbnailPrefetchConcurrency, concurrency)
+    }
+
     func testFastLocalSkipsSpoolingForRandomAccessFormats() {
         let profile = MediaProfile(mediaClass: .fastLocal)
         XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "zip"))

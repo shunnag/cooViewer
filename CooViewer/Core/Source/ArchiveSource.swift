@@ -77,7 +77,12 @@ actor ArchiveSource: BookSource {
     private var extractors: [ArchiveEntryExtractor] = []
     private var extractorBusyCounts: [Int] = []
     private var extractorGrowthDisabled = false
-    private static let extractorPoolSize = 3
+    /// 展開係プールの上限。従来は固定 3。各係は独立した XADArchive の再オープン
+    /// (ファイルハンドル + 中央ディレクトリ解析)を伴うので、コア数に応じて
+    /// 控えめに増やす(3〜6)。deflate 書庫の並列展開と高速めくりで効く。
+    static var extractorPoolSize: Int {  // テスト参照のため internal
+        min(max(3, ProcessInfo.processInfo.activeProcessorCount / 2), 6)
+    }
 
     /// いまの状態での並列可否: 全ページスプール済み(ローカル読みのみ)か、
     /// エントリ独立圧縮の形式のみ true。solid 書庫(rar/7z 等)は順不同展開で
