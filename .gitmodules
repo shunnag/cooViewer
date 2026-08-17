@@ -3,4 +3,4 @@
 	url = https://github.com/shunnag/XADMaster.git
 [submodule "UniversalDetector"]
 	path = UniversalDetector
-	url = https://github.com/MacPaw/universal-detector.git
+	url = https://github.com/shunnag/universal-detector.git
