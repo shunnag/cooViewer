@@ -6,6 +6,12 @@ import SwiftUI
 @MainActor
 final class ReaderWindowController: NSWindowController {
     private(set) var book: Book?
+    /// 現在の本がパスワード付き書庫か(ロック解除前の isEncrypted で判定)。
+    /// 超解像ディスクキャッシュを暗号化して残すかの判断に使う(復号済みページを
+    /// 平文で残さない。CWE-312)。ロック解除後は isEncrypted が false を返す実装
+    /// (PDFSource: isLocked 依存)があるため解除前の値を保持する。ルーペ配線
+    /// (別ファイルの extension)から参照するため getter は internal
+    private(set) var currentBookIsEncrypted = false
     private let readerView = ReaderView()
     private let pageBar = PageBarView()
     private let pageLabel = NSTextField(labelWithString: "")
@@ -685,6 +691,9 @@ final class ReaderWindowController: NSWindowController {
                     for: bookURL, readSubFolders: settings.readSubFolder,
                     nestedPasswordProvider: nestedPasswordProvider())
             }
+            // 復号済みページの暗号化ディスクキャッシュ判定に使うため、ロック解除前に
+            // 暗号化状態を控える(PDFSource は解除後 isEncrypted が false を返すため)
+            let bookIsEncrypted = await source.isEncrypted()
             switch await unlock(source) {
             case .unlocked:
                 break
@@ -762,10 +771,24 @@ final class ReaderWindowController: NSWindowController {
             loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
             readerView.resampleKeyPrefix = book.cacheKey
+            // パスワード付き書庫は超解像ディスクキャッシュを暗号化して残す
+            // (復号済みページを平文で SuperRes/ に残さない。CWE-312)。まず
+            // トップレベルの暗号化状態を反映する(ネスト内は組み立て後に上乗せ)
+            currentBookIsEncrypted = bookIsEncrypted
+            readerView.superResDiskCacheEncrypted = bookIsEncrypted
 
             // 書庫のローカルスプール等を開始(パスワード解除後。設計書 キャッシュ節)
             await source.beginBackgroundPreparation(
                 spoolSizeLimit: settings.archiveSpoolSizeLimit)
+
+            // フォルダ内やネスト書庫内の暗号化書庫/PDF を解除して束ねた本も
+            // 暗号化キャッシュ対象にする(組み立て後に確定。表示より前に反映する)
+            var hasProtectedContent = bookIsEncrypted
+            if !hasProtectedContent {
+                hasProtectedContent = await source.containsProtectedContent()
+            }
+            currentBookIsEncrypted = hasProtectedContent
+            readerView.superResDiskCacheEncrypted = hasProtectedContent
 
             let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
             await restoreBookState(for: book, skipPageRestore: skipPageRestore)
@@ -1243,7 +1266,8 @@ final class ReaderWindowController: NSWindowController {
                         image, to: targets[position],
                         cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
                         upscaleWithMetalFX: useMetalFX,
-                        noiseReduction: self.settings.noiseReductionLevel)
+                        noiseReduction: self.settings.noiseReductionLevel,
+                        superResEncrypted: self.currentBookIsEncrypted)
                     self.preresamplingEntryID = nil
                 }
                 resampledPages += indices.count

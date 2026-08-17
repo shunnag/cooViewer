@@ -49,6 +49,17 @@ actor ArchiveSource: BookSource {
     /// スプールする合計展開サイズの上限(これを超える書庫はオンデマンドのみ)
     static let defaultSpoolSizeLimit: Int64 = 4 << 30
 
+    /// ネスト展開 1 エントリの展開後サイズ上限(zip 爆弾対策)。
+    /// build() → appendNestedPages() → extractNestedFile() は開いた瞬間に
+    /// 自動展開される経路なので、展開後サイズが判るエントリは全展開する前に
+    /// ここで弾く。実在するネスト書庫/PDF は数十〜数百 MB、極端な長編でも
+    /// ~1GB 程度なので、2GiB を天井にすれば正規のコンテナは通しつつ多 GB の
+    /// 展開爆弾を拒否できる。判定は 64bit の uncompressedSizeOfEntry: を使う
+    /// (32bit の sizeOfEntry: は ~2.1GB 超で桁溢れし、爆弾が申告する巨大サイズを
+    /// 検出できないため上限判定には使えない)。off_t の上限は ~9.2EB なので
+    /// この 2GiB は実効的な閾値として働く(超過は確実に弾かれる)
+    private static let nestedEntrySizeLimit: Int64 = 2 << 30
+
     /// ネストページの id 基数(最上位のエントリ番号と衝突しない大きさ)
     private static let nestedIDStride = 1_000_000
 
@@ -230,8 +241,18 @@ actor ArchiveSource: BookSource {
                 at: directory, withIntermediateDirectories: true)) != nil else { return nil }
             nestedRoot = directory
         }
-        guard let root = nestedRoot,
-              let data = archive.contents(ofEntry: candidate.index) else { return nil }
+        guard let root = nestedRoot else { return nil }
+        // zip 爆弾対策: この経路は開いた瞬間に自動展開されるため、展開後サイズが
+        // 判るエントリは contents(ofEntry:) で全展開する前に上限で弾く。判定は
+        // 64bit の uncompressedSizeOfEntry: を使う(sizeOfEntry: は 32bit で桁溢れ
+        // するため爆弾検出に使えない)。サイズ不明(entryHasSize: が false)の形式は
+        // ストリーミング展開 API が無く事前判定できないので通す — 既知の残存リスク。
+        // サイズ未申告で 0 等が返っても上限以下として通し、正規エントリは弾かない
+        if archive.entryHasSize(candidate.index) {
+            let uncompressedSize = archive.uncompressedSize(ofEntry: candidate.index)
+            guard uncompressedSize <= Self.nestedEntrySizeLimit else { return nil }
+        }
+        guard let data = archive.contents(ofEntry: candidate.index) else { return nil }
         let fileURL = root.appendingPathComponent(
             "\(candidate.index)-\((candidate.path as NSString).lastPathComponent)")
         guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return nil }
@@ -243,13 +264,19 @@ actor ArchiveSource: BookSource {
         case .child(let sourceIndex, let childEntry):
             return await children[sourceIndex].imageData(for: childEntry)
         case .outer(let index):
-            return spooledData(for: entry.id) ?? archive.contents(ofEntry: index)
+            if let spooled = spooledData(for: entry.id) { return spooled }
+            // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
+            guard !exceedsPerPageDecodeLimit(index) else { return nil }
+            return archive.contents(ofEntry: index)
         case nil:
             // 一覧構築(build)前に呼ばれた場合の逃げ道。最上位書庫の
             // エントリ番号としてそのまま解釈する(ネスト id 域は 1M 以上
             // なので Int32 変換の失敗で自然に弾かれる)
             guard let index = Int32(exactly: entry.id) else { return nil }
-            return spooledData(for: entry.id) ?? archive.contents(ofEntry: index)
+            if let spooled = spooledData(for: entry.id) { return spooled }
+            // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
+            guard !exceedsPerPageDecodeLimit(index) else { return nil }
+            return archive.contents(ofEntry: index)
         }
     }
 
@@ -295,6 +322,21 @@ actor ArchiveSource: BookSource {
         case pooled(poolIndex: Int, extractor: ArchiveEntryExtractor, entryIndex: Int32)
     }
 
+    /// 1 ページ分のオンデマンド展開サイズの上限(先読み/サムネイル/オンデマンド
+    /// のどの経路でも、この宣言サイズを超えるエントリは展開しない。zip 爆弾対策)。
+    /// 2 GiB は現実的な単一ページ画像ファイル(超高解像度の無圧縮 TIFF/BMP や
+    /// レイヤー付き PSD でも)を確実に上回る一方、展開爆弾が宣言する数 GB〜の
+    /// 塊は依然として弾ける。サイズ不明のエントリ(entryHasSize=false)は
+    /// 判定できないため通す(残存リスクとして許容)
+    static let perPageDecodeSizeLimit: Int64 = 2 << 30
+
+    /// エントリの宣言展開サイズが上限を超えるか。サイズ不明なら false(=通す)。
+    /// 32bit の size(ofEntry:) ではなく 64bit の uncompressedSize(ofEntry:) を使う
+    private func exceedsPerPageDecodeLimit(_ index: Int32) -> Bool {
+        guard archive.entryHasSize(index) else { return false }
+        return archive.uncompressedSize(ofEntry: index) > Self.perPageDecodeSizeLimit
+    }
+
     private func pageContent(for entry: PageEntry) throws -> PageContent {
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return .child(children[sourceIndex], childEntry)
@@ -308,6 +350,10 @@ actor ArchiveSource: BookSource {
         if let (poolIndex, extractor) = acquireExtractor() {
             return .pooled(poolIndex: poolIndex, extractor: extractor,
                            entryIndex: index)
+        }
+        // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
+        guard !exceedsPerPageDecodeLimit(index) else {
+            throw BookSourceError.pageLoadFailed(entry.name)
         }
         guard let extracted = archive.contents(ofEntry: index) else {
             throw BookSourceError.pageLoadFailed(entry.name)
@@ -365,6 +411,15 @@ actor ArchiveSource: BookSource {
 
     func isEncrypted() async -> Bool {
         archive.isEncrypted()
+    }
+
+    /// 最上位書庫が暗号化されている、または組み立て時にネストの暗号化書庫/PDF を
+    /// 解除して束ねていれば、復号済み保護コンテンツを含む本(CWE-312)。
+    /// ネストの解除は build 後に確定するため buildIfNeeded を待ってから判定する
+    func containsProtectedContent() async -> Bool {
+        await buildIfNeeded()
+        if archive.isEncrypted() { return true }
+        return await unlocker.sawUnlockedChild
     }
 
     func hasSkippedLockedContent() async -> Bool {
@@ -444,6 +499,8 @@ actor ArchiveSource: BookSource {
 
     private func spoolEntry(_ id: Int) {
         guard let directory = spoolDirectory, !spooledIDs.contains(id) else { return }
+        // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開(スプール)しない
+        guard !exceedsPerPageDecodeLimit(Int32(id)) else { return }
         guard let data = archive.contents(ofEntry: Int32(id)) else { return }
         let fileURL = directory.appendingPathComponent(String(id))
         if (try? data.write(to: fileURL, options: .atomic)) != nil {
@@ -479,6 +536,13 @@ actor ArchiveEntryExtractor {
     }
 
     func contents(ofEntry index: Int32) -> Data? {
-        archive.contents(ofEntry: index)
+        // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない。
+        // 独立書庫なので ArchiveSource と同じ判定をここでも行う
+        // (サイズ不明なら通す。32bit の size(ofEntry:) は使わない)
+        if archive.entryHasSize(index),
+           archive.uncompressedSize(ofEntry: index) > ArchiveSource.perPageDecodeSizeLimit {
+            return nil
+        }
+        return archive.contents(ofEntry: index)
     }
 }

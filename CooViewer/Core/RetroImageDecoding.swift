@@ -671,10 +671,17 @@ enum RetroImageDecoding {
             var outOfBounds = offset - position
             if outOfBounds > 0 {
                 let fill = min(outOfBounds, remaining)
-                let b0 = fillerSwapped ? out[1] : out[0]
-                let b1 = fillerSwapped ? out[0] : out[1]
-                for i in 0..<fill {
-                    out[position + i] = i % 2 == 0 ? b0 : b1
+                if fill > 0 {
+                    // 1px 等の退化画像で out[1] を読まないための境界防御。
+                    // fill>0 ⇒ remaining>0 ⇒ total-position>0 ⇒ out[0] は必ず有効。
+                    // 要素が 1 個しかない退化ケースは先頭バイトで代用する。
+                    let first = out[0]
+                    let second = out.count > 1 ? out[1] : first
+                    let b0 = fillerSwapped ? second : first
+                    let b1 = fillerSwapped ? first : second
+                    for i in 0..<fill {
+                        out[position + i] = i % 2 == 0 ? b0 : b1
+                    }
                 }
                 position += fill
                 remaining -= fill

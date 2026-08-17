@@ -47,6 +47,20 @@ actor MLSuperResolver {
             fileName: "realesrgan_anime6b_256.mlmodel"),
         status: MLModelInstallStatus.superResolution)
 
+    /// 暗号化キャッシュ用の鍵(初回にキーチェーンから取得してから保持)。
+    /// 一度ロードしたら再取得しない。loaded=true かつ value=nil は「鍵取得不可=
+    /// 暗号化キャッシュ無効」を意味し、その場合はメモリのみで動く(平文で書かない)
+    private var cacheKeyLoaded = false
+    private var cacheKeyValue: SymmetricKey?
+
+    private func diskEncryptionKey() -> SymmetricKey? {
+        if !cacheKeyLoaded {
+            cacheKeyValue = SuperResCacheKeyStore.loadOrCreateKey()
+            cacheKeyLoaded = true
+        }
+        return cacheKeyValue
+    }
+
     // MARK: - 導入
 
     /// モデルを使える状態にする(必要ならダウンロード→検証→コンパイル→ロード)
@@ -60,26 +74,34 @@ actor MLSuperResolver {
     /// image を 4 倍へ超解像した画像を返す。cacheKey を渡すとディスク
     /// キャッシュを使う(キーは呼び出し側が画像サイズまで含めて一意にする)。
     /// 大きすぎる画像・モデル未導入・失敗時は nil
-    func upscale(_ image: CGImage, cacheKey: String?) async -> CGImage? {
+    func upscale(_ image: CGImage, cacheKey: String?,
+                 encrypted: Bool = false) async -> CGImage? {
         guard image.width > 0, image.height > 0,
               max(image.width, image.height) <= Self.maxSourceEdge else {
             return nil
         }
-        if let cacheKey, let cached = Self.readDiskCache(for: cacheKey) {
+        // 暗号化が要る本(パスワード付き書庫)は、キーチェーンのランダム鍵で
+        // 暗号化してからディスクに残す(復号済みページを平文で残さない。CWE-312)。
+        // 鍵が取得できないときはディスクキャッシュを諦めメモリのみで動く
+        // (平文で書き出すことは絶対にしない)。非暗号化本は従来どおり平文。
+        let encryptionKey = encrypted ? diskEncryptionKey() : nil
+        let diskKey = (encrypted && encryptionKey == nil) ? nil : cacheKey
+        if let diskKey, let cached = Self.readDiskCache(
+            for: diskKey, encryptionKey: encryptionKey) {
             return cached
         }
         if ProcessInfo.processInfo.environment["COO_TRACE"] != nil {
-            NSLog("SR start %@ (%dx%d)", cacheKey ?? "-", image.width, image.height)
+            NSLog("SR start %@ (%dx%d)", diskKey ?? "-", image.width, image.height)
         }
         guard let loaded = await installer.ensureModel() else { return nil }
         guard let result = await runTiled(model: loaded.model, image: image) else {
             return nil
         }
-        if let cacheKey {
-            Self.writeDiskCache(result, for: cacheKey)
+        if let diskKey {
+            Self.writeDiskCache(result, for: diskKey, encryptionKey: encryptionKey)
         }
         if ProcessInfo.processInfo.environment["COO_TRACE"] != nil {
-            NSLog("SR done %@", cacheKey ?? "-")
+            NSLog("SR done %@", diskKey ?? "-")
         }
         return result
     }
@@ -296,33 +318,67 @@ actor MLSuperResolver {
         return cacheDirectory.appendingPathComponent(digest + ".heic")
     }
 
-    private static func readDiskCache(for key: String) -> CGImage? {
+    /// encryptionKey が非 nil なら暗号化エントリとして読み、復号してからデコードする。
+    /// nil なら従来どおり平文 HEIC を読む(非暗号化本)。
+    private static func readDiskCache(for key: String,
+                                     encryptionKey: SymmetricKey?) -> CGImage? {
         let url = cacheFileURL(for: key)
         // 未キャッシュは正常系: 先に存在確認しないと ImageIO が
         // 「can't open (fileExists == false)」をコンソールへ吐いて紛らわしい
-        guard FileManager.default.fileExists(atPath: url.path),
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            return nil
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let image: CGImage?
+        if let encryptionKey {
+            // 暗号化エントリ: ファイルを読み復号してから HEIC をデコード。鍵違い・
+            // 改竄・旧平文ファイルは復号に失敗するので nil(=ミス扱いで再計算)
+            guard let blob = try? Data(contentsOf: url),
+                  let heic = SuperResCacheCrypto.open(blob, using: encryptionKey),
+                  let source = CGImageSourceCreateWithData(heic as CFData, nil) else {
+                return nil
+            }
+            image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        } else {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                return nil
+            }
+            image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         }
+        guard let image else { return nil }
         // 利用のたびに更新日時を進めて、起動時トリムの対象から外す
         try? FileManager.default.setAttributes(
             [.modificationDate: Date()], ofItemAtPath: url.path)
         return image
     }
 
-    private static func writeDiskCache(_ image: CGImage, for key: String) {
+    /// encryptionKey が非 nil なら HEIC をメモリ上に作ってから暗号化して書き出す
+    /// (平文 HEIC をディスクに一切残さない)。nil なら従来どおり平文で書く。
+    private static func writeDiskCache(_ image: CGImage, for key: String,
+                                      encryptionKey: SymmetricKey?) {
         try? FileManager.default.createDirectory(
             at: cacheDirectory, withIntermediateDirectories: true)
         let url = cacheFileURL(for: key)
-        guard let destination = CGImageDestinationCreateWithURL(
-            url as CFURL, UTType.heic.identifier as CFString, 1, nil) else {
-            return
-        }
         let options = [kCGImageDestinationLossyCompressionQuality: 0.9]
             as CFDictionary
-        CGImageDestinationAddImage(destination, image, options)
-        CGImageDestinationFinalize(destination)
+        if let encryptionKey {
+            let heic = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(
+                heic as CFMutableData, UTType.heic.identifier as CFString, 1, nil)
+            else { return }
+            CGImageDestinationAddImage(destination, image, options)
+            // 暗号化に失敗したら何も書かない(平文フォールバックは禁止)
+            guard CGImageDestinationFinalize(destination),
+                  let sealed = SuperResCacheCrypto.seal(heic as Data,
+                                                        using: encryptionKey) else {
+                return
+            }
+            try? sealed.write(to: url, options: .atomic)
+        } else {
+            guard let destination = CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.heic.identifier as CFString, 1, nil) else {
+                return
+            }
+            CGImageDestinationAddImage(destination, image, options)
+            CGImageDestinationFinalize(destination)
+        }
     }
 
     /// 古い超解像キャッシュの回収(起動時。サムネイルと同じ保持日数)

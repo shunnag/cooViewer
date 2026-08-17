@@ -56,6 +56,10 @@ protocol BookSource: Sendable {
 
     /// パスワード付き書庫か
     func isEncrypted() async -> Bool
+    /// この本が復号済みの保護コンテンツ(パスワード付き書庫/PDF。ネスト内も含む)を
+    /// 含むか。超解像ディスクキャッシュを暗号化して残すかの判定に使う(CWE-312)。
+    /// 既定はこのソース自身の暗号化状態。ネスト対応ソースは子の解除状況を OR する
+    func containsProtectedContent() async -> Bool
     /// パスワードを設定し、正しければ true(仕様書 §4.1.3)
     func checkAndSetPassword(_ password: String) async -> Bool
 
@@ -108,6 +112,7 @@ protocol BookSource: Sendable {
 extension BookSource {
     var displayName: String { url.lastPathComponent }
     func isEncrypted() async -> Bool { false }
+    func containsProtectedContent() async -> Bool { await isEncrypted() }
     func checkAndSetPassword(_ password: String) async -> Bool { true }
     var supportsParallelPageLoads: Bool { false }
     func currentlySupportsParallelPageLoads() async -> Bool { supportsParallelPageLoads }

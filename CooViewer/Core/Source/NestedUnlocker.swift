@@ -17,6 +17,10 @@ actor NestedUnlocker {
     /// 解除できず本から外した子があったか。バックグラウンド準備で組んだ
     /// ソース(provider なし)を開く時に使い回してよいかの判定に使う
     private(set) var sawSkippedChild = false
+    /// 解除に成功した(=暗号化されていた)子があったか。復号済み保護コンテンツを
+    /// 含む本かの判定に使う(超解像ディスクキャッシュの暗号化要否。CWE-312)。
+    /// unlock() は暗号化された子に対してのみ呼ばれる(呼び出し側で isEncrypted 判定済み)
+    private(set) var sawUnlockedChild = false
 
     init(provider: NestedPasswordProvider? = nil, knownPasswords: [String] = []) {
         self.provider = provider
@@ -54,7 +58,10 @@ actor NestedUnlocker {
 
     private func performUnlock(_ child: any BookSource, name: String) async -> Bool {
         for password in knownPasswords {
-            if await child.checkAndSetPassword(password) { return true }
+            if await child.checkAndSetPassword(password) {
+                sawUnlockedChild = true
+                return true
+            }
         }
         guard let provider, !promptingDisabled else {
             sawSkippedChild = true
@@ -69,6 +76,7 @@ actor NestedUnlocker {
             }
             if await child.checkAndSetPassword(entered) {
                 addKnown(entered)
+                sawUnlockedChild = true
                 return true
             }
         }
