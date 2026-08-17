@@ -104,6 +104,26 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(Set(names), ["画像1.png", "画像2.png", "漫画テスト絵巻.png"])
     }
 
+    func testUnflaggedUTF8Names() async throws {
+        // UTF-8 フラグ(汎用ビット 11)を立てずに UTF-8 バイトの CJK 名を格納した ZIP。
+        // universalchardet は短い CJK 名を統計推定で外しやすいが、XADMaster フォークの
+        // 「確信 UTF-8」fast path(3 バイト以上の列を含む厳密妥当 UTF-8 は UTF-8 と確定。
+        // XADString.m IsDataConfidentlyUTF8)が正しく復号する。1 文字名・日中韓・4 バイトの
+        // 絵文字(サロゲート)まで含めて検証する
+        let png = TestFixtures.pngData(width: 2, height: 2)
+        let u8 = { (s: String) in [UInt8](s.utf8) }
+        let url = try writeZip(named: "utf8noflag.zip", entries: [
+            (u8("図.png"), png),        // 1 文字(推定器が最も外しやすい)
+            (u8("目次.png"), png),      // 日本語
+            (u8("封面.png"), png),      // 中国語
+            (u8("표지.png"), png),      // 韓国語
+            (u8("絵🎉.png"), png),      // 3 バイト + 4 バイト(絵文字)
+        ])
+        let source = try ArchiveSource(url: url)
+        let names = try await source.entries().map(\.name)
+        XCTAssertEqual(Set(names), ["図.png", "目次.png", "封面.png", "표지.png", "絵🎉.png"])
+    }
+
     func testEncryptedZipPasswordFlow() async throws {
         // ZipCrypto 暗号化 ZIP を zip CLI で生成
         let plain = tempDir.appendingPathComponent("secret.png")
