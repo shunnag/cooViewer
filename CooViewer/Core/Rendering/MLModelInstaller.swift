@@ -54,7 +54,7 @@ actor MLModelInstaller {
 
     private var modelDirectory: URL {
         FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .userDomainDirectory(.applicationSupportDirectory)
             .appendingPathComponent("jp.coo.cooViewer/Models")
     }
 
