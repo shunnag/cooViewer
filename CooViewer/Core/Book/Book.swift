@@ -488,6 +488,12 @@ final class Book {
 
     // MARK: - 先読み(仕様書 §4.5 の置換。設計書 §3.1)
 
+    /// 現在ページ周辺の先読みを、現在の並列幅・深さ(mediaProfile / prefetchAhead 等)で
+    /// やり直す。メディア速度プロファイルを後追い確定したとき等に使う(#1: 初回描画を
+    /// プローブ待ちから切り離した後の再適用)。schedulePrefetch は旧タスクを cancel して
+    /// 張り直すので再呼び出しは安全。
+    func reschedulePrefetch() { schedulePrefetch() }
+
     private func schedulePrefetch() {
         prefetchTask?.cancel()
         let ahead = (0..<max(0, prefetchAhead)).map { currentIndex + lastDisplayCount + $0 }

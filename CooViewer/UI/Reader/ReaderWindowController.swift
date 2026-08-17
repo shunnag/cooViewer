@@ -726,12 +726,16 @@ final class ReaderWindowController: NSWindowController {
             self.book?.cancelPrefetch()  // 旧本のバックグラウンド I/O を止める
             saveCurrentBookState()
 
-            // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)
+            // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)。
+            // [#1] 初回描画をこの判定でブロックしないため Task にして待たない(async let は
+            // 宣言スコープ外から await できないので Task を使う)。確定プロファイルは描画後に
+            // バックグラウンドで .value を待って適用する。内蔵 SSD は IOKit、ネットワークは
+            // statfs で即答なので実質同時。外付けの不明メディア初回のみ最大 ~250ms のベンチ
+            // マークが走るが、その分だけ先に 1 ページ目を描ける(結果はボリュームでキャッシュ)。
             let probeURL = bookURL
-            async let mediaProfileTask = effectiveMediaProfile(for: probeURL)
+            let mediaProfileTask = Task { await self.effectiveMediaProfile(for: probeURL) }
             let book = try await Book.open(source: source, sortMode: settings.sortMode,
                                            cacheByteLimit: settings.pageCacheByteLimit)
-            let mediaProfile = await mediaProfileTask
             guard generation == openGeneration else { return }
             // 画像ゼロのフォルダ(コレクションフォルダ)は中の最初の本を開く
             // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)。
@@ -764,8 +768,10 @@ final class ReaderWindowController: NSWindowController {
             book.readMode = settings.readMode
             book.singleSetting = settings.singleSetting
             book.coverSingleFirst = settings.spreadCoverSingle
-            book.mediaProfile = mediaProfile
-            await source.applyMediaProfile(mediaProfile)
+            // [#1] まず保守的な unknown で表示に進む(既定と同値=従来動作)。
+            // 確定プロファイルは描画後にバックグラウンドで適用する(下記)。
+            book.mediaProfile = .unknown
+            await source.applyMediaProfile(.unknown)
             applyAdvancedSettings(to: book)
             self.book = book
             loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
@@ -777,9 +783,9 @@ final class ReaderWindowController: NSWindowController {
             currentBookIsEncrypted = bookIsEncrypted
             readerView.superResDiskCacheEncrypted = bookIsEncrypted
 
-            // 書庫のローカルスプール等を開始(パスワード解除後。設計書 キャッシュ節)
-            await source.beginBackgroundPreparation(
-                spoolSizeLimit: settings.archiveSpoolSizeLimit)
+            // [#1] スプール開始は確定プロファイルで判断したいので描画後の
+            // バックグラウンドへ移動した(unknown で SSD の zip を無駄にスプールしない)。
+            // containsProtectedContent は内部で buildIfNeeded するのでここで build 済み。
 
             // フォルダ内やネスト書庫内の暗号化書庫/PDF を解除して束ねた本も
             // 暗号化キャッシュ対象にする(組み立て後に確定。表示より前に反映する)
@@ -814,6 +820,25 @@ final class ReaderWindowController: NSWindowController {
             statusLabel.isHidden = true
             updateIndicatorVisibility()
             await refreshDisplay()
+
+            // [#1] メディア速度プローブが解決したらバックグラウンドで確定プロファイルを
+            // 適用する(描画はブロックしない)。確定後にスプール開始(正しいプロファイルで
+            // 判断=SSD の zip を無駄にスプールしない)と、新しい並列幅/深さでの先読み再
+            // スケジュールを行う。開き直しに追い越されていたら(世代・本の同一性で判定)何も
+            // しない。unknown のまま(適応チューニング OFF)なら再適用は不要でスプールのみ。
+            let spoolLimit = settings.archiveSpoolSizeLimit
+            Task { @MainActor [weak self] in
+                let realProfile = await mediaProfileTask.value
+                guard let self, self.openGeneration == generation,
+                      self.book === book else { return }
+                if realProfile != book.mediaProfile {
+                    book.mediaProfile = realProfile
+                    await source.applyMediaProfile(realProfile)
+                    self.applyAdvancedSettings(to: book)
+                    book.reschedulePrefetch()
+                }
+                await source.beginBackgroundPreparation(spoolSizeLimit: spoolLimit)
+            }
             // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す。
             // 非表示中はスナップショットを空にして旧本のソース保持を解く
             // (書庫のスプール/ネスト展開の一時ファイル回収のため)
