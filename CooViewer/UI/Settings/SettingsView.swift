@@ -1,4 +1,5 @@
 import SwiftUI
+import Sparkle
 
 /// 設定ペインの定義(macOS のシステム設定風サイドバー。設計書 §2.4)。
 /// rawValue は保存キー SettingsSelectedTab の値。旧 TabView 時代の 0-4 の
@@ -71,6 +72,16 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
 /// 各ペインの索引(SettingsSearch)でサイドバーを絞り込む。
 /// 旧実装の「Cancel で全ロールバック」方式と異なり即時反映(設計書 §2.4)。
 struct SettingsView: View {
+    /// 自動アップデート設定用の Sparkle updater(起動時に注入。スナップショット/
+    /// XCTest では未起動のため nil を渡し、UserDefaults 直読みで UI だけ成立させる)
+    var updater: SPUUpdater?
+
+    /// @AppStorage は private のため合成 memberwise init も private になり別ファイルから
+    /// 呼べない。updater を注入できるよう明示的 init を用意する(他は宣言時の既定値)
+    init(updater: SPUUpdater? = nil) {
+        self.updater = updater
+    }
+
     @AppStorage("ReadMode") private var readMode = 0
     @AppStorage("SpreadCoverSingle") private var spreadCoverSingle = false
     @AppStorage("SortMode") private var sortMode = 0
@@ -284,6 +295,9 @@ struct SettingsView: View {
             String(localized: "Restore last page:"),
             String(localized: "Always remember the last page"),
             String(localized: "Remember settings per book"),
+            String(localized: "Software Update"),
+            String(localized: "Automatically check for updates"),
+            String(localized: "Download and install updates automatically"),
         ]
         case .books: [
             String(localized: "Sort by:"),
@@ -384,6 +398,7 @@ struct SettingsView: View {
                 Toggle(String(localized: "Remember settings per book"),
                        isOn: $rememberBookSettings)
             }
+            UpdateSettingsSection(updater: updater)
         }
         .formStyle(.grouped)
     }

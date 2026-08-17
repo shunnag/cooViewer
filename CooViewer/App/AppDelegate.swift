@@ -314,8 +314,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
+            // 自動アップデート設定は起動済み updater 経由で即時反映する。未起動の
+            // スナップショット/XCTest では nil を渡し UserDefaults 直読みに委ねる
+            let settingsUpdater: SPUUpdater? =
+                (AutomatedRun.isSnapshot || AutomatedRun.isXCTest) ? nil : updaterController.updater
             let window = NSWindow(contentViewController: NSHostingController(
-                rootView: SettingsView()))
+                rootView: SettingsView(updater: settingsUpdater)))
             window.title = String(localized: "Settings")
             // システム設定風のサイドバー+詳細構成のためリサイズ可
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
