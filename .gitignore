@@ -82,3 +82,7 @@ build/
 
 # ローカルの受け渡し用(参考資料 PDF など)。git には入れない
 inbox/
+
+# Claude Code のローカル個人設定(絶対パス・許可リスト等)。共有するのは
+# .claude/settings.json のみで、個人設定は追跡しない
+.claude/settings.local.json
