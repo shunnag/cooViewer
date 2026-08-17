@@ -119,8 +119,10 @@ struct KeyBindingsPane: View {
             get: {
                 guard bindings.indices.contains(index),
                       let value = bindings[index].value else { return "" }
-                return value == value.rounded()
-                    ? String(Int(value)) : String(value)
+                if value == value.rounded(), let intValue = value.safeInt {
+                    return String(intValue)
+                }
+                return String(value)
             },
             set: { newValue in
                 guard bindings.indices.contains(index) else { return }

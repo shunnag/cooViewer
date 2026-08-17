@@ -421,7 +421,9 @@ final class Book {
     /// 100% 以上は hitEnd を返す(仕様書 §13.3)。
     func goToPercent(_ percent: Double) -> MoveResult {
         guard !entries.isEmpty else { return .hitEnd }
-        let target = Int(Double(entries.count) * percent)
+        // percent が非有限・極端でも Int(Double) トラップしないよう安全変換。
+        // 変換不能(巨大/NaN)は entries.count 扱い → 下の判定で hitEnd に落ちる
+        let target = (Double(entries.count) * percent).safeInt ?? entries.count
         guard target < entries.count else { return .hitEnd }
         goTo(index: max(0, target))
         return .moved
