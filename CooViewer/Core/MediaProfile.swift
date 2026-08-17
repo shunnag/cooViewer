@@ -61,11 +61,20 @@ struct MediaProfile: Sendable, Equatable {
         }
     }
 
+    /// 高速ローカル(SSD)での読み取り/デコード並列度。従来は固定 6 だったが、
+    /// Apple Silicon の実効コア数に合わせて引き上げる(高速めくり・サムネイル
+    /// 大量読み・深部オープンの立ち上がりで多コアを活かす)。UI・システム用に
+    /// 2 コア残し、下限は従来値の 6・上限 12(同時デコードのメモリ膨張を抑える)。
+    /// M1(8コア)は 6 のままで回帰なし、Pro/Max ほど広がる。
+    static var fastLocalConcurrency: Int {
+        min(max(6, ProcessInfo.processInfo.activeProcessorCount - 2), 12)
+    }
+
     /// フォルダの本の同時読み取り上限(サムネイルのセル読みも含む全読者)。
     /// HDD ではシーク嵐を防ぎ、SSD では並列デコードを活かす
     var sourceReadConcurrency: Int {
         switch mediaClass {
-        case .fastLocal: 6
+        case .fastLocal: Self.fastLocalConcurrency
         case .slowLocal: 2
         case .network: 3
         case .unknown: 64  // 実質無制限(従来動作)
@@ -76,7 +85,7 @@ struct MediaProfile: Sendable, Equatable {
     /// fastLocal は読み取りゲート(6)と揃え、多コアの並列デコードを活かす
     var bookPrefetchConcurrency: Int {
         switch mediaClass {
-        case .fastLocal: 6
+        case .fastLocal: Self.fastLocalConcurrency
         case .unknown: 4  // 従来の固定値
         case .slowLocal: 1
         case .network: 2
@@ -86,7 +95,7 @@ struct MediaProfile: Sendable, Equatable {
     /// サムネイル一覧の先読み並列度
     var thumbnailPrefetchConcurrency: Int {
         switch mediaClass {
-        case .fastLocal: 6
+        case .fastLocal: Self.fastLocalConcurrency
         case .slowLocal, .network: 2
         case .unknown: 3  // 従来の固定値
         }

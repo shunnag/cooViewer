@@ -70,10 +70,10 @@ final class ArchiveSourceTests: XCTestCase {
                 XCTAssertEqual(width, 4 + offset)
             }
         }
-        // プールは成長しても上限(3)まで
+        // プールは成長してもコア数連動の上限まで
         let extractorCount = await source.extractorCount
         XCTAssertGreaterThanOrEqual(extractorCount, 1)
-        XCTAssertLessThanOrEqual(extractorCount, 3)
+        XCTAssertLessThanOrEqual(extractorCount, ArchiveSource.extractorPoolSize)
     }
 
     func testSerialZipReadsKeepPoolMinimal() async throws {
