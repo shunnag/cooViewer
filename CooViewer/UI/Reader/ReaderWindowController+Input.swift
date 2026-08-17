@@ -324,8 +324,8 @@ extension ReaderWindowController {
         case .halfPreviousPage: halfPreviousPage(nil)
         case .goToLastPage: goToLastPage(nil)
         case .goToFirstPage: goToFirstPage(nil)
-        case .skip: skipPages(by: Int(value ?? 10))
-        case .backSkip: skipPages(by: -Int(value ?? 10))
+        case .skip: skipPages(by: (value ?? 10).safeInt ?? 10)
+        case .backSkip: skipPages(by: -((value ?? 10).safeInt ?? 10))
         case .goToPercent: jumpToPercent(Double(value ?? 0) / 100.0)
         case .goToPage: promptGoToPage()
         case .cycleReadMode: cycleReadMode(nil)
@@ -363,7 +363,8 @@ extension ReaderWindowController {
         case .positionalLastTop:
             isNextSide ? goToLastPage(nil) : goToFirstPage(nil)
         case .positionalSkipBack:
-            skipPages(by: isNextSide ? Int(value ?? 10) : -Int(value ?? 10))
+            let count = (value ?? 10).safeInt ?? 10
+            skipPages(by: isNextSide ? count : -count)
         case .positionalPageUpDownTurn:
             if isNextSide {
                 if !readerViewForInput.pageDown() { nextPage(nil) }
