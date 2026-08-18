@@ -24,6 +24,10 @@ final class SettingsStore {
             "SingleSetting": 740,
             "SwipeToTurnPage": true,
             "FlipSwipeDirection": true,
+            "GestureHUDEnabled": true,
+            "SmartZoomEnabled": true,
+            "ForceClickLoupe": true,
+            "PasswordVaultEnabled": true,
             "PlayAnimatedImages": true,
         ])
     }
@@ -158,6 +162,33 @@ final class SettingsStore {
 
     /// スワイプページめくりの向きを反転する(既定オン。オフで導入時の向き)
     var flipSwipeDirection: Bool { defaults.bool(forKey: "FlipSwipeDirection") }
+
+    /// ドラッグジェスチャの方向 HUD(既定オン。新実装のみのキー、設計書 §2.4)。
+    /// メニューと設定「操作」ペインの両方から切り替える(§7.5)
+    var gestureHUDEnabled: Bool {
+        get { defaults.bool(forKey: "GestureHUDEnabled") }
+        set { defaults.set(newValue, forKey: "GestureHUDEnabled") }
+    }
+
+    /// 2 本指ダブルタップのスマートズーム(既定オン。設計書 §2.4)
+    var smartZoomEnabled: Bool { defaults.bool(forKey: "SmartZoomEnabled") }
+
+    /// トラックパッド深押しでルーペをトグル(既定オン。設計書 §2.4)
+    var forceClickLoupe: Bool { defaults.bool(forKey: "ForceClickLoupe") }
+
+    /// 保存したパスワードで自動解錠(既定オン。オフは照会停止のみで
+    /// 保存データは消さない。設計書 §2.4 パスワードマネージャー)
+    var passwordVaultEnabled: Bool {
+        get { defaults.bool(forKey: "PasswordVaultEnabled") }
+        set { defaults.set(newValue, forKey: "PasswordVaultEnabled") }
+    }
+
+    /// パスワードダイアログの「保存」チェックボックスの記憶(既定オフ=
+    /// 保存はユーザーの明示チェックから。変更したら次回に引き継ぐ)
+    var passwordVaultSaveByDefault: Bool {
+        get { defaults.bool(forKey: "PasswordVaultSaveByDefault") }
+        set { defaults.set(newValue, forKey: "PasswordVaultSaveByDefault") }
+    }
 
     /// アニメーション画像(GIF/WebP 等)を再生する(既定オン)
     var playAnimatedImages: Bool { defaults.bool(forKey: "PlayAnimatedImages") }

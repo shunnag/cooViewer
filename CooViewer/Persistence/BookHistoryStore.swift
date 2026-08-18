@@ -99,8 +99,9 @@ final class BookHistoryStore {
     }
 
     /// シンボリックリンク(/var → /private/var 等)を解決した正規形で比較する
+    /// (PasswordVault と共通の CanonicalPath.normalize)
     private func normalize(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        CanonicalPath.normalize(path)
     }
 
     private func stateURL(forNormalizedPath path: String) -> URL {

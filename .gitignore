@@ -86,3 +86,9 @@ inbox/
 # Claude Code のローカル個人設定(絶対パス・許可リスト等)。共有するのは
 # .claude/settings.json のみで、個人設定は追跡しない
 .claude/settings.local.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

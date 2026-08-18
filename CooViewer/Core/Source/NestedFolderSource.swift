@@ -120,20 +120,26 @@ actor NestedFolderSource: BookSource {
         candidate: (fileURL: URL, relativePath: String),
         unlocker: NestedUnlocker, profile: MediaProfile
     ) async -> (any BookSource, [PageEntry])? {
+        // コレクション内の子はディスク上の実ファイルなので、保存キーは
+        // 正規化した実パス — 単体で同じ zip を開いたときと同一キーになり、
+        // 保存パスワードが両経路で共有される(設計書 §2.4)
+        let childKey = PasswordVault.Key.file(path: candidate.fileURL.path)
         let child: any BookSource
         if SupportedTypes.isPDF(candidate.fileURL) {
             guard let pdf = try? PDFSource(url: candidate.fileURL) else { return nil }
             child = pdf
         } else {
             guard let nested = try? ArchiveSource(
-                url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker) else {
+                url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker,
+                persistenceKey: childKey) else {
                 return nil
             }
             child = nested
         }
         if await child.isEncrypted() {
             let name = (candidate.relativePath as NSString).lastPathComponent
-            guard await unlocker.unlock(child, name: name) else { return nil }
+            guard await unlocker.unlock(child, name: name,
+                                        persistenceKey: childKey) else { return nil }
         }
         guard let childEntries = try? await child.entries(),
               !childEntries.isEmpty else { return nil }
@@ -240,6 +246,10 @@ actor NestedFolderSource: BookSource {
 
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {
         await unlocker.setProvider(provider)
+    }
+
+    func notePasswordSaveConsent(_ password: String) async {
+        await unlocker.noteSaveConsent(password)
     }
 
     func setAssemblyProgressHandler(
