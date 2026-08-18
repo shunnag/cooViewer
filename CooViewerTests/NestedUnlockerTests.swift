@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import XCTest
 @testable import cooViewer
 
@@ -34,7 +35,9 @@ final class NestedUnlockerTests: XCTestCase {
     }
 
     func testProviderUnlockRecordsUnlockedChild() async {
-        let unlocker = NestedUnlocker(provider: { _, _ in "pw" })
+        let unlocker = NestedUnlocker(provider: { _, _ in
+            NestedPasswordAnswer(password: "pw", saveRequested: false)
+        })
         let child = MockEncryptedSource(password: "pw")
         let ok = await unlocker.unlock(child, name: "secret.cbz")
         XCTAssertTrue(ok)
@@ -53,5 +56,81 @@ final class NestedUnlockerTests: XCTestCase {
         let sawSkipped = await unlocker.sawSkippedChild
         XCTAssertFalse(sawUnlocked)
         XCTAssertTrue(sawSkipped)
+    }
+
+    // MARK: - PasswordVault 連携(設計書 §2.4 パスワードマネージャー)
+
+    private func makeVault() -> (PasswordVault, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unlocker-vault-\(UUID().uuidString)")
+        return (PasswordVault(key: SymmetricKey(size: .bits256), directory: dir), dir)
+    }
+
+    func testVaultPasswordUnlocksWithoutPrompt() async {
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = PasswordVault.Key.file(path: "/tmp/books/locked.zip")
+        await vault.save("pw", for: key)
+        // provider が呼ばれたら失敗扱い(自動解錠はダイアログゼロ)
+        let unlocker = NestedUnlocker(provider: { _, _ in
+            XCTFail("保存済みがあるのにダイアログが出た")
+            return nil
+        }, vault: vault)
+        let child = MockEncryptedSource(password: "pw")
+        let ok = await unlocker.unlock(child, name: "locked.zip", persistenceKey: key)
+        XCTAssertTrue(ok)
+        let sawUnlocked = await unlocker.sawUnlockedChild
+        XCTAssertTrue(sawUnlocked)
+    }
+
+    func testDialogSaveRequestedPersistsToVault() async {
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = PasswordVault.Key.file(path: "/tmp/books/new.zip")
+        let unlocker = NestedUnlocker(provider: { _, _ in
+            NestedPasswordAnswer(password: "pw", saveRequested: true)
+        }, vault: vault)
+        let child = MockEncryptedSource(password: "pw")
+        _ = await unlocker.unlock(child, name: "new.zip", persistenceKey: key)
+        let saved = await vault.password(for: key)
+        XCTAssertEqual(saved, "pw")
+    }
+
+    func testDialogWithoutSaveRequestDoesNotPersist() async {
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = PasswordVault.Key.file(path: "/tmp/books/no-save.zip")
+        let unlocker = NestedUnlocker(provider: { _, _ in
+            NestedPasswordAnswer(password: "pw", saveRequested: false)
+        }, vault: vault)
+        let child = MockEncryptedSource(password: "pw")
+        _ = await unlocker.unlock(child, name: "no-save.zip", persistenceKey: key)
+        let saved = await vault.password(for: key)
+        XCTAssertNil(saved, "同意なしのパスワードは絶対に永続化しない")
+    }
+
+    func testConsentExtendsSaveToKnownPasswordChildren() async {
+        // 最上位ダイアログで保存に同意したパスワードが、同じパスワードの
+        // ネスト子の解錠時に子のキーへも保存される(コレクションの展延)
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let unlocker = NestedUnlocker(knownPasswords: ["pw"], vault: vault)
+        await unlocker.noteSaveConsent("pw")
+        let childKey = PasswordVault.Key.file(path: "/tmp/books/child.zip")
+        let child = MockEncryptedSource(password: "pw")
+        _ = await unlocker.unlock(child, name: "child.zip", persistenceKey: childKey)
+        let saved = await vault.password(for: childKey)
+        XCTAssertEqual(saved, "pw")
+    }
+
+    func testKnownPasswordWithoutConsentDoesNotPersist() async {
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let unlocker = NestedUnlocker(knownPasswords: ["pw"], vault: vault)
+        let childKey = PasswordVault.Key.file(path: "/tmp/books/child2.zip")
+        let child = MockEncryptedSource(password: "pw")
+        _ = await unlocker.unlock(child, name: "child2.zip", persistenceKey: childKey)
+        let saved = await vault.password(for: childKey)
+        XCTAssertNil(saved)
     }
 }

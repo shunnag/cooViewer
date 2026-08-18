@@ -16,17 +16,32 @@ actor ImageResampler {
     private var order: [String] = []  // 末尾が最新(MRU)
     private var costs: [String: Int] = [:]
     private var totalCost = 0
-    /// 合計バイト上限(既定: 物理メモリの 1/6、最大 4.5GB。
-    /// 先読み予算(1/8・最大 4GB)+表示中スプレッド・ルーペ分の余裕)
+    /// 合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
+    /// リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため、
+    /// 行き来で作り直さずに済むよう広めに確保する(旧: 1/6・最大 4.5GB は
+    /// アクティビティ窓でデコードキャッシュ 16GB に比べ使用率が高く、
+    /// 大容量メモリ機でキャップが早く効いていた)。メモリ圧時は trimToHalf が
+    /// 半減させる安全弁があるため、先読み予算(1/8・最大 4GB)+表示・ルーペ分に
+    /// 余裕を持たせても実使用は圧に応じて縮む
     private let byteLimit: Int
     private var pressureSource: (any DispatchSourceMemoryPressure)?
     private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
     private lazy var lanczos: LanczosDownscaler? = LanczosDownscaler()
     private lazy var noiseReducer: NoiseReducer? = NoiseReducer()
 
+    /// アクティビティ窓向けの読み取り専用スナップショット(O(1))
+    struct Stats: Sendable, Equatable {
+        let count: Int
+        let usedBytes: Int
+        let limitBytes: Int
+    }
+    func stats() -> Stats {
+        Stats(count: cache.count, usedBytes: totalCost, limitBytes: byteLimit)
+    }
+
     init(byteLimit: Int = min(
-        4608 << 20,
-        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 6)) {
+        12 << 30,
+        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 5)) {
         self.byteLimit = max(1, byteLimit)
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))

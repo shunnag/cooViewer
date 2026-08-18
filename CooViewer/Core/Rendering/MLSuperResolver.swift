@@ -311,6 +311,21 @@ actor MLSuperResolver {
             .appendingPathComponent("jp.coo.cooViewer/SuperRes")
     }
 
+    /// 超解像ディスクキャッシュの件数・合計バイト(アクティビティ窓向け。
+    /// FS 走査。集計 API が無いためここで数える)
+    nonisolated static func diskCacheStats() -> (count: Int, bytes: Int64) {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: cacheDirectory, includingPropertiesForKeys: [.fileSizeKey]) else {
+            return (0, 0)
+        }
+        var bytes: Int64 = 0
+        for url in items where url.pathExtension == "heic" {
+            bytes += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?
+                .fileSize ?? 0)
+        }
+        return (items.filter { $0.pathExtension == "heic" }.count, bytes)
+    }
+
     /// キャッシュファイルの場所(キーのハッシュをファイル名にする)
     nonisolated static func cacheFileURL(for key: String) -> URL {
         let digest = SHA256.hash(data: Data(key.utf8))
