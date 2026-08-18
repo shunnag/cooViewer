@@ -103,14 +103,20 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   mark strings), `ReadMode`.
 - `CooViewer/Input/` — `ReaderAction` (typed action catalog + legacy number maps),
   `BindingConfiguration` (legacy-compatible 6 arrays, resolution order §5.3, switchAction
-  §5.4). Dispatch lives in `ReaderWindowController+Input.swift`.
+  §5.4), `MouseGestureRecognizer` (pure value-type state machine for click/drag-gesture/
+  drag-scroll classification §5.9), `ActionNames` (display names for key/mouse actions and
+  triggers). Dispatch lives in `ReaderWindowController+Input.swift`.
 - `CooViewer/UI/Reader/` — `ReaderWindowController` (+Input/+Library/+Thumbnails
   extensions: open flow, actions, persistence hooks, page indicator layout/auto-hide),
   `ReaderView` (CALayer-based 1-2 page rendering, fit modes, rotation, internal scroll
-  with edge detection), `PageBarView`.
+  with edge detection, all-button mouse handling + smart zoom / force click),
+  `GestureHUDView` (drag-gesture direction HUD), `PageBarView`. Mouse/gesture binding
+  editing lives in `CooViewer/UI/Settings/MouseBindingsPane.swift`.
 - `CooViewer/UI/Bookmarks/` — `BookmarkEditorView` (copy-edit sheet, Cancel-safe).
 - `CooViewer/Persistence/` — `SettingsStore` (typed accessors over legacy keys),
-  `BookHistoryStore` (BookSettings/RecentItems/LastPages, URL bookmarks instead of alias).
+  `BookHistoryStore` (BookSettings/RecentItems/LastPages, URL bookmarks instead of alias),
+  `PasswordVault` (archive/PDF password manager: one Keychain master key + AES-GCM
+  encrypted vault file; keys are canonical file paths via `Core/CanonicalPath`).
 - `Scripts/build-frameworks.sh` — nested xcodebuild for the XADMaster submodule.
 
 ## Licensing constraints

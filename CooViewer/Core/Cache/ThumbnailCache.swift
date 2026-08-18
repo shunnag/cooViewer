@@ -178,19 +178,22 @@ actor ThumbnailCache {
         // ソース呼び出しが始まった後は完走させてキャッシュに残す
         guard !Task.isCancelled else { return nil }
         // パスワード付き書庫の復号済みページを平文でディスクに残さない(CWE-312)。
-        // 暗号化ソースはディスク層(読み取りも書き込みも)を素通りさせ、生成物は
-        // 呼び出し元のメモリキャッシュにだけ載せる。これでセッション内の性能は
-        // 保ちつつ、Caches/ に平文サムネイルを残さない。キャンセル判定の後に
-        // 一度だけ await するので、キャンセル意味論もホットパスの await 回数も変えない。
-        let encrypted = await source.isEncrypted()
-        if !encrypted,
+        // 保護コンテンツを含むソースはディスク層(読み取りも書き込みも)を素通り
+        // させ、生成物は呼び出し元のメモリキャッシュにだけ載せる。判定は
+        // isEncrypted ではなく containsProtectedContent — コレクション内の
+        // 暗号化 zip・非暗号化書庫内の暗号化ネスト・解錠後の PDF は最上位の
+        // isEncrypted が false になるため(SuperRes キャッシュと同じ判定に揃える)。
+        // キャンセル判定の後に一度だけ await するので、キャンセル意味論も
+        // ホットパスの await 回数も変えない。
+        let protected = await source.containsProtectedContent()
+        if !protected,
            let data = try? Data(contentsOf: fileURL),
            let image = try? ImageDecoding.decode(data) {
             return image
         }
         guard let image = try? await source.image(
             for: entry, maxPixelSize: maxPixelSize) else { return nil }
-        if !encrypted {
+        if !protected {
             writeToDisk(image, at: fileURL)
         }
         return image

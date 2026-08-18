@@ -23,6 +23,8 @@ final class ReaderWindowController: NSWindowController {
     private let openingProgressBox = NSView()
     private let openingProgressSpinner = NSProgressIndicator()
     private let openingProgressLabel = NSTextField(labelWithString: "")
+    /// ドラッグジェスチャの方向 HUD(+Input から駆動。設計書 §2.4 の新規機能)
+    let gestureHUD = GestureHUDView()
     /// 進捗表示を所有しているオープン処理の世代(nil = 進行中なし)
     private var openingFlowGeneration: Int?
     private var openingProgressName = ""
@@ -104,6 +106,21 @@ final class ReaderWindowController: NSWindowController {
     var interactiveCurlProgress: CGFloat = 0
     /// 準備完了前にジェスチャが終わった場合の確定/取消の予約
     var interactiveCurlEndDecision: Bool?
+    /// マウスドラッグ起点のカール追従(interactiveCurlPhase はスワイプと共有。
+    /// 設計書 §2.4 の新規機能)
+    var mouseCurlTracking = false
+    var mouseCurlDelta: CGFloat = 0
+    /// カール追従がドラッグを消費した(直後のクリック/ジェスチャ発火を抑止)
+    var mouseCurlConsumedGesture = false
+    /// スマートズーム直後の非同期再デコードでスクロール位置が先頭へ戻される
+    /// 場合に再適用するアンカー(同一スプレッドのときだけ消費)
+    var pendingScrollAnchor: (ratio: CGPoint, index: Int)?
+    /// 連続ピンチズーム確定時の cap 上昇再デコードで、setPages が zoomScale=1 に
+    /// 落とすため、倍率とアンカーを再適用する(同一スプレッドのときだけ消費)
+    var pendingZoom: (scale: CGFloat, ratio: CGPoint, index: Int)?
+    /// クイックルーペ(深押し中のみ表示)を保持中か。解放で畳む。
+    /// ⌘L 等の常時表示トグルで出したルーペは対象外
+    var forceClickLoupeHeld = false
 
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
@@ -117,6 +134,22 @@ final class ReaderWindowController: NSWindowController {
     /// 先読みの処理が進行中か(薄い表示。ソフト停止で新旧タスクが
     /// 重なることがあるためカウントで持つ)
     private var prefetchResampleCount = 0
+    /// 先読みリサンプルの計画枚数と処理済み枚数(アクティビティ窓の残数用)
+    private var prefetchPlannedPages = 0
+    private var prefetchDonePages = 0
+    /// アクティビティ窓向け: 先読みリサンプルの進行中件数
+    var prefetchResampleActiveCount: Int { prefetchResampleCount }
+    /// アクティビティ窓向け: 先読みリサンプルの計画枚数(M)と残り枚数(N)。
+    /// 先読み中でなければ (0, 0)
+    var prefetchPlannedPageCount: Int { prefetchPlannedPages }
+    var prefetchRemainingPageCount: Int { max(0, prefetchPlannedPages - prefetchDonePages) }
+    /// アクティビティ窓向け: 先読みが処理中のエントリ ID(直列 1 件)
+    var preresamplingEntryIDValue: Int? { preresamplingEntryID }
+    /// アクティビティ窓向け: 表示中スプレッドのリサンプルが進行中か
+    var displayResampleActiveValue: Bool { displayResampleActive }
+    /// アクティビティ窓向け: 開いている本の書庫ソース(スプール統計用。
+    /// フォルダ/PDF/ネスト統合では nil)
+    var currentArchiveSource: ArchiveSource? { book?.source as? ArchiveSource }
     /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
     /// キャンセルして ML 実行キューを明け渡す)
     private var preresampleTask: Task<Void, Never>?
@@ -322,8 +355,17 @@ final class ReaderWindowController: NSWindowController {
     /// 先読みの処理開始・終了(薄い表示の駆動源。先読みタスクから呼ぶ)
     func setPrefetchIndicator(_ active: Bool) {
         prefetchResampleCount = max(0, prefetchResampleCount + (active ? 1 : -1))
+        // 先読みが終わったら残数表示もクリアする(次の先読みで再設定)
+        if prefetchResampleCount == 0 {
+            prefetchPlannedPages = 0
+            prefetchDonePages = 0
+        }
         updateResampleIndicator()
     }
+
+    /// 先読みループから計画枚数・処理済みを更新する(残数表示用)
+    func notePrefetchPlan(planned: Int) { prefetchPlannedPages = planned }
+    func notePrefetchProgress(done: Int) { prefetchDonePages = done }
 
     /// 進行表示の実体: 表示中ページの処理が濃い(0.85)、先読みのみは
     /// 薄い(0.4)。キャッシュ命中等で瞬時に終わるケースでチラつかないよう
@@ -443,12 +485,17 @@ final class ReaderWindowController: NSWindowController {
     private func currentDisplayPixelCap() -> Int {
         let scale = window?.backingScaleFactor ?? 2
         let size = window?.contentView?.bounds.size ?? .zero
-        let edge = Int((max(size.width, size.height) * scale).rounded(.up))
-        // ウインドウに収まらない描画をするモードは従来のユーザー上限のまま
-        let usesUserCap = switch readerView.fitMode {
+        // 連続ズーム確定時は拡大ぶんだけ長辺を段階的(1x/2x/4x)に引き上げて
+        // くっきり再描画する(毎フレームは isLiveZooming ガードで抑止済み)
+        let bucket = ZoomMath.capBucket(zoom: readerView.zoomScale)
+        let edge = Int((max(size.width, size.height) * scale * bucket).rounded(.up))
+        // ウインドウに収まらない描画をするモードは従来のユーザー上限のまま。
+        // ズーム中(bucket>1)も収まらないので同様にユーザー上限でクランプする
+        let modeUsesUserCap = switch readerView.fitMode {
         case .noScale, .fitWidth, .fitWidthDivide: true
         default: false
         }
+        let usesUserCap = bucket > 1 || modeUsesUserCap
         return DisplayCapPolicy.cap(
             windowLongEdgePixels: edge,
             userCap: settings.displayPixelCap,
@@ -538,6 +585,7 @@ final class ReaderWindowController: NSWindowController {
         openingProgressBox.addSubview(openingProgressSpinner)
         openingProgressBox.addSubview(openingProgressLabel)
         contentView.addSubview(openingProgressBox)
+        contentView.addSubview(gestureHUD)
 
         NSLayoutConstraint.activate([
             readerView.topAnchor.constraint(equalTo: contentView.topAnchor),
@@ -566,6 +614,9 @@ final class ReaderWindowController: NSWindowController {
                 equalTo: openingProgressBox.topAnchor, constant: 12),
             openingProgressLabel.bottomAnchor.constraint(
                 equalTo: openingProgressBox.bottomAnchor, constant: -12),
+
+            gestureHUD.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            gestureHUD.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
         ])
 
         // ホバーバブル(フレームベース配置。ホバー中のみ表示)
@@ -951,7 +1002,11 @@ final class ReaderWindowController: NSWindowController {
     /// ネスト書庫/PDF 用のパスワード入力コールバック(仕様書 §4.1.3 のネスト版)。
     /// 本を開くフロー(entries() 構築)中に呼ばれ、MainActor でダイアログを出す。
     func nestedPasswordProvider() -> NestedPasswordProvider {
-        { name, attempt in
+        // @Sendable クロージャに非 Sendable の self を捕まえないため、
+        // 有効判定は生成時に固定し、チェック状態の記憶はクロージャ内で
+        // defaults を直接読み書きする(SettingsStore と同じキー)
+        let vaultEnabled = settings.passwordVaultEnabled
+        return { name, attempt in
             await MainActor.run {
                 // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱い)
                 if ProcessInfo.processInfo.environment[
@@ -969,22 +1024,86 @@ final class ReaderWindowController: NSWindowController {
                 alert.addButton(withTitle: String(localized: "Skip"))
                 let field = NSSecureTextField(
                     frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-                alert.accessoryView = field
+                let saveCheckbox = Self.makeSaveCheckbox()
+                alert.accessoryView = vaultEnabled
+                    ? Self.passwordAccessory(field: field, checkbox: saveCheckbox)
+                    : field
                 alert.window.initialFirstResponder = field
                 guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-                return field.stringValue
+                let save = vaultEnabled && saveCheckbox.state == .on
+                if vaultEnabled {
+                    UserDefaults.standard.set(save, forKey: "PasswordVaultSaveByDefault")
+                }
+                return NestedPasswordAnswer(password: field.stringValue,
+                                            saveRequested: save)
             }
         }
     }
 
+    /// パスワードダイアログの「保存」チェックボックス(既定は前回の選択。
+    /// 初期値はオフ=保存はユーザーの明示チェックから。設計書 §2.4)
+    private static func makeSaveCheckbox() -> NSButton {
+        let checkbox = NSButton(
+            checkboxWithTitle: String(
+                localized: "Save this password (unlock automatically next time)"),
+            target: nil, action: nil)
+        checkbox.state = UserDefaults.standard
+            .bool(forKey: "PasswordVaultSaveByDefault") ? .on : .off
+        return checkbox
+    }
+
+    /// 検証用: 保存チェックボックス付きアクセサリビューを組んで返す
+    /// (--show-password-dialog)。ダイアログ本文と同じ配色の枠に載せる
+    func debugPasswordAccessory() -> NSView {
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = String(localized: "Enter the password to open it.")
+        let accessory = Self.passwordAccessory(
+            field: field, checkbox: Self.makeSaveCheckbox())
+        let container = NSView(frame: accessory.frame.insetBy(dx: -20, dy: -20))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        accessory.setFrameOrigin(NSPoint(x: 20, y: 20))
+        container.addSubview(accessory)
+        return container
+    }
+
+    private static func passwordAccessory(field: NSSecureTextField,
+                                          checkbox: NSButton) -> NSView {
+        let stack = NSStackView(views: [field, checkbox])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        // 入力欄の幅はチェックボックスのラベル幅に合わせる(下限 240)。
+        // frame をラベルより狭く固定するとラベル右側が切れるため、
+        // アクセサリ全体を実サイズ(fittingSize)に合わせる
+        let width = ceil(max(240, checkbox.intrinsicContentSize.width))
+        field.widthAnchor.constraint(equalToConstant: width).isActive = true
+        let fitting = stack.fittingSize
+        stack.frame = NSRect(x: 0, y: 0, width: fitting.width, height: fitting.height)
+        return stack
+    }
+
     /// パスワード書庫のロック解除(仕様書 §4.1.3)。
     /// 旧実装の「正解かキャンセルまで無限に再表示」をやめ、3 回で打ち切る。
+    /// 保存済みパスワード(PasswordVault)があれば先に無言で試し、成功なら
+    /// ダイアログを出さない(自動解錠。設計書 §2.4)
     private func unlock(_ source: any BookSource) async -> UnlockResult {
         // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱いにする)
         if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil
             || AutomatedRun.isXCTest,
            await source.isEncrypted() {
             return .cancelled
+        }
+        let vaultKey = PasswordVault.Key.file(path: source.url.path)
+        if settings.passwordVaultEnabled, await source.isEncrypted(),
+           let saved = await PasswordVault.shared.password(for: vaultKey) {
+            if await source.checkAndSetPassword(saved) {
+                // 保存済み=同意済み。同じパスワードのネスト子にも保存を展延
+                await source.notePasswordSaveConsent(saved)
+                return .unlocked
+            }
+            // パスワードが変更された書庫: 無言で従来のダイアログへ
+            // (試行回数は消費しない。成功時に上書き保存される)
         }
         let maxAttempts = 3
         var attemptsLeft = maxAttempts
@@ -998,10 +1117,22 @@ final class ReaderWindowController: NSWindowController {
             alert.addButton(withTitle: String(localized: "OK"))
             alert.addButton(withTitle: String(localized: "Cancel"))
             let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-            alert.accessoryView = field
+            let saveCheckbox = Self.makeSaveCheckbox()
+            alert.accessoryView = settings.passwordVaultEnabled
+                ? Self.passwordAccessory(field: field, checkbox: saveCheckbox)
+                : field
             alert.window.initialFirstResponder = field
             guard alert.runModal() == .alertFirstButtonReturn else { return .cancelled }
+            let save = settings.passwordVaultEnabled && saveCheckbox.state == .on
+            if settings.passwordVaultEnabled {
+                // チェック状態は誤入力でも記憶する(ネスト側ダイアログと同じ)
+                settings.passwordVaultSaveByDefault = save
+            }
             if await source.checkAndSetPassword(field.stringValue) {
+                if save {
+                    await PasswordVault.shared.save(field.stringValue, for: vaultKey)
+                    await source.notePasswordSaveConsent(field.stringValue)
+                }
                 return .unlocked
             }
             attemptsLeft -= 1
@@ -1158,6 +1289,22 @@ final class ReaderWindowController: NSWindowController {
                             readsFromLeft: book.readMode.readsFromLeft,
                             preResampled: preResampled,
                             turn: turn)
+        // スマートズーム直後の再デコード(キャップ上昇)では setPages が
+        // スクロールを先頭へ戻すため、同一スプレッドに限りアンカーを再適用する
+        if let pending = pendingScrollAnchor {
+            pendingScrollAnchor = nil
+            if book.currentIndex == pending.index {
+                readerView.scroll(toAnchorRatio: pending.ratio)
+            }
+        }
+        // 連続ピンチズーム確定の再デコード: 倍率とアンカーを復元する
+        // (setPages が zoomScale=1 に落とすため。同一スプレッドのみ)
+        if let pending = pendingZoom {
+            pendingZoom = nil
+            if book.currentIndex == pending.index {
+                readerView.restoreZoom(scale: pending.scale, anchorRatio: pending.ratio)
+            }
+        }
         readerView.window?.makeFirstResponder(readerView)
         updatePageIndicators(spread: spread)
         if readerView.isLoupeEnabled {
@@ -1223,6 +1370,10 @@ final class ReaderWindowController: NSWindowController {
             var pageLimit = PreresamplePolicy.maxPages
             var limitComputed = false
             var resampledPages = 0
+            // 計画枚数(残数表示用)。予算確定前は maxPages 内での見込み
+            let plannedPages = min(spreads.reduce(0) { $0 + $1.count },
+                                   PreresamplePolicy.maxPages)
+            self.notePrefetchPlan(planned: plannedPages)
             for indices in spreads {
                 var images: [CGImage] = []
                 for index in indices {
@@ -1246,6 +1397,9 @@ final class ReaderWindowController: NSWindowController {
                         bytesPerPage: bytesPerPage,
                         physicalMemory: ProcessInfo.processInfo.physicalMemory)
                     limitComputed = true
+                    // 予算確定で計画枚数を精緻化(残数表示に反映)
+                    self.notePrefetchPlan(
+                        planned: min(spreads.reduce(0) { $0 + $1.count }, pageLimit))
                 }
                 for (position, image) in images.enumerated() {
                     // 表示要求を優先(キャンセル)。ソフト停止で残した
@@ -1268,8 +1422,9 @@ final class ReaderWindowController: NSWindowController {
                         noiseReduction: self.settings.noiseReductionLevel,
                         superResEncrypted: self.currentBookIsEncrypted)
                     self.preresamplingEntryID = nil
+                    resampledPages += 1
+                    self.notePrefetchProgress(done: resampledPages)  // 残数表示に反映
                 }
-                resampledPages += indices.count
                 guard resampledPages < pageLimit else { return }
             }
         }
@@ -1577,22 +1732,44 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: - メニューアクション
 
-    @objc func nextPage(_ sender: Any?) { showNext() }
-    @objc func previousPage(_ sender: Any?) { showPrevious() }
+    /// 拡大中のページ送りは「引いてからめくる」: 先にズームを 1.0 へ戻し、
+    /// フィットになってから実際の送り(=設定のめくり演出)を行う(設計書 §2.4)。
+    /// 等倍・視差効果オフのときは即実行(animateZoomOut が判定)
+    private func turningPage(_ body: @escaping () -> Void) {
+        // めくり効果が「なし」のときは、ズームアウト演出も付けず即座に送る
+        // (「効果なし」を一貫させる。setPages が zoomScale を 1 に戻す)。
+        // 視差効果オフ・等倍時の即実行は animateZoomOut 側が判定する
+        guard settings.pageTurnAnimation != .none else {
+            body()
+            return
+        }
+        readerView.animateZoomOut(completion: body)
+    }
+
+    @objc func nextPage(_ sender: Any?) {
+        turningPage { [weak self] in self?.showNext() }
+    }
+    @objc func previousPage(_ sender: Any?) {
+        turningPage { [weak self] in self?.showPrevious() }
+    }
 
     @objc func halfNextPage(_ sender: Any?) {
-        guard let book else { return }
-        if book.moveHalfNext() == .moved {
-            pendingTurnForward = true
-            Task { await refreshDisplay() }
+        turningPage { [weak self] in
+            guard let self, let book = self.book else { return }
+            if book.moveHalfNext() == .moved {
+                self.pendingTurnForward = true
+                Task { await self.refreshDisplay() }
+            }
         }
     }
 
     @objc func halfPreviousPage(_ sender: Any?) {
-        guard let book else { return }
-        if book.moveHalfPrevious() == .moved {
-            pendingTurnForward = false
-            Task { await refreshDisplay() }
+        turningPage { [weak self] in
+            guard let self, let book = self.book else { return }
+            if book.moveHalfPrevious() == .moved {
+                self.pendingTurnForward = false
+                Task { await self.refreshDisplay() }
+            }
         }
     }
 
@@ -1697,6 +1874,11 @@ final class ReaderWindowController: NSWindowController {
         toggleLoupe()
     }
 
+    /// ドラッグ中のジェスチャ方向 HUD の表示切替(設定「操作」と同じ defaults を共有)
+    @objc func toggleGestureHUDMenu(_ sender: Any?) {
+        settings.gestureHUDEnabled.toggle()
+    }
+
     @objc func rotateLeft(_ sender: Any?) {
         readerView.rotation += 1  // 仕様書 §4.15: rotateLeft はインクリメント
     }
@@ -1726,6 +1908,9 @@ final class ReaderWindowController: NSWindowController {
         case #selector(toggleLoupeMenu(_:)):
             menuItem.state = readerView.isLoupeEnabled ? .on : .off
             return (book?.pageCount ?? 0) > 0
+        case #selector(toggleGestureHUDMenu(_:)):
+            menuItem.state = settings.gestureHUDEnabled ? .on : .off
+            return true
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
              #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)),
@@ -1794,16 +1979,55 @@ extension ReaderWindowController: ReaderViewDelegate {
         handleClick(button: button, modifiers: modifiers, leftHalf: leftHalf)
     }
 
-    func readerView(_ view: ReaderView, gesture virtualButton: Int, modifiers: Int) {
-        handleGesture(virtualButton: virtualButton, modifiers: modifiers)
+    func readerView(_ view: ReaderView, gesture virtualButton: Int, modifiers: Int,
+                    leftHalf: Bool) {
+        handleGesture(virtualButton: virtualButton, modifiers: modifiers, leftHalf: leftHalf)
     }
 
-    func readerView(_ view: ReaderView, dragGesture directionModifier: Int, baseModifiers: Int) {
-        handleDragGesture(directionModifier: directionModifier, baseModifiers: baseModifiers)
+    func readerView(_ view: ReaderView, dragGesture directionModifier: Int,
+                    baseModifiers: Int, button: Int, leftHalf: Bool) {
+        handleDragGesture(directionModifier: directionModifier, baseModifiers: baseModifiers,
+                          button: button, leftHalf: leftHalf)
     }
 
-    func readerViewShouldDragScroll(_ view: ReaderView, modifiers: Int) -> Bool {
-        shouldDragScroll(modifiers: modifiers)
+    func readerView(_ view: ReaderView, dragTracking dx: CGFloat, dy: CGFloat,
+                    button: Int, modifiers: Int, elapsed: TimeInterval) {
+        handleDragTracking(dx: dx, dy: dy, button: button, modifiers: modifiers,
+                           elapsed: elapsed)
+    }
+
+    func readerViewDragTrackingEnded(_ view: ReaderView) {
+        handleDragTrackingEnded()
+    }
+
+    func readerViewSmartMagnify(_ view: ReaderView, at point: CGPoint) {
+        handleSmartZoom(at: point)
+    }
+
+    func readerViewZoomWillBegin(_ view: ReaderView) {
+        // 進行中のカール追従・保留めくりを畳む(ズームとは別系統)
+        pendingTurnForward = nil
+    }
+
+    func readerViewZoomDidEnd(_ view: ReaderView, scale: CGFloat) {
+        // 確定倍率に見合う解像度へ段階引き上げ(cap 上昇時のみ再デコード)。
+        // 再デコードは setPages を通り zoomScale=1 に落とすため、復元予約を置く
+        if scale > 1, let book {
+            pendingZoom = (scale, view.currentZoomAnchorRatio, book.currentIndex)
+        }
+        refreshDisplayIfCapRaised()
+    }
+
+    func readerViewForceClick(_ view: ReaderView, at point: CGPoint) -> Bool {
+        handleForceClick()
+    }
+
+    func readerViewForceClickEnded(_ view: ReaderView) {
+        handleForceClickEnded()
+    }
+
+    func readerViewShouldDragScroll(_ view: ReaderView, button: Int, modifiers: Int) -> Bool {
+        shouldDragScroll(button: button, modifiers: modifiers)
     }
 
     func readerView(_ view: ReaderView, scrollWheel event: NSEvent) {

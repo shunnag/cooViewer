@@ -152,9 +152,9 @@ final class NestedArchiveSourceTests: XCTestCase {
         private(set) var count = 0
         private let answer: String?
         init(answer: String?) { self.answer = answer }
-        func provide() -> String? {
+        func provide() -> NestedPasswordAnswer? {
             count += 1
-            return answer
+            return answer.map { NestedPasswordAnswer(password: $0, saveRequested: false) }
         }
     }
 
@@ -177,6 +177,76 @@ final class NestedArchiveSourceTests: XCTestCase {
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
         return try Data(contentsOf: stage.appendingPathComponent("out.zip"))
+    }
+
+    /// 混在書庫(先頭エントリが非暗号化)では誤パスワードを受理しないこと。
+    /// プローブが暗号化エントリを優先しないと、自動試行の誤値が無音で確定する
+    /// (設計書 §2.4 パスワードマネージャーの強化点)
+    func testMixedArchiveRejectsWrongPassword() async throws {
+        // 先頭=非暗号化、後続=暗号化 の混在 zip を CLI で組む
+        let stage = tempDir.appendingPathComponent("mixed")
+        try FileManager.default.createDirectory(at: stage,
+                                                withIntermediateDirectories: true)
+        let plain = stage.appendingPathComponent("a-plain.png")
+        let locked = stage.appendingPathComponent("b-locked.png")
+        try png(width: 40).write(to: plain)
+        try png(width: 41).write(to: locked)
+        let zipURL = stage.appendingPathComponent("mixed.zip")
+        for arguments in [["-j", zipURL.path, plain.path],
+                          ["-j", "-P", "sesame", zipURL.path, locked.path]] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.arguments = arguments
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+        }
+        let source = try ArchiveSource(url: zipURL)
+        let wrongAccepted = await source.checkAndSetPassword("wrong")
+        XCTAssertFalse(wrongAccepted, "誤パスワードが混在書庫で受理された")
+        let correctAccepted = await source.checkAndSetPassword("sesame")
+        XCTAssertTrue(correctAccepted)
+    }
+
+    /// 暗号化書庫のスプールは平文で書かれず、読み出しは正しく復号されること
+    /// (CWE-312: 自動解錠で無人スプールが走るため。設計書 §2.4)
+    func testEncryptedArchiveSpoolIsNotPlaintext() async throws {
+        let data = try encryptedZipData(widths: [40, 41], password: "sesame",
+                                        label: "spool")
+        let zipURL = tempDir.appendingPathComponent("enc-spool.zip")
+        try data.write(to: zipURL)
+        let source = try ArchiveSource(url: zipURL)
+        let unlocked = await source.checkAndSetPassword("sesame")
+        XCTAssertTrue(unlocked)
+        // ネットワーク相当のプロファイルでスプールを強制
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network))
+        await source.beginBackgroundPreparation(spoolSizeLimit: .max)
+        await source.waitForSpoolCompletion()
+        let spooled = await source.spooledEntryCount
+        XCTAssertEqual(spooled, 2)
+        // スプールディレクトリの実ファイルに PNG マジックが現れないこと
+        let root = ArchiveSource.spoolRoot()
+        let pid = "\(ProcessInfo.processInfo.processIdentifier)-"
+        let dirs = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        var checked = 0
+        for dir in dirs where dir.lastPathComponent.hasPrefix(pid) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil)) ?? []
+            for file in files {
+                guard let raw = try? Data(contentsOf: file), raw.count >= 4 else {
+                    continue
+                }
+                XCTAssertNotEqual(raw.prefix(4), Data([0x89, 0x50, 0x4E, 0x47]),
+                                  "暗号化書庫のスプールが平文 PNG のまま")
+                checked += 1
+            }
+        }
+        XCTAssertGreaterThan(checked, 0, "スプールファイルが見つからない")
+        // 読み出しは復号を通って正しい画像になる
+        let entries = try await source.entries()
+        let image = try await source.image(for: entries[0], maxPixelSize: nil)
+        XCTAssertEqual(image.width, 40)
     }
 
     /// 暗号化されたネスト書庫は provider に問い合わせて解除し、本に取り込むこと

@@ -127,15 +127,32 @@ struct BindingConfiguration: Sendable {
         return nil
     }
 
+    /// DragScroll(41)の照会(仕様書 §5.7.5)。旧実装は起動時にモード固有配列の
+    /// action==41 エントリだけを dragScrollDic へ配布するため、mode0 配列の 41 は
+    /// どのモードでも効かない — resolveMouse の mode0 フォールバックは通さない。
+    /// Fit to Screen(fitMode 0)では配布自体が無いので常に nil。
+    func resolveDragScroll(button: Int, modifiers: Int, fitMode: Int) -> MouseBinding? {
+        let array: [MouseBinding] = switch fitMode {
+        case 1: mouseMode2
+        case 2, 3: mouseMode3
+        default: []
+        }
+        return array.first {
+            $0.button == button && $0.modifiers == modifiers && $0.action == .dragScroll
+        }
+    }
+
     /// ドラッグジェスチャの解決: 方向別(+200..500)→ 方向不問(100)の順に
-    /// フォールバックする(仕様書 §5.3)。
+    /// フォールバックする(仕様書 §5.3)。フォールバック段は旧実装どおり
+    /// 修飾キーを捨てた素の 100 固定(Controller_input.m:1012-1026。
+    /// 100+修飾 の照合は DragScroll の押下時判定 resolveDragScroll だけが行う)
     func resolveDrag(button: Int, baseModifiers: Int, directionModifier: Int,
                      fitMode: Int, readsFromLeft: Bool) -> MouseBinding? {
         if let binding = resolveMouse(button: button, modifiers: directionModifier + baseModifiers,
                                       fitMode: fitMode, readsFromLeft: readsFromLeft) {
             return binding
         }
-        return resolveMouse(button: button, modifiers: LegacyModifier.drag + baseModifiers,
+        return resolveMouse(button: button, modifiers: LegacyModifier.drag,
                             fitMode: fitMode, readsFromLeft: readsFromLeft)
     }
 
@@ -197,6 +214,37 @@ struct BindingConfiguration: Sendable {
     static func saveKeyBindings(_ bindings: [KeyBinding], arrayName: String,
                                 to defaults: UserDefaults = .standard) {
         defaults.set(legacyArray(from: bindings), forKey: arrayName)
+        // 2.0 の UI で KeyArray を編集したら以後 f(補間切替)の自動注入を
+        // やめる(削除が定着するように。MouseArrayUserEdited と同型)
+        if arrayName == "KeyArray" {
+            defaults.set(true, forKey: "KeyArrayUserEdited")
+        }
+    }
+
+    /// マウス配列を旧 defaults 形式へ書き出す(仕様書 §5.1 のスキーマ:
+    /// button/modifier/action(+value)。キー配列と違い keyname は無い。
+    /// switchAction は「オンのときだけキーが存在」(§13.2)を厳守する)
+    static func legacyArray(from bindings: [MouseBinding]) -> [[String: Any]] {
+        bindings.map { binding in
+            var dict: [String: Any] = [
+                "action": binding.legacyActionNumber,
+                "button": binding.button,
+                "modifier": binding.modifiers,
+            ]
+            if let value = binding.value { dict["value"] = value }
+            if binding.switchAction { dict["switchAction"] = true }
+            return dict
+        }
+    }
+
+    static func saveMouseBindings(_ bindings: [MouseBinding], arrayName: String,
+                                  to defaults: UserDefaults = .standard) {
+        defaults.set(legacyArray(from: bindings), forKey: arrayName)
+        // 2.0 の UI で MouseArray を編集したら以後サイドボタンの自動注入を
+        // やめる(削除が定着するように。キーは legacy スキーマ外の新規)
+        if arrayName == "MouseArray" {
+            defaults.set(true, forKey: "MouseArrayUserEdited")
+        }
     }
 
     /// UserDefaults(旧キー名のまま)から読む。無ければ既定を返す。
@@ -208,8 +256,11 @@ struct BindingConfiguration: Sendable {
             var bindings = keyBindings(fromLegacyArray: array)
             guard !bindings.isEmpty else { return fallback }
             // 保存済み配列への新既定の移行: f が未使用かつ補間切替(53)が
-            // 未割当のときだけ追記する(ユーザーのカスタマイズは尊重)
+            // 未割当のときだけ追記する(ユーザーのカスタマイズは尊重)。
+            // 2.0 の UI で編集済み(KeyArrayUserEdited)なら注入しない —
+            // UI で削除した行が復活しないように
             if name == "KeyArray",
+               !defaults.bool(forKey: "KeyArrayUserEdited"),
                !bindings.contains(where: { $0.key == "f" && $0.modifiers == 0 }),
                !bindings.contains(where: { $0.legacyActionNumber == 53 }) {
                 bindings.append(KeyBinding(legacyActionNumber: 53, key: "f",
@@ -221,8 +272,25 @@ struct BindingConfiguration: Sendable {
             guard let array = defaults.array(forKey: name) as? [[String: Any]] else {
                 return fallback
             }
-            let bindings = mouseBindings(fromLegacyArray: array)
-            return bindings.isEmpty ? fallback : bindings
+            var bindings = mouseBindings(fromLegacyArray: array)
+            guard !bindings.isEmpty else { return fallback }
+            // 保存済み配列への新既定の移行(メモリ内注入): サイドボタンを
+            // 戻る/進むに。ユーザーが button 3/4 を既に使っている場合と、
+            // 2.0 の設定 UI で MouseArray を編集済み(MouseArrayUserEdited)の
+            // 場合は尊重して注入しない — UI で削除したら復活しない(設計書 §2.4)
+            if name == "MouseArray", !defaults.bool(forKey: "MouseArrayUserEdited") {
+                if !bindings.contains(where: { $0.button == 3 }) {
+                    bindings.append(MouseBinding(legacyActionNumber: 7, button: 3,
+                                                 modifiers: 0, value: nil,
+                                                 switchAction: false))
+                }
+                if !bindings.contains(where: { $0.button == 4 }) {
+                    bindings.append(MouseBinding(legacyActionNumber: 6, button: 4,
+                                                 modifiers: 0, value: nil,
+                                                 switchAction: false))
+                }
+            }
+            return bindings
         }
         let builtIn = BindingConfiguration.builtInDefaults
         return BindingConfiguration(
@@ -306,18 +374,22 @@ struct BindingConfiguration: Sendable {
             key(32, left, value: 20), key(33, right, value: 20),
         ]
 
-        // §5.7.4 MouseArray
+        // §5.7.4 MouseArray(+ サイドボタン戻る/進むは 2.0 の新規既定。
+        // ブラウザ同様の論理ナビゲーションなので switchAction なし=綴じ方向
+        // 非依存。設計書 §2.4)
         let mouseNormal: [MouseBinding] = [
             mouse(0, 0),
             mouse(1, 0, LegacyModifier.shift),
+            mouse(7, 3), mouse(6, 4),
             mouse(6, VirtualButton.swipeLeft, sw: true),
             mouse(7, VirtualButton.swipeRight, sw: true),
             mouse(14, VirtualButton.swipeDown),
             mouse(15, VirtualButton.swipeUp),
             mouse(49, VirtualButton.rotateRight),
             mouse(50, VirtualButton.rotateLeft),
-            mouse(63, VirtualButton.pinchOut),
-            mouse(64, VirtualButton.pinchIn),
+            // ピンチは常に連続ズームに固定(設計書 §2.4)。旧既定の
+            // pinchOut=63/pinchIn=64(拡大/縮小表示)は発火しないため既定から外す。
+            // 表示モードの拡大/縮小はキー(51/52)や他ボタン割当で行う
             mouse(43, 2),
             mouse(59, 1), mouse(59, 0, LegacyModifier.control),
         ]

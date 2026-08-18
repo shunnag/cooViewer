@@ -17,9 +17,11 @@ enum AutomatedRun {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var readerWindowController: ReaderWindowController?
     private var settingsWindow: NSWindow?
+    private var activityWindow: NSWindow?
+    private var activityMonitor: ActivityMonitor?
     /// 起動時に文書オープン(Finder ダブルクリック等)を受け取ったか。
     /// 受け取っていたら「前回の本を開く」(§6.1)は行わない
     private var didOpenDocumentAtLaunch = false
@@ -189,6 +191,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.readerWindowController?.debugShowOpeningProgress()
             }
         }
+        if arguments.contains("--show-activity") {
+            // 検証用: アクティビティ窓を開いて撮る(更新ループが本データを
+            // 拾うまで少し早めに開く)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(0.4))
+                self.showActivity(nil)
+            }
+        }
+        if let index = arguments.firstIndex(of: "--zoom"), index + 1 < arguments.count,
+           let scale = Double(arguments[index + 1]) {
+            // 検証用: 中心を基点に指定倍率へ連続ズームした状態で撮る
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.readerViewForInput
+                    .debugSetZoom(CGFloat(scale))
+            }
+        }
+        if let index = arguments.firstIndex(of: "--show-gesture-hud"),
+           index + 1 < arguments.count {
+            // 検証用: ジェスチャ方向 HUD を表示した状態で撮影する
+            // (方向は left|right|up|down。割当名は実際のバインディングを引く)
+            let direction = arguments[index + 1]
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                self.readerWindowController?.debugShowGestureHUD(named: direction)
+            }
+        }
+        if let index = arguments.firstIndex(of: "--show-password-dialog"),
+           index + 1 < arguments.count {
+            // 検証用: パスワードダイアログ(保存チェックボックス付き)を
+            // レイアウトして撮る(runModal せずウインドウ内容を撮影)
+            let path = arguments[index + 1]
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                guard let accessory = self.readerWindowController?
+                    .debugPasswordAccessory()
+                else { NSApp.terminate(nil); return }
+                self.writeCachedSnapshot(of: accessory, to: path)
+                NSApp.terminate(nil)
+            }
+        }
         if let index = arguments.firstIndex(of: "--then-open"), index + 1 < arguments.count {
             // 検証用: 最初の本(とサムネイル)を表示した後に別の本へ切り替える
             // (本の切替をまたぐサムネイル一覧の描画確認のため)
@@ -206,6 +249,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }.count
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2 + Double(max(0, navSteps - 1))))
+                // アクティビティ窓が開いていれば ImageRenderer で撮る
+                // (NSHostingView + ScrollView はヘッドレスの cacheDisplay で
+                // テキストが写らないため。FileInfoView と同じ流儀)
+                if let monitor = self.activityMonitor {
+                    let renderer = ImageRenderer(
+                        content: ActivityView(monitor: monitor, embedInScroll: false)
+                            .frame(width: 420)
+                            .background(Color(nsColor: .windowBackgroundColor)))
+                    renderer.scale = 2
+                    if let cgImage = renderer.cgImage {
+                        try? NSBitmapImageRep(cgImage: cgImage)
+                            .representation(using: .png, properties: [:])?
+                            .write(to: URL(fileURLWithPath: path))
+                    }
+                    NSApp.terminate(nil)
+                    return
+                }
                 // しおり編集シート/ファイル情報パネルが開いていればそちらを撮る
                 // (NSHostingView は反転補正)
                 if let sheet = self.readerWindowController?.bookmarkEditorWindow {
@@ -329,6 +389,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// アクティビティ窓(バックグラウンド処理・メモリの計画と実態)。
+    /// 開いている間だけ更新し、閉じたら停止する
+    @objc func showActivity(_ sender: Any?) {
+        if activityWindow == nil {
+            let monitor = ActivityMonitor(controller: readerWindowController)
+            activityMonitor = monitor
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: ActivityView(monitor: monitor,
+                                       setAlwaysOnTop: { [weak self] on in
+                                           self?.activityWindow?.level = on ? .floating : .normal
+                                       })))
+            window.title = String(localized: "Activity")
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 420, height: 560))
+            window.center()
+            // 位置・サイズを保存(初回だけ中央、以降は AppKit の frame autosave で
+            // 復元。リーダー窓と同じ流儀)。保存済みフレームがあれば center を上書き
+            window.setFrameAutosaveName("ActivityWindow")
+            // 保存済みの「常に最前面」を反映(onAppear でも設定するが初期化時にも)
+            window.level = UserDefaults.standard.bool(forKey: "ActivityAlwaysOnTop")
+                ? .floating : .normal
+            window.delegate = self
+            activityWindow = window
+        }
+        activityMonitor?.start()
+        activityWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // アクティビティ窓を閉じたら更新ループを止める(actor への query 停止)
+        if (notification.object as? NSWindow) === activityWindow {
+            activityMonitor?.stop()
+        }
     }
 
     @objc func openRecentBook(_ sender: NSMenuItem) {

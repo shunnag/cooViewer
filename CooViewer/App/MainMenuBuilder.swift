@@ -217,6 +217,11 @@ enum MainMenuBuilder {
         menu.addItem(withTitle: String(localized: "Loupe"),
                      action: #selector(ReaderWindowController.toggleLoupeMenu(_:)),
                      keyEquivalent: "l")
+        // ドラッグ中のジェスチャ方向 HUD(設定「操作」ペインと同じトグル。§7.5)
+        menu.addItem(
+            withTitle: String(localized: "Show gesture direction while dragging"),
+            action: #selector(ReaderWindowController.toggleGestureHUDMenu(_:)),
+            keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Enter Full Screen"),
                      action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
@@ -287,6 +292,13 @@ enum MainMenuBuilder {
                      action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         menu.addItem(withTitle: String(localized: "Zoom"),
                      action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        // アクティビティ窓(読み込み・リサンプル・メモリの計画と実態)。
+        // target は nil で応答連鎖経由 AppDelegate へ(設定項目と同じ流儀)
+        let activity = menu.addItem(
+            withTitle: String(localized: "Activity"),
+            action: #selector(AppDelegate.showActivity(_:)), keyEquivalent: "a")
+        activity.keyEquivalentModifierMask = [.command, .option]
         NSApp.windowsMenu = menu
 
         let item = NSMenuItem()

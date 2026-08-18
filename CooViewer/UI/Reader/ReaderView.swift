@@ -9,11 +9,29 @@ protocol ReaderViewDelegate: AnyObject {
     /// クリック/仮想ボタン。leftHalf=画面左半分での操作か
     func readerView(_ view: ReaderView, clickedButton button: Int,
                     modifiers: Int, leftHalf: Bool)
-    func readerView(_ view: ReaderView, gesture virtualButton: Int, modifiers: Int)
-    /// ±30px 以上のドラッグジェスチャ(方向 modifier は LegacyModifier.drag*)
-    func readerView(_ view: ReaderView, dragGesture directionModifier: Int, baseModifiers: Int)
-    /// このドラッグを 1:1 スクロールとして扱うか(バインディング照会)
-    func readerViewShouldDragScroll(_ view: ReaderView, modifiers: Int) -> Bool
+    /// マルチタッチ仮想ボタン。leftHalf は positional 系アクション用(仕様書 §5.9)
+    func readerView(_ view: ReaderView, gesture virtualButton: Int, modifiers: Int,
+                    leftHalf: Bool)
+    /// 30pt 超のドラッグジェスチャ(方向 modifier は LegacyModifier.drag*)
+    func readerView(_ view: ReaderView, dragGesture directionModifier: Int,
+                    baseModifiers: Int, button: Int, leftHalf: Bool)
+    /// ドラッグジェスチャの追跡中(HUD 用。ドラッグスクロール時は呼ばれない)
+    func readerView(_ view: ReaderView, dragTracking dx: CGFloat, dy: CGFloat,
+                    button: Int, modifiers: Int, elapsed: TimeInterval)
+    /// 追跡終了(発火の有無に関わらず解放時に呼ぶ)
+    func readerViewDragTrackingEnded(_ view: ReaderView)
+    /// 2 本指ダブルタップ(スマートズーム)。point はビュー座標
+    func readerViewSmartMagnify(_ view: ReaderView, at point: CGPoint)
+    /// 連続ピンチズーム開始(カール等の抑止用)
+    func readerViewZoomWillBegin(_ view: ReaderView)
+    /// 連続ピンチズーム確定(scale>1 なら高解像度再描画を要求)
+    func readerViewZoomDidEnd(_ view: ReaderView, scale: CGFloat)
+    /// トラックパッドの深押し。処理したら true(その解放のクリックを抑止)
+    func readerViewForceClick(_ view: ReaderView, at point: CGPoint) -> Bool
+    /// 深押しした押下の解放(クイックルーペを畳む合図)
+    func readerViewForceClickEnded(_ view: ReaderView)
+    /// このドラッグを 1:1 スクロールとして扱うか(押下時のバインディング照会)
+    func readerViewShouldDragScroll(_ view: ReaderView, button: Int, modifiers: Int) -> Bool
     func readerView(_ view: ReaderView, scrollWheel event: NSEvent)
 }
 
@@ -89,7 +107,7 @@ final class ReaderView: NSView {
     private var softRestartRequested = false
 
     var fitMode: FitMode = .fitToScreen {
-        didSet { scrollOffset = .zero; needsLayout = true }
+        didSet { scrollOffset = .zero; resetZoom(); needsLayout = true }
     }
 
     /// 回転(仕様書 §4.15): 0=なし, 1=左90°, 2=180°, 3=右90°。永続化しない。
@@ -97,8 +115,33 @@ final class ReaderView: NSView {
         didSet {
             rotation = ((rotation % 4) + 4) % 4
             scrollOffset = .zero
+            resetZoom()
             needsLayout = true
         }
+    }
+
+    /// 連続ピンチズームの倍率(1.0=現在の表示モードの見え方=下限)。
+    /// fitMode は昇格させず純粋な乗数として relayout の scaled にだけ掛かる
+    /// (predictedResampleSizes は 1.0 基準を保ち先読み予算を汚さない)。
+    /// ページめくり・モード変更・回転で 1.0 に戻る
+    private(set) var zoomScale: CGFloat = 1 {
+        didSet {
+            guard zoomScale != oldValue else { return }
+            needsLayout = true  // スクロール位置は保持(拡縮のみ)
+        }
+    }
+    /// ライブズーム中(リサンプル洪水を抑止。inLiveResize と同じ発想)
+    private var isLiveZooming = false
+
+    /// ズームを下限へ戻し、進行中の慣性タイマも必ず止める。zoomScale=1 を
+    /// 外部から起こす全経路(setPages/fitMode/rotation)はこれを通す —
+    /// settle 中に新ページ/新モードが来ても旧 target へズームし直さないため
+    private func resetZoom() {
+        zoomSettleTimer?.invalidate()
+        zoomSettleTimer = nil
+        zoomSettleCompletion = nil
+        isLiveZooming = false
+        zoomScale = 1
     }
 
     var interpolation: Interpolation = .systemDefault {
@@ -180,6 +223,19 @@ final class ReaderView: NSView {
         memoryPressureSource?.cancel()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // ウインドウから外れた(閉じた)ら慣性タイマを止める。run loop に
+        // 強参照で保持されるため放置すると [weak self] の空撃ちが永久に続く
+        // (deinit は nonisolated で Timer に触れないためここで畳む)
+        if window == nil {
+            zoomSettleTimer?.invalidate()
+            zoomSettleTimer = nil
+            zoomSettleCompletion = nil
+            isLiveZooming = false
+        }
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -230,6 +286,7 @@ final class ReaderView: NSView {
             pageLayer.removeAnimation(forKey: "pageAnimation")
         }
         scrollOffset = .zero
+        resetZoom()  // ズームはページを跨いで持ち越さない(送りで下限へ)
         needsLayout = true
         layoutSubtreeIfNeeded()
         scrollToHome()
@@ -301,7 +358,7 @@ final class ReaderView: NSView {
     /// カールを実行できる状態か。回転表示中は軸の幾何が合わず、ルーペ表示中は
     /// スナップショットにルーペが写り込むため省略する
     private var canRunCurl: Bool {
-        rotation == 0 && !loupe.isEnabled
+        rotation == 0 && !loupe.isEnabled && zoomScale == 1
             && bounds.width > 1 && bounds.height > 1
     }
 
@@ -498,8 +555,10 @@ final class ReaderView: NSView {
 
         let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
         let scales = pageScales(for: sizes, available: available)
+        // zoomScale は表示モードのスケールに掛かる純乗数。pageScales 側には
+        // 混ぜない(predictedResampleSizes/先読み予算が 1.0 基準を保つため)
         let scaled = zip(sizes, scales).map {
-            CGSize(width: $0.width * $1, height: $0.height * $1)
+            CGSize(width: $0.width * $1 * zoomScale, height: $0.height * $1 * zoomScale)
         }
         contentSize = CGSize(
             width: scaled.reduce(0) { $0 + $1.width },
@@ -559,6 +618,10 @@ final class ReaderView: NSView {
             setResampleActivity(false)
             return
         }
+        // ライブズーム中は毎フレーム pixelSize が変わるため、リサンプル(ML は
+        // 1 ページ数秒)の洪水を避けて trilinear 拡大表示に委ねる。確定時
+        // (isLiveZooming=false の最後の relayout)に 1 回だけ予約される
+        guard !isLiveZooming else { setResampleActivity(false); return }
         let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String,
                         noiseReduction: NoiseReductionLevel)] =
             images.indices.compactMap { index in
@@ -713,6 +776,9 @@ final class ReaderView: NSView {
 
     // MARK: - スクロール
 
+    /// テスト用: 現在のスクロール位置(読み取りのみ)
+    var debugScrollOffset: CGPoint { scrollOffset }
+
     private var maxScrollOffset: CGPoint {
         CGPoint(
             x: max(0, contentSize.width - availableSize.width),
@@ -724,6 +790,41 @@ final class ReaderView: NSView {
         scrollOffset.x = min(max(0, scrollOffset.x), maxScrollOffset.x)
         scrollOffset.y = min(max(0, scrollOffset.y), maxScrollOffset.y)
     }
+
+    /// ズーム中か(コントローラがページ送りを抑止しパンへ振り替える判定に使う)
+    var isZoomed: Bool { zoomScale > 1 }
+    /// 現在のズーム倍率(アクティビティ窓向け)
+    var currentZoomScale: CGFloat { zoomScale }
+
+    // MARK: - アクティビティ窓向けの実態アクセサ
+    /// 表示中スプレッドのリサンプル進行中要求数
+    var resampleInFlightCount: Int { resampleRequestKeys.count }
+    /// 表示中ページのうち高品質リサンプルが完成している枚数
+    var resampledCompletedCount: Int { resampledPages.compactMap { $0 }.count }
+
+    /// 検証用: 中心アンカーで倍率を直接与え、確定経路(cap 再デコード)も通す
+    func debugSetZoom(_ scale: CGFloat) {
+        zoomAnchorRatio = CGPoint(x: 0.5, y: 0.5)
+        zoomAnchorCursor = CGPoint(x: bounds.midX, y: bounds.midY)
+        zoomScale = max(1, scale)
+        reanchorZoom()
+        // 実ピンチと同じ確定通知(高解像度再デコード→pendingZoom 復元)を起こす
+        delegate?.readerViewZoomDidEnd(self, scale: zoomScale)
+    }
+
+    /// 確定ズームの cap 上昇再デコード後に、倍率とアンカーを復元する
+    /// (setPages が zoomScale=1 に落とすため。コントローラの pendingZoom 経由)
+    func restoreZoom(scale: CGFloat, anchorRatio: CGPoint) {
+        guard scale > 1 else { return }
+        zoomAnchorRatio = anchorRatio
+        // 復元時はカーソルが無いのでアンカー点を中央に据える
+        zoomAnchorCursor = CGPoint(x: bounds.midX, y: bounds.midY)
+        zoomScale = scale
+        reanchorZoom()
+    }
+
+    /// 確定ズームのアンカー比率(コントローラが再デコード後の復元に使う)
+    var currentZoomAnchorRatio: CGPoint { zoomAnchorRatio }
 
     /// delta 分スクロールする。1px も動けなかったら false(端到達。仕様書 §4.16)。
     @discardableResult
@@ -852,68 +953,94 @@ final class ReaderView: NSView {
 
     // MARK: - マウス(クリック/ドラッグスクロール/ドラッグジェスチャ。仕様書 §5.9)
 
-    private var mouseDownPoint: CGPoint?
-    private var didDragScroll = false
+    /// 全ボタン共通の状態機械。旧実装は rightMouse*/otherMouse* を左の処理へ
+    /// 転送して同一規則で扱う(右/中ボタンのドラッグジェスチャや DragScroll
+    /// 割当も成立し、クリックは解放時に発火する。仕様書 §5.9)
+    private var mouseRecognizer = MouseGestureRecognizer()
 
-    override func mouseDown(with event: NSEvent) {
-        mouseDownPoint = convert(event.locationInWindow, from: nil)
-        didDragScroll = false
+    /// positional 系アクション用の左右半面判定。旧実装はクリック=contentView /
+    /// ジェスチャ=imageView と基準が不統一だったが view bounds に統一
+    /// (設計書 §2.4 の仕様変更)
+    func isLeftHalf(locationInWindow point: NSPoint) -> Bool {
+        convert(point, from: nil).x < bounds.midX
     }
 
-    override func mouseDragged(with event: NSEvent) {
+    override func mouseDown(with event: NSEvent) { beginMouse(event, button: 0) }
+    override func rightMouseDown(with event: NSEvent) { beginMouse(event, button: 1) }
+    override func otherMouseDown(with event: NSEvent) {
+        beginMouse(event, button: event.buttonNumber)
+    }
+
+    override func mouseDragged(with event: NSEvent) { dragMouse(event) }
+    override func rightMouseDragged(with event: NSEvent) { dragMouse(event) }
+    override func otherMouseDragged(with event: NSEvent) { dragMouse(event) }
+
+    override func mouseUp(with event: NSEvent) { finishMouse(event, button: 0) }
+    override func rightMouseUp(with event: NSEvent) { finishMouse(event, button: 1) }
+    override func otherMouseUp(with event: NSEvent) {
+        finishMouse(event, button: event.buttonNumber)
+    }
+
+    private func beginMouse(_ event: NSEvent, button: Int) {
+        // 追跡中の同時押し(chord)は無視する — 状態機械は 1 押下分なので、
+        // 上書きするとドラッグスクロールのカーソルが戻らない等の混線を起こす
+        guard !mouseRecognizer.isTracking else { return }
+        // DragScroll は押下時に確定する(ドラッグ中の修飾キー変更は影響しない。
+        // 旧 CustomImageView.m:141-168)。Fit to Screen では成立しない(仕様書 §5.7.5)
+        let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
+        let dragScroll = fitMode != .fitToScreen
+            && delegate?.readerViewShouldDragScroll(self, button: button,
+                                                    modifiers: modifiers) == true
+        mouseRecognizer.begin(button: button,
+                              point: convert(event.locationInWindow, from: nil),
+                              time: event.timestamp, dragScroll: dragScroll)
+        if dragScroll { NSCursor.closedHand.set() }  // 押下時から表示(旧互換)
+    }
+
+    private func dragMouse(_ event: NSEvent) {
         if loupe.isEnabled {
             loupe.move(to: convert(event.locationInWindow, from: nil))
         }
-        let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
-        guard fitMode != .fitToScreen,
-              delegate?.readerViewShouldDragScroll(self, modifiers: modifiers) == true else {
+        if mouseRecognizer.isDragScrolling {
+            mouseRecognizer.noteDragScrolled()
+            scroll(by: CGPoint(x: -event.deltaX, y: -event.deltaY))
             return
         }
-        didDragScroll = true
-        NSCursor.closedHand.set()
-        scroll(by: CGPoint(x: -event.deltaX, y: -event.deltaY))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer { mouseDownPoint = nil }
-        if didDragScroll {
-            NSCursor.arrow.set()
-            return  // ドラッグスクロール後はクリック処理をしない(仕様書 §5.7.5)
-        }
-        guard let start = mouseDownPoint else { return }
-        let end = convert(event.locationInWindow, from: nil)
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
-
-        if max(abs(dx), abs(dy)) >= 30 {
-            // ドラッグジェスチャ(±30px。仕様書 §5.9)。isFlipped のため dy>0 は下方向
-            let direction: Int
-            if abs(dx) >= abs(dy) {
-                direction = dx < 0 ? LegacyModifier.dragLeft : LegacyModifier.dragRight
-            } else {
-                direction = dy < 0 ? LegacyModifier.dragUp : LegacyModifier.dragDown
-            }
-            delegate?.readerView(self, dragGesture: direction, baseModifiers: modifiers)
-        } else {
-            delegate?.readerView(self, clickedButton: 0, modifiers: modifiers,
-                                 leftHalf: end.x < bounds.midX)
-        }
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        forwardClick(event, button: 1)
-    }
-
-    override func otherMouseDown(with event: NSEvent) {
-        forwardClick(event, button: event.buttonNumber)
-    }
-
-    private func forwardClick(_ event: NSEvent, button: Int) {
+        guard mouseRecognizer.isTracking else { return }
         let point = convert(event.locationInWindow, from: nil)
-        delegate?.readerView(self, clickedButton: button,
+        delegate?.readerView(self, dragTracking: point.x - mouseRecognizer.startPoint.x,
+                             dy: point.y - mouseRecognizer.startPoint.y,
+                             button: mouseRecognizer.button,
                              modifiers: LegacyModifier.encode(flags: event.modifierFlags),
-                             leftHalf: point.x < bounds.midX)
+                             elapsed: event.timestamp - mouseRecognizer.startTime)
+    }
+
+    private func finishMouse(_ event: NSEvent, button: Int) {
+        // 深押し中の押下の解放: クイックルーペを畳む(深押しは左ボタンのみ)
+        if button == 0, forceClickActive {
+            forceClickActive = false
+            delegate?.readerViewForceClickEnded(self)
+            return
+        }
+        // 追跡中のボタンの解放だけを終端にする(chord の他ボタン解放は無視)
+        guard mouseRecognizer.isTracking, mouseRecognizer.button == button else { return }
+        delegate?.readerViewDragTrackingEnded(self)
+        let point = convert(event.locationInWindow, from: nil)
+        let wasDragScrolling = mouseRecognizer.isDragScrolling
+        let outcome = mouseRecognizer.finish(
+            point: point, time: event.timestamp,
+            modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+        if wasDragScrolling { NSCursor.arrow.set() }
+        switch outcome {
+        case .none:
+            break
+        case .click(let button, let modifiers):
+            delegate?.readerView(self, clickedButton: button, modifiers: modifiers,
+                                 leftHalf: point.x < bounds.midX)
+        case .dragGesture(let direction, let base, let button):
+            delegate?.readerView(self, dragGesture: direction, baseModifiers: base,
+                                 button: button, leftHalf: point.x < bounds.midX)
+        }
     }
 
     // MARK: - ホイール/マルチタッチジェスチャ(仕様書 §4.16, §5.1)
@@ -932,23 +1059,96 @@ final class ReaderView: NSView {
                 ? VirtualButton.swipeUp : VirtualButton.swipeDown
         }
         delegate?.readerView(self, gesture: virtualButton,
-                             modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+                             modifiers: LegacyModifier.encode(flags: event.modifierFlags),
+                             leftHalf: isLeftHalf(locationInWindow: event.locationInWindow))
     }
 
-    private var magnificationSum: CGFloat = 0
     private var rotationSum: CGFloat = 0
+    /// ライブズームのカーソルアンカー(.began で固定)
+    private var zoomAnchorRatio = CGPoint(x: 0.5, y: 0.5)
+    private var zoomAnchorCursor = CGPoint.zero
+    private var zoomSettleTimer: Timer?
 
+    /// ピンチで連続ズームする(現在の表示モードを下限 1.0 とした純乗数)。
+    /// 段階的な表示モード切替(旧 pinchIn/pinchOut → enlarge/reduceViewMode)は
+    /// キー・他ボタン割当に残し、ピンチジェスチャは常に連続ズーム
     override func magnify(with event: NSEvent) {
-        // キャンセルされたジェスチャの残滓が次回に混ざらないよう開始時に捨てる
-        if event.phase == .began { magnificationSum = 0 }
-        magnificationSum += event.magnification
-        guard event.phase == .ended else { return }
-        defer { magnificationSum = 0 }
-        guard abs(magnificationSum) > 0.05 else { return }
-        let virtualButton = magnificationSum > 0
-            ? VirtualButton.pinchOut : VirtualButton.pinchIn
-        delegate?.readerView(self, gesture: virtualButton,
-                             modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+        switch event.phase {
+        case .began:
+            zoomSettleTimer?.invalidate()
+            isLiveZooming = true
+            let cursor = convert(event.locationInWindow, from: nil)
+            zoomAnchorCursor = cursor
+            zoomAnchorRatio = contentAnchorRatio(for: cursor)
+            removeCurlOverlay()
+            delegate?.readerViewZoomWillBegin(self)
+        case .changed:
+            guard isLiveZooming else { return }
+            zoomScale = ZoomMath.updatedScale(current: zoomScale,
+                                              magnification: event.magnification)
+            reanchorZoom()
+        case .ended, .cancelled:
+            guard isLiveZooming else { return }
+            settleZoom(to: ZoomMath.settleTarget(scale: zoomScale))
+        default:
+            break
+        }
+    }
+
+    /// カーソル下の点を不動に保つ(.changed ごと)
+    private func reanchorZoom() {
+        needsLayout = true
+        layoutSubtreeIfNeeded()  // contentSize を確定させてからアンカーを合わせる
+        scrollOffset = ZoomMath.anchoredScrollOffset(
+            anchorRatio: zoomAnchorRatio, cursor: zoomAnchorCursor,
+            contentSize: contentSize, available: availableSize)
+        clampScrollOffset()
+        needsLayout = true
+    }
+
+    /// ズームアウト完了後に実行する処理(「引いてからめくる」用)
+    private var zoomSettleCompletion: (() -> Void)?
+
+    /// 拡大中のページ送り前に、ズームを 1.0 へ滑らかに戻してから completion を
+    /// 呼ぶ(2 段階演出。設計書 §2.4)。既に等倍・視差効果オフなら即実行
+    func animateZoomOut(completion: @escaping () -> Void) {
+        guard zoomScale > 1,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            resetZoom()
+            completion()
+            return
+        }
+        isLiveZooming = true  // ズームアウト中のリサンプル洪水を抑止
+        zoomSettleCompletion = completion
+        settleZoom(to: 1)
+    }
+
+    /// 指を離した後の慣性/吸着(120Hz でスクラブ。cancelInteractiveCurl と同型)
+    private func settleZoom(to target: CGFloat) {
+        zoomSettleTimer?.invalidate()
+        zoomSettleTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0 / 120, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let next = ZoomMath.settleStep(current: self.zoomScale, target: target)
+                self.zoomScale = next
+                self.reanchorZoom()
+                if next == target {
+                    self.zoomSettleTimer?.invalidate()
+                    self.zoomSettleTimer = nil
+                    self.isLiveZooming = false
+                    self.needsLayout = true  // 確定倍率で高品質リサンプルを予約
+                    if let completion = self.zoomSettleCompletion {
+                        // ズームアウト→めくり: cap 再デコードはせず次の遷移へ
+                        self.zoomSettleCompletion = nil
+                        completion()
+                    } else {
+                        self.delegate?.readerViewZoomDidEnd(self, scale: next)
+                    }
+                }
+            }
+        }
     }
 
     override func rotate(with event: NSEvent) {
@@ -960,7 +1160,63 @@ final class ReaderView: NSView {
         let virtualButton = rotationSum > 0
             ? VirtualButton.rotateLeft : VirtualButton.rotateRight
         delegate?.readerView(self, gesture: virtualButton,
-                             modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+                             modifiers: LegacyModifier.encode(flags: event.modifierFlags),
+                             leftHalf: isLeftHalf(locationInWindow: event.locationInWindow))
+    }
+
+    // MARK: - スマートズーム/Force click(旧実装には無い新規操作。設計書 §2.4)
+
+    override func smartMagnify(with event: NSEvent) {
+        delegate?.readerViewSmartMagnify(
+            self, at: convert(event.locationInWindow, from: nil))
+    }
+
+    private var pressureStage = 0
+    /// 深押しが発火した押下を保持中(解放で readerViewForceClickEnded を送る)
+    private var forceClickActive = false
+
+    override func pressureChange(with event: NSEvent) {
+        // 深押し(stage 2)への遷移で 1 回だけ発火。対応デバイス以外では
+        // イベント自体が来ない
+        defer { pressureStage = event.stage }
+        guard event.stage == 2, pressureStage < 2 else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard delegate?.readerViewForceClick(self, at: point) == true else { return }
+        forceClickActive = true
+        // 発火した押下の追跡を打ち切る(クリック/ジェスチャ/HUD の二重発火防止)。
+        // ドラッグスクロール中だった場合はカーソルもここで戻す
+        if mouseRecognizer.isDragScrolling { NSCursor.arrow.set() }
+        mouseRecognizer.noteForceClick()
+        delegate?.readerViewDragTrackingEnded(self)
+        NSHapticFeedbackManager.defaultPerformer.perform(
+            .alignment, performanceTime: .now)
+    }
+
+    /// スマートズーム用: ビュー座標の点が内容のどの比率位置かを返す
+    /// (回転表示中は中央扱い)
+    func contentAnchorRatio(for point: CGPoint) -> CGPoint {
+        guard rotation == 0, contentSize.width > 0, contentSize.height > 0 else {
+            return CGPoint(x: 0.5, y: 0.5)
+        }
+        let available = availableSize
+        let pad = CGPoint(x: max(0, (available.width - contentSize.width) / 2),
+                          y: max(0, (available.height - contentSize.height) / 2))
+        let x = (point.x - pad.x + scrollOffset.x) / contentSize.width
+        let y = (point.y - pad.y + scrollOffset.y) / contentSize.height
+        return CGPoint(x: min(1, max(0, x)), y: min(1, max(0, y)))
+    }
+
+    /// スマートズーム用: 内容の比率位置が表示中央付近に来るようスクロールする
+    /// (fitMode 変更直後に呼ぶ。端はクランプ)
+    func scroll(toAnchorRatio ratio: CGPoint) {
+        needsLayout = true
+        layoutSubtreeIfNeeded()  // fitMode 変更直後の contentSize を確定させる
+        let available = availableSize
+        scrollOffset = CGPoint(
+            x: ratio.x * contentSize.width - available.width / 2,
+            y: ratio.y * contentSize.height - available.height / 2)
+        clampScrollOffset()
+        needsLayout = true
     }
 
     // MARK: - マウス移動(フルスクリーン時のカーソル自動非表示用。仕様書 §3.3)

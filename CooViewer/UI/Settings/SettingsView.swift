@@ -15,13 +15,14 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
     case pageNumber = 6
     case pageBar = 7
     case decoders = 8
+    case mouseBindings = 9
 
     var id: Int { rawValue }
 
     /// サイドバーの表示順(rawValue の並びとは独立)
     static let sidebarOrder: [SettingsPane] = [
         .general, .books, .display, .pageNumber, .pageBar,
-        .control, .keyBindings, .decoders, .advanced,
+        .control, .keyBindings, .mouseBindings, .decoders, .advanced,
     ]
 
     var title: String {
@@ -33,6 +34,7 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
         case .pageBar: String(localized: "Page Bar")
         case .control: String(localized: "Control")
         case .keyBindings: String(localized: "Key Bindings")
+        case .mouseBindings: String(localized: "Mouse & Gestures")
         case .decoders: String(localized: "Decoders")
         case .advanced: String(localized: "Advanced")
         }
@@ -47,6 +49,7 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
         case .pageBar: "slider.horizontal.below.rectangle"
         case .control: "computermouse"
         case .keyBindings: "keyboard"
+        case .mouseBindings: "magicmouse"
         case .decoders: "cpu"
         case .advanced: "gearshape.2"
         }
@@ -61,6 +64,7 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
         case .pageBar: .teal
         case .control: .green
         case .keyBindings: .indigo
+        case .mouseBindings: .cyan
         case .decoders: .red
         case .advanced: .brown
         }
@@ -145,6 +149,9 @@ struct SettingsView: View {
     @AppStorage("CanScrollMode") private var canScrollMode = 0
     @AppStorage("SwipeToTurnPage") private var swipeToTurnPage = true
     @AppStorage("FlipSwipeDirection") private var flipSwipeDirection = true
+    @AppStorage("GestureHUDEnabled") private var gestureHUDEnabled = true
+    @AppStorage("SmartZoomEnabled") private var smartZoomEnabled = true
+    @AppStorage("ForceClickLoupe") private var forceClickLoupe = true
     @AppStorage("WheelSensitivity") private var wheelSensitivity = 1.0
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
@@ -303,6 +310,9 @@ struct SettingsView: View {
             String(localized: "Sort by:"),
             String(localized: "Read subfolders"),
             String(localized: "At the end of a book:"),
+            String(localized: "Passwords"),
+            String(localized: "Unlock with saved passwords"),
+            String(localized: "Delete All…"),
         ]
         case .display: [
             String(localized: "Reading direction:"),
@@ -334,13 +344,32 @@ struct SettingsView: View {
         case .control: [
             String(localized: "Turn pages with a trackpad swipe"),
             String(localized: "Reverse swipe direction"),
+            String(localized: "Show gesture direction while dragging"),
+            String(localized: "Smart zoom with two-finger double tap"),
+            String(localized: "Force click for a quick loupe"),
             String(localized: "Scroll wheel:"),
             String(localized: "Wheel page-turn threshold:"),
             String(localized: "When returning to previous page:"),
             String(localized: "Slideshow interval (seconds):"),
         ]
         case .keyBindings: [
-            String(localized: "Reset to Defaults"),
+            String(localized: "Turn Pages"),
+            String(localized: "Bookmarks"),
+            String(localized: "Scrolling"),
+            String(localized: "Tools"),
+            String(localized: "Add a key…"),
+            String(localized: "Per-view-mode overrides (advanced)"),
+            String(localized: "Reset base settings…"),
+        ]
+        case .mouseBindings: [
+            String(localized: "Turn Pages"),
+            String(localized: "Bookmarks"),
+            String(localized: "Scrolling"),
+            String(localized: "Tools"),
+            String(localized: "Side Button (Back)"),
+            String(localized: "Swipe Left"),
+            String(localized: "Per-view-mode overrides (advanced)"),
+            String(localized: "Reset base settings…"),
         ]
         case .decoders: [
             String(localized: "Built-in image decoders"),
@@ -370,8 +399,8 @@ struct SettingsView: View {
         case .pageNumber: pageNumberPane
         case .pageBar: pageBarPane
         case .control: controlPane
-        // タイトルバー(ツールバー)と重ならないよう上に余白を入れる
-        case .keyBindings: KeyBindingsPane().padding(.top, 12)
+        case .keyBindings: KeyBindingsPane()
+        case .mouseBindings: MouseBindingsPane()
         case .decoders: decodersPane
         case .advanced: advancedPane
         }
@@ -425,6 +454,7 @@ struct SettingsView: View {
                     Text(String(localized: "Do nothing")).tag(3)
                 }
             }
+            PasswordVaultSection()
         }
         .formStyle(.grouped)
     }
@@ -643,6 +673,12 @@ struct SettingsView: View {
                 Toggle(String(localized: "Reverse swipe direction"),
                        isOn: $flipSwipeDirection)
                     .disabled(!swipeToTurnPage)
+                Toggle(String(localized: "Show gesture direction while dragging"),
+                       isOn: $gestureHUDEnabled)
+                Toggle(String(localized: "Smart zoom with two-finger double tap"),
+                       isOn: $smartZoomEnabled)
+                Toggle(String(localized: "Force click for a quick loupe"),
+                       isOn: $forceClickLoupe)
                 Picker(String(localized: "Scroll wheel:"), selection: $canScrollMode) {
                     Text(String(localized: "Scroll only")).tag(0)
                     Text(String(localized: "Scroll, then move within page")).tag(1)
@@ -782,10 +818,16 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    /// 現在のパーセント指定が実メモリで何バイトになるかの表示
+    /// 現在のパーセント指定が実メモリで何バイトになるかの表示。
+    /// 高度設定オフのときは実際の上限(16GB)を反映する — 説明文の
+    /// 「上限 16 GB」および pageCacheByteLimit のオフ分岐と一致させる
+    /// (高度設定オンでは上限を掛けないので生の値。SettingsStore.pageCacheByteLimit)
     private var advancedMemoryDisplay: String {
-        let bytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
+        var bytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
             / 100 * Int64(advMemoryPercent)
+        if !advancedEnabled {
+            bytes = min(16 * 1024 * 1024 * 1024, bytes)
+        }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)
     }
 

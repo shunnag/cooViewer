@@ -109,6 +109,18 @@ final class Book {
 
     var pageCount: Int { entries.count }
     var displayName: String { source.displayName }
+    var currentPageIndex: Int { currentIndex }
+
+    // MARK: - アクティビティ窓向けの実態アクセサ
+
+    /// 進行中デコード件数(実態)
+    var inFlightLoadCount: Int { inFlightLoads.count }
+    /// 表示中スプレッドの枚数(1 か 2)
+    var displayedPageCount: Int { lastDisplayCount }
+    /// デコード用ページキャッシュの件数・使用バイト(実態)
+    func pageCacheStats() async -> (count: Int, cost: Int) {
+        (await cache.count, await cache.currentCost)
+    }
 
     // MARK: - 画像ロード
 
