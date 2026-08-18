@@ -107,6 +107,10 @@ protocol BookSource: Sendable {
     /// 本の置き場所の速度プロファイルを適用する(読み取り並列度・スプール方針)。
     /// beginBackgroundPreparation より前に呼ぶこと
     func applyMediaProfile(_ profile: MediaProfile) async
+
+    /// 最上位ダイアログでの「パスワードを保存」同意をネスト子へ引き継ぐ
+    /// (同意済みパスワードで解錠された子は子のキーでも保存される。設計書 §2.4)
+    func notePasswordSaveConsent(_ password: String) async
 }
 
 extension BookSource {
@@ -124,6 +128,7 @@ extension BookSource {
     func imageSize(for entry: PageEntry) async -> CGSize? { nil }
     func hasSkippedLockedContent() async -> Bool { false }
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {}
+    func notePasswordSaveConsent(_ password: String) async {}
     func setAssemblyProgressHandler(
         _ handler: (@Sendable (Int, Int) -> Void)?) async {}
     func containerFileURL(for entry: PageEntry) async -> URL {
@@ -139,13 +144,14 @@ enum BookSourceFactory {
     /// nestedPasswordProvider: 暗号化されたネスト書庫/PDF のパスワードを UI に
     /// 求めるコールバック(nil なら既知パスワードのみ試して黙って飛ばす)
     static func make(for url: URL, readSubFolders: Bool,
-                     nestedPasswordProvider: NestedPasswordProvider? = nil)
+                     nestedPasswordProvider: NestedPasswordProvider? = nil,
+                     vault: PasswordVault? = PasswordVault.sharedIfEnabled())
         async throws -> any BookSource {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw BookSourceError.unreadable(url)
         }
-        let unlocker = NestedUnlocker(provider: nestedPasswordProvider)
+        let unlocker = NestedUnlocker(provider: nestedPasswordProvider, vault: vault)
         if isDirectory.boolValue {
             let folder = try FolderSource(url: url, readSubFolders: readSubFolders)
             // 書庫/PDF を含むフォルダは統合ソースで包む(旧ネストローダー §2.4)。
@@ -159,7 +165,8 @@ enum BookSourceFactory {
             return try PDFSource(url: url)
         }
         if SupportedTypes.isArchive(url) {
-            return try ArchiveSource(url: url, unlocker: unlocker)
+            return try ArchiveSource(url: url, unlocker: unlocker,
+                                     persistenceKey: .file(path: url.path))
         }
         throw BookSourceError.unsupportedFormat(url)
     }

@@ -1,5 +1,27 @@
 import AppKit
 
+/// カール追従の共有判定(スワイプ/マウスドラッグ共通の純関数。設計書 §7.6)
+enum InteractiveCurlRules {
+    /// 移動量 → 進行度(350pt のスワイプ/ドラッグでめくり切り)
+    static func progress(for delta: CGFloat) -> CGFloat {
+        min(1, max(0, abs(delta) / 350))
+    }
+
+    /// ジェスチャ終了時にめくり切るか(60pt 超の移動または進行度 0.35 超)
+    static func completes(finalDelta: CGFloat, progress: CGFloat) -> Bool {
+        abs(finalDelta) > 60 || progress > 0.35
+    }
+
+    /// マウスドラッグでカール追従を開始してよいか: 水平方向の本判定
+    /// (30pt 超)が出たときのみ。垂直はカールの向きと合わないため対象外
+    static func beginsMouseTracking(dx: CGFloat, dy: CGFloat) -> Bool {
+        switch MouseGestureRecognizer.dragDirection(dx: dx, dy: dy) {
+        case LegacyModifier.dragLeft?, LegacyModifier.dragRight?: true
+        default: false
+        }
+    }
+}
+
 /// 入力イベント → バインディング解決 → アクション実行(仕様書 §5)。
 /// 旧 Controller (Input) カテゴリに相当する。
 extension ReaderWindowController {
@@ -29,6 +51,12 @@ extension ReaderWindowController {
     // MARK: - マウス/ジェスチャ(仕様書 §5.6, §5.9)
 
     func handleClick(button: Int, modifiers: Int, leftHalf: Bool) {
+        if mouseCurlConsumedGesture {
+            // カール追従が確定/巻き戻しを済ませたドラッグの解放(30pt 内へ
+            // 戻して離した場合はクリック判定になる)を二重発火させない
+            mouseCurlConsumedGesture = false
+            return
+        }
         guard let binding = bindings.resolveMouse(
             button: button, modifiers: modifiers,
             fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
@@ -36,44 +64,211 @@ extension ReaderWindowController {
         perform(action, value: binding.value, leftHalf: leftHalf)
     }
 
-    func handleGesture(virtualButton: Int, modifiers: Int) {
-        // 水平スワイプのページ送りはトグルで無効化できる。システム設定が
-        // 「3 本指でスワイプ」の場合はスクロールではなく swipe イベントとして
+    func handleGesture(virtualButton: Int, modifiers: Int, leftHalf: Bool) {
+        // 水平スワイプの「ページ送り」だけをトグルで無効化・向き反転する。
+        // 水平スワイプを別アクション(次の本など)へ割り当てたユーザーの設定は
+        // トグル/反転の影響を受けず常に発火させる(解決結果で判定)。
+        // システム設定が「3 本指でスワイプ」の場合も swipe イベントとして
         // この経路に届くため、2 本指(handleSwipeToTurn)と共通でここで見る
         var button = virtualButton
         if button == VirtualButton.swipeLeft || button == VirtualButton.swipeRight {
-            guard settings.swipeToTurnPage else { return }
-            // スワイプの向き反転(既定オン)。オフで旧来の向きに戻る
-            if settings.flipSwipeDirection {
-                button = button == VirtualButton.swipeLeft
-                    ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+            let action = bindings.resolveMouse(
+                button: button, modifiers: modifiers,
+                fitMode: fitModeNumber, readsFromLeft: readsFromLeft)?.action
+            if action == .nextPage || action == .previousPage {
+                guard settings.swipeToTurnPage else { return }
+                // スワイプの向き反転(既定オン)。オフで旧来の向きに戻る
+                if settings.flipSwipeDirection {
+                    button = button == VirtualButton.swipeLeft
+                        ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+                }
             }
         }
-        handleClick(button: button, modifiers: modifiers, leftHalf: false)
+        handleClick(button: button, modifiers: modifiers, leftHalf: leftHalf)
     }
 
-    func handleDragGesture(directionModifier: Int, baseModifiers: Int) {
+    func handleDragGesture(directionModifier: Int, baseModifiers: Int, button: Int,
+                           leftHalf: Bool) {
+        if mouseCurlConsumedGesture {
+            mouseCurlConsumedGesture = false
+            return  // カール追従が既にページ送りを確定/取消した
+        }
         guard let binding = bindings.resolveDrag(
-            button: 0, baseModifiers: baseModifiers, directionModifier: directionModifier,
+            button: button, baseModifiers: baseModifiers, directionModifier: directionModifier,
             fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
             let action = binding.action else { return }
-        perform(action, value: binding.value, leftHalf: nil)
+        perform(action, value: binding.value, leftHalf: leftHalf)
     }
 
-    func shouldDragScroll(modifiers: Int) -> Bool {
-        let binding = bindings.resolveMouse(
-            button: 0, modifiers: LegacyModifier.drag + modifiers,
-            fitMode: fitModeNumber, readsFromLeft: readsFromLeft)
-        return binding?.action == .dragScroll
+    func shouldDragScroll(button: Int, modifiers: Int) -> Bool {
+        bindings.resolveDragScroll(button: button,
+                                   modifiers: LegacyModifier.drag + modifiers,
+                                   fitMode: fitModeNumber) != nil
+    }
+
+    /// ドラッグ追跡中の方向 HUD 駆動。方向と割当アクション名を予告する
+    /// (旧マウスジェスチャの「何が起きるか見えない」弱点への 2.0 の答え。
+    /// 設定「操作」の GestureHUDEnabled でオフ可)
+    func handleDragTracking(dx: CGFloat, dy: CGFloat, button: Int, modifiers: Int,
+                            elapsed: TimeInterval) {
+        guard book != nil else { return }
+        // 水平ドラッグの割当が次/前ページならカールがカーソルに追従する。
+        // 追従中は HUD を出さない — カール自体がフィードバック(設計書 §2.4)
+        if driveMouseDragCurl(dx: dx, dy: dy, button: button, modifiers: modifiers) {
+            gestureHUD.hide()
+            return
+        }
+        guard settings.gestureHUDEnabled else { return }
+        let state = GestureHUDModel.state(dx: dx, dy: dy, elapsed: elapsed)
+        var actionName: String?
+        switch state {
+        case .faint(let direction), .armed(let direction):
+            // resolveDrag は switchAction 入替(左綴じ)適用済みの番号を返すため、
+            // 表示名と実際の発火が食い違わない(仕様書 §5.4)
+            if let binding = bindings.resolveDrag(
+                button: button, baseModifiers: modifiers, directionModifier: direction,
+                fitMode: fitModeNumber, readsFromLeft: readsFromLeft) {
+                actionName = ActionNames.mouseActionName(binding.legacyActionNumber)
+            }
+        case .hidden, .expired:
+            break
+        }
+        gestureHUD.apply(state: state, actionName: actionName)
+    }
+
+    /// ドラッグ追跡の終了(発火の有無に関わらず解放時)。カール追従の確定/取消と
+    /// HUD の後始末を行う
+    func handleDragTrackingEnded() {
+        gestureHUD.hide()
+        guard mouseCurlTracking else {
+            mouseCurlConsumedGesture = false
+            return
+        }
+        mouseCurlTracking = false
+        mouseCurlConsumedGesture =
+            settleInteractiveCurlOnGestureEnd(finalDelta: mouseCurlDelta)
+        mouseCurlDelta = 0
+        if mouseCurlConsumedGesture {
+            // 直後に同期ディスパッチされる mouseUp のクリック/ジェスチャだけを
+            // 抑止する。発火が無かった場合(1 秒超等)に旗が残らないよう、
+            // 現在のイベント処理が終わったら必ず下ろす
+            Task { @MainActor in self.mouseCurlConsumedGesture = false }
+        }
+    }
+
+    /// マウスドラッグでのカール追従。追従が進行中なら true(HUD を抑止)。
+    /// 追従開始後は 1 秒長押しキャンセルを適用しない — スワイプ同様の直接操作
+    /// として、離した時点の進行度で確定/巻き戻しを決める(設計書 §2.4)
+    private func driveMouseDragCurl(dx: CGFloat, dy: CGFloat, button: Int,
+                                    modifiers: Int) -> Bool {
+        if !mouseCurlTracking {
+            // 水平方向の本判定(30pt 超)が出た瞬間から追従を試みる。
+            // 垂直ドラッグは割当が次/前ページでもカールの向きと合わないため従来動作
+            guard InteractiveCurlRules.beginsMouseTracking(dx: dx, dy: dy) else {
+                return false
+            }
+            mouseCurlTracking = true
+            // 前回の端到達等で残った確定予約を持ち越さない(スワイプの .began と同型)
+            interactiveCurlEndDecision = nil
+        }
+        mouseCurlDelta = dx
+        driveInteractiveCurl(delta: dx, modifiers: modifiers, startThreshold: 30,
+                             direction: { self.dragTurnDirection(dx: $0, button: button) })
+        switch interactiveCurlPhase {
+        case .starting, .active, .finished:
+            return true
+        case nil, .unavailable:
+            return false  // 追従不成立(別割当・カール以外の効果等)は HUD へ
+        }
+    }
+
+    // MARK: - スマートズーム/Force click(設計書 §2.4 の新規操作)
+
+    /// 2 本指ダブルタップ: 全体フィットならタップ位置を中心に幅フィットへ拡大、
+    /// 拡大系表示中なら全体フィットへ戻るトグル(Preview.app と同じ心理モデル)
+    func handleSmartZoom(at point: CGPoint) {
+        guard settings.smartZoomEnabled, let book else { return }
+        let view = readerViewForInput
+        if view.fitMode == .fitToScreen {
+            let ratio = view.contentAnchorRatio(for: point)
+            setFitMode(.fitWidth)
+            view.scroll(toAnchorRatio: ratio)
+            // キャップ上昇による非同期の再デコードが setPages でスクロールを
+            // 先頭へ戻すことがあるため、完了時に再適用する
+            pendingScrollAnchor = (ratio, book.currentIndex)
+        } else {
+            pendingScrollAnchor = nil
+            setFitMode(.fitToScreen)
+        }
+    }
+
+    /// トラックパッドの深押し=クイックルーペ: 押している間だけ表示し、
+    /// 解放(handleForceClickEnded)で消える — 消す操作を覚える必要がない。
+    /// ⌘L / l キー / 中クリックの常時表示トグルは従来どおりで、常時表示中に
+    /// 深押しした場合はそれを消す(ルーペ操作としての一貫性)。処理したら true
+    func handleForceClick() -> Bool {
+        guard settings.forceClickLoupe, book != nil else { return false }
+        if readerViewForInput.isLoupeEnabled {
+            forceClickLoupeHeld = false
+            perform(.toggleLoupe, value: nil, leftHalf: nil)  // 表示中なら消す
+        } else {
+            forceClickLoupeHeld = true
+            perform(.toggleLoupe, value: nil, leftHalf: nil)
+        }
+        return true
+    }
+
+    /// 深押しの解放: クイックルーペで出したルーペだけを畳む
+    func handleForceClickEnded() {
+        guard forceClickLoupeHeld else { return }
+        forceClickLoupeHeld = false
+        if readerViewForInput.isLoupeEnabled {
+            perform(.toggleLoupe, value: nil, leftHalf: nil)
+        }
+    }
+
+    /// ドラッグ方向の割当が次/前のページなら進行方向を返す(カール追従の可否)
+    private func dragTurnDirection(dx: CGFloat, button: Int) -> Bool? {
+        let direction = dx < 0 ? LegacyModifier.dragLeft : LegacyModifier.dragRight
+        guard let binding = bindings.resolveDrag(
+            button: button, baseModifiers: 0, directionModifier: direction,
+            fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
+            let action = binding.action else { return nil }
+        switch action {
+        case .nextPage: return true
+        case .previousPage: return false
+        default: return nil
+        }
+    }
+
+    /// 検証用: HUD を指定方向の強調状態で表示する(--show-gesture-hud)。
+    /// 実経路(handleDragTracking)を通すため割当名の解決も本番同様
+    func debugShowGestureHUD(named direction: String) {
+        let displacement: (dx: CGFloat, dy: CGFloat)? = switch direction {
+        case "left": (-100, 0)
+        case "right": (100, 0)
+        case "up": (0, -100)
+        case "down": (0, 100)
+        default: nil
+        }
+        guard let displacement else { return }
+        handleDragTracking(dx: displacement.dx, dy: displacement.dy,
+                           button: 0, modifiers: 0, elapsed: 0.1)
     }
 
     // MARK: - ホイール(仕様書 §4.16)
 
     func handleScrollWheel(_ event: NSEvent) {
         guard book != nil else { return }
+        let view = readerViewForInput
+        // 連続ズーム中は 2 本指スクロールを常にパンへ振り替える(ページ送りや
+        // 幅フィットの端到達めくりを抑止)。fitToScreen でも拡大後は pan が要る
+        if view.isZoomed {
+            view.scroll(by: CGPoint(x: -event.scrollingDeltaX, y: -event.scrollingDeltaY))
+            return
+        }
         if handleSwipeToTurn(event) { return }
         let mode = settings.canScrollMode
-        let view = readerViewForInput
 
         if view.fitMode == .fitToScreen || mode == 3 {
             // 慣性スクロールでは連続でめくらない。閾値は旧実装同様
@@ -121,6 +316,10 @@ extension ReaderWindowController {
         }
         switch event.phase {
         case .began:
+            // マウスドラッグのカール追従中はスワイプに状態を奪わせない
+            // (interactiveCurlPhase を共有しているため、リセットすると
+            // 進行中のオーバーレイが孤児化する)
+            guard !mouseCurlTracking else { return false }
             swipeConsumeMomentum = false
             swipeTrackingActive =
                 abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
@@ -131,18 +330,25 @@ extension ReaderWindowController {
         case .changed:
             guard swipeTrackingActive else { return false }
             swipeTrackingDeltaX += event.scrollingDeltaX
-            driveInteractiveCurl(event)
+            driveInteractiveCurl(delta: swipeTrackingDeltaX,
+                                 modifiers: LegacyModifier.encode(flags: event.modifierFlags),
+                                 startThreshold: 12,
+                                 direction: swipeTurnDirection(deltaX:))
             return true
         case .ended, .cancelled:
             guard swipeTrackingActive else { return false }
             swipeTrackingActive = false
             swipeConsumeMomentum = true
-            if settleInteractiveCurlOnGestureEnd() { return true }
+            if settleInteractiveCurlOnGestureEnd(finalDelta: swipeTrackingDeltaX) {
+                return true
+            }
             if abs(swipeTrackingDeltaX) > 60 {
                 let virtualButton = swipeTrackingDeltaX > 0
                     ? VirtualButton.swipeRight : VirtualButton.swipeLeft
                 handleGesture(virtualButton: virtualButton,
-                              modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+                              modifiers: LegacyModifier.encode(flags: event.modifierFlags),
+                              leftHalf: readerViewForInput.isLeftHalf(
+                                locationInWindow: event.locationInWindow))
             }
             return true
         default:
@@ -152,38 +358,33 @@ extension ReaderWindowController {
 
     // MARK: - スワイプ追従カール(設定「ページカール」時のみ)
 
-    /// スワイプ中の移動量からカールの進行度を駆動する。
-    /// スワイプの向きが「次/前のページ」に割り当てられている場合だけ追従し、
+    /// ジェスチャ中の移動量からカールの進行度を駆動する(スワイプ/マウス
+    /// ドラッグ共通)。向きの割当が「次/前のページ」の場合だけ追従し、
     /// それ以外の割当・修飾キー付きは従来動作(離した時に一括実行)のまま
-    private func driveInteractiveCurl(_ event: NSEvent) {
+    private func driveInteractiveCurl(delta: CGFloat, modifiers: Int,
+                                      startThreshold: CGFloat,
+                                      direction: (CGFloat) -> Bool?) {
         guard settings.pageTurnAnimation == .curl,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         else { return }
-        let delta = swipeTrackingDeltaX
         switch interactiveCurlPhase {
         case .finished, .unavailable:
             return
         case nil:
-            guard abs(delta) > 12 else { return }
-            guard LegacyModifier.encode(flags: event.modifierFlags) == 0,
-                  let forward = swipeTurnDirection(deltaX: delta) else {
+            guard abs(delta) > startThreshold else { return }
+            guard modifiers == 0, let forward = direction(delta) else {
                 interactiveCurlPhase = .unavailable
                 return
             }
             interactiveCurlPhase = .starting(forward: forward)
-            interactiveCurlProgress = curlProgress(for: delta)
+            interactiveCurlProgress = InteractiveCurlRules.progress(for: delta)
             Task { await self.startInteractiveCurl(forward: forward) }
         case .starting:
-            interactiveCurlProgress = curlProgress(for: delta)
+            interactiveCurlProgress = InteractiveCurlRules.progress(for: delta)
         case .active:
-            interactiveCurlProgress = curlProgress(for: delta)
+            interactiveCurlProgress = InteractiveCurlRules.progress(for: delta)
             readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
         }
-    }
-
-    /// 移動量 → 進行度(350pt のスワイプでめくり切り)
-    private func curlProgress(for delta: CGFloat) -> CGFloat {
-        min(1, max(0, abs(delta) / 350))
     }
 
     /// スワイプの向きに割り当てられたアクションが次/前のページなら進行方向を返す
@@ -211,8 +412,18 @@ extension ReaderWindowController {
         let oldContent = readerViewForInput.snapshotContent()
         let moved = forward ? book.moveNext() : await book.movePrevious()
         guard moved == .moved else {
-            // 端に達した: 従来動作(離した時の端処理=ループ/次の本)へ
+            // 端に達した: 従来動作(離した時の端処理=ループ/次の本)へ。
+            // ジェスチャが既に終わっていた(settle が従来動作を抑止済み)なら、
+            // ここで通常のページ送りへ委譲して端処理を発動させる — 放置すると
+            // 端で無反応+残留 decision が次のカールを即時誤確定させる
             interactiveCurlPhase = .unavailable
+            if let decision = interactiveCurlEndDecision {
+                interactiveCurlEndDecision = nil
+                interactiveCurlPhase = nil
+                if decision {
+                    perform(forward ? .nextPage : .previousPage, value: nil, leftHalf: nil)
+                }
+            }
             return
         }
         pendingTurnForward = nil
@@ -231,7 +442,7 @@ extension ReaderWindowController {
     }
 
     /// ジェスチャ終了時の確定/取消。追従に入っていたら true(従来動作を抑止)
-    private func settleInteractiveCurlOnGestureEnd() -> Bool {
+    private func settleInteractiveCurlOnGestureEnd(finalDelta: CGFloat) -> Bool {
         switch interactiveCurlPhase {
         case nil, .unavailable:
             interactiveCurlPhase = nil
@@ -241,11 +452,12 @@ extension ReaderWindowController {
             return true
         case .starting:
             // 準備完了時(startInteractiveCurl の末尾)に判定を適用する
-            interactiveCurlEndDecision = abs(swipeTrackingDeltaX) > 60
+            interactiveCurlEndDecision = InteractiveCurlRules.completes(
+                finalDelta: finalDelta, progress: 0)
             return true
         case .active(let forward):
-            let complete = abs(swipeTrackingDeltaX) > 60
-                || interactiveCurlProgress > 0.35
+            let complete = InteractiveCurlRules.completes(
+                finalDelta: finalDelta, progress: interactiveCurlProgress)
             resolveActiveCurl(forward: forward, complete: complete)
             return true
         }

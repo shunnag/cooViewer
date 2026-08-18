@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import PDFKit
 import XADMaster
@@ -39,11 +40,17 @@ actor ArchiveSource: BookSource {
     private var password: String?
     /// ネスト書庫/PDF のロック解除係(本の全ネスト階層で共有)
     private let unlocker: NestedUnlocker
+    /// 保存パスワードのキー(実ファイルの正規化パス、ネストは親キー+書庫内パス)
+    private let persistenceKey: PasswordVault.Key
     /// 置き場所の速度プロファイル(スプール方針に使う。既定=従来動作)
     private var mediaProfile: MediaProfile = .unknown
 
     private var spoolDirectory: URL?
     private var spooledIDs: Set<Int> = []
+    /// 暗号化書庫のスプールを暗号化するか(beginSpooling 時に確定)
+    private var spoolEncrypted = false
+    /// スプール暗号鍵(メモリのみの使い捨て。CWE-312 対策のプロセス限定鍵)
+    private let spoolKey = SymmetricKey(size: .bits256)
     private var spoolTask: Task<Void, Never>?
 
     /// スプールする合計展開サイズの上限(これを超える書庫はオンデマンドのみ)
@@ -102,10 +109,16 @@ actor ArchiveSource: BookSource {
         FileManager.default.temporaryDirectory.appendingPathComponent("cooViewer-spool")
     }
 
-    init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil) throws {
+    /// persistenceKey: 保存パスワードのキー(必ず実ファイルの正規化パス、
+    /// またはネストなら親キー由来で組む。デフォルト値を持たせないのは、
+    /// 一時展開パス(url が temp)から作った無意味なキーが静かに紛れ込むのを
+    /// コンパイル時に防ぐため)
+    init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
+         persistenceKey: PasswordVault.Key) throws {
         self.url = url
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker ?? NestedUnlocker()
+        self.persistenceKey = persistenceKey
         guard let archive = XADArchive(file: url.path) else {
             throw BookSourceError.unreadable(url)
         }
@@ -196,6 +209,9 @@ actor ArchiveSource: BookSource {
     private func appendNestedPages(of candidate: (index: Int32, path: String),
                                    ordinal: Int, into result: inout [PageEntry]) async {
         guard let fileURL = extractNestedFile(candidate) else { return }
+        // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
+        // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
+        let childKey = persistenceKey.nested(entryPath: candidate.path)
         let child: any BookSource
         if SupportedTypes.isPDF(fileURL) {
             guard let pdf = try? PDFSource(url: fileURL) else { return }
@@ -203,15 +219,16 @@ actor ArchiveSource: BookSource {
         } else {
             guard let nested = try? ArchiveSource(
                 url: fileURL, nestingDepth: nestingDepth + 1,
-                unlocker: unlocker) else { return }
+                unlocker: unlocker, persistenceKey: childKey) else { return }
             child = nested
         }
-        // 暗号化された子は共有アンロッカーで解除する(既知パスワード→入力依頼)。
+        // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
         // 解除できない/キャンセルされた子は本から外す(§4.17 の黙殺方針。
         // 恒久的な空セルとして残すより一覧が正直になる)
         if await child.isEncrypted() {
             let name = (candidate.path as NSString).lastPathComponent
-            guard await unlocker.unlock(child, name: name) else { return }
+            guard await unlocker.unlock(child, name: name,
+                                        persistenceKey: childKey) else { return }
         }
         guard let childEntries = try? await child.entries(), !childEntries.isEmpty else {
             return
@@ -242,8 +259,12 @@ actor ArchiveSource: BookSource {
         if nestedRoot == nil {
             let directory = Self.spoolRoot().appendingPathComponent(
                 "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)-nested")
+            // 暗号化親の復号済みネストが平文で置かれる経路(XADMaster がパスを
+            // 直接読むため暗号化不可 — 設計書 §2.4 の残余リスク)。せめて
+            // ディレクトリ/ファイル権限を所有者限定にする
             guard (try? FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true)) != nil else { return nil }
+                at: directory, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])) != nil else { return nil }
             nestedRoot = directory
         }
         guard let root = nestedRoot else { return nil }
@@ -261,6 +282,8 @@ actor ArchiveSource: BookSource {
         let fileURL = root.appendingPathComponent(
             "\(candidate.index)-\((candidate.path as NSString).lastPathComponent)")
         guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return nil }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: fileURL.path)
         return fileURL
     }
 
@@ -311,7 +334,10 @@ actor ArchiveSource: BookSource {
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return await children[sourceIndex].imageSize(for: childEntry)
         }
-        guard spooledIDs.contains(entry.id), let directory = spoolDirectory else {
+        // 暗号化スプールはシール済みバイト列なのでヘッダ直読みできない
+        // (nil で従来の取得経路へ)
+        guard spooledIDs.contains(entry.id), !spoolEncrypted,
+              let directory = spoolDirectory else {
             return nil
         }
         return ImageDecoding.imageSize(
@@ -435,6 +461,12 @@ actor ArchiveSource: BookSource {
         await unlocker.setProvider(provider)
     }
 
+    func notePasswordSaveConsent(_ password: String) async {
+        // 最上位ダイアログの保存同意をネスト子へ引き継ぐ(同一パスワードの
+        // 子が解錠されたとき、その子のキーへも保存される)
+        await unlocker.noteSaveConsent(password)
+    }
+
     func applyMediaProfile(_ profile: MediaProfile) async {
         mediaProfile = profile
     }
@@ -442,7 +474,16 @@ actor ArchiveSource: BookSource {
     /// パスワードを設定し、先頭エントリの展開を試して検証する(仕様書 §4.1.3)。
     /// 画像がなくネスト書庫だけの本でも検証できるよう候補もプローブに使う。
     func checkAndSetPassword(_ password: String) async -> Bool {
-        let probe = outerImages.first.map { Int32($0.id) } ?? nestedCandidates.first?.index
+        // プローブは「暗号化されているエントリ」を優先する。旧実装相当の
+        // 「先頭エントリで検証」(仕様書 §4.1.3)だと、先頭が非暗号化の混在
+        // 書庫で任意のパスワードが「成功」してしまい、保存パスワードの
+        // 自動試行では誤値が無音で確定・永続化される(設計書 §2.4 の強化点)
+        // zip 爆弾対策: 保存パスワードの自動試行では無人でプローブ展開が走る
+        // ため、宣言サイズが上限内のエントリを優先する(全滅時のみ従来どおり)
+        let candidates = outerImages.map { Int32($0.id) } + nestedCandidates.map(\.index)
+        let safe = candidates.filter { !exceedsPerPageDecodeLimit($0) }
+        let pool = safe.isEmpty ? candidates : safe
+        let probe = pool.first(where: { archive.entryIsEncrypted($0) }) ?? pool.first
         // 画像も書庫/PDF もない書庫は検証しようがない(=本としては空)。
         // false を返すと正しいパスワードでも「試行超過」になってしまうため通す
         guard let probe else { return true }
@@ -472,6 +513,11 @@ actor ArchiveSource: BookSource {
             return
         }
         guard spoolTask == nil, !outerImages.isEmpty else { return }
+        // 暗号化書庫の復号済みページを平文で temp に残さない(CWE-312。
+        // 保存パスワードの自動解錠で無人でも展開が走るため)。スプールは
+        // プロセス生存中しか読まれないので、鍵はメモリのみの使い捨て —
+        // プロセス終了で残骸ファイルは復号不能なゴミになる
+        spoolEncrypted = password != nil
         var total: Int64 = 0
         for entry in outerImages {
             total += Int64(archive.size(ofEntry: Int32(entry.id)))
@@ -501,15 +547,37 @@ actor ArchiveSource: BookSource {
     }
 
     var spooledEntryCount: Int { spooledIDs.count }
+    /// スプール済みバイト量(アクティビティ窓向け。書き込み時に累積)
+    private var spooledBytes: Int64 = 0
+
+    /// アクティビティ窓向けのスプール実態スナップショット
+    struct SpoolStats: Sendable, Equatable {
+        let spooled: Int
+        let total: Int
+        let bytes: Int64
+        let active: Bool
+    }
+    func spoolStats() -> SpoolStats {
+        SpoolStats(spooled: spooledIDs.count, total: outerImages.count,
+                   bytes: spooledBytes, active: spoolTask != nil)
+    }
 
     private func spoolEntry(_ id: Int) {
         guard let directory = spoolDirectory, !spooledIDs.contains(id) else { return }
         // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開(スプール)しない
         guard !exceedsPerPageDecodeLimit(Int32(id)) else { return }
-        guard let data = archive.contents(ofEntry: Int32(id)) else { return }
+        guard var data = archive.contents(ofEntry: Int32(id)) else { return }
+        if spoolEncrypted {
+            // seal 失敗時は書かない(平文フォールバック禁止)
+            guard let sealed = SuperResCacheCrypto.seal(data, using: spoolKey) else {
+                return
+            }
+            data = sealed
+        }
         let fileURL = directory.appendingPathComponent(String(id))
         if (try? data.write(to: fileURL, options: .atomic)) != nil {
             spooledIDs.insert(id)
+            spooledBytes += Int64(data.count)
         }
     }
 
@@ -517,8 +585,11 @@ actor ArchiveSource: BookSource {
         guard spooledIDs.contains(id), let directory = spoolDirectory else { return nil }
         // スプールファイルは書き切り後は不変(アプリ所有)なのでマップ読みが安全。
         // 大きなページのコピーを 1 回分省く
-        return try? Data(contentsOf: directory.appendingPathComponent(String(id)),
-                         options: .mappedIfSafe)
+        let raw = try? Data(contentsOf: directory.appendingPathComponent(String(id)),
+                            options: .mappedIfSafe)
+        guard let raw else { return nil }
+        guard spoolEncrypted else { return raw }
+        return SuperResCacheCrypto.open(raw, using: spoolKey)
     }
 }
 

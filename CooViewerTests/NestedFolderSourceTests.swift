@@ -117,7 +117,7 @@ final class NestedFolderSourceTests: XCTestCase {
             for: tempDir, readSubFolders: false,
             nestedPasswordProvider: { _, _ in
                 prompts.withLock { $0 += 1 }
-                return "sesame"
+                return NestedPasswordAnswer(password: "sesame", saveRequested: false)
             })
         let entries = try await source.entries()
         XCTAssertEqual(entries.count, 2)
@@ -152,7 +152,9 @@ final class NestedFolderSourceTests: XCTestCase {
 
         let source = try await BookSourceFactory.make(
             for: tempDir, readSubFolders: false,
-            nestedPasswordProvider: { _, _ in "sesame" })
+            nestedPasswordProvider: { _, _ in
+                NestedPasswordAnswer(password: "sesame", saveRequested: false)
+            })
         let entries = try await source.entries()
         XCTAssertEqual(entries.map(\.pathInBook), ["locked.zip/p1.png"])
         let image = try await source.image(for: entries[0], maxPixelSize: nil)

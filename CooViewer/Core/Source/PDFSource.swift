@@ -201,6 +201,12 @@ actor PDFSource: BookSource {
         document.isEncrypted && document.isLocked
     }
 
+    /// 解錠後も「保護コンテンツを含む」ままにする(isEncrypted は解錠後
+    /// false になるため。サムネイル/キャッシュのディスク素通り判定用。CWE-312)
+    func containsProtectedContent() async -> Bool {
+        document.isEncrypted
+    }
+
     /// 旧実装には無かった PDF パスワード対応(改善)。
     func checkAndSetPassword(_ password: String) async -> Bool {
         let unlocked = document.unlock(withPassword: password)
