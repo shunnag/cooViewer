@@ -41,6 +41,35 @@ final class PageFileInfoTests: XCTestCase {
         XCTAssertFalse(details.sections.contains { $0.title == "EXIF" })
     }
 
+    func testComicSectionAppearsWithComicInfo() {
+        var info = ComicInfo()
+        info.series = "テスト漫画"; info.number = "3"; info.volume = 2
+        info.writer = "作者太郎"; info.summary = "あらすじ"
+        let details = PageFileInfo.details(
+            entryName: "p1.png", pathInBook: "p1.png",
+            containerURL: tempDir.appendingPathComponent("v.zip"),
+            pageNumber: 1, pageCount: 5,
+            imageData: nil, fallbackPixelSize: nil, comicInfo: info)
+        // ページ・ファイル・コミックの 3 セクション
+        XCTAssertEqual(details.sections.count, 3)
+        let values = allValues(details)
+        XCTAssertTrue(values.contains("テスト漫画"))
+        XCTAssertTrue(values.contains("3"))
+        XCTAssertTrue(values.contains("2"))
+        XCTAssertTrue(values.contains("作者太郎"))
+        XCTAssertTrue(values.contains("あらすじ"))
+    }
+
+    func testNoComicSectionWithoutComicInfo() {
+        let details = PageFileInfo.details(
+            entryName: "p1.png", pathInBook: "p1.png",
+            containerURL: tempDir.appendingPathComponent("v.zip"),
+            pageNumber: 1, pageCount: 5,
+            imageData: nil, fallbackPixelSize: nil, comicInfo: nil)
+        // ページ・ファイルの 2 セクションのみ(コミックセクションを足さない)
+        XCTAssertEqual(details.sections.count, 2)
+    }
+
     func testDetailsOmitPathWhenSameAsName() {
         let details = PageFileInfo.details(
             entryName: "a.png", pathInBook: "a.png",
