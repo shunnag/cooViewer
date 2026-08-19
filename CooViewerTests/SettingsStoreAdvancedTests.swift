@@ -25,6 +25,14 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "SpreadCoverSingle"))
     }
 
+    /// ComicInfo 読み方向の尊重フラグ(既定オフ・往復。cooViewer-4fi.4)
+    func testRespectComicInfoReadingDirectionRoundTrip() {
+        XCTAssertFalse(store.respectComicInfoReadingDirection)
+        store.respectComicInfoReadingDirection = true
+        XCTAssertTrue(defaults.bool(forKey: "RespectComicInfoReadingDirection"))
+        XCTAssertTrue(store.respectComicInfoReadingDirection)
+    }
+
     func testDefaultsWhenSwitchIsOff() {
         // 保存値があってもマスタースイッチ OFF なら既定値
         defaults.set(40, forKey: "AdvancedPrefetchAhead")

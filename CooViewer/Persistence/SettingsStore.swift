@@ -37,6 +37,13 @@ final class SettingsStore {
         set { defaults.set(newValue.rawValue, forKey: "ReadMode") }
     }
 
+    /// ComicInfo.xml の読み方向を尊重するか(既定オフ。cooViewer-4fi.4)。
+    /// オンでも本ごとに保存された読み方向(ユーザーの明示設定)が最優先
+    var respectComicInfoReadingDirection: Bool {
+        get { defaults.bool(forKey: "RespectComicInfoReadingDirection") }
+        set { defaults.set(newValue, forKey: "RespectComicInfoReadingDirection") }
+    }
+
     var sortMode: SortMode {
         get { SortMode(rawValue: defaults.integer(forKey: "SortMode")) ?? .name }
         set { defaults.set(newValue.rawValue, forKey: "SortMode") }

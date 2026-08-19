@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Follow the comic’s reading direction (ComicInfo.xml)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ComicInfo.xml の読み方向に従う"
+          }
+        }
+      }
+    },
+    "When a book includes ComicInfo.xml, use its direction unless you’ve set one for that book." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本に ComicInfo.xml が含まれる場合、その本に読み方向を設定していない限り ComicInfo の方向を使います。"
+          }
+        }
+      }
+    },
     "" : {
 
     },
