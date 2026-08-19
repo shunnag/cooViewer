@@ -81,6 +81,30 @@ struct ComicInfo: Sendable, Equatable {
         var bookmark: String?      // 章名(目次ナビに使う。cooViewer-4fi.6)
     }
 
+    /// ウインドウ表示用のタイトル(Series 優先、無ければ Title、両方無ければ nil)。
+    /// 例: "シリーズ名 Vol.2 – 章タイトル" / "シリーズ名 #3"。ファイル名への
+    /// フォールバックは呼び出し側の既定(cooViewer-4fi.3)
+    var displayTitle: String? {
+        func trimmed(_ s: String?) -> String? {
+            let t = s?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (t?.isEmpty ?? true) ? nil : t
+        }
+        let series = trimmed(series)
+        let title = trimmed(title)
+        var head: [String] = []
+        if let series { head.append(series) }
+        if let volume {
+            head.append("Vol.\(volume)")
+        } else if let number = trimmed(number) {
+            head.append("#\(number)")
+        }
+        let headText = head.joined(separator: " ")
+        if let title, title != series {
+            return headText.isEmpty ? title : headText + " – " + title
+        }
+        return headText.isEmpty ? nil : headText
+    }
+
     /// 章/目次(Pages の Bookmark が付いたページ)。image 昇順・空名は除く。
     /// 実ページへの写像・PageCount ズレ耐性は消費側(§4fi.6)で担保する
     var chapters: [(image: Int, name: String)] {

@@ -152,6 +152,26 @@ final class ComicInfoTests: XCTestCase {
         XCTAssertEqual(info.number, "1.5") // 小数話数は文字列で保持
     }
 
+    func testDisplayTitleComposition() {
+        func title(series: String? = nil, number: String? = nil,
+                   volume: Int? = nil, title: String? = nil) -> String? {
+            var info = ComicInfo()
+            info.series = series; info.number = number
+            info.volume = volume; info.title = title
+            return info.displayTitle
+        }
+        XCTAssertEqual(title(series: "S"), "S")
+        XCTAssertEqual(title(series: "S", volume: 2), "S Vol.2")
+        XCTAssertEqual(title(series: "S", number: "3"), "S #3")
+        XCTAssertEqual(title(series: "S", number: "3", volume: 2), "S Vol.2")  // volume 優先
+        XCTAssertEqual(title(series: "S", title: "T"), "S – T")
+        XCTAssertEqual(title(series: "S", volume: 2, title: "T"), "S Vol.2 – T")
+        XCTAssertEqual(title(title: "T"), "T")               // series 無しは title のみ
+        XCTAssertEqual(title(series: "S", title: "S"), "S")  // 同名は重複しない
+        XCTAssertNil(title())                                 // 何も無ければ nil
+        XCTAssertNil(title(series: "   "))                    // 空白のみは nil
+    }
+
     func testUTF16DeclaredDocumentParses() throws {
         let body = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n"
             + "<ComicInfo><Series>波括弧テスト</Series></ComicInfo>"

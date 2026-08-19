@@ -870,7 +870,7 @@ final class ReaderWindowController: NSWindowController {
             } else if atLastPage {
                 await book.goToLast()
             }
-            window?.title = book.displayName
+            window?.title = await book.displayTitle()  // ComicInfo 優先(cooViewer-4fi.3)
             lockedBookReason = nil
             statusLabel.isHidden = true
             updateIndicatorVisibility()
