@@ -76,9 +76,9 @@ struct ComicInfo: Sendable, Equatable {
     /// `<Pages><Page .../></Pages>` の 1 要素。image は 0 始まりのページ番号
     struct PageInfo: Sendable, Equatable {
         var image: Int
-        var type: PageType?
+        var type: PageType? = nil
         var doublePage: Bool = false
-        var bookmark: String?      // 章名(目次ナビに使う。cooViewer-4fi.6)
+        var bookmark: String? = nil    // 章名(目次ナビに使う。cooViewer-4fi.6)
     }
 
     /// ウインドウ表示用のタイトル(Series 優先、無ければ Title、両方無ければ nil)。

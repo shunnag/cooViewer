@@ -9,6 +9,10 @@ final class StubSource: BookSource, @unchecked Sendable {
 
     var supportsDateSort: Bool { false }
 
+    /// テスト用の ComicInfo(章の写像テスト等。cooViewer-4fi.6)
+    var comicInfoStub: ComicInfo?
+    func metadata() async -> ComicInfo? { comicInfoStub }
+
     init(sizes: [CGSize]) {
         self.sizes = sizes
     }
@@ -38,6 +42,29 @@ final class BookTests: XCTestCase {
         let book = try await Book.open(source: StubSource(sizes: sizes))
         book.readMode = readMode
         return book
+    }
+
+    func testChapterMarksMapClampAndSkip() async throws {
+        // ComicInfo の章を実ページへ写像。空名は除外、範囲外(image>=pageCount)は捨てる(4fi.6)
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 4))
+        var info = ComicInfo()
+        info.pages = [
+            .init(image: 0, bookmark: "序"),
+            .init(image: 1, bookmark: ""),        // 空名 → 除外
+            .init(image: 2, bookmark: "中"),
+            .init(image: 4, bookmark: "範囲外"),   // pageCount=4(0..3)→ 捨てる
+        ]
+        stub.comicInfoStub = info
+        let book = try await Book.open(source: stub)
+        await book.loadChapterMarks()
+        XCTAssertEqual(book.chapterMarks.map(\.page), [0, 2])
+        XCTAssertEqual(book.chapterMarks.map(\.name), ["序", "中"])
+    }
+
+    func testChapterMarksEmptyWithoutComicInfo() async throws {
+        let book = try await makeBook([portrait, portrait])
+        await book.loadChapterMarks()
+        XCTAssertTrue(book.chapterMarks.isEmpty)
     }
 
     func testSpreadPairsTwoPortraitPages() async throws {

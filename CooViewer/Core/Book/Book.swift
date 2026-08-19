@@ -128,6 +128,24 @@ final class Book {
         await comicInfo()?.displayTitle ?? displayName
     }
 
+    /// ComicInfo の章(目次)を実ページへ写像したもの(cooViewer-4fi.6)。
+    /// メニューから同期参照するため open 時に loadChapterMarks() で構築する。
+    /// image は 0 始まりのページ番号として扱い、実ページ範囲外の章は捨てる
+    /// (PageCount と実ページ数のズレ耐性)
+    private(set) var chapterMarks: [(page: Int, name: String)] = []
+
+    func loadChapterMarks() async {
+        guard let chapters = await comicInfo()?.chapters else {
+            chapterMarks = []
+            return
+        }
+        let count = pageCount
+        chapterMarks = chapters.compactMap { chapter in
+            guard chapter.image >= 0, chapter.image < count else { return nil }
+            return (page: chapter.image, name: chapter.name)
+        }
+    }
+
     // MARK: - アクティビティ窓向けの実態アクセサ
 
     /// 進行中デコード件数(実態)
