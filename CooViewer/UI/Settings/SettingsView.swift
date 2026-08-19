@@ -88,6 +88,8 @@ struct SettingsView: View {
 
     @AppStorage("ReadMode") private var readMode = 0
     @AppStorage("SpreadCoverSingle") private var spreadCoverSingle = false
+    @AppStorage("RespectComicInfoReadingDirection")
+    private var respectComicInfoReadingDirection = false
     @AppStorage("SortMode") private var sortMode = 0
     @AppStorage("LoopCheck") private var loopCheck = 0
     @AppStorage("GoToLastPage") private var goToLastPage = 0
@@ -469,6 +471,15 @@ struct SettingsView: View {
                     Text(String(localized: "Left to Right")).tag(1)
                     Text(String(localized: "Right to Left (single page)")).tag(2)
                     Text(String(localized: "Left to Right (single page)")).tag(3)
+                }
+                // ComicInfo.xml の読み方向を尊重(既定オフ。本ごとの設定が最優先)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(String(localized: "Follow the comic’s reading direction (ComicInfo.xml)"),
+                           isOn: $respectComicInfoReadingDirection)
+                    Text(String(localized:
+                        "When a book includes ComicInfo.xml, use its direction unless you’ve set one for that book."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 // 表紙(先頭ページ)を単ページで表示(見開きモード時のみ効果)
                 VStack(alignment: .leading, spacing: 4) {

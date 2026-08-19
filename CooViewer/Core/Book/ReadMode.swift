@@ -12,4 +12,15 @@ enum ReadMode: Int, Sendable, CaseIterable {
 
     /// r キー巡回(0→1→2→3→0。仕様書 §4.4.1)
     var cycled: ReadMode { ReadMode(rawValue: (rawValue + 1) % 4)! }
+
+    /// 見開き/単ページは保ったまま、読み方向(左右)だけを差し替える。
+    /// ComicInfo の読み方向ヒント適用に使う(cooViewer-4fi.4)
+    func withDirection(readsRightToLeft rtl: Bool) -> ReadMode {
+        switch (isSpread, rtl) {
+        case (true, true): .rightToLeftSpread
+        case (true, false): .leftToRightSpread
+        case (false, true): .rightToLeftSingle
+        case (false, false): .leftToRightSingle
+        }
+    }
 }
