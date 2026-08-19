@@ -390,9 +390,14 @@ final class BookHistoryStore {
         // RecentItems: 並び順+保存ページ(先頭が最新)
         let recentItems = defaults.array(forKey: "RecentItems") as? [[String: Any]] ?? []
         var recents: [RecentEntry] = []
+        var seenPaths = Set<String>()
         let now = Date().timeIntervalSince1970
         for (offset, entry) in recentItems.enumerated() {
             guard let path = legacyEntryPath(entry) else { continue }
+            // 同一パスは最初の出現(=最新)のみ採用。壊れた RecentItems(例: 全件が
+            // temppath='null.rar' で単一パスへ collapse)でも recents.json とページ
+            // 状態に重複を残さない。touchRecents の dedup 不変条件に揃える(cooViewer-0pk)
+            guard seenPaths.insert(path).inserted else { continue }
             recents.append(RecentEntry(path: path,
                                        lastOpened: now - Double(offset)))
             if let page = entry["page"] as? Int, page > 0 {
@@ -407,7 +412,7 @@ final class BookHistoryStore {
             }
         }
         if !recents.isEmpty {
-            writeRecents(recents)
+            writeRecents(Array(recents.prefix(50)))  // 保持上限は touchRecents と同じ 50 件
         }
         // 書き込みが失敗した場合はフラグを立てず、次回起動で再試行する
         // (旧キーは凍結保持なので再実行しても失われない)
