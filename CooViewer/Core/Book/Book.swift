@@ -111,6 +111,17 @@ final class Book {
     var displayName: String { source.displayName }
     var currentPageIndex: Int { currentIndex }
 
+    /// ComicInfo.xml メタデータ(read-only ヒント。cooViewer-4fi.2)。一度成功したら
+    /// キャッシュする。暗号化書庫は解錠後に呼ぶこと(未解錠の nil は焼き付けず、
+    /// 後の呼び出しで再取得できるようにする)
+    private var comicInfoCache: ComicInfo?
+    func comicInfo() async -> ComicInfo? {
+        if let cached = comicInfoCache { return cached }
+        let info = await source.metadata()
+        if info != nil { comicInfoCache = info }
+        return info
+    }
+
     // MARK: - アクティビティ窓向けの実態アクセサ
 
     /// 進行中デコード件数(実態)

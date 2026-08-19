@@ -23,6 +23,8 @@ actor ArchiveSource: BookSource {
     private let sourceData: Data?
     /// この本の内容が暗号化された祖先由来か(nest 子の平文 temp 回避を子孫へ伝播)
     private let contentIsSensitive: Bool
+    /// ルートの ComicInfo.xml エントリ(あれば。cooViewer-4fi.2)
+    private let comicInfoEntryIndex: Int32?
     /// ネスト段数(0=最上位)。zip 爆弾対策で 3 段目以降は展開しない
     private let nestingDepth: Int
 
@@ -77,6 +79,10 @@ actor ArchiveSource: BookSource {
     /// 復号済み NSData)の肥大を防ぐ。実在するネスト書庫/PDF の大半はこの
     /// 256MiB 以下でメモリ経由=平文を disk に置かずに開ける
     static let nestedInMemoryLimit: Int64 = 256 << 20
+
+    /// ComicInfo.xml の展開後サイズ上限(zip 爆弾対策)。標準のメタデータは
+    /// 数 KB〜、巨大な Pages 列でも 1MB 未満。16MiB を天井にする(cooViewer-4fi.2)
+    private static let comicInfoSizeLimit: Int64 = 16 << 20
 
     /// ネストページの id 基数(最上位のエントリ番号と衝突しない大きさ)
     private static let nestedIDStride = 1_000_000
@@ -139,6 +145,7 @@ actor ArchiveSource: BookSource {
         let enumerated = Self.enumerateEntries(archive, nestingDepth: nestingDepth)
         self.outerImages = enumerated.images
         self.nestedCandidates = enumerated.candidates
+        self.comicInfoEntryIndex = enumerated.comicInfo
     }
 
     /// 暗号化親のネスト子をメモリから開く(復号済みバイトを disk に置かない。
@@ -159,15 +166,18 @@ actor ArchiveSource: BookSource {
         let enumerated = Self.enumerateEntries(archive, nestingDepth: nestingDepth)
         self.outerImages = enumerated.images
         self.nestedCandidates = enumerated.candidates
+        self.comicInfoEntryIndex = enumerated.comicInfo
     }
 
     /// 書庫のエントリを画像/ネスト候補へ振り分ける(両 init 共通)。
     /// 旧実装(XADWrapper)同様、ディレクトリとサイズ 0 のエントリを除外し、
     /// 画像以外のファイルと macOS メタデータ(__MACOSX/、._*)も除外する。
     private static func enumerateEntries(_ archive: XADArchive, nestingDepth: Int)
-        -> (images: [PageEntry], candidates: [(index: Int32, path: String)]) {
+        -> (images: [PageEntry], candidates: [(index: Int32, path: String)],
+            comicInfo: Int32?) {
         var images: [PageEntry] = []
         var candidates: [(index: Int32, path: String)] = []
+        var comicInfo: Int32?
         for index in 0..<archive.numberOfEntries() {
             guard let name = archive.name(ofEntry: index) else { continue }
             guard !archive.entryIsDirectory(index), archive.size(ofEntry: index) != 0 else {
@@ -175,6 +185,11 @@ actor ArchiveSource: BookSource {
             }
             let lastComponent = (name as NSString).lastPathComponent
             guard !lastComponent.hasPrefix("."), !name.hasPrefix("__MACOSX") else {
+                continue
+            }
+            // ルート直下の ComicInfo.xml(標準メタデータ)を控える(cooViewer-4fi.2)
+            if comicInfo == nil, name.lowercased() == "comicinfo.xml" {
+                comicInfo = index
                 continue
             }
             // ネスト id 域(1M 刻み)との衝突を防ぐ。100 万エントリ超の書庫は
@@ -194,7 +209,7 @@ actor ArchiveSource: BookSource {
                 candidates.append((index: index, path: name))
             }
         }
-        return (images, candidates)
+        return (images, candidates, comicInfo)
     }
 
     deinit {
@@ -516,6 +531,19 @@ actor ArchiveSource: BookSource {
 
     func isEncrypted() async -> Bool {
         archive.isEncrypted()
+    }
+
+    /// ルートの ComicInfo.xml を読んで解析する(cooViewer-4fi.2)。暗号化書庫では
+    /// 解錠後のみ読める(未解錠は contents が nil で自然に nil)。zip 爆弾対策で
+    /// 展開後サイズが判るなら小さな上限で弾く(メタデータは通常数 KB)
+    func metadata() async -> ComicInfo? {
+        guard let index = comicInfoEntryIndex else { return nil }
+        if archive.entryHasSize(index),
+           archive.uncompressedSize(ofEntry: index) > Self.comicInfoSizeLimit {
+            return nil
+        }
+        guard let data = archive.contents(ofEntry: index) else { return nil }
+        return ComicInfo.parse(data)
     }
 
     /// 最上位書庫が暗号化されている、または組み立て時にネストの暗号化書庫/PDF を

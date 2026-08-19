@@ -22,6 +22,18 @@ final class FolderSource: BookSource {
         await readGate.setLimit(profile.sourceReadConcurrency)
     }
 
+    /// フォルダ直下の ComicInfo.xml を read-only で読む(cooViewer-4fi.2)。
+    /// 巨大ファイル対策で 16MiB を上限にする(標準のメタデータは数 KB)。
+    /// macOS 既定 FS は大小無視なので綴りは標準の "ComicInfo.xml" を使う
+    func metadata() async -> ComicInfo? {
+        let candidate = url.appendingPathComponent("ComicInfo.xml")
+        let size = (try? candidate.resourceValues(
+            forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 0, size <= 16 << 20,
+              let data = try? Data(contentsOf: candidate) else { return nil }
+        return ComicInfo.parse(data)
+    }
+
     /// サブフォルダのどこかに画像があるか(空フォルダ表示のヒント用)。
     /// 最初の 1 件で打ち切り、巨大ツリーでも走査を 2000 項目で止める
     static func subfoldersContainImages(at url: URL) -> Bool {
