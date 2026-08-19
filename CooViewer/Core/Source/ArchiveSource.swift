@@ -18,6 +18,11 @@ import XADMaster
 actor ArchiveSource: BookSource {
     nonisolated let url: URL
     private let archive: XADArchive
+    /// メモリ背景(暗号化親のネスト子)。非 nil のとき disk を読まず、
+    /// 展開プールもこの共有 NSData から再オープンする(平文を temp に置かない)
+    private let sourceData: Data?
+    /// この本の内容が暗号化された祖先由来か(nest 子の平文 temp 回避を子孫へ伝播)
+    private let contentIsSensitive: Bool
     /// ネスト段数(0=最上位)。zip 爆弾対策で 3 段目以降は展開しない
     private let nestingDepth: Int
 
@@ -57,7 +62,7 @@ actor ArchiveSource: BookSource {
     static let defaultSpoolSizeLimit: Int64 = 4 << 30
 
     /// ネスト展開 1 エントリの展開後サイズ上限(zip 爆弾対策)。
-    /// build() → appendNestedPages() → extractNestedFile() は開いた瞬間に
+    /// build() → appendNestedPages() → nestedChildData() は開いた瞬間に
     /// 自動展開される経路なので、展開後サイズが判るエントリは全展開する前に
     /// ここで弾く。実在するネスト書庫/PDF は数十〜数百 MB、極端な長編でも
     /// ~1GB 程度なので、2GiB を天井にすれば正規のコンテナは通しつつ多 GB の
@@ -66,6 +71,12 @@ actor ArchiveSource: BookSource {
     /// 検出できないため上限判定には使えない)。off_t の上限は ~9.2EB なので
     /// この 2GiB は実効的な閾値として働く(超過は確実に弾かれる)
     private static let nestedEntrySizeLimit: Int64 = 2 << 30
+
+    /// 暗号化祖先由来のネスト子をメモリで開く上限(cooViewer-6ax)。超えると
+    /// 平文 temp にフォールバックし RAM 常駐(展開プールで共有/複製される
+    /// 復号済み NSData)の肥大を防ぐ。実在するネスト書庫/PDF の大半はこの
+    /// 256MiB 以下でメモリ経由=平文を disk に置かずに開ける
+    static let nestedInMemoryLimit: Int64 = 256 << 20
 
     /// ネストページの id 基数(最上位のエントリ番号と衝突しない大きさ)
     private static let nestedIDStride = 1_000_000
@@ -114,8 +125,10 @@ actor ArchiveSource: BookSource {
     /// 一時展開パス(url が temp)から作った無意味なキーが静かに紛れ込むのを
     /// コンパイル時に防ぐため)
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
-         persistenceKey: PasswordVault.Key) throws {
+         persistenceKey: PasswordVault.Key, sensitive: Bool = false) throws {
         self.url = url
+        self.sourceData = nil
+        self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker ?? NestedUnlocker()
         self.persistenceKey = persistenceKey
@@ -123,9 +136,36 @@ actor ArchiveSource: BookSource {
             throw BookSourceError.unreadable(url)
         }
         self.archive = archive
+        let enumerated = Self.enumerateEntries(archive, nestingDepth: nestingDepth)
+        self.outerImages = enumerated.images
+        self.nestedCandidates = enumerated.candidates
+    }
 
-        // 旧実装(XADWrapper)同様、ディレクトリとサイズ 0 のエントリを除外する。
-        // 加えて画像以外のファイルと macOS メタデータ(__MACOSX/、._*)も除外する。
+    /// 暗号化親のネスト子をメモリから開く(復号済みバイトを disk に置かない。
+    /// cooViewer-6ax)。name は書庫内パス: 合成 url の拡張子がプール判定/型判定に
+    /// 使われる(disk は決して読まない)。sensitive は常に true(暗号化祖先由来)
+    init(data: Data, name: String, nestingDepth: Int, unlocker: NestedUnlocker,
+         persistenceKey: PasswordVault.Key, sensitive: Bool = true) throws {
+        self.url = URL(fileURLWithPath: name)
+        self.sourceData = data
+        self.contentIsSensitive = sensitive
+        self.nestingDepth = nestingDepth
+        self.unlocker = unlocker
+        self.persistenceKey = persistenceKey
+        guard let archive = XADArchive(data: data) else {
+            throw BookSourceError.unreadable(url)
+        }
+        self.archive = archive
+        let enumerated = Self.enumerateEntries(archive, nestingDepth: nestingDepth)
+        self.outerImages = enumerated.images
+        self.nestedCandidates = enumerated.candidates
+    }
+
+    /// 書庫のエントリを画像/ネスト候補へ振り分ける(両 init 共通)。
+    /// 旧実装(XADWrapper)同様、ディレクトリとサイズ 0 のエントリを除外し、
+    /// 画像以外のファイルと macOS メタデータ(__MACOSX/、._*)も除外する。
+    private static func enumerateEntries(_ archive: XADArchive, nestingDepth: Int)
+        -> (images: [PageEntry], candidates: [(index: Int32, path: String)]) {
         var images: [PageEntry] = []
         var candidates: [(index: Int32, path: String)] = []
         for index in 0..<archive.numberOfEntries() {
@@ -154,8 +194,7 @@ actor ArchiveSource: BookSource {
                 candidates.append((index: index, path: name))
             }
         }
-        self.outerImages = images
-        self.nestedCandidates = candidates
+        return (images, candidates)
     }
 
     deinit {
@@ -208,18 +247,39 @@ actor ArchiveSource: BookSource {
     /// 失敗(壊れた書庫等)はそのエントリを黙って飛ばす(§4.17 の方針)
     private func appendNestedPages(of candidate: (index: Int32, path: String),
                                    ordinal: Int, into result: inout [PageEntry]) async {
-        guard let fileURL = extractNestedFile(candidate) else { return }
+        guard let data = nestedChildData(candidate) else { return }
         // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
         // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
         let childKey = persistenceKey.nested(entryPath: candidate.path)
+        // 暗号化祖先由来の子は復号済み平文を disk に置かずメモリから開く。ただし
+        // RAM 常駐(プールで共有/複製)が重い大きな子は現行の平文 temp へフォール
+        // バック(上限 nestedInMemoryLimit)。非機微(非暗号化親)は従来どおり
+        // temp 経由で挙動・性能を変えない。子の機微性は子孫へ伝播する。cooViewer-6ax
+        let sensitive = contentIsSensitive || archive.isEncrypted()
+        let useMemory = sensitive && Int64(data.count) <= Self.nestedInMemoryLimit
+        let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
         let child: any BookSource
-        if SupportedTypes.isPDF(fileURL) {
-            guard let pdf = try? PDFSource(url: fileURL) else { return }
-            child = pdf
-        } else {
+        if isPDF {
+            if useMemory {
+                guard let pdf = try? PDFSource(data: data) else { return }
+                child = pdf
+            } else {
+                guard let fileURL = writeNestedTemp(candidate, data: data),
+                      let pdf = try? PDFSource(url: fileURL) else { return }
+                child = pdf
+            }
+        } else if useMemory {
             guard let nested = try? ArchiveSource(
-                url: fileURL, nestingDepth: nestingDepth + 1,
-                unlocker: unlocker, persistenceKey: childKey) else { return }
+                data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
+                unlocker: unlocker, persistenceKey: childKey, sensitive: true)
+            else { return }
+            child = nested
+        } else {
+            guard let fileURL = writeNestedTemp(candidate, data: data),
+                  let nested = try? ArchiveSource(
+                    url: fileURL, nestingDepth: nestingDepth + 1,
+                    unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive)
+            else { return }
             child = nested
         }
         // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
@@ -254,31 +314,36 @@ actor ArchiveSource: BookSource {
         }
     }
 
-    /// ネスト候補のファイルを一時領域へ書き出す(<pid>-<uuid>-nested/)
-    private func extractNestedFile(_ candidate: (index: Int32, path: String)) -> URL? {
+    /// ネスト候補の展開後バイト(zip 爆弾ガード付き、temp には書かない)。
+    /// zip 爆弾対策: この経路は開いた瞬間に自動展開されるため、展開後サイズが
+    /// 判るエントリは contents(ofEntry:) で全展開する前に上限で弾く。判定は
+    /// 64bit の uncompressedSizeOfEntry: を使う(sizeOfEntry: は 32bit で桁溢れ
+    /// するため爆弾検出に使えない)。サイズ不明(entryHasSize: が false)の形式は
+    /// ストリーミング展開 API が無く事前判定できないので通す — 既知の残存リスク。
+    /// サイズ未申告で 0 等が返っても上限以下として通し、正規エントリは弾かない
+    private func nestedChildData(_ candidate: (index: Int32, path: String)) -> Data? {
+        if archive.entryHasSize(candidate.index) {
+            let uncompressedSize = archive.uncompressedSize(ofEntry: candidate.index)
+            guard uncompressedSize <= Self.nestedEntrySizeLimit else { return nil }
+        }
+        return archive.contents(ofEntry: candidate.index)
+    }
+
+    /// ネスト子を一時領域へ書き出す(<pid>-<uuid>-nested/)。非機微な子、または
+    /// 上限超でメモリ経由を諦めた機微な子に使う。暗号化祖先由来の平文がここに
+    /// 残る場合があるため(XADMaster/PDFKit がパスを直読みするため暗号化不可 —
+    /// 設計書 §2.4 の残余リスク)、ディレクトリ/ファイル権限を所有者限定にする
+    private func writeNestedTemp(_ candidate: (index: Int32, path: String),
+                                 data: Data) -> URL? {
         if nestedRoot == nil {
             let directory = Self.spoolRoot().appendingPathComponent(
                 "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)-nested")
-            // 暗号化親の復号済みネストが平文で置かれる経路(XADMaster がパスを
-            // 直接読むため暗号化不可 — 設計書 §2.4 の残余リスク)。せめて
-            // ディレクトリ/ファイル権限を所有者限定にする
             guard (try? FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700])) != nil else { return nil }
             nestedRoot = directory
         }
         guard let root = nestedRoot else { return nil }
-        // zip 爆弾対策: この経路は開いた瞬間に自動展開されるため、展開後サイズが
-        // 判るエントリは contents(ofEntry:) で全展開する前に上限で弾く。判定は
-        // 64bit の uncompressedSizeOfEntry: を使う(sizeOfEntry: は 32bit で桁溢れ
-        // するため爆弾検出に使えない)。サイズ不明(entryHasSize: が false)の形式は
-        // ストリーミング展開 API が無く事前判定できないので通す — 既知の残存リスク。
-        // サイズ未申告で 0 等が返っても上限以下として通し、正規エントリは弾かない
-        if archive.entryHasSize(candidate.index) {
-            let uncompressedSize = archive.uncompressedSize(ofEntry: candidate.index)
-            guard uncompressedSize <= Self.nestedEntrySizeLimit else { return nil }
-        }
-        guard let data = archive.contents(ofEntry: candidate.index) else { return nil }
         let fileURL = root.appendingPathComponent(
             "\(candidate.index)-\((candidate.path as NSString).lastPathComponent)")
         guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return nil }
@@ -404,10 +469,19 @@ actor ArchiveSource: BookSource {
         }
         if !extractorGrowthDisabled, extractors.count < Self.extractorPoolSize {
             // エントリ数の一致を検証してから採用する(開いた後にファイルが
-            // 差し替えられた場合、一覧と食い違う内容を展開しないため)
-            if let extractor = ArchiveEntryExtractor(
-                url: url, password: password,
-                expectedEntryCount: archive.numberOfEntries()) {
+            // 差し替えられた場合、一覧と食い違う内容を展開しないため)。
+            // メモリ背景(暗号化親のネスト子)は共有 NSData から再オープンし、
+            // 平文を disk に置かずに並列展開を保つ(cooViewer-6ax)
+            let expected = archive.numberOfEntries()
+            let grown: ArchiveEntryExtractor?
+            if let sourceData {
+                grown = ArchiveEntryExtractor(data: sourceData, password: password,
+                                              expectedEntryCount: expected)
+            } else {
+                grown = ArchiveEntryExtractor(url: url, password: password,
+                                              expectedEntryCount: expected)
+            }
+            if let extractor = grown {
                 extractors.append(extractor)
                 extractorBusyCounts.append(1)
                 return (extractors.count - 1, extractor)
@@ -604,6 +678,17 @@ actor ArchiveEntryExtractor {
     /// (エントリ数が同じ差し替えまでは検出しない割り切り。PDF 側と同じ)
     init?(url: URL, password: String?, expectedEntryCount: Int32) {
         guard let archive = XADArchive(file: url.path) else { return nil }
+        if let password {
+            archive.setPassword(password)
+        }
+        guard archive.numberOfEntries() == expectedEntryCount else { return nil }
+        self.archive = archive
+    }
+
+    /// メモリ背景版(暗号化親のネスト子。共有 NSData から独立ハンドルを開く。
+    /// 平文を disk に置かずに並列展開する。cooViewer-6ax)
+    init?(data: Data, password: String?, expectedEntryCount: Int32) {
+        guard let archive = XADArchive(data: data) else { return nil }
         if let password {
             archive.setPassword(password)
         }
