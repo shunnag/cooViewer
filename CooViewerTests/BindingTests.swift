@@ -324,6 +324,19 @@ extension BindingTests {
         XCTAssertEqual(encoded[0]["keyname"] as? String, "shift+tab")
     }
 
+    func testBackTabDisplayName() {
+        // 実 1.x データの Shift+Tab は key=0x19(NSBackTabCharacter)で保存される。
+        // 表示名 case が無いと生の制御文字が出るため "shift+tab" と表示する(cooViewer-5gv)
+        let backTab = Character(UnicodeScalar(0x19)!)
+        XCTAssertEqual(ActionNames.keyName(for: backTab), "tab")
+        let binding = KeyBinding(legacyActionNumber: 14, key: backTab,
+                                 modifiers: LegacyModifier.shift, value: 10, switchAction: false)
+        let name = ActionNames.displayName(for: binding)
+        XCTAssertEqual(name, "shift+tab")
+        // 表示名に不可視制御文字が漏れないこと
+        XCTAssertFalse(name.unicodeScalars.contains { $0.value < 0x20 })
+    }
+
     func testMouseLegacyArrayRoundTripKeepsSchema() {
         // マウス編集 UI の保存形式が仕様書 §5.1 のスキーマを厳守すること
         let original = [
