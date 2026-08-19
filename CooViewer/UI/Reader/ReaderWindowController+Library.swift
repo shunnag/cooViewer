@@ -348,10 +348,12 @@ extension ReaderWindowController {
             let sideLabels = ordered.count == 2
                 ? [String(localized: "Left Page"), String(localized: "Right Page")]
                 : [""]
+            let comicInfo = await book.comicInfo()  // 本メタデータ(4fi.5)
             var pages: [FileInfoPage] = []
             for (position, index) in ordered.enumerated() {
                 pages.append(await fileInfoPage(
-                    for: index, in: book, sideLabel: sideLabels[position]))
+                    for: index, in: book, sideLabel: sideLabels[position],
+                    comicInfo: comicInfo))
             }
             presentFileInfoPanel(pages: pages, initialIndex: initialPosition)
         }
@@ -359,7 +361,8 @@ extension ReaderWindowController {
 
     /// 1 ページ分のファイル情報を収集する
     private func fileInfoPage(for index: Int, in book: Book,
-                              sideLabel: String) async -> FileInfoPage {
+                              sideLabel: String,
+                              comicInfo: ComicInfo?) async -> FileInfoPage {
         let entry = book.entries[index]
         let containerURL = await book.source.containerFileURL(for: entry)
         let data = await book.source.imageData(for: entry)
@@ -371,7 +374,8 @@ extension ReaderWindowController {
             pageNumber: index + 1,
             pageCount: book.pageCount,
             imageData: data,
-            fallbackPixelSize: fallback)
+            fallbackPixelSize: fallback,
+            comicInfo: comicInfo)
         return FileInfoPage(title: entry.name, sideLabel: sideLabel,
                             details: details)
     }
