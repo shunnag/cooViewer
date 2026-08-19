@@ -90,6 +90,8 @@ struct SettingsView: View {
     @AppStorage("SpreadCoverSingle") private var spreadCoverSingle = false
     @AppStorage("RespectComicInfoReadingDirection")
     private var respectComicInfoReadingDirection = false
+    @AppStorage("UseComicInfoLayoutHints")
+    private var useComicInfoLayoutHints = false
     @AppStorage("SortMode") private var sortMode = 0
     @AppStorage("LoopCheck") private var loopCheck = 0
     @AppStorage("GoToLastPage") private var goToLastPage = 0
@@ -478,6 +480,15 @@ struct SettingsView: View {
                            isOn: $respectComicInfoReadingDirection)
                     Text(String(localized:
                         "When a book includes ComicInfo.xml, use its direction unless you’ve set one for that book."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                // ComicInfo.xml の見開き補助(DoublePage/表紙を単ページ扱い。既定オフ)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(String(localized: "Use the comic’s page layout hints (ComicInfo.xml)"),
+                           isOn: $useComicInfoLayoutHints)
+                    Text(String(localized:
+                        "Keep double-page spreads and cover pages from being paired, when ComicInfo.xml marks them."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -44,6 +44,13 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "RespectComicInfoReadingDirection") }
     }
 
+    /// ComicInfo.xml の見開き補助(DoublePage/FrontCover を単ページ扱い)を使うか
+    /// (既定オフ。cooViewer-bt1)。オンでもユーザーの marks 指定が最優先
+    var useComicInfoLayoutHints: Bool {
+        get { defaults.bool(forKey: "UseComicInfoLayoutHints") }
+        set { defaults.set(newValue, forKey: "UseComicInfoLayoutHints") }
+    }
+
     var sortMode: SortMode {
         get { SortMode(rawValue: defaults.integer(forKey: "SortMode")) ?? .name }
         set { defaults.set(newValue.rawValue, forKey: "SortMode") }

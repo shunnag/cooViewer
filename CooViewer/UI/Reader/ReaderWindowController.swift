@@ -828,7 +828,9 @@ final class ReaderWindowController: NSWindowController {
                let rtl = await book.comicInfo()?.manga.readsRightToLeft {
                 book.readMode = book.readMode.withDirection(readsRightToLeft: rtl)
             }
-            await book.loadChapterMarks()  // ComicInfo の章を目次メニュー用に構築(4fi.6)
+            // ComicInfo 由来の状態(章メニュー・見開き補助)を構築(4fi.6 / bt1)
+            await book.loadComicInfoState(
+                useLayoutHints: settings.useComicInfoLayoutHints)
             book.singleSetting = settings.singleSetting
             book.coverSingleFirst = settings.spreadCoverSingle
             // [#1] まず保守的な unknown で表示に進む(既定と同値=従来動作)。
