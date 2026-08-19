@@ -9,12 +9,27 @@ import PDFKit
 actor PDFSource: BookSource {
     nonisolated let url: URL
     private let document: PDFDocument
+    /// メモリ背景(暗号化親のネスト PDF)。非 nil のとき disk を読まず、
+    /// レンダラープールもこの共有 Data から再オープンする(平文を temp に置かない)
+    private let sourceData: Data?
 
     nonisolated var supportsDateSort: Bool { false }
 
     init(url: URL) throws {
         self.url = url
+        self.sourceData = nil
         guard let document = PDFDocument(url: url) else {
+            throw BookSourceError.unreadable(url)
+        }
+        self.document = document
+    }
+
+    /// 暗号化親のネスト PDF をメモリから開く(復号済みバイトを disk に置かない。
+    /// cooViewer-6ax)。合成 url は識別用のみで disk は決して読まない
+    init(data: Data) throws {
+        self.url = URL(fileURLWithPath: "in-memory.pdf")
+        self.sourceData = data
+        guard let document = PDFDocument(data: data) else {
             throw BookSourceError.unreadable(url)
         }
         self.document = document
@@ -67,9 +82,18 @@ actor PDFSource: BookSource {
         }
         if !poolGrowthDisabled, renderers.count < Self.rendererPoolSize {
             // ページ数一致を検証してから採用する(開いた後にファイルが
-            // 差し替えられた場合、entries()/見開き判定と食い違う描画を防ぐ)
-            if let renderer = PDFPageRenderer(url: url, password: storedPassword,
-                                              expectedPageCount: document.pageCount) {
+            // 差し替えられた場合、entries()/見開き判定と食い違う描画を防ぐ)。
+            // メモリ背景(暗号化親のネスト PDF)は共有 Data から再オープンし、
+            // 平文を disk に置かずに並列レンダリングを保つ(cooViewer-6ax)
+            let grown: PDFPageRenderer?
+            if let sourceData {
+                grown = PDFPageRenderer(data: sourceData, password: storedPassword,
+                                        expectedPageCount: document.pageCount)
+            } else {
+                grown = PDFPageRenderer(url: url, password: storedPassword,
+                                        expectedPageCount: document.pageCount)
+            }
+            if let renderer = grown {
                 renderers.append(renderer)
                 rendererBusyCounts.append(1)
                 return (renderers.count - 1, renderer)
@@ -227,6 +251,18 @@ actor PDFPageRenderer {
     /// (ページ数が同じ差し替えまでは検出しない割り切り)
     init?(url: URL, password: String?, expectedPageCount: Int) {
         guard let document = PDFDocument(url: url) else { return nil }
+        if let password {
+            _ = document.unlock(withPassword: password)
+        }
+        guard !document.isLocked,
+              document.pageCount == expectedPageCount else { return nil }
+        self.document = document
+    }
+
+    /// メモリ背景版(暗号化親のネスト PDF。共有 Data から独立文書を開く。
+    /// 平文を disk に置かずに並列レンダリングする。cooViewer-6ax)
+    init?(data: Data, password: String?, expectedPageCount: Int) {
+        guard let document = PDFDocument(data: data) else { return nil }
         if let password {
             _ = document.unlock(withPassword: password)
         }

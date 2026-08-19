@@ -179,6 +179,27 @@ final class NestedArchiveSourceTests: XCTestCase {
         return try Data(contentsOf: stage.appendingPathComponent("out.zip"))
     }
 
+    /// zip CLI で「任意ファイルを内包する暗号化 ZIP」を作る(ネスト子を包む用)
+    private func encryptedZipContaining(_ files: [(name: String, data: Data)],
+                                        password: String, label: String) throws -> URL {
+        let stage = tempDir.appendingPathComponent("encc-\(label)")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        let out = stage.appendingPathComponent("out.zip")
+        var arguments = ["-j", "-P", password, out.path]
+        for file in files {
+            let path = stage.appendingPathComponent(file.name)
+            try file.data.write(to: path)
+            arguments.append(path.path)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.arguments = arguments
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        return out
+    }
+
     /// 混在書庫(先頭エントリが非暗号化)では誤パスワードを受理しないこと。
     /// プローブが暗号化エントリを優先しないと、自動試行の誤値が無音で確定する
     /// (設計書 §2.4 パスワードマネージャーの強化点)
@@ -266,6 +287,45 @@ final class NestedArchiveSourceTests: XCTestCase {
         XCTAssertEqual(image.width, 41)
         let count = await prompts.count
         XCTAssertEqual(count, 1)
+    }
+
+    /// 暗号化親のネスト子は復号済み平文を temp に書かずメモリから開くこと
+    /// (cooViewer-6ax。XADMaster がパス直読みするため従来は平文 temp が残った)
+    func testEncryptedParentNestedChildOpensFromMemory() async throws {
+        // 平文の inner 書庫(この幅の PNG は本テスト固有の内容マーカー)を、
+        // "sesame" で暗号化した outer に内包する
+        let innerData = zipData([("p1.png", png(width: 37)), ("p2.png", png(width: 38))])
+        let outerURL = try encryptedZipContaining([("inner.zip", innerData)],
+                                                  password: "sesame", label: "6ax")
+        let source = try ArchiveSource(url: outerURL)
+        let encrypted = await source.isEncrypted()
+        XCTAssertTrue(encrypted, "outer が暗号化として認識されること")
+        let unlocked = await source.checkAndSetPassword("sesame")
+        XCTAssertTrue(unlocked)
+
+        // ネスト子のページがメモリ経由で正しく展開できること
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.map(\.pathInBook),
+                       ["inner.zip/p1.png", "inner.zip/p2.png"])
+        let image0 = try await source.image(for: entries[0], maxPixelSize: nil)
+        let image1 = try await source.image(for: entries[1], maxPixelSize: nil)
+        XCTAssertEqual(image0.width, 37)
+        XCTAssertEqual(image1.width, 38)
+
+        // 復号済み inner 書庫の平文が temp spool のどこにも書かれていないこと
+        let root = ArchiveSource.spoolRoot()
+        let pid = "\(ProcessInfo.processInfo.processIdentifier)-"
+        let dirs = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        for dir in dirs where dir.lastPathComponent.hasPrefix(pid) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil)) ?? []
+            for file in files {
+                let raw = try? Data(contentsOf: file)
+                XCTAssertNotEqual(raw, innerData,
+                                  "暗号化親のネスト子が平文 temp に書かれている")
+            }
+        }
     }
 
     /// キャンセル(nil)なら子を本から外し、以降は尋ねないこと
