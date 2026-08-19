@@ -1,6 +1,196 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Use the comic’s page layout hints (ComicInfo.xml)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ComicInfo.xml の見開き指定に従う"
+          }
+        }
+      }
+    },
+    "Keep double-page spreads and cover pages from being paired, when ComicInfo.xml marks them." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ComicInfo.xml が指定する見開きページや表紙を、隣のページと対にせず単独で表示します。"
+          }
+        }
+      }
+    },
+    "Go to Chapter" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "章へ移動"
+          }
+        }
+      }
+    },
+    "No Chapters" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "章がありません"
+          }
+        }
+      }
+    },
+    "Comic" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コミック"
+          }
+        }
+      }
+    },
+    "Series" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "シリーズ"
+          }
+        }
+      }
+    },
+    "Title" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "タイトル"
+          }
+        }
+      }
+    },
+    "Number" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "番号"
+          }
+        }
+      }
+    },
+    "Volume" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "巻"
+          }
+        }
+      }
+    },
+    "Writer" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "作者"
+          }
+        }
+      }
+    },
+    "Penciller" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "作画"
+          }
+        }
+      }
+    },
+    "Publisher" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "出版社"
+          }
+        }
+      }
+    },
+    "Genre" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ジャンル"
+          }
+        }
+      }
+    },
+    "Age Rating" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "対象年齢"
+          }
+        }
+      }
+    },
+    "Language" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "言語"
+          }
+        }
+      }
+    },
+    "Web" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Web"
+          }
+        }
+      }
+    },
+    "Summary" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "あらすじ"
+          }
+        }
+      }
+    },
+    "Follow the comic’s reading direction (ComicInfo.xml)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ComicInfo.xml の読み方向に従う"
+          }
+        }
+      }
+    },
+    "When a book includes ComicInfo.xml, use its direction unless you’ve set one for that book." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本に ComicInfo.xml が含まれる場合、その本に読み方向を設定していない限り ComicInfo の方向を使います。"
+          }
+        }
+      }
+    },
     "" : {
 
     },

@@ -821,6 +821,16 @@ final class ReaderWindowController: NSWindowController {
             }
             endOpeningProgress(generation: generation)
             book.readMode = settings.readMode
+            // ComicInfo の読み方向ヒント(オプトイン時のみ)。全体既定の上に載せ、
+            // 本ごとに保存された読み方向(ユーザーの明示設定)が後で最優先で上書き
+            // する = saved > ComicInfo > 既定(cooViewer-4fi.4)
+            if settings.respectComicInfoReadingDirection,
+               let rtl = await book.comicInfo()?.manga.readsRightToLeft {
+                book.readMode = book.readMode.withDirection(readsRightToLeft: rtl)
+            }
+            // ComicInfo 由来の状態(章メニュー・見開き補助)を構築(4fi.6 / bt1)
+            await book.loadComicInfoState(
+                useLayoutHints: settings.useComicInfoLayoutHints)
             book.singleSetting = settings.singleSetting
             book.coverSingleFirst = settings.spreadCoverSingle
             // [#1] まず保守的な unknown で表示に進む(既定と同値=従来動作)。
@@ -870,7 +880,7 @@ final class ReaderWindowController: NSWindowController {
             } else if atLastPage {
                 await book.goToLast()
             }
-            window?.title = book.displayName
+            window?.title = await book.displayTitle()  // ComicInfo 優先(cooViewer-4fi.3)
             lockedBookReason = nil
             statusLabel.isHidden = true
             updateIndicatorVisibility()

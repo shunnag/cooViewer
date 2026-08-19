@@ -9,6 +9,10 @@ final class StubSource: BookSource, @unchecked Sendable {
 
     var supportsDateSort: Bool { false }
 
+    /// テスト用の ComicInfo(章の写像テスト等。cooViewer-4fi.6)
+    var comicInfoStub: ComicInfo?
+    func metadata() async -> ComicInfo? { comicInfoStub }
+
     init(sizes: [CGSize]) {
         self.sizes = sizes
     }
@@ -38,6 +42,47 @@ final class BookTests: XCTestCase {
         let book = try await Book.open(source: StubSource(sizes: sizes))
         book.readMode = readMode
         return book
+    }
+
+    func testChapterMarksMapClampAndSkip() async throws {
+        // ComicInfo の章を実ページへ写像。空名は除外、範囲外(image>=pageCount)は捨てる(4fi.6)
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 4))
+        var info = ComicInfo()
+        info.pages = [
+            .init(image: 0, bookmark: "序"),
+            .init(image: 1, bookmark: ""),        // 空名 → 除外
+            .init(image: 2, bookmark: "中"),
+            .init(image: 4, bookmark: "範囲外"),   // pageCount=4(0..3)→ 捨てる
+        ]
+        stub.comicInfoStub = info
+        let book = try await Book.open(source: stub)
+        await book.loadComicInfoState(useLayoutHints: false)
+        XCTAssertEqual(book.chapterMarks.map(\.page), [0, 2])
+        XCTAssertEqual(book.chapterMarks.map(\.name), ["序", "中"])
+    }
+
+    func testComicSingleIndicesBuiltOnlyWithLayoutHints() async throws {
+        // DoublePage / FrontCover を単ページ集合に。範囲外は捨てる。オプトイン時のみ(bt1)
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 4))
+        var info = ComicInfo()
+        info.pages = [
+            .init(image: 0, type: .frontCover),
+            .init(image: 2, doublePage: true),
+            .init(image: 5, doublePage: true),   // pageCount=4(0..3)→ 捨てる
+        ]
+        stub.comicInfoStub = info
+        let book = try await Book.open(source: stub)
+        await book.loadComicInfoState(useLayoutHints: true)
+        XCTAssertEqual(book.comicSingleIndices, [0, 2])
+        // オプトインオフなら空
+        await book.loadComicInfoState(useLayoutHints: false)
+        XCTAssertTrue(book.comicSingleIndices.isEmpty)
+    }
+
+    func testChapterMarksEmptyWithoutComicInfo() async throws {
+        let book = try await makeBook([portrait, portrait])
+        await book.loadComicInfoState(useLayoutHints: false)
+        XCTAssertTrue(book.chapterMarks.isEmpty)
     }
 
     func testSpreadPairsTwoPortraitPages() async throws {

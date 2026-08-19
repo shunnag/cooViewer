@@ -111,6 +111,55 @@ final class Book {
     var displayName: String { source.displayName }
     var currentPageIndex: Int { currentIndex }
 
+    /// ComicInfo.xml メタデータ(read-only ヒント。cooViewer-4fi.2)。一度成功したら
+    /// キャッシュする。暗号化書庫は解錠後に呼ぶこと(未解錠の nil は焼き付けず、
+    /// 後の呼び出しで再取得できるようにする)
+    private var comicInfoCache: ComicInfo?
+    func comicInfo() async -> ComicInfo? {
+        if let cached = comicInfoCache { return cached }
+        let info = await source.metadata()
+        if info != nil { comicInfoCache = info }
+        return info
+    }
+
+    /// ウインドウ表示名。ComicInfo があればそのタイトル、無ければファイル名
+    /// (displayName)。ファイル名はファイル情報窓で確認できる(cooViewer-4fi.3)
+    func displayTitle() async -> String {
+        await comicInfo()?.displayTitle ?? displayName
+    }
+
+    /// ComicInfo の章(目次)を実ページへ写像したもの(cooViewer-4fi.6)。
+    /// メニューから同期参照するため open 時に loadChapterMarks() で構築する。
+    /// image は 0 始まりのページ番号として扱い、実ページ範囲外の章は捨てる
+    /// (PageCount と実ページ数のズレ耐性)
+    private(set) var chapterMarks: [(page: Int, name: String)] = []
+
+    /// ComicInfo が「単ページ(見開きにしない)」と示すページ(DoublePage /
+    /// FrontCover)を実ページへ写像した集合。useLayoutHints オプトイン時のみ構築
+    /// する(cooViewer-bt1)。isSmall の判定に渡す
+    private(set) var comicSingleIndices: Set<Int> = []
+
+    /// open 時に ComicInfo 由来の状態(章メニュー・見開き補助)をまとめて構築する。
+    /// image は 0 始まりページとして実ページへ写像し、範囲外は捨てる
+    /// (PageCount と実ページ数のズレ耐性)
+    func loadComicInfoState(useLayoutHints: Bool) async {
+        let info = await comicInfo()
+        let count = pageCount
+        chapterMarks = (info?.chapters ?? []).compactMap { chapter in
+            guard chapter.image >= 0, chapter.image < count else { return nil }
+            return (page: chapter.image, name: chapter.name)
+        }
+        if useLayoutHints, let pages = info?.pages {
+            comicSingleIndices = Set(pages.compactMap { page in
+                guard page.image >= 0, page.image < count,
+                      page.doublePage || page.type == .frontCover else { return nil }
+                return page.image
+            })
+        } else {
+            comicSingleIndices = []
+        }
+    }
+
     // MARK: - アクティビティ窓向けの実態アクセサ
 
     /// 進行中デコード件数(実態)
@@ -198,7 +247,8 @@ final class Book {
         guard let size = await pageSize(at: index) else { return nil }
         return PageLayout.isSmall(size: size, index: index,
                                   marks: marks, singleSetting: singleSetting,
-                                  coverSingle: coverSingleFirst)
+                                  coverSingle: coverSingleFirst,
+                                  comicSingleIndices: comicSingleIndices)
     }
 
     /// 表示デコード上限の更新。上げた場合は低解像度の既存キャッシュを破棄する
@@ -221,7 +271,8 @@ final class Book {
         return PageLayout.isSmall(
             size: CGSize(width: image.width, height: image.height),
             index: index, marks: marks, singleSetting: singleSetting,
-            coverSingle: coverSingleFirst
+            coverSingle: coverSingleFirst,
+            comicSingleIndices: comicSingleIndices
         )
     }
 
