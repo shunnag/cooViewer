@@ -265,6 +265,12 @@ enum MainMenuBuilder {
         let bookmarkListMenu = NSMenu()
         bookmarkListMenu.delegate = BookmarkListMenuDelegate.shared
         bookmarkListItem.submenu = bookmarkListMenu
+        // ComicInfo の章(目次)。開くたびに現在の本の章で再構築(cooViewer-4fi.6)
+        let chapterListItem = menu.addItem(
+            withTitle: String(localized: "Go to Chapter"), action: nil, keyEquivalent: "")
+        let chapterListMenu = NSMenu()
+        chapterListMenu.delegate = ChapterListMenuDelegate.shared
+        chapterListItem.submenu = chapterListMenu
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Show Thumbnails"),
                      action: #selector(ReaderWindowController.showThumbnailsMenu(_:)),

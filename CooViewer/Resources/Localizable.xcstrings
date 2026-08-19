@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Go to Chapter" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "章へ移動"
+          }
+        }
+      }
+    },
+    "No Chapters" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "章がありません"
+          }
+        }
+      }
+    },
     "Comic" : {
       "localizations" : {
         "ja" : {
