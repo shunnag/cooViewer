@@ -122,6 +122,12 @@ final class Book {
         return info
     }
 
+    /// ウインドウ表示名。ComicInfo があればそのタイトル、無ければファイル名
+    /// (displayName)。ファイル名はファイル情報窓で確認できる(cooViewer-4fi.3)
+    func displayTitle() async -> String {
+        await comicInfo()?.displayTitle ?? displayName
+    }
+
     // MARK: - アクティビティ窓向けの実態アクセサ
 
     /// 進行中デコード件数(実態)
