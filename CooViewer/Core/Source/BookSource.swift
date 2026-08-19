@@ -111,6 +111,10 @@ protocol BookSource: Sendable {
     /// 最上位ダイアログでの「パスワードを保存」同意をネスト子へ引き継ぐ
     /// (同意済みパスワードで解錠された子は子のキーでも保存される。設計書 §2.4)
     func notePasswordSaveConsent(_ password: String) async
+
+    /// cbz ルートの ComicInfo.xml メタデータを read-only で返す(無ければ nil)。
+    /// 常にヒントであり、ユーザー設定を上書きしない(適用側の責務。cooViewer-4fi)
+    func metadata() async -> ComicInfo?
 }
 
 extension BookSource {
@@ -135,6 +139,7 @@ extension BookSource {
         entry.fileURL ?? url
     }
     func applyMediaProfile(_ profile: MediaProfile) async {}
+    func metadata() async -> ComicInfo? { nil }
 }
 
 enum BookSourceFactory {
