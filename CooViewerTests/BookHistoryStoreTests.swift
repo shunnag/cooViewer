@@ -299,6 +299,22 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(settings?.readMode, ReadMode(rawValue: 1))
     }
 
+    func testMigrationDeduplicatesDuplicateRecentPaths() throws {
+        // 壊れた RecentItems が同一パスへ collapse しても(例: 全件 temppath='null.rar')
+        // recents とページ状態に重複を残さず、最初=最新のエントリを採用する(cooViewer-0pk)
+        let a = try makeBookFile("dup-recent.zip")
+        defaults.set([
+            ["temppath": a, "page": 20],   // offset 0 = 最新
+            ["temppath": a, "page": 5],
+            ["temppath": a, "page": 8],
+        ], forKey: "RecentItems")
+        store.migrateLegacyDataIfNeeded()
+        // 一覧は 1 件へ集約(重複しない)
+        XCTAssertEqual(store.recentBookPaths(), [a])
+        // ページは最初=最新の 20(以前は最後=最古が上書きしていた)
+        XCTAssertEqual(store.savedPage(forPath: a)?.page, 20)
+    }
+
     func testMigrationImportsLastPagesAsRememberedBeyondRecents() throws {
         // LastPages にある=閉じた時点で AlwaysRememberLastPage が ON だった本。
         // 一覧に載っていなくてもグローバル設定に関係なく復元できること

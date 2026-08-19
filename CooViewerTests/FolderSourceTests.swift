@@ -25,6 +25,24 @@ final class FolderSourceTests: XCTestCase {
         try FileManager.default.removeItem(at: tempDir)
     }
 
+    func testMetadataReadsComicInfoFile() async throws {
+        // フォルダ直下の ComicInfo.xml を metadata() が読むこと(4fi.2)
+        let xml = Data("<ComicInfo><Series>フォルダ本</Series><Manga>No</Manga></ComicInfo>".utf8)
+        try xml.write(to: tempDir.appendingPathComponent("ComicInfo.xml"))
+        let source = try FolderSource(url: tempDir, readSubFolders: false)
+        let fetched = await source.metadata()
+        let info = try XCTUnwrap(fetched)
+        XCTAssertEqual(info.series, "フォルダ本")
+        XCTAssertEqual(info.manga, .no)
+        XCTAssertEqual(info.manga.readsRightToLeft, false)
+    }
+
+    func testMetadataNilWhenNoComicInfoFile() async throws {
+        let source = try FolderSource(url: tempDir, readSubFolders: false)
+        let info = await source.metadata()
+        XCTAssertNil(info)
+    }
+
     func testNonRecursiveListsTopLevelImagesOnly() async throws {
         let source = try FolderSource(url: tempDir, readSubFolders: false)
         let entries = try await source.entries()

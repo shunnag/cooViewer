@@ -145,6 +145,14 @@ extension ReaderWindowController {
         refreshAfterJump()
     }
 
+    /// ComicInfo の章(目次)メニューからのジャンプ(cooViewer-4fi.6)
+    @objc func goToChapterListItem(_ sender: NSMenuItem) {
+        guard let book, let index = sender.representedObject as? Int,
+              book.entries.indices.contains(index) else { return }
+        book.goTo(index: index)
+        refreshAfterJump()
+    }
+
     func goToBookmark(next: Bool) {
         guard let book else { return }
         let target = next ? book.nextBookmarkIndex() : book.previousBookmarkIndex()
@@ -348,10 +356,12 @@ extension ReaderWindowController {
             let sideLabels = ordered.count == 2
                 ? [String(localized: "Left Page"), String(localized: "Right Page")]
                 : [""]
+            let comicInfo = await book.comicInfo()  // 本メタデータ(4fi.5)
             var pages: [FileInfoPage] = []
             for (position, index) in ordered.enumerated() {
                 pages.append(await fileInfoPage(
-                    for: index, in: book, sideLabel: sideLabels[position]))
+                    for: index, in: book, sideLabel: sideLabels[position],
+                    comicInfo: comicInfo))
             }
             presentFileInfoPanel(pages: pages, initialIndex: initialPosition)
         }
@@ -359,7 +369,8 @@ extension ReaderWindowController {
 
     /// 1 ページ分のファイル情報を収集する
     private func fileInfoPage(for index: Int, in book: Book,
-                              sideLabel: String) async -> FileInfoPage {
+                              sideLabel: String,
+                              comicInfo: ComicInfo?) async -> FileInfoPage {
         let entry = book.entries[index]
         let containerURL = await book.source.containerFileURL(for: entry)
         let data = await book.source.imageData(for: entry)
@@ -371,7 +382,8 @@ extension ReaderWindowController {
             pageNumber: index + 1,
             pageCount: book.pageCount,
             imageData: data,
-            fallbackPixelSize: fallback)
+            fallbackPixelSize: fallback,
+            comicInfo: comicInfo)
         return FileInfoPage(title: entry.name, sideLabel: sideLabel,
                             details: details)
     }
@@ -563,6 +575,32 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
         }
         if bookmarks.isEmpty {
             let empty = menu.addItem(withTitle: String(localized: "No Bookmarks"),
+                                     action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+        }
+    }
+}
+
+/// 章(目次)サブメニューを開くたびに現在の本の ComicInfo 章で再構築する
+/// (cooViewer-4fi.6。メニューのみ提供)
+@MainActor
+final class ChapterListMenuDelegate: NSObject, NSMenuDelegate {
+    static let shared = ChapterListMenuDelegate()
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let controller = NSApp.windows
+            .compactMap { $0.windowController as? ReaderWindowController }.first
+        let chapters = controller?.book?.chapterMarks ?? []
+        for chapter in chapters {
+            let item = menu.addItem(
+                withTitle: "\(chapter.name)  (p.\(chapter.page + 1))",
+                action: #selector(ReaderWindowController.goToChapterListItem(_:)),
+                keyEquivalent: "")
+            item.representedObject = chapter.page
+        }
+        if chapters.isEmpty {
+            let empty = menu.addItem(withTitle: String(localized: "No Chapters"),
                                      action: nil, keyEquivalent: "")
             empty.isEnabled = false
         }

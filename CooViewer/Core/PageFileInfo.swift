@@ -34,7 +34,8 @@ enum PageFileInfo {
     ///   - fallbackPixelSize: データが無いときの寸法(PDF のポイントサイズ等)
     static func details(entryName: String, pathInBook: String, containerURL: URL,
                         pageNumber: Int, pageCount: Int,
-                        imageData: Data?, fallbackPixelSize: CGSize?) -> Details {
+                        imageData: Data?, fallbackPixelSize: CGSize?,
+                        comicInfo: ComicInfo? = nil) -> Details {
         var sections: [Section] = []
 
         var pageRows: [Row] = [
@@ -76,8 +77,40 @@ enum PageFileInfo {
 
         sections.append(Section(title: String(localized: "File"),
                                 rows: containerRows(url: containerURL)))
+        // ComicInfo.xml の本メタデータ(あれば。cooViewer-4fi.5)
+        if let comicInfo {
+            let rows = comicRows(comicInfo)
+            if !rows.isEmpty {
+                sections.append(Section(title: String(localized: "Comic"), rows: rows))
+            }
+        }
         return Details(sections: sections, latitude: latitude,
                        longitude: longitude)
+    }
+
+    /// ComicInfo.xml から表示する行(存在するフィールドのみ)
+    private static func comicRows(_ info: ComicInfo) -> [Row] {
+        var rows: [Row] = []
+        func add(_ label: String, _ value: String?) {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let trimmed, !trimmed.isEmpty {
+                rows.append(Row(label: label, value: trimmed))
+            }
+        }
+        add(String(localized: "Series"), info.series)
+        // 認可タイトル(ComicInfo.xml)優先、無ければ文書自身のタイトル(PDF 等)
+        add(String(localized: "Title"), info.title ?? info.documentTitle)
+        add(String(localized: "Number"), info.number)
+        add(String(localized: "Volume"), info.volume.map(String.init))
+        add(String(localized: "Writer"), info.writer)
+        add(String(localized: "Penciller"), info.penciller)
+        add(String(localized: "Publisher"), info.publisher)
+        add(String(localized: "Genre"), info.genre)
+        add(String(localized: "Age Rating"), info.ageRating)
+        add(String(localized: "Language"), info.languageISO)
+        add(String(localized: "Web"), info.web)
+        add(String(localized: "Summary"), info.summary)
+        return rows
     }
 
     // MARK: - 画像メタデータ

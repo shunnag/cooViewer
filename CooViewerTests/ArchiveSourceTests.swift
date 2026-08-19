@@ -21,6 +21,33 @@ final class ArchiveSourceTests: XCTestCase {
         return url
     }
 
+    func testMetadataParsesRootComicInfo() async throws {
+        // ルートの ComicInfo.xml を metadata() が解析し、画像一覧には混ざらないこと(4fi.2)
+        let xml = Data("<ComicInfo><Series>統合テスト</Series><Number>2</Number><Manga>YesAndRightToLeft</Manga><Pages><Page Image=\"0\" Bookmark=\"序章\"/></Pages></ComicInfo>".utf8)
+        let url = try writeZip(named: "meta.cbz", entries: [
+            (Array("ComicInfo.xml".utf8), xml),
+            (Array("p1.png".utf8), TestFixtures.pngData(width: 4, height: 6)),
+        ])
+        let source = try ArchiveSource(url: url)
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.map(\.pathInBook), ["p1.png"], "ComicInfo.xml はページに混ざらない")
+        let fetched = await source.metadata()
+        let info = try XCTUnwrap(fetched)
+        XCTAssertEqual(info.series, "統合テスト")
+        XCTAssertEqual(info.number, "2")
+        XCTAssertEqual(info.manga, .yesAndRightToLeft)
+        XCTAssertEqual(info.chapters.map(\.name), ["序章"])
+    }
+
+    func testMetadataNilWithoutComicInfo() async throws {
+        let url = try writeZip(named: "plain.cbz", entries: [
+            (Array("p1.png".utf8), TestFixtures.pngData(width: 4, height: 6)),
+        ])
+        let source = try ArchiveSource(url: url)
+        let info = await source.metadata()
+        XCTAssertNil(info)
+    }
+
     func testListsImagesAndSkipsJunkEntries() async throws {
         let png = TestFixtures.pngData(width: 4, height: 6)
         let url = try writeZip(named: "book.zip", entries: [
