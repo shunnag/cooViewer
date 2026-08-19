@@ -134,15 +134,29 @@ final class Book {
     /// (PageCount と実ページ数のズレ耐性)
     private(set) var chapterMarks: [(page: Int, name: String)] = []
 
-    func loadChapterMarks() async {
-        guard let chapters = await comicInfo()?.chapters else {
-            chapterMarks = []
-            return
-        }
+    /// ComicInfo が「単ページ(見開きにしない)」と示すページ(DoublePage /
+    /// FrontCover)を実ページへ写像した集合。useLayoutHints オプトイン時のみ構築
+    /// する(cooViewer-bt1)。isSmall の判定に渡す
+    private(set) var comicSingleIndices: Set<Int> = []
+
+    /// open 時に ComicInfo 由来の状態(章メニュー・見開き補助)をまとめて構築する。
+    /// image は 0 始まりページとして実ページへ写像し、範囲外は捨てる
+    /// (PageCount と実ページ数のズレ耐性)
+    func loadComicInfoState(useLayoutHints: Bool) async {
+        let info = await comicInfo()
         let count = pageCount
-        chapterMarks = chapters.compactMap { chapter in
+        chapterMarks = (info?.chapters ?? []).compactMap { chapter in
             guard chapter.image >= 0, chapter.image < count else { return nil }
             return (page: chapter.image, name: chapter.name)
+        }
+        if useLayoutHints, let pages = info?.pages {
+            comicSingleIndices = Set(pages.compactMap { page in
+                guard page.image >= 0, page.image < count,
+                      page.doublePage || page.type == .frontCover else { return nil }
+                return page.image
+            })
+        } else {
+            comicSingleIndices = []
         }
     }
 
@@ -233,7 +247,8 @@ final class Book {
         guard let size = await pageSize(at: index) else { return nil }
         return PageLayout.isSmall(size: size, index: index,
                                   marks: marks, singleSetting: singleSetting,
-                                  coverSingle: coverSingleFirst)
+                                  coverSingle: coverSingleFirst,
+                                  comicSingleIndices: comicSingleIndices)
     }
 
     /// 表示デコード上限の更新。上げた場合は低解像度の既存キャッシュを破棄する
@@ -256,7 +271,8 @@ final class Book {
         return PageLayout.isSmall(
             size: CGSize(width: image.width, height: image.height),
             index: index, marks: marks, singleSetting: singleSetting,
-            coverSingle: coverSingleFirst
+            coverSingle: coverSingleFirst,
+            comicSingleIndices: comicSingleIndices
         )
     }
 

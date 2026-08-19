@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Use the comic’s page layout hints (ComicInfo.xml)" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ComicInfo.xml の見開き指定に従う"
+          }
+        }
+      }
+    },
+    "Keep double-page spreads and cover pages from being paired, when ComicInfo.xml marks them." : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ComicInfo.xml が指定する見開きページや表紙を、隣のページと対にせず単独で表示します。"
+          }
+        }
+      }
+    },
     "Go to Chapter" : {
       "localizations" : {
         "ja" : {

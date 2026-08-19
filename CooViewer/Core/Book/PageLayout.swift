@@ -85,16 +85,20 @@ enum PageLayout {
     static let defaultSingleSetting = 740
 
     /// ページが「小さい」=見開き候補か。
-    /// 1. marks の強制指定が最優先
-    /// 2. coverSingle(表紙を単ページにする。新機能・既定オフ)なら先頭ページは単ページ
-    /// 3. 幅/高さ が singleSetting/1000 以下(縦長)なら見開き候補
+    /// 1. marks の強制指定が最優先(ユーザーの明示)
+    /// 2. comicSingleIndices(ComicInfo の DoublePage/FrontCover)なら単ページ
+    /// 3. coverSingle(表紙を単ページにする。新機能・既定オフ)なら先頭ページは単ページ
+    /// 4. 幅/高さ が singleSetting/1000 以下(縦長)なら見開き候補
     static func isSmall(
         size: CGSize, index: Int, marks: PageMarks,
         singleSetting: Int = defaultSingleSetting,
-        coverSingle: Bool = false
+        coverSingle: Bool = false,
+        comicSingleIndices: Set<Int> = []
     ) -> Bool {
         if marks.forcesSingle(index) { return false }
         if marks.forcesPairContaining(index) { return true }
+        // ComicInfo の見開き補助(DoublePage/FrontCover)= このページは見開きにしない
+        if comicSingleIndices.contains(index) { return false }
         if coverSingle, index == 0 { return false }
         guard size.height > 0 else { return false }
         return size.width / size.height <= CGFloat(singleSetting) / 1000.0
