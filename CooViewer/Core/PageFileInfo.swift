@@ -98,7 +98,8 @@ enum PageFileInfo {
             }
         }
         add(String(localized: "Series"), info.series)
-        add(String(localized: "Title"), info.title)
+        // 認可タイトル(ComicInfo.xml)優先、無ければ文書自身のタイトル(PDF 等)
+        add(String(localized: "Title"), info.title ?? info.documentTitle)
         add(String(localized: "Number"), info.number)
         add(String(localized: "Volume"), info.volume.map(String.init))
         add(String(localized: "Writer"), info.writer)

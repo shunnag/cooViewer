@@ -52,6 +52,12 @@ actor NestedFolderSource: BookSource {
         await buildIfNeeded()
     }
 
+    /// コレクションフォルダ直下の ComicInfo.xml を FolderSource へ委譲して読む
+    /// (cooViewer-oo6)。子ごとの集約はしない(フォルダ単位のメタデータのみ)
+    func metadata() async -> ComicInfo? {
+        await folder.metadata()
+    }
+
     @discardableResult
     private func buildIfNeeded() async -> [PageEntry] {
         if let buildTask { return await buildTask.value }

@@ -6,6 +6,10 @@ import Foundation
 /// ユーザー設定を上書きしない(適用側の責務)。
 struct ComicInfo: Sendable, Equatable {
     var title: String?
+    /// 文書自身のタイトル(PDF の Title 属性など。cooViewer-oo6)。ウインドウ
+    /// タイトルには使わず(PDF の Title はゴミが多い)、ファイル情報窓にのみ出す。
+    /// displayTitle は無視する
+    var documentTitle: String?
     var series: String?
     var number: String?        // "1" / "1.5" 等があるため文字列で保持
     var count: Int?            // シリーズ総数
