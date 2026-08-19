@@ -278,7 +278,7 @@ enum ActionNames {
         case NSHomeFunctionKey: return "home"
         case NSEndFunctionKey: return "end"
         case NSDeleteFunctionKey: return "del"
-        case 0x09: return "tab"
+        case 0x09, 0x19: return "tab"  // 0x19=NSBackTabCharacter(Shift+Tab)。修飾 shift と併せ "shift+tab" 表示
         case 0x0D: return "return"
         case 0x03: return "enter"
         case 0x20: return "space"
