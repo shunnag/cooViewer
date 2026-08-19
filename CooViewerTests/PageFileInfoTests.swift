@@ -60,6 +60,20 @@ final class PageFileInfoTests: XCTestCase {
         XCTAssertTrue(values.contains("あらすじ"))
     }
 
+    func testComicSectionUsesDocumentTitleWhenNoAuthoredTitle() {
+        // PDF 由来: 認可 title が無ければ documentTitle を「タイトル」行に出す(oo6)
+        var info = ComicInfo()
+        info.documentTitle = "PDF の題名"; info.writer = "著者"
+        let details = PageFileInfo.details(
+            entryName: "d.pdf", pathInBook: "d.pdf",
+            containerURL: tempDir.appendingPathComponent("d.pdf"),
+            pageNumber: 1, pageCount: 3,
+            imageData: nil, fallbackPixelSize: nil, comicInfo: info)
+        let values = allValues(details)
+        XCTAssertTrue(values.contains("PDF の題名"))
+        XCTAssertTrue(values.contains("著者"))
+    }
+
     func testNoComicSectionWithoutComicInfo() {
         let details = PageFileInfo.details(
             entryName: "p1.png", pathInBook: "p1.png",

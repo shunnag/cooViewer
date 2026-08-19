@@ -35,6 +35,12 @@ actor PDFSource: BookSource {
         self.document = document
     }
 
+    /// PDF 自身のメタデータ(文書属性 + アウトライン)を ComicInfo へ合成して返す
+    /// (cooViewer-oo6)。暗号化 PDF は解錠後のみ意味のある値になる(未解錠は nil)
+    func metadata() async -> ComicInfo? {
+        ComicInfo.from(pdf: document)
+    }
+
     func entries() async throws -> [PageEntry] {
         // ロック解除前は pageCount が 0 になるため、毎回計算する
         (0..<document.pageCount).map { index in
