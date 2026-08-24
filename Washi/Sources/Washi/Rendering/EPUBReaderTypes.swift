@@ -7,10 +7,15 @@ public struct EPUBLocator: Sendable, Equatable, Codable {
     public var spineIndex: Int
     /// 項目内の進行率 0.0(先頭)〜1.0(末尾)
     public var progression: Double
+    /// spine itemref の idref。あれば配信本の改版(spine の並べ替え・増減)を
+    /// またいで正しい項目へ追跡できる(EPUBPublication.resolve)。
+    /// 旧形式の保存データ({spineIndex, progression} のみ)とデコード互換
+    public var idref: String?
 
-    public init(spineIndex: Int, progression: Double = 0) {
+    public init(spineIndex: Int, progression: Double = 0, idref: String? = nil) {
         self.spineIndex = spineIndex
         self.progression = min(1, max(0, progression))
+        self.idref = idref
     }
 }
 

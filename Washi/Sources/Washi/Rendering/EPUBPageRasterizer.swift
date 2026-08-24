@@ -28,12 +28,27 @@ public final class EPUBPageRasterizer {
         self.schemeHandler = EPUBSchemeHandler(publication: publication)
     }
 
+    /// invalidate 後は新規レンダーを受け付けない
+    private var isInvalidated = false
+
+    /// オフスクリーンリソース(不可視 NSWindow + WebContent プロセス)を
+    /// 明示的に畳む。使い終えたら呼ぶ(以後の renderPage は loadFailed)
+    public func invalidate() {
+        isInvalidated = true
+        lastJob?.cancel()
+        webView?.navigationDelegate = nil
+        webView = nil
+        window?.orderOut(nil)
+        window = nil
+    }
+
     /// spine 項目を描画して返す。maxPixelSize は長辺の上限(nil で等倍 2x)。
     /// 共有 WKWebView を使うため FIFO で完全直列化する: 描画本体をチェーン
     /// された Task の**中**で実行する(外に出すと直列化にならず、並行呼び出しが
     /// 相互のナビゲーションを潰して NavigationWaiter が永久に待つ)
     public func renderPage(atSpineIndex index: Int,
                            maxPixelSize: Int? = nil) async throws -> CGImage {
+        guard !isInvalidated else { throw RasterizeError.loadFailed }
         let previous = lastJob
         // 優先度は明示的に userInitiated へ(低優先度の呼び出し元 — 例:
         // .utility のサムネイル先読み — の QoS を継ぐと、WebKit への JS 実行が
@@ -50,6 +65,9 @@ public final class EPUBPageRasterizer {
 
     private func performRender(atSpineIndex index: Int,
                                maxPixelSize: Int?) async throws -> CGImage {
+        // FIFO 待ちの間に invalidate された場合、ここでオフスクリーンを
+        // 作り直さない(畳んだはずのウインドウ/プロセスを復活させない)
+        guard !isInvalidated else { throw RasterizeError.loadFailed }
         guard publication.readingOrder.indices.contains(index) else {
             throw EPUBError.resourceNotFound("spine index \(index)")
         }

@@ -67,6 +67,14 @@ public final class EPUBReaderView: NSView {
     /// spine 項目の読み込み中(旧文書から届く境界イベントを捨てて
     /// 章の飛び越しを防ぐ)
     private var isLoadingSpineItem = false
+    /// spine 読み込みの世代。loadSpineItem のたびに進める。
+    /// runSetup は「開始時と各 await 後」に世代一致を確認し、高速なページ
+    /// 送りで古いセットアップが新しい文書の状態(pendingTarget・
+    /// isLoadingSpineItem・復元位置)を消費・破壊しないようにする
+    private var spineLoadGeneration = 0
+    /// 現在有効なナビゲーション(didFinish/didFail の遅延配達を、後続の
+    /// loadSpineItem 後に古い文書ぶんとして無視するための同一性チェック)
+    private var currentNavigation: WKNavigation?
     /// めくりアニメーションのオーバーレイ(spine 切替時に掃除)
     private var turnOverlays: [NSView] = []
     /// 直前のめくり時刻(高速連打時はアニメーションを省略して即めくり)
@@ -265,18 +273,25 @@ public final class EPUBReaderView: NSView {
         // census は本に紐づく(scheme handler ごと作り直す)
         censusTask?.cancel()
         censusTask = nil
+        censusEngine?.invalidate()  // 旧本のオフスクリーンを確実に畳む
         censusEngine = nil
         censusCache.removeAll()
         censusFailureCounts.removeAll()
         censusKey = nil
-        thumbnailRenderer = nil  // サムネイルレンダラも本に紐づく
+        thumbnailRenderer?.invalidate()  // サムネイルレンダラも本に紐づく
+        thumbnailRenderer = nil
         if pageCensus != nil {
             pageCensus = nil
             delegate?.readerViewDidUpdatePageCensus(self)
         }
-        let index = locator.map { max(0, min($0.spineIndex, publication.readingOrder.count - 1)) } ?? 0
-        let target: PendingTarget = locator.map { .progression($0.progression) } ?? .start
-        pendingRestoreLocator = locator
+        // 保存位置は idref で突き合わせる(改版で spine が並べ替わった本でも
+        // 別の章を無言で開かない。該当 idref が消えた本は先頭から)
+        let resolved = locator.flatMap { publication.resolve($0) }
+        let index = resolved.map {
+            max(0, min($0.spineIndex, publication.readingOrder.count - 1))
+        } ?? 0
+        let target: PendingTarget = resolved.map { .progression($0.progression) } ?? .start
+        pendingRestoreLocator = resolved
         rebuildWebView(for: publication)
         loadSpineItem(at: index, target: target)
     }
@@ -436,6 +451,8 @@ public final class EPUBReaderView: NSView {
         pageCountInItem = 1
         isImagePage = false
         isLoadingSpineItem = true
+        spineLoadGeneration += 1
+        repaginateWork?.cancel()  // 旧文書あての再ページ割りを新文書へ流さない
         // 進行中のめくり演出は新しい章の表示を隠すので畳む。
         // spine 遷移演出の持ち越しカバー(旧ページ)だけは読み込み中も残す
         if !preservingTurnCover { clearPendingSpineTurn() }
@@ -451,7 +468,7 @@ public final class EPUBReaderView: NSView {
             return
         }
         webView.alphaValue = 0
-        webView.load(URLRequest(url: url))
+        currentNavigation = webView.load(URLRequest(url: url))
     }
 
     // MARK: - ナビゲーション API
@@ -465,10 +482,13 @@ public final class EPUBReaderView: NSView {
         // 復元がまだ適用されていない間は復元先を答える(開いてすぐ閉じたときに
         // 保存済み位置を (0,0) で潰さない)
         if let pendingRestoreLocator { return pendingRestoreLocator }
-        return EPUBLocator(
-            spineIndex: currentSpineIndex,
-            progression: pageCountInItem <= 1
-                ? 0 : Double(pageInItem) / Double(pageCountInItem - 1))
+        let progression = pageCountInItem <= 1
+            ? 0 : Double(pageInItem) / Double(pageCountInItem - 1)
+        // idref 併記(publication.resolve で改版追跡できる形)で返す
+        return publication?.locator(forSpineIndex: currentSpineIndex,
+                                    progression: progression)
+            ?? EPUBLocator(spineIndex: currentSpineIndex,
+                           progression: progression)
     }
 
     /// 読書順で次へ(項目内の次ページ → 次の spine 項目)。
@@ -768,15 +788,22 @@ public final class EPUBReaderView: NSView {
     /// lastLaidOutSize が先に更新され、以後そのサイズでは再ページ割りされない)
     private func schedulePagination(preserveProgression: Bool) {
         guard webView != nil, publication != nil else { return }
-        if isSettingUp {
+        // spine 読み込み中(didFinish 前)は再ページ割りを走らせない。
+        // ここで走らせると、文書のロード完了前に repaginate が isLoadingSpineItem
+        // や alpha を早期リセットして、旧文書の境界イベント受理や表示のちらつきを
+        // 招く(世代トークンは同一世代なので防げない)。didFinish 後の
+        // runSetup 完了時に defer が pendingRepaginate を拾って正しい順序で走る
+        if isSettingUp || isLoadingSpineItem {
             pendingRepaginate = true
             return
         }
         repaginateWork?.cancel()
+        let generation = spineLoadGeneration
         repaginateWork = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            await self?.runSetup(preserveProgression: preserveProgression)
+            await self?.runSetup(preserveProgression: preserveProgression,
+                                 generation: generation)
         }
     }
 
@@ -797,9 +824,12 @@ public final class EPUBReaderView: NSView {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    /// didFinish 後(または再ページ割り時)のセットアップ実行
-    private func runSetup(preserveProgression: Bool) async {
-        guard let webView else { return }
+    /// didFinish 後(または再ページ割り時)のセットアップ実行。
+    /// generation が現在の spine 読み込み世代と食い違ったら何もしない
+    /// (guard は JS await の後にも必要 — await 中に別の spine へ
+    /// 移っていたら、その文書の状態を消費・破壊してはならない)
+    private func runSetup(preserveProgression: Bool, generation: Int) async {
+        guard let webView, generation == spineLoadGeneration else { return }
         isSettingUp = true
         defer {
             isSettingUp = false
@@ -815,6 +845,8 @@ public final class EPUBReaderView: NSView {
         do {
             let result = try await webView.callAsyncJavaScript(
                 call, arguments: [:], in: nil, contentWorld: Self.washiWorld)
+            guard generation == spineLoadGeneration,
+                  webView === self.webView else { return }
             if let dict = result as? [String: Any] {
                 if let count = dict["pageCount"] as? Int {
                     pageCountInItem = max(1, count)
@@ -839,10 +871,13 @@ public final class EPUBReaderView: NSView {
                 config.afterScreenUpdates = true
                 let newPage = try? await webView.takeSnapshot(
                     configuration: config)
+                guard generation == spineLoadGeneration else { return }
                 runTurnEffect(oldPage: pending.oldPage, newPage: newPage,
                               cover: pending.cover, forward: pending.forward)
             }
         } catch {
+            // 古い文書の JS 失敗で新しい文書の読み込み状態を壊さない
+            guard generation == spineLoadGeneration else { return }
             isLoadingSpineItem = false
             clearPendingSpineTurn()
             webView.alphaValue = 1
@@ -900,11 +935,14 @@ public final class EPUBReaderView: NSView {
             if remaining < count {
                 let progression = count <= 1
                     ? 0 : Double(remaining) / Double(count - 1)
-                return EPUBLocator(spineIndex: index, progression: progression)
+                return publication?.locator(forSpineIndex: index,
+                                            progression: progression)
+                    ?? EPUBLocator(spineIndex: index, progression: progression)
             }
             remaining -= count
         }
-        return EPUBLocator(spineIndex: counts.count - 1, progression: 1)
+        return publication?.locator(forSpineIndex: counts.count - 1, progression: 1)
+            ?? EPUBLocator(spineIndex: counts.count - 1, progression: 1)
     }
 
     // MARK: - 画面サムネイル(ホストの一覧 UI 用)
@@ -957,11 +995,30 @@ public final class EPUBReaderView: NSView {
         censusTask = nil
     }
 
+    /// ウインドウから外れたら(クローズ・ビューの取り外し)オフスクリーン
+    /// 計測を止め、不可視ウインドウと WebContent プロセスを畳む。
+    /// 明示的な cancelPageCensus を知らないホストでもリークしないための保険。
+    /// 再表示されれば次の runSetup / layout が census を自然に再開する
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window == nil else { return }
+        cancelPageCensus()
+        censusEngine?.invalidate()
+        censusEngine = nil
+        thumbnailRenderer?.invalidate()
+        thumbnailRenderer = nil
+    }
+
     /// メトリクスが変わっていれば census を(デバウンス付きで)再実測する。
     /// runSetup 完了時と FXL 表示中のリサイズで呼ぶ — リサイズ・フォント倍率・
     /// 見開き切替に追従する
     private func scheduleCensusIfNeeded() {
         guard let publication, !publication.readingOrder.isEmpty else { return }
+        // ウインドウから外れている間はオフスクリーン計測を始めない
+        // (viewDidMoveToWindow で畳んだ直後に runSetup 由来の呼び出しが
+        // 実測を復活させ、不可視ウインドウ/プロセスが生き返るのを防ぐ。
+        // 再表示されれば layout/runSetup が改めて呼ぶ)
+        guard window != nil else { return }
         let key = censusOptionsJSON()
         // 実測に使う寸法はキーと同じ瞬間に採る(デバウンス起床時に採ると、
         // 窓の終盤のリサイズで「旧キーに新寸法の実測」が入りキャッシュが汚れる)
@@ -1000,14 +1057,17 @@ public final class EPUBReaderView: NSView {
             // 失敗や「1 項目ずれた実測値」のキャッシュ汚染が起きる
             // (EPUBPageRasterizer と同じ直列化方針)
             _ = await previous?.value
-            guard let self, !Task.isCancelled,
-                  let publication = self.publication, self.censusKey == key
+            // measure の await をまたいで self を強参照しない: ホストが
+            // ビューを手放したら、全 spine 実測(壊れた本は 1 項目 15 秒
+            // タイムアウト×N)を道連れにビューが生き残らないように
+            guard !Task.isCancelled,
+                  let publication = self?.publication, self?.censusKey == key
             else { return }
-            let engine = self.censusEngine ?? EPUBPaginationCensus()
-            self.censusEngine = engine
+            let engine = self?.censusEngine ?? EPUBPaginationCensus()
+            self?.censusEngine = engine
             let counts = await engine.measure(
                 publication: publication, optionsJSON: key, contentSize: size)
-            guard !Task.isCancelled, self.censusKey == key else { return }
+            guard let self, !Task.isCancelled, self.censusKey == key else { return }
             guard let counts else {
                 // 失敗完了は「実測中」ではない — タスクを解放して次の
                 // runSetup での再実測を許す(回数はキーごとに上限あり)
@@ -1314,11 +1374,16 @@ extension EPUBReaderView: WKNavigationDelegate, WKUIDelegate {
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // 別の spine へ移った後に届いた古い didFinish は無視する
+        // (これを通すと古いセットアップが新文書の pendingTarget を消費する)
+        guard navigation == nil || navigation === currentNavigation else { return }
         if isFixedLayoutItem {
             layoutFixedItem()
         }
+        let generation = spineLoadGeneration
         Task { [weak self] in
-            await self?.runSetup(preserveProgression: false)
+            await self?.runSetup(preserveProgression: false,
+                                 generation: generation)
         }
     }
 
@@ -1342,12 +1407,15 @@ extension EPUBReaderView: WKNavigationDelegate, WKUIDelegate {
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
                         withError error: any Error) {
+        // 別 spine へ移った後に届く古い失敗は無視(新文書の状態を壊さない)
+        guard navigation == nil || navigation === currentNavigation else { return }
         handleNavigationFailure(error)
     }
 
     public func webView(_ webView: WKWebView,
                         didFailProvisionalNavigation navigation: WKNavigation!,
                         withError error: any Error) {
+        guard navigation == nil || navigation === currentNavigation else { return }
         handleNavigationFailure(error)
     }
 

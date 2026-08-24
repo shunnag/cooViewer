@@ -24,6 +24,17 @@ final class EPUBPaginationCensus {
     /// 各 spine 項目のページ数を実測する。
     /// 失敗(読み込みエラー・タイムアウト)またはキャンセル時は nil
     /// (部分結果は返さない — 古い合計でページ番号を出すより隠す方が良い)
+    /// オフスクリーンリソース(不可視 NSWindow + WebContent プロセス)を
+    /// 明示的に畳む。ホストが計測を使い終えたとき(ビューのウインドウ離脱・
+    /// アトラスの破棄)に呼ぶ。以後 measure が呼ばれれば作り直される
+    func invalidate() {
+        webView?.navigationDelegate = nil
+        webView = nil
+        schemeHandler = nil
+        window?.orderOut(nil)
+        window = nil
+    }
+
     func measure(publication: EPUBPublication, optionsJSON: String,
                  contentSize: NSSize) async -> [Int]? {
         prepareIfNeeded(publication: publication, contentSize: contentSize)

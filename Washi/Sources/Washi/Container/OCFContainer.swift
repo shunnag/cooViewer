@@ -48,12 +48,17 @@ struct FolderContainerReader: ContainerReader {
     var allPaths: [String] {
         let root = rootURL.standardizedFileURL
         guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey],
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]) else { return [] }
         var paths: [String] = []
         for case let url as URL in enumerator {
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?
-                .isRegularFile == true else { continue }
+            // シンボリックリンクは列挙しない(コンテナ外の実体を「コンテナ内
+            // リソース」として晒さない。read 側の実体検証と対)
+            guard let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                values.isSymbolicLink != true, values.isRegularFile == true
+            else { continue }
             let full = url.standardizedFileURL.path
             let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
             if full.hasPrefix(prefix) {
@@ -73,11 +78,24 @@ struct FolderContainerReader: ContainerReader {
             && !components.contains("..") && !components.contains(".")
     }
 
+    /// パス成分は安全でも、途中のシンボリックリンクが実体をコンテナ外へ
+    /// 逃がしている場合を拒否する(~/.ssh 等をスキームハンドラ経由で
+    /// 読ませない)。実体パスを解決してルート配下であることを検証する
+    private func isInsideContainer(_ url: URL) -> Bool {
+        let resolvedRoot = rootURL.standardizedFileURL
+            .resolvingSymlinksInPath().path
+        let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return resolved == resolvedRoot
+            || resolved.hasPrefix(resolvedRoot.hasSuffix("/")
+                ? resolvedRoot : resolvedRoot + "/")
+    }
+
     func exists(_ path: String) -> Bool {
         guard isSafeContainerPath(path) else { return false }
         var isDirectory: ObjCBool = false
         let url = rootURL.appendingPathComponent(path)
-        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        return isInsideContainer(url)
+            && FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
             && !isDirectory.boolValue
     }
 
@@ -86,6 +104,9 @@ struct FolderContainerReader: ContainerReader {
             throw EPUBError.resourceNotFound(path)
         }
         let url = rootURL.appendingPathComponent(path)
+        guard isInsideContainer(url) else {
+            throw EPUBError.resourceNotFound(path)
+        }
         do {
             return try Data(contentsOf: url, options: .mappedIfSafe)
         } catch {

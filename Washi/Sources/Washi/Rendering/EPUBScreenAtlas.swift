@@ -27,6 +27,20 @@ public final class EPUBScreenAtlas {
         self.publication = publication
     }
 
+    /// オフスクリーンリソース(census とレンダラの不可視ウインドウ・
+    /// WebContent プロセス)を明示的に畳む。**アトラスを手放すとき
+    /// (キャッシュからの追い出し等)は必ず呼ぶ** — 進行中の実測・レンダーを
+    /// 止め、プロセスをホストの寿命まで生かさないため。呼んだ後の
+    /// このインスタンスは再利用しない
+    public func invalidate() {
+        for task in measuring.values { task.cancel() }
+        measuring.removeAll()
+        newestRequestedKey = nil
+        census.invalidate()
+        renderer?.invalidate()
+        renderer = nil
+    }
+
     /// 各 spine 項目のページ数(実測。metrics ごとにキャッシュ)。
     /// 失敗(タイムアウト・WebContent 死)は nil
     public func screenCounts(metrics: EPUBScreenMetrics) async -> [Int]? {

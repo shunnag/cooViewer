@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 
 /// spine 1 項目ぶんの読書順エントリ(マニフェスト解決・パス解決済み)
 public struct ReadingOrderItem: Sendable {
@@ -167,6 +168,36 @@ public final class EPUBPublication: Sendable {
         return isDRMProtected ? "不明な DRM" : nil
     }
 
+    // MARK: - 読書位置の突き合わせ
+
+    /// この本の spine index から idref 併記の位置を作る(保存用はこちらを使う)
+    public func locator(forSpineIndex index: Int,
+                        progression: Double = 0) -> EPUBLocator {
+        EPUBLocator(spineIndex: index, progression: progression,
+                    idref: readingOrder.indices.contains(index)
+                        ? readingOrder[index].itemRef.idref : nil)
+    }
+
+    /// 保存済み位置をこの本へ突き合わせる。idref があれば spine の並べ替え・
+    /// 増減(配信本の改版)を追跡して正しい項目へ写像し、該当 idref が
+    /// 消えていれば nil(呼び出し側が「先頭から」等を決める)。
+    /// idref のない旧形式は範囲内クランプのみ行う
+    public func resolve(_ locator: EPUBLocator) -> EPUBLocator? {
+        guard !readingOrder.isEmpty else { return nil }
+        if let idref = locator.idref {
+            if readingOrder.indices.contains(locator.spineIndex),
+               readingOrder[locator.spineIndex].itemRef.idref == idref {
+                return locator
+            }
+            guard let entry = readingOrder.first(
+                where: { $0.itemRef.idref == idref }) else { return nil }
+            return EPUBLocator(spineIndex: entry.spineIndex,
+                               progression: locator.progression, idref: idref)
+        }
+        let clamped = max(0, min(locator.spineIndex, readingOrder.count - 1))
+        return EPUBLocator(spineIndex: clamped, progression: locator.progression)
+    }
+
     /// マニフェストのフォールバック連鎖(自身を先頭に、循環はそこで打ち切り。
     /// EPUB RS 3.3 §5.4)
     public func fallbackChain(for item: ManifestItem) -> [ManifestItem] {
@@ -187,6 +218,86 @@ public final class EPUBPublication: Sendable {
     public var coverImagePath: String? {
         guard let item = package.coverImageItem else { return nil }
         return ContainerPath.resolve(base: package.path, href: item.href)
+    }
+
+    /// 表紙画像のコンテナ内パスをフォールバック連鎖で解決する(ライブラリ
+    /// 一覧用途: 宣言のない実在本でもできるだけ表紙を出す):
+    /// ① manifest properties="cover-image" / EPUB 2 meta name="cover"
+    /// ② landmarks の epub:type="cover" が指す先(画像そのもの、または
+    ///    文書内の唯一の画像)
+    /// ③ id かファイル名に cover を含む manifest の画像アイテム
+    /// ④ 先頭 spine 項目が「画像 1 枚だけのページ」ならその画像
+    public var resolvedCoverImagePath: String? {
+        if let path = coverImagePath { return path }
+        if let path = landmarkCoverPath { return path }
+        if let item = package.manifest.first(where: { item in
+            item.mediaType.hasPrefix("image/")
+                && item.id.lowercased().contains("cover")
+        }) ?? package.manifest.first(where: { item in
+            item.mediaType.hasPrefix("image/")
+                && (item.href.split(separator: "/").last ?? "")
+                    .lowercased().contains("cover")
+        }) {
+            return ContainerPath.resolve(base: package.path, href: item.href)
+        }
+        if let info = try? fixedLayoutInfo(forSpineIndex: 0),
+           let imagePath = info.simpleImagePath {
+            return imagePath
+        }
+        return nil
+    }
+
+    /// landmarks の epub:type="cover" 経由の表紙解決(②)
+    private var landmarkCoverPath: String? {
+        guard let landmark = navigation.landmarks.first(where: {
+            $0.epubType?.components(separatedBy: .whitespaces)
+                .contains("cover") == true
+        }), let href = landmark.href else { return nil }
+        let raw = href.split(separator: "#").first.map(String.init) ?? href
+        guard let docPath = ContainerPath.resolve(
+            base: navigation.basePath, href: raw) else { return nil }
+        let mediaType = manifestByPath[docPath]?.mediaType
+            ?? EPUBMediaType.guessed(fromPath: docPath)
+        if mediaType.hasPrefix("image/") { return docPath }
+        // 表紙ページ(XHTML)の中の唯一の画像を表紙とみなす
+        guard mediaType == EPUBMediaType.xhtml,
+              let (data, _) = try? resource(at: docPath),
+              let document = try? WashiXML.document(from: data),
+              let root = document.rootElement(),
+              let body = Self.firstDescendant("body", in: root) else { return nil }
+        let imgs = Self.descendants("img", in: body)
+        if imgs.count == 1, let src = imgs[0].attr("src") {
+            return ContainerPath.resolve(base: docPath, href: src)
+        }
+        let svgImages = Self.descendants("image", in: body)
+        if imgs.isEmpty, svgImages.count == 1 {
+            let href = svgImages[0].attribute(forLocalName: "href",
+                                              uri: XMLNamespace.xlink)?.stringValue
+                ?? svgImages[0].attr("xlink:href") ?? svgImages[0].attr("href")
+            return href.flatMap { ContainerPath.resolve(base: docPath, href: $0) }
+        }
+        return nil
+    }
+
+    /// 表紙画像をデコードして返す(ImageIO のみ・WebKit/AppKit 不使用なので
+    /// ヘッドレスの索引ツール等からも使える)。maxPixelSize を指定すると
+    /// 長辺がそれ以下のサムネイルへ縮小する(EXIF 回転適用済み)。
+    /// 表紙が解決できない・SVG 等デコード不能・DRM で読めない場合は nil
+    public func coverImage(maxPixelSize: Int? = nil) -> CGImage? {
+        guard let path = resolvedCoverImagePath,
+              let (data, _) = try? resource(at: path),
+              let source = CGImageSourceCreateWithData(data as CFData, nil)
+        else { return nil }
+        if let maxPixelSize {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(
+                source, 0, options as CFDictionary)
+        }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
     // MARK: - リソース読み出し

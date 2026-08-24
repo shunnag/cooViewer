@@ -17,6 +17,10 @@ public enum ZipError: Error, Sendable, Equatable {
     case entryNotFound(String)
     /// 展開結果が壊れている(サイズ不一致・CRC 不一致)
     case corruptEntry(String)
+    /// 宣言された展開後サイズが上限(maxEntrySize)を超える。
+    /// 1032:1 の比率検査だけではゼロ埋め等の「本物の高圧縮 deflate」で
+    /// 小さな書庫から GB 級の確保を強制できるため、絶対上限で守る
+    case entryTooLarge(String, declaredSize: UInt64)
 }
 
 /// ZIP 内の 1 エントリのメタ情報
@@ -42,18 +46,27 @@ public struct ZipEntryInfo: Sendable, Hashable {
 /// 以後の読み取りは不変データへの純関数なのでスレッド安全(Sendable)。
 /// エントリ名によるパス操作は一切行わない(zip-slip の懸念なし)。
 public final class ZipArchive: Sendable {
+    /// 1 エントリの展開後サイズの既定上限(512 MB)。EPUB の実態
+    /// (画像・音声・映像込みでも 1 ファイルはこれ未満)に対して十分広い
+    public static let defaultMaxEntrySize = 512 << 20
+
     private let data: Data
     public let entries: [ZipEntryInfo]
     /// 正確な名前 → entries 添字(OCF はケースセンシティブ。重複名は先勝ち)
     private let index: [String: Int]
+    /// 1 エントリの展開後サイズ上限(超えると entryTooLarge)
+    private let maxEntrySize: Int
 
-    public convenience init(url: URL) throws {
+    public convenience init(url: URL,
+                            maxEntrySize: Int = ZipArchive.defaultMaxEntrySize) throws {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        try self.init(data: data)
+        try self.init(data: data, maxEntrySize: maxEntrySize)
     }
 
-    public init(data: Data) throws {
+    public init(data: Data,
+                maxEntrySize: Int = ZipArchive.defaultMaxEntrySize) throws {
         self.data = data
+        self.maxEntrySize = maxEntrySize
         let reader = ByteReader(data: data)
         let eocd = try Self.locateEndOfCentralDirectory(reader)
         // 偽装 zip64 対策: 中央ディレクトリエントリは最低 46 バイトなので、
@@ -103,6 +116,11 @@ public final class ZipArchive: Sendable {
               let uncompressedSize = Int(exactly: info.uncompressedSize),
               lho <= reader.count, compressedSize <= reader.count else {
             throw ZipError.truncated("entry sizes: \(name)")
+        }
+        // 宣言サイズの絶対上限。比率検査(deflate 1032:1)だけでは
+        // ゼロ埋め等の正規高圧縮データで巨大確保を強制できる
+        guard uncompressedSize <= maxEntrySize else {
+            throw ZipError.entryTooLarge(name, declaredSize: info.uncompressedSize)
         }
         guard try reader.u32(at: lho) == 0x0403_4B50 else {
             throw ZipError.truncated("local header: \(name)")

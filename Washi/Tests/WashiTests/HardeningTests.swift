@@ -50,6 +50,170 @@ final class HardeningTests: XCTestCase {
         XCTAssertThrowsError(try archive.data(forEntry: "b.bin"))
     }
 
+    /// 内部 DTD の実体爆弾(billion laughs)は展開前に拒否される
+    func testEntityBombRejected() {
+        let xml = """
+        <?xml version="1.0"?>
+        <!DOCTYPE bomb [
+          <!ENTITY a "aaaaaaaaaaaaaaaaaaaa">
+          <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+          <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+        ]>
+        <bomb>&c;</bomb>
+        """
+        XCTAssertThrowsError(try WashiXML.document(from: Data(xml.utf8)))
+    }
+
+    /// 内部サブセット内の処理命令に隠した実体宣言も見逃さない
+    /// (PI 内の ']' で DOCTYPE スキャナを早期終了させるバイパス)
+    func testEntityBombHiddenInPIRejected() {
+        let xml = """
+        <!DOCTYPE r [ <?p ] ?> <!ENTITY a "aaaaaaaaaa">\
+        <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">\
+        <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;"> ]><r>&c;</r>
+        """
+        XCTAssertThrowsError(try WashiXML.document(from: Data(xml.utf8)))
+    }
+
+    /// UTF-16 で書かれた実体爆弾もガードを迂回できない
+    func testEntityBombUTF16Rejected() {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-16"?>
+        <!DOCTYPE r [
+          <!ENTITY a "aaaaaaaaaa">
+          <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+          <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+        ]><r>&c;</r>
+        """
+        // BOM 付き LE / BE 両方
+        for encoding in [String.Encoding.utf16LittleEndian, .utf16BigEndian] {
+            var data = Data([0xFF, 0xFE])
+            if encoding == .utf16BigEndian { data = Data([0xFE, 0xFF]) }
+            data.append(xml.data(using: encoding)!)
+            XCTAssertThrowsError(try WashiXML.document(from: data),
+                                 "\(encoding) 実体爆弾が通った")
+        }
+    }
+
+    /// DTD 内部サブセットのコメントに入れた `<!ENTITY` は宣言ではないので、
+    /// 正当な XML を誤って拒否しない
+    func testCommentedOutEntityAccepted() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <!DOCTYPE html [<!-- <!ENTITY evil "x"> はコメント -->
+          <!ENTITY ok "&#160;">]>
+        <html><p>a&ok;</p></html>
+        """
+        XCTAssertNoThrow(try WashiXML.document(from: Data(xml.utf8)))
+    }
+
+    /// 定義済み実体(&lt; 等)を値に含むシムは許容される(再帰しないので安全)
+    func testPredefinedEntityInShimAccepted() throws {
+        let xml = """
+        <!DOCTYPE x [<!ENTITY arrow "&lt;-&gt;">]><x>a&arrow;b</x>
+        """
+        XCTAssertNoThrow(try WashiXML.document(from: Data(xml.utf8)))
+    }
+
+    /// 実在ファイルの互換シム(&nbsp; 等の短い文字参照実体)は許容される
+    func testBenignEntityShimAccepted() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <!-- 前置コメント -->
+        <!DOCTYPE html [<!ENTITY nbsp "&#160;"><!ENTITY copy '&#169;'>]>
+        <html><p>a&nbsp;b&copy;</p></html>
+        """
+        let document = try WashiXML.document(from: Data(xml.utf8))
+        XCTAssertEqual(document.rootElement()?.name, "html")
+    }
+
+    /// 文字参照密輸(&#38; → 参照後付け)・巨大値・大量宣言も拒否される
+    func testEntityEdgeCasesRejected() {
+        let smuggle = """
+        <!DOCTYPE x [<!ENTITY a "&#38;b;"><!ENTITY b "y">]><x>&a;</x>
+        """
+        XCTAssertThrowsError(try WashiXML.document(from: Data(smuggle.utf8)))
+        let huge = "<!DOCTYPE x [<!ENTITY a \"\(String(repeating: "z", count: 100))\">]><x/>"
+        XCTAssertThrowsError(try WashiXML.document(from: Data(huge.utf8)))
+        // 上限(64)を超える大量宣言は拒否。20 個程度の実在シム集は許容する
+        let many = "<!DOCTYPE x ["
+            + (0..<80).map { "<!ENTITY e\($0) \"v\">" }.joined() + "]><x/>"
+        XCTAssertThrowsError(try WashiXML.document(from: Data(many.utf8)))
+        let modest = "<!DOCTYPE x ["
+            + (0..<20).map { "<!ENTITY e\($0) \"v\">" }.joined() + "]><x/>"
+        XCTAssertNoThrow(try WashiXML.document(from: Data(modest.utf8)))
+        // SYSTEM 文字列内の "]>" で検査を早期終了させて後続宣言を隠す抜け道
+        let hidden = """
+        <!DOCTYPE x SYSTEM "u]>v" [<!ENTITY a "&#38;">]><x/>
+        """
+        XCTAssertThrowsError(try WashiXML.document(from: Data(hidden.utf8)))
+    }
+
+    /// 外部 DTD 参照のみの DOCTYPE(NCX / XHTML1.1 実在形)は従来どおり通る
+    func testExternalDoctypeStillAccepted() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN"
+          "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"/>
+        """
+        XCTAssertNoThrow(try WashiXML.document(from: Data(xml.utf8)))
+    }
+
+    /// 異常に深い要素ネストは(下流の再帰ウォーカーが走る前に)拒否される
+    func testDeepNestingRejected() throws {
+        let deep = String(repeating: "<a>", count: 5000)
+            + String(repeating: "</a>", count: 5000)
+        XCTAssertThrowsError(try WashiXML.document(from: Data(deep.utf8)))
+        let normal = String(repeating: "<a>", count: 50)
+            + String(repeating: "</a>", count: 50)
+        XCTAssertNoThrow(try WashiXML.document(from: Data(normal.utf8)))
+    }
+
+    /// 比率検査(1032:1)を通る「本物の高圧縮 deflate」でも、宣言サイズが
+    /// 上限(maxEntrySize)を超えるエントリは展開前に拒否される
+    func testOversizedEntryRejected() throws {
+        // ゼロ埋め 4000 バイト → deflate 数十バイト(比率は 1032:1 以内)
+        let zip = ZipBuilder.build(
+            [("big.bin", Data(repeating: 0, count: 4000))], method: 8)
+        let archive = try ZipArchive(data: zip, maxEntrySize: 1024)
+        XCTAssertThrowsError(try archive.data(forEntry: "big.bin")) { error in
+            guard case ZipError.entryTooLarge("big.bin", declaredSize: 4000) = error
+            else { return XCTFail("entryTooLarge ではない: \(error)") }
+        }
+        // 既定上限では通常どおり読める
+        let permissive = try ZipArchive(data: zip)
+        XCTAssertEqual(try permissive.data(forEntry: "big.bin").count, 4000)
+    }
+
+    /// フォルダコンテナ内のシンボリックリンクはコンテナ外の実体を晒さない
+    func testFolderContainerRejectsSymlinkEscape() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("washi-symlink-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for (name, data) in EPUBFixtures.verticalNovelEntries() {
+            let url = dir.appendingPathComponent(name)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+        let secret = dir.deletingLastPathComponent()
+            .appendingPathComponent("washi-secret-\(UUID().uuidString).txt")
+        try Data("secret".utf8).write(to: secret)
+        defer { try? FileManager.default.removeItem(at: secret) }
+        // パス成分としては安全な位置にコンテナ外を指すリンクを置く
+        let link = dir.appendingPathComponent("OEBPS/leak.txt")
+        try FileManager.default.createSymbolicLink(at: link,
+                                                   withDestinationURL: secret)
+
+        let publication = try EPUBPublication(url: dir)
+        XCTAssertThrowsError(try publication.resource(at: "OEBPS/leak.txt"))
+        XCTAssertFalse(publication.resourceExists(at: "OEBPS/leak.txt"))
+        // コンテナ内を指すリンク経由でない実体は従来どおり読める(回帰確認)
+        XCTAssertNoThrow(try publication.resource(at: "OEBPS/nav.xhtml"))
+    }
+
     /// フォルダコンテナはコンテナ外への脱出参照を拒否する
     func testFolderContainerRejectsEscape() throws {
         let dir = FileManager.default.temporaryDirectory

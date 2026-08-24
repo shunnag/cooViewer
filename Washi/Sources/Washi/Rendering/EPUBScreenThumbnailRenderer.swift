@@ -19,14 +19,32 @@ final class EPUBScreenThumbnailRenderer {
     private var loadedSpineIndex: Int?
     private var loadedOptionsJSON: String?
     private var lastJob: Task<Void, Never>?
+    /// invalidate 後は新規レンダーを受け付けない(再利用はしない前提)
+    private var isInvalidated = false
 
     init(publication: EPUBPublication) {
         self.publication = publication
     }
 
+    /// オフスクリーンリソースを明示的に畳み、以後の要求を無効化する。
+    /// FIFO 待ちのジョブは順に nil を返して抜ける
+    func invalidate() {
+        isInvalidated = true
+        lastJob?.cancel()
+        webView?.navigationDelegate = nil
+        webView = nil
+        schemeHandler = nil
+        window?.orderOut(nil)
+        window = nil
+        loadedSpineIndex = nil
+        loadedOptionsJSON = nil
+        fxlRasterizer.invalidate()
+    }
+
     /// 指定画面のサムネイル。失敗時は nil(一覧側は空セルのまま先へ進める)
     func thumbnail(spineIndex: Int, pageInItem: Int, optionsJSON: String,
                    contentSize: NSSize, snapshotWidth: CGFloat) async -> CGImage? {
+        guard !isInvalidated else { return nil }
         let previous = lastJob
         // 優先度は明示的に userInitiated へ引き上げる。呼び出し元はサムネイル
         // 先読み(.utility の detached タスク)で、その優先度のまま WebKit へ
@@ -52,6 +70,7 @@ final class EPUBScreenThumbnailRenderer {
             return try? await fxlRasterizer.renderPage(
                 atSpineIndex: spineIndex, maxPixelSize: Int(snapshotWidth * 2))
         }
+        guard !isInvalidated else { return nil }
         prepareIfNeeded(contentSize: contentSize)
         guard let webView, let schemeHandler else { return nil }
         if loadedSpineIndex != spineIndex || loadedOptionsJSON != optionsJSON {

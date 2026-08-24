@@ -23,6 +23,86 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(publication.coverImagePath, "OEBPS/images/cover.png")
     }
 
+    /// 表紙 API: 宣言あり(cover-image)の解決とデコード・縮小
+    func testCoverImageDeclaredAndDecoded() throws {
+        let publication = try openVerticalNovel()
+        XCTAssertEqual(publication.resolvedCoverImagePath, "OEBPS/images/cover.png")
+        let full = publication.coverImage()
+        XCTAssertNotNil(full)
+        let thumb = publication.coverImage(maxPixelSize: 2)
+        XCTAssertNotNil(thumb)
+        XCTAssertLessThanOrEqual(max(thumb?.width ?? 0, thumb?.height ?? 0), 2)
+    }
+
+    /// 表紙 API: 宣言なしでも「cover を含む名前の manifest 画像」へフォールバック
+    func testCoverImageFallsBackToNamedManifestImage() throws {
+        var entries = EPUBFixtures.verticalNovelEntries()
+        for (index, entry) in entries.enumerated()
+        where entry.name.hasSuffix("package.opf") {
+            let opf = String(data: entry.data, encoding: .utf8)!
+                .replacingOccurrences(of: #" properties="cover-image""#, with: "")
+            entries[index] = (entry.name, Data(opf.utf8))
+        }
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/no-decl.epub"))
+        XCTAssertNil(publication.coverImagePath)
+        XCTAssertEqual(publication.resolvedCoverImagePath, "OEBPS/images/cover.png")
+    }
+
+    /// 表紙 API: 宣言も cover 名もない FXL は先頭ページの単一画像へフォールバック
+    func testCoverImageFallsBackToFirstFXLPage() throws {
+        var entries = EPUBFixtures.fxlComicEntries()
+        for (index, entry) in entries.enumerated()
+        where entry.name.hasSuffix(".opf") {
+            let opf = String(data: entry.data, encoding: .utf8)!
+                .replacingOccurrences(of: #" properties="cover-image""#, with: "")
+            entries[index] = (entry.name, Data(opf.utf8))
+        }
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/fxl-no-decl.epub"))
+        XCTAssertNil(publication.coverImagePath)
+        XCTAssertEqual(publication.resolvedCoverImagePath, "OEBPS/images/p001.png")
+        XCTAssertNotNil(publication.coverImage(maxPixelSize: 4))
+    }
+
+    /// EPUBLocator: idref 併記の生成・改版追跡の resolve・旧形式互換
+    func testLocatorResolveTracksIdref() throws {
+        let publication = try openVerticalNovel()
+        // 保存用 locator には idref が併記される
+        let saved = publication.locator(forSpineIndex: 1, progression: 0.5)
+        XCTAssertEqual(saved.idref, publication.readingOrder[1].itemRef.idref)
+        // 同一 spine 構成なら恒等
+        XCTAssertEqual(publication.resolve(saved), saved)
+        // spineIndex がずれていても idref で正しい項目へ写像される(改版追跡)
+        let stale = EPUBLocator(spineIndex: 0, progression: 0.5,
+                                idref: saved.idref)
+        XCTAssertEqual(publication.resolve(stale)?.spineIndex, 1)
+        XCTAssertEqual(publication.resolve(stale)?.progression, 0.5)
+        // 消えた idref は nil(呼び出し側が先頭から等を決める)
+        let gone = EPUBLocator(spineIndex: 0, progression: 0, idref: "no-such")
+        XCTAssertNil(publication.resolve(gone))
+        // idref のない旧形式は範囲内クランプのみ
+        let legacy = EPUBLocator(spineIndex: 99, progression: 1)
+        XCTAssertEqual(publication.resolve(legacy)?.spineIndex,
+                       publication.readingOrder.count - 1)
+    }
+
+    /// EPUBLocator: 旧形式 JSON({spineIndex, progression})とデコード互換
+    func testLocatorCodableBackwardCompatible() throws {
+        let legacy = Data(#"{"spineIndex":2,"progression":0.25}"#.utf8)
+        let decoded = try JSONDecoder().decode(EPUBLocator.self, from: legacy)
+        XCTAssertEqual(decoded.spineIndex, 2)
+        XCTAssertEqual(decoded.progression, 0.25)
+        XCTAssertNil(decoded.idref)
+        // idref 付きはラウンドトリップ
+        let modern = EPUBLocator(spineIndex: 1, progression: 0.5, idref: "ch2")
+        let roundTrip = try JSONDecoder().decode(
+            EPUBLocator.self, from: JSONEncoder().encode(modern))
+        XCTAssertEqual(roundTrip, modern)
+    }
+
     func testNavigationResolution() throws {
         let publication = try openVerticalNovel()
         XCTAssertEqual(publication.navigation.toc.count, 2)

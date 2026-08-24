@@ -4,16 +4,21 @@ macOS ネイティブ技術だけで実装した EPUB 3 ツールキット。
 日本語組版(縦組み・ルビ・縦中横・圏点・右綴じ)を第一級でサポートする。
 
 **Washi** is an EPUB 3 toolkit for macOS built exclusively on system frameworks
-(Foundation / Compression / CryptoKit / WebKit) with **zero third-party
-dependencies**, MIT licensed. Japanese typography — vertical writing
+with **zero third-party dependencies**, MIT licensed. The parsing layer needs
+only Foundation / Compression / CryptoKit / ImageIO (usable headless); the
+rendering layer adds AppKit / WebKit. Japanese typography — vertical writing
 (`vertical-rl`), ruby, tate-chu-yoko, kenten, right-to-left page progression —
-is a first-class citizen. English API documentation is in the doc comments;
-this README is primarily in Japanese.
+is a first-class citizen. Documentation (README and doc comments) is currently
+Japanese-first.
 
 ## 特徴
 
 - **依存ゼロ**: ZIP 読み取り(zip64 対応・CRC 検証)から自前実装。
-  Foundation の `XMLDocument`、Compression、CryptoKit、WebKit のみ使用
+  解析層は Foundation の `XMLDocument`・Compression・CryptoKit・ImageIO のみ
+  (ヘッドレス利用可)、表示層(`EPUBReaderView` 等)は AppKit・WebKit を使用
+- **攻撃的 EPUB への耐性**: zip 爆弾(比率+絶対上限)、XML 実体爆弾
+  (billion laughs。互換シムは許容)、異常な深さの XML、パス走査・
+  シンボリックリンク脱出をすべて入口で遮断(テスト付き)
 - **EPUB 3.3 の RS(閲覧システム)要件に準拠する設計**(EPUB 2.0.1 後方互換込み):
   - OCF コンテナ(`container.xml` 複数 rootfile / `mimetype` 検証 /
     `encryption.xml`)。`.epub` と展開済みフォルダの両方を開ける
@@ -67,6 +72,9 @@ SwiftPM で依存に追加する:
 .package(url: "https://github.com/shunnag/Washi.git", from: "0.1.0")
 ```
 
+通常は `Washi` プロダクトを使う。`WashiDynamic` は動的ライブラリとして
+組み立てたいホスト(フレームワーク同梱など)向けで、API は同一。
+
 ## 使い方
 
 ```swift
@@ -84,6 +92,9 @@ reader.delegate = self
 reader.load(publication: publication)      // at: EPUBLocator で位置復元
 reader.goForward()                         // 読書順で次ページ
 reader.turnPageLeft()                      // 物理方向(右綴じなら「進む」)
+
+// 表紙(ライブラリ一覧用。宣言がない本もフォールバック連鎖で解決)
+let cover = publication.coverImage(maxPixelSize: 480)   // CGImage?
 
 // 固定レイアウトの画像直取り
 let info = try publication.fixedLayoutInfo(forSpineIndex: 0)
@@ -111,6 +122,19 @@ if let path = info.simpleImagePath {
 
 macOS 14+ / Swift 6(strict concurrency)/ Apple Silicon・Intel 両対応の
 ソースだが、cooViewer 同梱ビルドは arm64 のみ。
+
+## 組み込みの注意(オフスクリーン WebKit)
+
+- `EPUBPaginationCensus`(全文ページ数の実測)・`EPUBScreenThumbnailRenderer`・
+  `EPUBPageRasterizer`・`EPUBScreenAtlas` は、それぞれ不可視の
+  NSWindow + WebContent プロセスを持つ。**使い終えたら `invalidate()` を呼ぶ**
+  (アトラスをキャッシュから追い出すときも)。`EPUBReaderView` は
+  ウインドウから外れた時点で自分のオフスクリーンを自動で畳む
+- オフスクリーン系 API は **`.userInitiated` 以上の優先度で呼ぶ**こと。
+  低 QoS(`.utility` 等)を継いだまま最初の JS 実行を発行すると、WebKit の
+  応答が返らず永久待ちになる(実測)
+- 表示・計測系(Rendering/)は全て `@MainActor`。GUI セッションのないデーモン
+  からは解析層(`EPUBPublication` ほか)だけを使う
 
 ## 開発体制
 

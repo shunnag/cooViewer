@@ -1,12 +1,12 @@
 // swift-tools-version: 6.0
 // Washi — macOS ネイティブ技術だけで実装する EPUB 3 ツールキット。
-// 依存パッケージゼロ(Foundation / Compression / WebKit のみ)を設計原則とする。
+// 依存パッケージゼロを設計原則とする(解析層は Foundation / Compression /
+// CryptoKit / ImageIO のみ、表示層は AppKit / WebKit を追加)。
 // cooViewer から独立した MIT ライセンスのパッケージであり、単体で再利用できる。
 import PackageDescription
 
 let package = Package(
     name: "Washi",
-    defaultLocalization: "ja",
     platforms: [
         // WKWebView.takeSnapshot / WKURLSchemeHandler / XMLDocument が揃う範囲で
         // できるだけ広く(cooViewer 本体は macOS 26+ だが、パッケージ単体は
