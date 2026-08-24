@@ -109,6 +109,9 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     public var forwardsKeyEventsNatively = false
     /// scripted コンテンツ(本の JavaScript)を許可するか(既定 false)
     public var allowsScriptedContent = false
+    /// When true, right-click (and control-click) does not open the web view's
+    /// context menu, so the host can provide its own. Default false.
+    public var suppressesContextMenu = false
 
     public init() {}
 

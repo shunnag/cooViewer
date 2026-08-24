@@ -82,8 +82,8 @@ SwiftPM で依存に追加する:
 ```swift
 import Washi
 
-// 解析
-let publication = try EPUBPublication(url: epubURL)
+// 解析(UI からは非同期の open を推奨。重い解析をメインで走らせない)
+let publication = try await EPUBPublication.open(url: epubURL)
 print(publication.metadata.mainTitle ?? "")
 print(publication.readingDirection)        // .rtl = 右綴じ
 for item in publication.navigation.toc { print(item.title) }

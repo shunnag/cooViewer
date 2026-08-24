@@ -1,26 +1,49 @@
 import Compression
 import Foundation
 
-/// ZIP 読み取りのエラー
-public enum ZipError: Error, Sendable, Equatable {
-    /// ZIP として認識できない(EOCD が見つからない)
+/// An error raised while reading a ZIP (OCF) container.
+public enum ZipError: Error, Sendable, Equatable, LocalizedError {
+    /// Not a ZIP file (no end-of-central-directory record was found).
     case notAZipFile
-    /// ファイルが途中で切れている・構造が壊れている
+    /// The archive is truncated or structurally broken. The string names where.
     case truncated(String)
-    /// 未対応の圧縮メソッド(store=0 / deflate=8 以外)
+    /// The entry uses a compression method other than store (0) or deflate (8).
     case unsupportedCompressionMethod(UInt16, entry: String)
-    /// ZIP レベルの暗号化エントリ(EPUB では使われない。DRM とは別物)
+    /// A ZIP-level encrypted entry (distinct from EPUB DRM; not used by valid
+    /// EPUBs).
     case encryptedEntryUnsupported(String)
-    /// マルチボリューム書庫は未対応
+    /// Multi-volume (spanned) archives are not supported.
     case multiDiskUnsupported
-    /// 指定エントリが存在しない
+    /// The named entry does not exist.
     case entryNotFound(String)
-    /// 展開結果が壊れている(サイズ不一致・CRC 不一致)
+    /// The inflated data failed its size or CRC-32 check.
     case corruptEntry(String)
-    /// 宣言された展開後サイズが上限(maxEntrySize)を超える。
-    /// 1032:1 の比率検査だけではゼロ埋め等の「本物の高圧縮 deflate」で
-    /// 小さな書庫から GB 級の確保を強制できるため、絶対上限で守る
+    /// The declared uncompressed size exceeds `ZipArchive.maxEntrySize`.
+    /// The 1032:1 ratio check alone cannot stop a genuine high-ratio deflate
+    /// stream (e.g. zeros) from forcing a huge allocation, so an absolute cap
+    /// guards it. `declaredSize` is the size the archive claimed.
     case entryTooLarge(String, declaredSize: UInt64)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notAZipFile:
+            return "Not a ZIP/EPUB file."
+        case .truncated(let detail):
+            return "Truncated or broken ZIP: \(detail)"
+        case .unsupportedCompressionMethod(let method, let entry):
+            return "Unsupported compression method \(method) in entry: \(entry)"
+        case .encryptedEntryUnsupported(let entry):
+            return "ZIP-level encrypted entry is not supported: \(entry)"
+        case .multiDiskUnsupported:
+            return "Multi-volume ZIP archives are not supported."
+        case .entryNotFound(let entry):
+            return "Entry not found: \(entry)"
+        case .corruptEntry(let entry):
+            return "Corrupt entry (size or CRC mismatch): \(entry)"
+        case .entryTooLarge(let entry, let size):
+            return "Entry exceeds the size limit (\(size) bytes declared): \(entry)"
+        }
+    }
 }
 
 /// ZIP 内の 1 エントリのメタ情報

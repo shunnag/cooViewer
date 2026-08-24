@@ -18,9 +18,20 @@ public final class EPUBPageRasterizer {
     /// 直列化: 直前の要求が終わるまで次を待たせる
     private var lastJob: Task<Void, Never>?
 
-    public enum RasterizeError: Error {
+    /// An error raised while rasterizing a fixed-layout page.
+    public enum RasterizeError: Error, Sendable, Equatable, LocalizedError {
+        /// The page's document could not be loaded (or the rasterizer was
+        /// invalidated before it loaded).
         case loadFailed
+        /// The offscreen web view produced no snapshot image.
         case snapshotFailed
+
+        public var errorDescription: String? {
+            switch self {
+            case .loadFailed: return "The page could not be loaded for rendering."
+            case .snapshotFailed: return "The page could not be captured as an image."
+            }
+        }
     }
 
     public init(publication: EPUBPublication) {

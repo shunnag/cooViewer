@@ -162,6 +162,44 @@ final class PublicationTests: XCTestCase {
                        hits.map(\.characterOffset).sorted())
     }
 
+    /// 非同期オープン(open)は同期 init と同じ結果を返す
+    func testAsyncOpenMatchesSyncInit() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("washi-open-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for (name, data) in EPUBFixtures.verticalNovelEntries() {
+            let url = dir.appendingPathComponent(name)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+        let publication = try await EPUBPublication.open(url: dir)
+        XCTAssertEqual(publication.metadata.mainTitle, "吾輩は猫である")
+    }
+
+    /// resourcePaths はコンテナ内の実リソースを列挙する
+    func testResourcePathsEnumerated() throws {
+        let publication = try openVerticalNovel()
+        let paths = publication.resourcePaths
+        XCTAssertTrue(paths.contains("OEBPS/package.opf"))
+        XCTAssertTrue(paths.contains("OEBPS/images/cover.png"))
+        XCTAssertTrue(paths.contains("OEBPS/text/ch1.xhtml"))
+    }
+
+    /// エラーは LocalizedError で人間可読な errorDescription を返す
+    func testErrorsAreLocalized() {
+        XCTAssertNotNil((EPUBError.notAnEPUB("x") as LocalizedError).errorDescription)
+        XCTAssertNotNil((EPUBError.drmProtected(scheme: "LCP") as LocalizedError)
+            .errorDescription)
+        XCTAssertNotNil((ZipError.notAZipFile as LocalizedError).errorDescription)
+        XCTAssertNotNil((ZipError.entryTooLarge("a", declaredSize: 9) as LocalizedError)
+            .errorDescription)
+        // localizedDescription 経路(NSError ブリッジ)でも空でない
+        XCTAssertFalse(EPUBError.malformed("y").localizedDescription.isEmpty)
+        XCTAssertFalse(ZipError.corruptEntry("z").localizedDescription.isEmpty)
+    }
+
     func testNavigationResolution() throws {
         let publication = try openVerticalNovel()
         XCTAssertEqual(publication.navigation.toc.count, 2)

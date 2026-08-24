@@ -4,6 +4,21 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [0.4.0] - 2026-08-25
+
+### 追加
+- `EPUBPublication.open(url:)` — 解析を `.userInitiated` の detached タスクで
+  行う非同期オープン。UI からはこちらを推奨(重い解析でメインを塞がない)
+- `EPUBPublication.resourcePaths` — コンテナ内の全リソースパス列挙
+  (索引・抽出・監査用)
+- `EPUBReaderSettings.suppressesContextMenu` — 右クリックの WKWebView
+  コンテキストメニューを抑制し、ホスト独自メニューを出せるようにする
+
+### 変更
+- `EPUBError` / `ZipError` / `EPUBPageRasterizer.RasterizeError` を
+  `LocalizedError` 準拠にし、`errorDescription`(英語)を提供。外部利用者が
+  エラーをそのまま UI へ表示できる
+
 ## [0.3.0] - 2026-08-25
 
 ### 追加

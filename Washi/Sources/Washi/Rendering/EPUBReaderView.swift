@@ -334,7 +334,11 @@ public final class EPUBReaderView: NSView {
             source: ReaderScripts.baseCSSInjector, injectionTime: .atDocumentStart,
             forMainFrameOnly: true, in: Self.washiWorld))
 
-        let webView = WKWebView(frame: contentFrame(), configuration: configuration)
+        let webView = WashiWebView(frame: contentFrame(),
+                                   configuration: configuration)
+        webView.suppressesContextMenu = { [weak self] in
+            self?.settings.suppressesContextMenu ?? false
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.autoresizingMask = []
@@ -1478,5 +1482,21 @@ private final class MessageProxy: NSObject, WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
         owner?.handleScriptMessage(message.body)
+    }
+}
+
+/// 右クリック/コントロールクリックのコンテキストメニューを任意で抑制できる
+/// WKWebView。ホストが独自メニューを出せるようにするための最小サブクラス
+/// (EPUBReaderSettings.suppressesContextMenu)
+private final class WashiWebView: WKWebView {
+    /// 呼ばれた時点の設定を参照するクロージャ(true で抑制)
+    var suppressesContextMenu: (() -> Bool)?
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        if suppressesContextMenu?() == true {
+            menu.removeAllItems()  // 空メニューは表示されない(標準的な抑制手法)
+            return
+        }
+        super.willOpenMenu(menu, with: event)
     }
 }

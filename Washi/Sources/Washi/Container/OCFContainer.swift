@@ -1,15 +1,31 @@
 import Foundation
 
-/// EPUB を開く際のエラー
-public enum EPUBError: Error, Sendable {
-    /// EPUB として認識できない(ZIP でない・container.xml がない等)
+/// An error raised while opening or reading an EPUB.
+public enum EPUBError: Error, Sendable, Equatable, LocalizedError {
+    /// The file is not a recognizable EPUB (not a ZIP, no container.xml, …).
+    /// The associated string names what failed the check.
     case notAnEPUB(String)
-    /// 必須構成ファイルの解析に失敗
+    /// A required structural file could not be parsed. The associated string
+    /// names the file or the specific defect.
     case malformed(String)
-    /// コンテナ内に指定リソースがない
+    /// The named resource does not exist in the container.
     case resourceNotFound(String)
-    /// DRM(鍵を持たない暗号化)で保護されており読めない
+    /// The content is DRM-protected with a scheme Washi cannot decrypt.
+    /// `scheme` names the detected DRM (e.g. "Readium LCP").
     case drmProtected(scheme: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notAnEPUB(let detail):
+            return "Not a valid EPUB: \(detail)"
+        case .malformed(let detail):
+            return "Malformed EPUB: \(detail)"
+        case .resourceNotFound(let path):
+            return "Resource not found in the EPUB: \(path)"
+        case .drmProtected(let scheme):
+            return "This book is DRM-protected (\(scheme)) and cannot be opened."
+        }
+    }
 }
 
 /// OCF 抽象コンテナ(仕様 EPUB 3.3 OCF §3)。

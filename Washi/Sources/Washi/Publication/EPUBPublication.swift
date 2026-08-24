@@ -42,6 +42,20 @@ public final class EPUBPublication: Sendable {
     /// コンテナ内パス → マニフェスト項目(メディアタイプ解決用)
     private let manifestByPath: [String: ManifestItem]
 
+    /// Opens an EPUB off the calling thread and returns the parsed publication.
+    ///
+    /// Parsing a large book (unzip, XML) is CPU-bound; this runs it at
+    /// `.userInitiated` priority on a detached task so callers on the main
+    /// actor stay responsive. Prefer this over the synchronous initializer in
+    /// UI code.
+    ///
+    /// - Parameter url: a `.epub` file or an unpacked EPUB directory.
+    public static func open(url: URL) async throws -> EPUBPublication {
+        try await Task.detached(priority: .userInitiated) {
+            try EPUBPublication(url: url)
+        }.value
+    }
+
     /// .epub ファイルまたは展開済みフォルダを開く
     public convenience init(url: URL) throws {
         var isDirectory: ObjCBool = false
@@ -142,6 +156,11 @@ public final class EPUBPublication: Sendable {
 
     public var metadata: EPUBMetadata { package.metadata }
     public var isFixedLayout: Bool { package.isFixedLayout }
+
+    /// Every non-directory resource path in the container, in no particular
+    /// order. Useful for indexing, extraction tools, or auditing what a book
+    /// ships. Read individual resources with ``resource(at:)``.
+    public var resourcePaths: [String] { container.reader.allPaths }
     public var readingDirection: PageProgressionDirection {
         package.readingDirection
     }
