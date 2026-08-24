@@ -1,15 +1,20 @@
 import Foundation
 
-/// 画面計画の**単一の正**。リーダー(EPUBReaderView)・全文 census・
-/// リーダー外の一覧展開(EPUBScreenAtlas)が同じ式を共有し、
-/// 「同じ表示条件なら同じページ割り」を構造的に保証する。
-/// viewportSize(リーダーが占める領域)と表示設定から、コンテンツ寸法・
-/// 見開き・ノド・__washi.setup() へ渡すオプションを一意に導出する
+/// The **single source of truth** for screen planning. The reader
+/// (EPUBReaderView), the whole-book census, and the out-of-reader list
+/// expansion (EPUBScreenAtlas) all share the same formula, which
+/// structurally guarantees that identical display conditions produce
+/// identical pagination.
+/// From `viewportSize` (the region the reader occupies) and the display
+/// settings, it uniquely derives the content dimensions, the spread flag,
+/// the gutter, and the options passed to `__washi.setup()`.
 public struct EPUBScreenMetrics: Sendable, Equatable {
-    /// 余白(insets)控除後のコンテンツ寸法(WKWebView の実寸)
+    /// Content dimensions after subtracting the margins (insets) — the
+    /// actual WKWebView size.
     public let contentSize: CGSize
-    /// 1 画面に並ぶページ数(1=単ページ / 2=見開き。
-    /// 画像 1 枚の項目は実行時に常に 1 だが、これは本文の計画値)
+    /// Number of pages laid out on one screen (1 = single page / 2 = spread).
+    /// A single-image item is always 1 at runtime, but this is the planned
+    /// value for body text.
     public let pagesPerScreen: Int
     let gap: Double
     let gutter: Double
@@ -54,7 +59,8 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
     /// メトリクスの同一性キーとしても使う
     var censusOptionsJSON: String { optionsJSON(userCSS: layoutCSS) }
 
-    /// メトリクスの同一性キー(ホストのキャッシュ判定用の公開アクセサ)
+    /// Identity key for these metrics (a public accessor the host uses for
+    /// cache decisions).
     public var cacheKey: String { censusOptionsJSON }
 
     /// サムネイル用オプション(census と同じページ割り+テーマ配色。

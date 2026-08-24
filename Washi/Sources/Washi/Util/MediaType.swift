@@ -1,8 +1,9 @@
 import Foundation
 
-/// EPUB で扱うメディアタイプの定数と拡張子推定。
-/// マニフェスト宣言を第一に信頼し、宣言がないリソース(補助ファイル等)の
-/// 配信時だけ拡張子から推定する。
+/// Media-type constants for EPUB, plus extension-based inference.
+/// Trusts the manifest declaration first; falls back to guessing from the
+/// extension only when serving a resource that has no declaration (auxiliary
+/// files and the like).
 public enum EPUBMediaType {
     public static let xhtml = "application/xhtml+xml"
     public static let ncx = "application/x-dtbncx+xml"
@@ -13,7 +14,7 @@ public enum EPUBMediaType {
     public static let javascript = "application/javascript"
     public static let smil = "application/smil+xml"
 
-    /// コア画像タイプ(EPUB 3.3 core media types)
+    /// Core image types (EPUB 3.3 core media types).
     public static let coreImageTypes: Set<String> = [
         "image/jpeg", "image/png", "image/gif", "image/webp", svg,
     ]
@@ -35,13 +36,13 @@ public enum EPUBMediaType {
         "txt": "text/plain",
     ]
 
-    /// 拡張子からの推定(不明は octet-stream)
+    /// Infers the media type from the file extension (unknown extensions fall back to octet-stream).
     public static func guessed(fromPath path: String) -> String {
         let ext = (path as NSString).pathExtension.lowercased()
         return byExtension[ext] ?? "application/octet-stream"
     }
 
-    /// フォントか(難読化対象の判定などに使う)
+    /// Whether the media type is a font (used, for example, to decide obfuscation targets).
     public static func isFont(_ mediaType: String) -> Bool {
         mediaType.hasPrefix("font/")
             || mediaType == "application/font-woff"
@@ -52,7 +53,7 @@ public enum EPUBMediaType {
             || mediaType == "application/x-font-opentype"
     }
 
-    /// ブラウザに解釈させる文書タイプか(charset 付与の判定)
+    /// Whether the media type is a document the browser should interpret (decides whether to attach a charset).
     public static func isTextual(_ mediaType: String) -> Bool {
         mediaType.hasPrefix("text/")
             || mediaType.hasSuffix("+xml")

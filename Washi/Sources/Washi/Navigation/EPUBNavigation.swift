@@ -1,12 +1,12 @@
 import Foundation
 
-/// 目次・ページリスト・ランドマークの 1 項目(木構造)
+/// A single entry in the table of contents, page list, or landmarks (a tree structure).
 public struct EPUBNavItem: Sendable, Hashable {
     public let title: String
-    /// ナビゲーション文書からの相対 href(フラグメント込み・記載のまま)。
-    /// 見出しだけの項目(リンクなし span)は nil
+    /// The href relative to the navigation document (including any fragment, exactly as written).
+    /// nil for heading-only entries (a linkless span).
     public let href: String?
-    /// ランドマークの epub:type("cover" / "bodymatter" / "toc" 等)
+    /// The landmark's epub:type ("cover" / "bodymatter" / "toc", etc.).
     public let epubType: String?
     public let children: [EPUBNavItem]
 
@@ -19,12 +19,12 @@ public struct EPUBNavItem: Sendable, Hashable {
     }
 }
 
-/// ナビゲーション一式
+/// A complete set of navigation data.
 public struct EPUBNavigation: Sendable {
     public var toc: [EPUBNavItem] = []
     public var pageList: [EPUBNavItem] = []
     public var landmarks: [EPUBNavItem] = []
-    /// ナビゲーション文書(または NCX)のコンテナ内パス(href 解決の基準)
+    /// The container-relative path of the navigation document (or NCX), used as the base for resolving hrefs.
     public var basePath: String = ""
 }
 

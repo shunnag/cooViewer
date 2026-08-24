@@ -1,15 +1,17 @@
 import AppKit
 import Foundation
 
-/// 読書位置(spine 項目 + 項目内進行率)。リフローではページ番号が
-/// ウインドウ寸法・フォント設定で変わるため、進行率(0..1)で永続化する
+/// A reading position (spine item + progression within that item). In
+/// reflowable layout the page number shifts with window size and font
+/// settings, so the position is persisted as a progression ratio (0..1).
 public struct EPUBLocator: Sendable, Equatable, Codable {
     public var spineIndex: Int
-    /// 項目内の進行率 0.0(先頭)〜1.0(末尾)
+    /// Progression within the item, from 0.0 (start) to 1.0 (end).
     public var progression: Double
-    /// spine itemref の idref。あれば配信本の改版(spine の並べ替え・増減)を
-    /// またいで正しい項目へ追跡できる(EPUBPublication.resolve)。
-    /// 旧形式の保存データ({spineIndex, progression} のみ)とデコード互換
+    /// The idref of the spine itemref. When present, it lets the correct item
+    /// be tracked across a revised edition of the book (spine reordering or
+    /// added/removed items) (EPUBPublication.resolve). Decode-compatible with
+    /// the old saved format (which stored only {spineIndex, progression}).
     public var idref: String?
 
     public init(spineIndex: Int, progression: Double = 0, idref: String? = nil) {
@@ -19,7 +21,8 @@ public struct EPUBLocator: Sendable, Equatable, Codable {
     }
 }
 
-/// 余白(NSEdgeInsets は Equatable/Sendable でないため独自型)
+/// Content insets (a custom type because NSEdgeInsets is neither Equatable
+/// nor Sendable).
 public struct EPUBReaderInsets: Sendable, Equatable {
     public var top: Double
     public var left: Double
@@ -37,67 +40,74 @@ public struct EPUBReaderInsets: Sendable, Equatable {
     public static let zero = EPUBReaderInsets()
 }
 
-/// 配色テーマ。system はビューの実効外観(ライト/ダーク)に追従する
+/// Color theme. system follows the view's effective appearance (light/dark).
 public enum EPUBReaderTheme: Int, Sendable {
     case system = 0
     case light = 1
     case dark = 2
 }
 
-/// ページ送り演出の内蔵スタイル
+/// Built-in styles for the page-turn effect.
 public enum EPUBPageTurnStyle: Sendable, Equatable {
     case none
-    /// クロスフェード
+    /// Cross-fade.
     case fade
-    /// 旧ページが物理方向(綴じの反対側)へ滑り出す
+    /// The old page slides out in the physical direction (away from the
+    /// binding).
     case slide
 }
 
-/// 見開き(2 ページ)表示の方針。auto はウインドウ幅で自動切替
-/// (Apple Books の 1/2 ページ判定と同じ発想)
+/// Policy for two-page (spread) display. auto switches automatically based on
+/// window width (the same idea as Apple Books' 1/2-page decision).
 public enum EPUBColumnMode: Int, Sendable {
     case auto = 0
     case single = 1
     case double = 2
 }
 
-/// リーダー表示設定
+/// Reader display settings.
 public struct EPUBReaderSettings: Sendable, Equatable {
-    /// 基準フォントサイズ倍率(html font-size % 指定)。
-    /// 許容範囲は EPUBReaderView.fontScaleRange(0.5〜3.0)
+    /// Base font-size multiplier (applied as an html font-size %). The valid
+    /// range is EPUBReaderView.fontScaleRange (0.5 to 3.0).
     public var fontScale: Double = 1.0
-    /// ページ間ギャップ px(隣ページの字形はみ出し防止。0 でも動作はする)
+    /// Gap between pages in px (prevents glyphs from the adjacent page
+    /// bleeding through; 0 still works).
     public var pageGap: Double = 24
-    /// コンテンツ余白(WKWebView 自体をインセット配置し、multicol の座標系を
-    /// 単純に保つ。余白はネイティブ側の背景として描かれ、地(下部)に
-    /// 各ページのノンブルが載る — Apple Books の版面設計を模す。
-    /// 固定レイアウト(FXL)ページには適用されない(全面表示)
+    /// Content insets. The WKWebView itself is inset, keeping the multicol
+    /// coordinate system simple. The margins are painted as the native
+    /// background, and each page's folio (page number) sits in the bottom
+    /// margin — mirroring Apple Books' page-layout design. Not applied to
+    /// fixed-layout (FXL) pages (which display full-bleed).
     public var insets = EPUBReaderInsets(top: 56, left: 56, bottom: 52, right: 56)
-    /// 見開き表示の方針(既定: ウインドウ幅で自動)
+    /// Spread-display policy (default: automatic, based on window width).
     public var columnMode: EPUBColumnMode = .auto
-    /// 配色(既定: システム外観に追従)
+    /// Color theme (default: follows the system appearance).
     public var theme: EPUBReaderTheme = .system
-    /// 柱(書名/章題)とノンブル(ページ番号)を余白に表示するか
+    /// Whether to show the running head (book/chapter title) and folio (page
+    /// number) in the margins.
     public var showsPageFurniture = true
-    /// ページ送りの演出(「視差効果を減らす」有効時と高速連打時は自動省略)。
-    /// delegate の animatePageTurn がホスト独自の演出(カール等)で
-    /// 置き換えることもできる
+    /// The page-turn effect (automatically skipped when "Reduce Motion" is on
+    /// and during rapid repeated presses). The delegate's animatePageTurn can
+    /// replace it with a host-specific effect (page curl, etc.).
     public var pageTurnStyle: EPUBPageTurnStyle = .slide
-    /// ピンチでフォント倍率を変更するか(OFF でも adjustFontScale(by:) や
-    /// settings.fontScale の直接変更は有効)
+    /// Whether pinch gestures change the font multiplier (even when off,
+    /// adjustFontScale(by:) and directly setting settings.fontScale still
+    /// work).
     public var pinchAdjustsFontScale = true
-    /// 本が font-family を指定しないときに使う既定フォント(CSS ファミリー名。
-    /// nil = WebKit 既定)。html レベルへ !important なしで注入するため、
-    /// 本文側の指定(電書協テンプレート等)は常にそちらが勝つ
+    /// Default font used when the book does not specify a font-family (a CSS
+    /// family name; nil = WebKit default). Injected at the html level without
+    /// !important, so the book's own declarations (e.g. the EBPAJ / 電書協
+    /// template) always win.
     public var defaultFontFamily: String?
-    /// ページ背景の CSS 色(nil = テーマ既定)
+    /// Page background CSS color (nil = theme default).
     public var backgroundColorCSS: String?
-    /// 本文文字色の CSS 色(nil = テーマ既定)
+    /// Body text CSS color (nil = theme default).
     public var textColorCSS: String?
-    /// 追加のユーザー CSS(最後に注入)
+    /// Additional user CSS (injected last).
     public var userCSS: String?
-    /// true なら矢印・スペース等の既定キー操作をビュー内で処理する。
-    /// false ならキーは delegate へ転送される(ホストのキーバインド優先)
+    /// When true, default key actions (arrows, space, etc.) are handled within
+    /// the view. When false, keys are forwarded to the delegate (giving the
+    /// host's key bindings priority).
     public var handlesKeyboardNavigation = true
     /// When true, the view installs a native key monitor and forwards each
     /// `NSEvent` key-down to `readerView(_:didReceiveNativeKey:)` before the
@@ -107,7 +117,8 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// the web view holds first responder). Independent of
     /// `handlesKeyboardNavigation`. Default false.
     public var forwardsKeyEventsNatively = false
-    /// scripted コンテンツ(本の JavaScript)を許可するか(既定 false)
+    /// Whether to allow scripted content (the book's JavaScript). Default
+    /// false.
     public var allowsScriptedContent = false
     /// When true, right-click (and control-click) does not open the web view's
     /// context menu, so the host can provide its own. Default false.
@@ -178,7 +189,8 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     }
 }
 
-/// ホストへ転送するキーイベント(handlesKeyboardNavigation = false のとき)
+/// A key event forwarded to the host (when handlesKeyboardNavigation is
+/// false).
 public struct EPUBKeyEvent: Sendable, Equatable {
     public let key: String
     public let code: String
@@ -188,11 +200,12 @@ public struct EPUBKeyEvent: Sendable, Equatable {
     public let command: Bool
 }
 
-/// ページ面クリックの詳細(delegate 転送用)。
-/// button は NSEvent 流の番号(0=左, 1=右, 2=中, 3/4=サイド)。
-/// 右クリックは WebKit のコンテキストメニューに委ねるため通知しない
+/// Details of a click on the page surface (forwarded to the delegate).
+/// button uses NSEvent-style numbering (0 = left, 1 = right, 2 = middle,
+/// 3/4 = side). Right-clicks are not reported, as they are left to WebKit's
+/// context menu.
 public struct EPUBClickEvent: Sendable, Equatable {
-    /// 0..1 の正規化座標
+    /// Normalized coordinates in 0..1.
     public let x: Double
     public let y: Double
     public let button: Int
@@ -201,23 +214,26 @@ public struct EPUBClickEvent: Sendable, Equatable {
     public let control: Bool
     public let command: Bool
 
-    /// 修飾キーなしの左クリックか(既定の端タップめくり対象)
+    /// Whether this is a left click with no modifier keys (the target of the
+    /// default edge-tap page turn).
     public var isPlainPrimary: Bool {
         button == 0 && !shift && !option && !control && !command
     }
 }
 
-/// リーダービューのイベント通知先
+/// Receiver of the reader view's event notifications.
 @MainActor
 public protocol EPUBReaderViewDelegate: AnyObject {
-    /// 表示位置が変わった(ページ送り・章移動・復元)
+    /// The displayed position changed (page turn, chapter move, or restore).
     func readerView(_ view: EPUBReaderView, didMoveTo locator: EPUBLocator,
                     pageInItem: Int, pageCountInItem: Int)
-    /// 本の先頭/末尾を越えようとした(forward=true が末尾側)
+    /// An attempt to move past the start/end of the book (forward = true is
+    /// the end side).
     func readerView(_ view: EPUBReaderView, didReachBookEdge forward: Bool)
-    /// 外部リンクを開こうとしている。true を返すと既定動作(ブラウザで開く)
+    /// About to open an external link. Return true for the default action
+    /// (open in the browser).
     func readerView(_ view: EPUBReaderView, shouldOpenExternalURL url: URL) -> Bool
-    /// handlesKeyboardNavigation = false のときのキー転送
+    /// Key forwarding, used when handlesKeyboardNavigation is false.
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent)
     /// A native key-down event, delivered only when
     /// `EPUBReaderSettings.forwardsKeyEventsNatively` is true. Return true to
@@ -231,28 +247,30 @@ public protocol EPUBReaderViewDelegate: AnyObject {
     /// only for keys your host actually handles; return false for the rest.
     func readerView(_ view: EPUBReaderView,
                     didReceiveNativeKey event: NSEvent) -> Bool
-    /// ページ面のクリック(リンク以外。左・中・サイドボタン+修飾キー付き)。
-    /// true を返すと処理済み、false で既定動作(修飾なし左クリックの
-    /// 左右端タップめくりのみ)
+    /// A click on the page surface (non-link: left/middle/side buttons, with
+    /// modifier keys). Return true if handled; false for the default action
+    /// (only the left/right edge-tap page turn on an unmodified left click).
     func readerView(_ view: EPUBReaderView, didClick event: EPUBClickEvent) -> Bool
-    /// ファイルのドロップ(ホストが「別の本を開く」等に使う)。
-    /// false ならドロップは拒否される
+    /// A file drop (which the host can use to "open another book", etc.).
+    /// Return false to reject the drop.
     func readerView(_ view: EPUBReaderView,
                     didReceiveDroppedFileURL url: URL) -> Bool
-    /// ピンチ等でフォント倍率が変わった(ホストの永続化用)
+    /// The font multiplier changed via pinch, etc. (for the host to persist).
     func readerView(_ view: EPUBReaderView, didChangeFontScale scale: Double)
-    /// ページ送り演出をホスト独自の効果(ページカール等)で置き換える。
-    /// oldPage/newPage はページ領域(pageRect、view 座標系)のスナップショット。
-    /// **このメソッド内で同期的に**オーバーレイを view へ載せて true を返すこと
-    /// (戻った直後に Washi が旧ページのカバーを外す)。false なら内蔵の
-    /// pageTurnStyle(スライド/フェード)で演出する
+    /// Replace the page-turn effect with a host-specific one (page curl,
+    /// etc.). oldPage/newPage are snapshots of the page area (pageRect, in the
+    /// view's coordinate system). Add the overlay to the view **synchronously
+    /// within this method** and return true (Washi removes the old page's
+    /// cover as soon as this returns). Return false to use the built-in
+    /// pageTurnStyle (slide/fade).
     func readerView(_ view: EPUBReaderView,
                     animatePageTurnFrom oldPage: NSImage, to newPage: NSImage,
                     forward: Bool, in pageRect: CGRect) -> Bool
-    /// 読み込み失敗等
+    /// A load failure or similar error.
     func readerView(_ view: EPUBReaderView, didFailWith error: any Error)
-    /// 全文ページ数の実測(census)が更新された(完了または無効化)。
-    /// view.pageCensus / censusTotalPages / currentGlobalPageRange を参照
+    /// The whole-book page-count measurement (census) was updated (completed
+    /// or invalidated). See view.pageCensus / censusTotalPages /
+    /// currentGlobalPageRange.
     func readerViewDidUpdatePageCensus(_ view: EPUBReaderView)
 }
 

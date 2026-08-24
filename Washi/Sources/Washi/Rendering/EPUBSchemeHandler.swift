@@ -1,17 +1,17 @@
 import Foundation
 import WebKit
 
-/// EPUB コンテナ内リソースを WKWebView へ供給するカスタムスキームハンドラ。
-/// URL 形式: washi-epub://<インスタンス ID>/<コンテナ内パス(percent-encoded)>
+/// Custom scheme handler that serves resources inside an EPUB container to a WKWebView.
+/// URL form: washi-epub://<instance ID>/<container path (percent-encoded)>
 ///
-/// 設計判断(調査済みの実運用知見に基づく):
-/// - 応答はすべてメインスレッドで行う(WKURLSchemeTask の要件)。展開だけ
-///   バックグラウンドで行い、応答前に「まだ生きているタスクか」を必ず確認する
-///   (stop 後の応答は NSInternalInconsistencyException で落ちる)
-/// - MIME はマニフェスト宣言を正として明示する(スキームハンドラ応答に
-///   sniffing はない。XHTML は application/xhtml+xml でないと XML パースされない)
-/// - CSP ヘッダで外部読み込み・スクリプトを多層防御する(本は信頼しない)
-/// - audio/video は Range 要求が来るため 206 部分応答に対応する
+/// Design decisions (grounded in real-world operational experience):
+/// - All responses happen on the main thread (a WKURLSchemeTask requirement). Only the
+///   extraction runs in the background, and before responding we always verify the task
+///   is still alive (responding after a stop crashes with NSInternalInconsistencyException).
+/// - The MIME type is stated explicitly from the manifest declaration (scheme-handler
+///   responses do no sniffing; XHTML is only XML-parsed when served as application/xhtml+xml).
+/// - The CSP header gives defense-in-depth against external loads and scripts (the book is untrusted).
+/// - audio/video receive Range requests, so 206 partial responses are supported.
 @MainActor
 public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
     public static let scheme = "washi-epub"
@@ -30,7 +30,7 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         self.allowsScripts = allowsScripts
     }
 
-    /// コンテナ内パス → この本の URL
+    /// Container path → this book's URL.
     public func url(forContainerPath path: String) -> URL? {
         var components = URLComponents()
         components.scheme = Self.scheme
@@ -39,7 +39,7 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         return components.url
     }
 
-    /// URL → コンテナ内パス(自分の本でなければ nil)
+    /// URL → container path (nil if it does not belong to this book).
     public func containerPath(for url: URL) -> String? {
         guard url.scheme?.lowercased() == Self.scheme,
               url.host()?.lowercased() == instanceID else { return nil }

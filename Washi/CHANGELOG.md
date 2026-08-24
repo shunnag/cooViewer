@@ -4,6 +4,27 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.0.0] - 2026-08-25
+
+初回の安定版。0.2.0〜0.5.0 で加えた外部利用向けの機能・堅牢化・安定化を
+まとめ、公開 API を 1.0 として固定する。
+
+### 変更
+- 公開 API の doc コメントをすべて英語化(DocC 生成が英語で読める)
+
+### この版までに揃った外部利用向けの主な API(0.2.0〜0.5.0 の総括)
+- 解析: `EPUBPublication.open(url:)`(非同期)/ `resource(at:)` /
+  `resourcePaths` / `extractText(forSpineIndex:)` / `search(_:)`
+- メタデータ: `metadata`(dc:* 一式)/ `accessibility` / `authors` / `series` /
+  `coverImage(maxPixelSize:)`
+- 位置: `EPUBLocator`(idref 付き)/ `resolve(_:)`
+- 表示: `EPUBReaderView`(縦組み・見開き・テーマ・FXL)、
+  `forwardsKeyEventsNatively` / `suppressesContextMenu`、各オフスクリーン
+  エンジンの `invalidate()`
+- エラー: 全型 `LocalizedError` 準拠
+- 堅牢化: XML 実体爆弾・ZIP 爆弾・パス/シンボリックリンク脱出・深い XML を
+  入口で遮断
+
 ## [0.5.0] - 2026-08-25
 
 ### 追加

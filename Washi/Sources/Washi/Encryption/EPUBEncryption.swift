@@ -1,25 +1,26 @@
 import CryptoKit
 import Foundation
 
-/// META-INF/encryption.xml の解析結果(EPUB 3.3 OCF §4)。
-/// EPUB で実際に流通する「暗号化」は次の 3 系統:
-/// 1. IDPF/Adobe のフォント難読化(DRM ではない。RS が自力で解除する義務)
-/// 2. Adobe ADEPT / Readium LCP 等の本物の DRM(鍵がないので開けない)
-/// 3. まれに独自方式
-/// Washi は 1 を透過的に解除し、2・3 は対象リソースを識別してエラーにする。
+/// Parsed result of META-INF/encryption.xml (EPUB 3.3 OCF §4).
+/// The "encryption" that actually circulates in EPUBs falls into three families:
+/// 1. IDPF/Adobe font obfuscation (not DRM; the reading system is obligated to undo it itself)
+/// 2. Genuine DRM such as Adobe ADEPT or Readium LCP (no key, so it cannot be opened)
+/// 3. Rarely, a proprietary scheme
+/// Washi transparently undoes family 1, and for families 2 and 3 it identifies the affected
+/// resources and reports an error.
 public struct EPUBEncryptionInfo: Sendable {
-    /// 難読化アルゴリズム
+    /// Obfuscation algorithm.
     public enum ObfuscationAlgorithm: String, Sendable {
-        /// IDPF 標準(SHA-1 鍵 20 バイト・先頭 1040 バイトを XOR)
+        /// IDPF standard (20-byte SHA-1 key, XOR over the first 1040 bytes).
         case idpf = "http://www.idpf.org/2008/embedding"
-        /// Adobe 方式(UUID 鍵 16 バイト・先頭 1024 バイトを XOR)
+        /// Adobe scheme (16-byte UUID key, XOR over the first 1024 bytes).
         case adobe = "http://ns.adobe.com/pdf/enc#RC"
     }
 
-    /// コンテナ内パス(正規形)→ 難読化アルゴリズム
+    /// Container-internal path (normalized) → obfuscation algorithm.
     public let obfuscatedResources: [String: ObfuscationAlgorithm]
-    /// 未知アルゴリズムで暗号化されたリソース(パス → Algorithm URI)。
-    /// spine コンテンツが含まれる場合は DRM 保護と判断する材料になる
+    /// Resources encrypted with an unknown algorithm (path → Algorithm URI).
+    /// When spine content is among them, this is evidence that the book is DRM-protected.
     public let unknownEncryptedResources: [String: String]
 
     public var isEmpty: Bool {
@@ -58,12 +59,12 @@ public struct EPUBEncryptionInfo: Sendable {
     }
 }
 
-/// フォント難読化(font mangling)の解除。
-/// 難読化は「先頭 n バイトを識別子由来の鍵で XOR」しただけの可逆変換で、
-/// 解除鍵は本の unique-identifier から導出する(EPUB 3.3 OCF §4.4)
+/// Reversal of font mangling (font obfuscation).
+/// Obfuscation is merely a reversible transform that XORs the first n bytes with an
+/// identifier-derived key; the key is derived from the book's unique-identifier (EPUB 3.3 OCF §4.4).
 public enum FontDeobfuscator {
-    /// IDPF 方式の鍵: unique-identifier から全空白(スペース・タブ・CR・LF)を
-    /// 除去した UTF-8 バイト列の SHA-1(20 バイト)
+    /// IDPF-scheme key: the SHA-1 (20 bytes) of the UTF-8 byte sequence of the
+    /// unique-identifier with all whitespace (space, tab, CR, LF) removed.
     public static func idpfKey(uniqueIdentifier: String) -> Data {
         let stripped = uniqueIdentifier.unicodeScalars
             .filter { !["\u{20}", "\u{9}", "\u{D}", "\u{A}"].contains(Character($0)) }
@@ -73,8 +74,8 @@ public enum FontDeobfuscator {
         return Data(digest)
     }
 
-    /// Adobe 方式の鍵: 識別子の "urn:uuid:" 接頭辞・ハイフン・空白を除いた
-    /// 32 桁 16 進を 16 バイトへデコードしたもの
+    /// Adobe-scheme key: the identifier's 32 hex digits — with the "urn:uuid:" prefix,
+    /// hyphens, and whitespace removed — decoded into 16 bytes.
     public static func adobeKey(uniqueIdentifier: String) -> Data? {
         var cleaned = uniqueIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         for prefix in ["urn:uuid:", "urn:UUID:"] where cleaned.hasPrefix(prefix) {
@@ -95,7 +96,7 @@ public enum FontDeobfuscator {
         return Data(bytes)
     }
 
-    /// 難読化データの解除(XOR は対合なので適用 = 解除)
+    /// Undo obfuscated data (XOR is an involution, so applying it equals undoing it).
     public static func deobfuscate(
         _ data: Data, algorithm: EPUBEncryptionInfo.ObfuscationAlgorithm,
         uniqueIdentifier: String) -> Data {

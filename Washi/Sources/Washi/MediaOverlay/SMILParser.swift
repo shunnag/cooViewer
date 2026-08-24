@@ -1,26 +1,27 @@
 import Foundation
 
-/// メディアオーバーレイ(EPUB 3 Media Overlays、SMIL サブセット)のモデル。
-/// 現状はパースのみ提供し、再生エンジンは持たない(EPUB RS 3.3 §9 は
-/// 音声再生能力のない RS に SMIL の無視を許している。将来の拡張点)
+/// Model of a media overlay (EPUB 3 Media Overlays, a SMIL subset).
+/// Currently offers parsing only, with no playback engine (EPUB RS 3.3 §9
+/// allows a RS without audio-playback capability to ignore SMIL; a future
+/// extension point).
 public struct MediaOverlay: Sendable {
-    /// par: テキスト断片と音声クリップの同期対
+    /// par: a synchronization pair of a text fragment and an audio clip.
     public struct Parallel: Sendable {
-        /// 対応するコンテンツ文書の href(フラグメント込み・SMIL からの相対)
+        /// href of the corresponding content document (fragment included, relative to the SMIL).
         public let textHref: String?
-        /// 音声ファイルの href
+        /// href of the audio file.
         public let audioHref: String?
-        /// クリップ開始秒(省略時 0)
+        /// Clip start in seconds (0 when omitted).
         public let clipBegin: Double
-        /// クリップ終了秒(省略時 = メディア末尾)
+        /// Clip end in seconds (end of media when omitted).
         public let clipEnd: Double?
-        /// epub:type(skippability 判定用: footnote / pagebreak 等)
+        /// epub:type (used to decide skippability: footnote / pagebreak, etc.).
         public let epubType: String?
     }
 
-    /// 再生順に平坦化した par 列
+    /// The par entries flattened into playback order.
     public let parallels: [Parallel]
-    /// SMIL 文書のコンテナ内パス(href 解決の基準)
+    /// Container-internal path of the SMIL document (the base for href resolution).
     public let basePath: String
 }
 
@@ -91,7 +92,7 @@ enum SMILParser {
 }
 
 extension EPUBPublication {
-    /// spine 項目に紐付くメディアオーバーレイを読み込む(なければ nil)
+    /// Loads the media overlay associated with a spine item (nil if none).
     public func mediaOverlay(forSpineIndex index: Int) -> MediaOverlay? {
         guard readingOrder.indices.contains(index) else { return nil }
         let entry = readingOrder[index]

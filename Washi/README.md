@@ -71,7 +71,7 @@ SwiftPM で依存に追加する:
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/shunnag/Washi.git", from: "0.1.0")
+.package(url: "https://github.com/shunnag/Washi.git", from: "1.0.0")
 ```
 
 通常は `Washi` プロダクトを使う。`WashiDynamic` は動的ライブラリとして

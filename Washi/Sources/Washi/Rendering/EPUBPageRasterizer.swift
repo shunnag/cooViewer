@@ -1,14 +1,16 @@
 import AppKit
 import WebKit
 
-/// 固定レイアウトページのオフスクリーンラスタライザ。
-/// WKWebView はウインドウ外では描画が止まるため、画面外に置いた
-/// borderless ウインドウ(表示はしない)に載せてスナップショットを撮る
-/// (macOS で実績のある唯一の方法)。読み込みは 1 ページずつ直列化する。
+/// Offscreen rasterizer for fixed-layout pages.
+/// A WKWebView stops rendering while it is outside a window, so we place it in
+/// an offscreen borderless window (never shown) and take a snapshot from there
+/// (the only approach proven to work on macOS). Loads are serialized one page
+/// at a time.
 ///
-/// 注意: 「1 枚画像だけのページ」は EPUBPublication.fixedLayoutInfo の
-/// simpleImagePath から画像を直接デコードする方が速く高品質。本クラスは
-/// 複雑な FXL ページ(テキスト・SVG 合成)のフォールバック
+/// Note: for a "single image only" page, decoding the image directly from
+/// EPUBPublication.fixedLayoutInfo's simpleImagePath is faster and higher
+/// quality. This class is the fallback for complex FXL pages that composite
+/// text and SVG.
 @MainActor
 public final class EPUBPageRasterizer {
     private let publication: EPUBPublication
@@ -42,8 +44,9 @@ public final class EPUBPageRasterizer {
     /// invalidate 後は新規レンダーを受け付けない
     private var isInvalidated = false
 
-    /// オフスクリーンリソース(不可視 NSWindow + WebContent プロセス)を
-    /// 明示的に畳む。使い終えたら呼ぶ(以後の renderPage は loadFailed)
+    /// Explicitly tears down the offscreen resources (the invisible NSWindow and
+    /// the WebContent process). Call it once you are done (any later renderPage
+    /// then fails with loadFailed).
     public func invalidate() {
         isInvalidated = true
         lastJob?.cancel()
@@ -53,10 +56,11 @@ public final class EPUBPageRasterizer {
         window = nil
     }
 
-    /// spine 項目を描画して返す。maxPixelSize は長辺の上限(nil で等倍 2x)。
-    /// 共有 WKWebView を使うため FIFO で完全直列化する: 描画本体をチェーン
-    /// された Task の**中**で実行する(外に出すと直列化にならず、並行呼び出しが
-    /// 相互のナビゲーションを潰して NavigationWaiter が永久に待つ)
+    /// Renders and returns a spine item. maxPixelSize caps the long edge (nil = 2x
+    /// native size). Because a single shared WKWebView is used, calls are fully
+    /// serialized FIFO: the render body runs **inside** the chained Task (moving
+    /// it outside breaks serialization, so concurrent calls clobber each other's
+    /// navigations and NavigationWaiter waits forever).
     public func renderPage(atSpineIndex index: Int,
                            maxPixelSize: Int? = nil) async throws -> CGImage {
         guard !isInvalidated else { throw RasterizeError.loadFailed }

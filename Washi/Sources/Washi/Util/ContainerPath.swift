@@ -1,13 +1,15 @@
 import Foundation
 
-/// OCF 抽象コンテナ内のパス演算。
-/// コンテナ内パスは「/ 区切り・先頭スラッシュなし・パーセントデコード済み」を
-/// 正規形とする(ZIP エントリ名と直接比較できる形)。
-/// href(URI 参照)からの解決時にフラグメント・クエリを外し、../ を折り畳む。
+/// Path arithmetic within an OCF abstract container.
+/// A container-internal path is canonical when it is "/-separated, has no
+/// leading slash, and is percent-decoded" (a form that can be compared directly
+/// against ZIP entry names).
+/// When resolving from an href (a URI reference), the fragment and query are
+/// stripped and `../` segments are collapsed.
 public enum ContainerPath {
-    /// base(コンテナ内のファイルパス)から相対 href を解決する。
-    /// 戻り値はコンテナ内正規形パス。コンテナ外(ルートより上)へ出る参照や
-    /// 絶対 URL(http: 等)は nil。
+    /// Resolves a relative href against `base` (a file path inside the container).
+    /// Returns the canonical container-internal path, or nil for references that
+    /// escape the container (above the root) or for absolute URLs (http:, etc.).
     public static func resolve(base: String, href: String) -> String? {
         // フラグメント・クエリを除去
         var reference = href
@@ -33,17 +35,18 @@ public enum ContainerPath {
         return collapse(joined)
     }
 
-    /// パスの正規化(パーセントデコード + ../ 折り畳み)。
-    /// ルートを脱出する参照は空文字にする(「存在しないパス」として扱われ、
-    /// FolderContainerReader 等でコンテナ外読み取りに使えない)
+    /// Normalizes a path (percent-decode plus `../` collapse).
+    /// A reference that escapes the root becomes the empty string (treated as a
+    /// "nonexistent path", so it cannot be used for out-of-container reads in
+    /// ``FolderContainerReader`` and the like).
     public static func normalize(_ path: String) -> String {
         let decoded = path.removingPercentEncoding ?? path
         return collapse(decoded) ?? ""
     }
 
-    /// デコード済みパスの正規化(折り畳みのみ)。コンテナ内パスは既に
-    /// デコード済みが正規形なので、二重デコード(名前に % を含むファイルの
-    /// 破壊)を避けるためこちらを使う
+    /// Normalizes an already-decoded path (collapse only). A container-internal
+    /// path is canonical in its already-decoded form, so use this to avoid a
+    /// double decode, which would corrupt files whose names contain a `%`.
     public static func sanitize(_ path: String) -> String {
         collapse(path) ?? ""
     }

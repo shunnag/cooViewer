@@ -46,13 +46,13 @@ public enum ZipError: Error, Sendable, Equatable, LocalizedError {
     }
 }
 
-/// ZIP 内の 1 エントリのメタ情報
+/// Metadata for a single entry within a ZIP archive.
 public struct ZipEntryInfo: Sendable, Hashable {
     public let name: String
     public let isDirectory: Bool
     public let compressedSize: UInt64
     public let uncompressedSize: UInt64
-    /// 圧縮メソッド(0=store / 8=deflate)
+    /// Compression method (0 = store / 8 = deflate).
     public let method: UInt16
     let crc32: UInt32
     let localHeaderOffset: UInt64
@@ -60,17 +60,21 @@ public struct ZipEntryInfo: Sendable, Hashable {
     let flags: UInt16
 }
 
-/// EPUB(OCF ZIP)読み取り専用の ZIP リーダー。
-/// 依存ゼロ方針のため XADMaster 等は使わず、Foundation + Compression のみで実装する。
-/// 対応範囲は EPUB の実態に合わせる: store/deflate、zip64、UTF-8 名(非 UTF-8 名は
-/// Shift_JIS へフォールバック)。ZIP 暗号化・マルチボリュームは非対応(明示エラー)。
+/// A read-only ZIP reader for EPUB (OCF ZIP) containers.
+/// To honor the zero-dependency policy it avoids XADMaster and the like,
+/// building only on Foundation + Compression. Its scope matches what EPUBs
+/// actually use: store/deflate, zip64, and UTF-8 names (non-UTF-8 names fall
+/// back to Shift_JIS). ZIP encryption and multi-volume archives are
+/// unsupported (they raise an explicit error).
 ///
-/// 全体を `Data`(mappedIfSafe)で保持し、init で中央ディレクトリだけを解析する。
-/// 以後の読み取りは不変データへの純関数なのでスレッド安全(Sendable)。
-/// エントリ名によるパス操作は一切行わない(zip-slip の懸念なし)。
+/// The whole file is held as `Data` (mappedIfSafe), and init parses only the
+/// central directory. Every subsequent read is a pure function over that
+/// immutable data, so it is thread-safe (Sendable). Entry names are never used
+/// for any path operation (no zip-slip concern).
 public final class ZipArchive: Sendable {
-    /// 1 エントリの展開後サイズの既定上限(512 MB)。EPUB の実態
-    /// (画像・音声・映像込みでも 1 ファイルはこれ未満)に対して十分広い
+    /// Default upper bound for a single entry's inflated size (512 MB). This is
+    /// comfortably wide for real-world EPUBs, where no single file exceeds it
+    /// even with images, audio, and video included.
     public static let defaultMaxEntrySize = 512 << 20
 
     private let data: Data
@@ -120,9 +124,10 @@ public final class ZipArchive: Sendable {
         index[name].map { entries[$0] }
     }
 
-    /// エントリを展開して返す。store はスライスのコピー、deflate は一括展開。
-    /// 展開後は必ず CRC-32 を検証する(サイレントな破損を EPUB パース失敗より
-    /// 手前で確実に検出するため)
+    /// Inflates the entry and returns it. Store copies the slice; deflate is
+    /// decoded in one shot. The result is always verified against its CRC-32, so
+    /// silent corruption is caught reliably before it surfaces as an EPUB parse
+    /// failure.
     public func data(forEntry name: String) throws -> Data {
         guard let info = info(for: name) else { throw ZipError.entryNotFound(name) }
         if info.isDirectory { return Data() }

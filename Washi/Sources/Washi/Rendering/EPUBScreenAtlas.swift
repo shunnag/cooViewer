@@ -1,11 +1,13 @@
 import AppKit
 import Foundation
 
-/// リーダーを開かずに EPUB の画面計画(項目別ページ数の実測)と
-/// 画面サムネイルを得る公開ファサード。コレクション(合本)の一覧で
-/// リフロー EPUB を「全ページ展開」するために使う。
-/// census・レンダラはリーダー内と同一実装(EPUBScreenMetrics が単一の正)
-/// なので、後でその本を開いたときのページ割りと必ず一致する。
+/// Public facade for obtaining an EPUB's screen plan (measured per-item page
+/// counts) and screen thumbnails without opening the reader. Used to fully
+/// expand a reflowable EPUB into all of its pages within a collection (merged
+/// book) listing.
+/// The census and renderer share the exact same implementation used inside the
+/// reader (EPUBScreenMetrics is the single source of truth), so the pagination
+/// is guaranteed to match what you get when the book is later opened.
 @MainActor
 public final class EPUBScreenAtlas {
     public let publication: EPUBPublication
@@ -27,11 +29,11 @@ public final class EPUBScreenAtlas {
         self.publication = publication
     }
 
-    /// オフスクリーンリソース(census とレンダラの不可視ウインドウ・
-    /// WebContent プロセス)を明示的に畳む。**アトラスを手放すとき
-    /// (キャッシュからの追い出し等)は必ず呼ぶ** — 進行中の実測・レンダーを
-    /// 止め、プロセスをホストの寿命まで生かさないため。呼んだ後の
-    /// このインスタンスは再利用しない
+    /// Explicitly tears down the offscreen resources (the invisible windows and
+    /// WebContent processes of the census and renderer). **Always call this when
+    /// releasing the atlas (e.g. on eviction from a cache)** — it stops any
+    /// in-progress measurement or render so the processes are not kept alive for
+    /// the host's entire lifetime. Do not reuse this instance after calling it.
     public func invalidate() {
         for task in measuring.values { task.cancel() }
         measuring.removeAll()
@@ -41,8 +43,8 @@ public final class EPUBScreenAtlas {
         renderer = nil
     }
 
-    /// 各 spine 項目のページ数(実測。metrics ごとにキャッシュ)。
-    /// 失敗(タイムアウト・WebContent 死)は nil
+    /// Page count of each spine item (measured; cached per metrics).
+    /// Returns nil on failure (timeout or WebContent death).
     public func screenCounts(metrics: EPUBScreenMetrics) async -> [Int]? {
         let key = metrics.censusOptionsJSON
         if let cached = countsCache[key] { return cached }
@@ -68,7 +70,7 @@ public final class EPUBScreenAtlas {
         return counts
     }
 
-    /// 指定画面のサムネイル(失敗時 nil)
+    /// Thumbnail for the given screen (nil on failure).
     public func thumbnail(spineIndex: Int, pageInItem: Int,
                           metrics: EPUBScreenMetrics, isDark: Bool,
                           width: CGFloat) async -> CGImage? {
