@@ -74,8 +74,24 @@ SwiftPM で依存に追加する:
 .package(url: "https://github.com/shunnag/Washi.git", from: "1.0.0")
 ```
 
-通常は `Washi` プロダクトを使う。`WashiDynamic` は動的ライブラリとして
-組み立てたいホスト(フレームワーク同梱など)向けで、API は同一。
+プロダクトは 2 つ:
+
+- **`WashiCore`** — 解析層のみ(Foundation / Compression / CryptoKit /
+  CoreGraphics / ImageIO)。AppKit/WebKit を引かないので、GUI セッションの
+  ない**ヘッドレス利用**(CLI・索引・サーバ・変換ツール)で使える。
+  OCF/OPF/nav 解析・メタデータ・本文抽出/検索・表紙デコードまで。
+- **`Washi`** — 表示層込み(AppKit / WebKit を追加。リーダービュー・
+  ページ census・サムネイル)。`WashiCore` を再輸出するので、
+  **`import Washi` だけで両層の公開 API が見える**(従来どおり)。
+
+```swift
+import WashiCore          // ヘッドレス: 解析・メタデータ・検索のみ
+let book = try EPUBPublication(url: url)
+print(book.metadata.mainTitle ?? "", book.search("keyword").count)
+```
+
+`WashiDynamic` は動的ライブラリとして 1 本にまとめたいホスト
+(フレームワーク同梱など)向けで、両ターゲットを含む。
 
 ## 使い方
 

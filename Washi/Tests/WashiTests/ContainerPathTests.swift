@@ -1,5 +1,6 @@
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// コンテナ内パス解決の検証
 final class ContainerPathTests: XCTestCase {

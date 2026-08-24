@@ -1,5 +1,6 @@
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// 不正入力(攻撃的 EPUB)への耐性の検証
 final class HardeningTests: XCTestCase {

@@ -1,6 +1,7 @@
 import CryptoKit
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// フォント難読化(IDPF / Adobe)の検証
 final class FontDeobfuscationTests: XCTestCase {

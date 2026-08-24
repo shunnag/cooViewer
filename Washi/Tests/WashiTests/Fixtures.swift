@@ -1,6 +1,7 @@
 import Compression
 import Foundation
 @testable import Washi
+@testable import WashiCore
 
 extension Data {
     mutating func appendLE16(_ value: UInt16) {

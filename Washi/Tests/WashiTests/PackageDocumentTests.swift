@@ -1,5 +1,6 @@
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// パッケージ文書(OPF)パーサの検証
 final class PackageDocumentTests: XCTestCase {

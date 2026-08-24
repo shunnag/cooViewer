@@ -1,5 +1,6 @@
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// ナビゲーション文書(nav / NCX)パーサの検証
 final class NavigationTests: XCTestCase {

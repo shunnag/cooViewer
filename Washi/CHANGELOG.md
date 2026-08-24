@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.2.0] - 2026-08-25
+
+### 追加
+- **`WashiCore` プロダクト**(解析層の分離)。Foundation / Compression /
+  CryptoKit / CoreGraphics / ImageIO のみに依存し、AppKit/WebKit を引かない。
+  GUI セッションのないヘッドレス利用(CLI・索引・サーバ)で
+  `import WashiCore` だけで解析・メタデータ・本文抽出/検索・表紙デコードが
+  使える。`Washi`(表示層)は `WashiCore` を `@_exported` 再輸出するので、
+  `import Washi` の利用者は従来どおり両層の API が見える(ソース互換)
+
 ## [1.1.0] - 2026-08-25
 
 弱点探索(多エージェント敵対的監査)で見つかった実在の穴を修正した堅牢化リリース。

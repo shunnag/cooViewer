@@ -1,5 +1,6 @@
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// 自前 ZIP リーダーの検証(フィクスチャはテスト側の手組みライタで生成)
 final class ZipArchiveTests: XCTestCase {

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// EPUBPublication ファサードの統合検証(ZIP / フォルダ両コンテナ)
 final class PublicationTests: XCTestCase {
