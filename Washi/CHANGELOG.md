@@ -19,8 +19,8 @@
   `coverImage(maxPixelSize:)`
 - 位置: `EPUBLocator`(idref 付き)/ `resolve(_:)`
 - 表示: `EPUBReaderView`(縦組み・見開き・テーマ・FXL)、
-  `forwardsKeyEventsNatively` / `suppressesContextMenu`、各オフスクリーン
-  エンジンの `invalidate()`
+  `forwardsKeyEventsNatively` / `suppressesContextMenu`、消費者が保持する
+  オフスクリーン型(`EPUBScreenAtlas` / `EPUBPageRasterizer`)の `invalidate()`
 - エラー: 全型 `LocalizedError` 準拠
 - 堅牢化: XML 実体爆弾・ZIP 爆弾・パス/シンボリックリンク脱出・深い XML を
   入口で遮断
@@ -80,9 +80,10 @@
 - `EPUBLocator.idref` と `EPUBPublication.locator(forSpineIndex:)` /
   `resolve(_:)` — 保存した読書位置を配信本の改版(spine の並べ替え・増減)を
   跨いで正しい章へ追跡する。旧 JSON とデコード互換
-- 各オフスクリーンエンジン(`EPUBPaginationCensus` /
-  `EPUBScreenThumbnailRenderer` / `EPUBPageRasterizer` / `EPUBScreenAtlas`)に
-  `invalidate()` — 不可視ウインドウと WebContent プロセスを明示的に畳む
+- 消費者が保持するオフスクリーン型(`EPUBScreenAtlas` /
+  `EPUBPageRasterizer`)に `invalidate()` — 不可視ウインドウと WebContent
+  プロセスを明示的に畳む(`EPUBScreenAtlas` は内部の census・サムネイル
+  レンダラも畳む。`EPUBReaderView` はウインドウ離脱時に自動)
 - `ZipArchive` の `maxEntrySize`(既定 512MB)
 
 ### セキュリティ・堅牢化

@@ -135,11 +135,12 @@ macOS 14+ / Swift 6(strict concurrency)/ Apple Silicon・Intel 両対応の
 
 ## 組み込みの注意(オフスクリーン WebKit)
 
-- `EPUBPaginationCensus`(全文ページ数の実測)・`EPUBScreenThumbnailRenderer`・
-  `EPUBPageRasterizer`・`EPUBScreenAtlas` は、それぞれ不可視の
-  NSWindow + WebContent プロセスを持つ。**使い終えたら `invalidate()` を呼ぶ**
-  (アトラスをキャッシュから追い出すときも)。`EPUBReaderView` は
-  ウインドウから外れた時点で自分のオフスクリーンを自動で畳む
+- 消費者が保持するオフスクリーン型 `EPUBScreenAtlas`(census と
+  サムネイルを内部に持つ)と `EPUBPageRasterizer` は、それぞれ不可視の
+  NSWindow + WebContent プロセスを抱える。**使い終えたら `invalidate()` を
+  呼ぶ**(アトラスをキャッシュから追い出すときも)。`EPUBReaderView` は
+  ウインドウから外れた時点で自分のオフスクリーン(内部の census・
+  サムネイルレンダラ含む)を自動で畳むので、明示呼び出しは不要
 - オフスクリーン系 API は **`.userInitiated` 以上の優先度で呼ぶ**こと。
   低 QoS(`.utility` 等)を継いだまま最初の JS 実行を発行すると、WebKit の
   応答が返らず永久待ちになる(実測)
