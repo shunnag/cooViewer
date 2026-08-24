@@ -87,12 +87,22 @@ public final class EPUBPageRasterizer {
             throw EPUBError.resourceNotFound("spine index \(index)")
         }
         let info = try publication.fixedLayoutInfo(forSpineIndex: index)
-        let viewport = info.viewportSize ?? CGSize(width: 1200, height: 1600)
+        let rawViewport = info.viewportSize ?? CGSize(width: 1200, height: 1600)
+        // 悪意ある FXL は viewport(または SVG viewBox)に巨大値を宣言でき、
+        // zoom 下限(0.05)ではフレームを十分に縮められず、巨大なオフスクリーン
+        // スナップショット確保でプロセスが落ちる。実在の FXL ページ寸法を
+        // 十分に覆う上限へ寸法自体をクランプする(NaN/0/負値も弾く)
+        let maxDimension: CGFloat = 5000
+        func sane(_ v: CGFloat, fallback: CGFloat) -> CGFloat {
+            v.isFinite && v >= 1 ? min(v, maxDimension) : fallback
+        }
+        let viewport = CGSize(width: sane(rawViewport.width, fallback: 1200),
+                              height: sane(rawViewport.height, fallback: 1600))
 
         // 目標ピクセルに合わせて pageZoom で拡縮(backing scale 込み)
         let backingScale = NSScreen.main?.backingScaleFactor ?? 2
         let longSide = max(viewport.width, viewport.height)
-        let targetLongSidePixels = maxPixelSize.map(CGFloat.init)
+        let targetLongSidePixels = maxPixelSize.map { max(1, CGFloat($0)) }
             ?? longSide * 2  // 既定は 2x(Retina 実寸)
         let zoom = max(0.05, min(4, targetLongSidePixels / (longSide * backingScale)))
         let frameSize = NSSize(width: viewport.width * zoom,

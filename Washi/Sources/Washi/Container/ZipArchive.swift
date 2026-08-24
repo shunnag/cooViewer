@@ -225,7 +225,14 @@ public final class ZipArchive: Sendable {
             guard locator >= 0, try reader.u32(at: locator) == 0x0706_4B50 else {
                 throw ZipError.truncated("zip64 locator")
             }
-            let zip64Offset = Int(try reader.u64(at: locator + 8))
+            // 攻撃者制御の 64bit オフセットを Int(...) で変換するとオーバー
+            // フローでトラップ(SIGTRAP)する。data(forEntry:) と同じく
+            // Int(exactly:) + 範囲検査で不正値は例外として弾く(zip64 EOCD は
+            // 56 バイトぶん読むので末尾まで在ることを要求する)
+            guard let zip64Offset = Int(exactly: try reader.u64(at: locator + 8)),
+                  zip64Offset >= 0, zip64Offset <= reader.count - 56 else {
+                throw ZipError.truncated("zip64 EOCD offset")
+            }
             guard try reader.u32(at: zip64Offset) == 0x0606_4B50 else {
                 throw ZipError.truncated("zip64 EOCD")
             }

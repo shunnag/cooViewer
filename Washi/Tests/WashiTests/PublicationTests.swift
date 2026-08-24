@@ -200,6 +200,15 @@ final class PublicationTests: XCTestCase {
         XCTAssertFalse(ZipError.corruptEntry("z").localizedDescription.isEmpty)
     }
 
+    /// 負の snippetRadius でもクラッシュせずクランプされる(公開 API 堅牢性)
+    func testSearchNegativeSnippetRadiusClamped() throws {
+        let publication = try openVerticalNovel()
+        let hits = publication.search("猫", snippetRadius: -5)
+        XCTAssertFalse(hits.isEmpty)
+        // radius=0 相当: スニペットはヒット語のみ
+        XCTAssertTrue(hits.allSatisfy { $0.snippet.contains("猫") })
+    }
+
     /// アクセシビリティ・メタデータの型付きサーフェス
     func testAccessibilityMetadata() throws {
         let a11y = try openVerticalNovel().metadata.accessibility

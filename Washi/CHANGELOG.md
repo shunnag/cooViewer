@@ -4,6 +4,25 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.1.0] - 2026-08-25
+
+弱点探索(多エージェント敵対的監査)で見つかった実在の穴を修正した堅牢化リリース。
+
+### 修正
+- 非 UTF-8(Shift_JIS/EUC-JP/UTF-16)の XML に名前付き HTML 実体
+  (`&nbsp;` `&copy;` 等)が含まれると救済に失敗していた問題。宣言の
+  `encoding` を尊重して復号するようにし、Shift_JIS の OPF で本が開けない・
+  Shift_JIS の本文で抽出/検索が黙って空になる・非 UTF-8 の nav/NCX で
+  目次が落ちる、を解消(旧来の日本語 EPUB に多いパターン)
+- 細工された zip64 EOCD ロケータの巨大 64bit オフセットで `Int(UInt64)` が
+  トラップしプロセスが落ちる問題(42 バイトの EPUB でクラッシュ)を、
+  `Int(exactly:)` + 範囲検査で throw に
+- `EPUBPublication.search` に負の `snippetRadius` を渡すとスニペット範囲が
+  反転してクラッシュする問題を、非負クランプで解消
+- 固定レイアウトの巨大 viewport(悪意ある `width`/`height`)で
+  オフスクリーンスナップショットが巨大確保されクラッシュする問題を、
+  描画寸法のクランプ(最大 5000px・非有限/0/負値の除外)で解消
+
 ## [1.0.0] - 2026-08-25
 
 初回の安定版。0.2.0〜0.5.0 で加えた外部利用向けの機能・堅牢化・安定化を

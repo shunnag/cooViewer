@@ -50,6 +50,64 @@ final class HardeningTests: XCTestCase {
         XCTAssertThrowsError(try archive.data(forEntry: "b.bin"))
     }
 
+    /// UTF-8 の文書に名前付き HTML 実体(&nbsp; 等)があっても従来どおり
+    /// 救済して解釈できる(符号化対応の刷新で最頻出の UTF-8 経路が壊れない)
+    func testUTF8NamedEntityStillRecovered() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"><body>\
+        <p>猫&nbsp;である&mdash;名前</p></body></html>
+        """
+        let document = try WashiXML.document(from: Data(xml.utf8))
+        let text = document.rootElement()?.stringValue ?? ""
+        XCTAssertTrue(text.contains("猫"))
+        XCTAssertTrue(text.contains("である"))
+        XCTAssertTrue(text.contains("名前"))
+    }
+
+    /// Shift_JIS 宣言の XML に名前付き HTML 実体があっても、実際の符号化で
+    /// 復号して救済し、UTF-8 で再パースできる(旧来の日本語 EPUB 対応)
+    func testShiftJISWithNamedEntityRecovered() throws {
+        let xml = """
+        <?xml version="1.0" encoding="Shift_JIS"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"><body>\
+        <p>著作権&copy;2020 猫&nbsp;である</p></body></html>
+        """
+        let data = xml.data(using: .shiftJIS)!
+        let document = try WashiXML.document(from: data)
+        let text = document.rootElement()?.stringValue ?? ""
+        XCTAssertTrue(text.contains("著作権"))
+        XCTAssertTrue(text.contains("猫"))
+        XCTAssertTrue(text.contains("である"))
+    }
+
+    /// UTF-16(BOM)宣言 + 名前付き実体も救済される
+    func testUTF16WithNamedEntityRecovered() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-16"?>
+        <r>a&mdash;b&nbsp;猫</r>
+        """
+        var data = Data([0xFF, 0xFE])
+        data.append(xml.data(using: .utf16LittleEndian)!)
+        let document = try WashiXML.document(from: data)
+        let text = document.rootElement()?.stringValue ?? ""
+        XCTAssertTrue(text.contains("猫"))
+    }
+
+    /// 細工された zip64 EOCD ロケータ(巨大 64bit オフセット)でクラッシュせず
+    /// エラーになる(Int(UInt64) のトラップ回避)
+    func testZip64LocatorOverflowRejected() throws {
+        var zip = ZipBuilder.build([("a.txt", Data("x".utf8))], forceZip64: true)
+        // zip64 EOCD locator(sig 0x07064b50)直後の 8 バイトオフセットを
+        // Int.max 超へ偽装する
+        let sig: [UInt8] = [0x50, 0x4B, 0x06, 0x07]
+        guard let start = zip.firstRange(of: Data(sig))?.lowerBound else {
+            return XCTFail("zip64 locator が見つからない")
+        }
+        for i in 0..<8 { zip[start + 8 + i] = 0xFF }  // オフセット = 0xFFFF...
+        XCTAssertThrowsError(try ZipArchive(data: zip))  // トラップせず throw
+    }
+
     /// 内部 DTD の実体爆弾(billion laughs)は展開前に拒否される
     func testEntityBombRejected() {
         let xml = """

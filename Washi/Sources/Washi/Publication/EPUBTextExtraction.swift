@@ -68,13 +68,16 @@ extension EPUBPublication {
                        snippetRadius: Int = 24) -> [EPUBSearchHit] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return [] }
+        // 負の radius はスニペットの範囲(lower..<upper)を反転させてトラップ
+        // するため、公開入口で非負にクランプする(0 = ヒット語のみ)
+        let radius = max(0, snippetRadius)
         var hits: [EPUBSearchHit] = []
         for index in readingOrder.indices {
             guard let text = try? extractText(forSpineIndex: index),
                   !text.isEmpty else { continue }
             hits.append(contentsOf: Self.matches(
                 of: needle, in: text, spineIndex: index,
-                snippetRadius: snippetRadius))
+                snippetRadius: radius))
         }
         return hits
     }

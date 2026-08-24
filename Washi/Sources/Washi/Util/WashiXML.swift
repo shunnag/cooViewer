@@ -240,9 +240,15 @@ enum WashiXML {
         return nil
     }
 
-    /// XML の定義済み 5 実体以外の頻出 HTML 実体を数値文字参照へ置換する
-    private static func sanitizeEntities(_ data: Data) -> Data {
-        guard var text = String(data: data, encoding: .utf8) else { return data }
+    /// XML の定義済み 5 実体以外の頻出 HTML 実体を数値文字参照へ置換する。
+    /// 非 UTF-8(Shift_JIS/EUC-JP/UTF-16)の文書でも救済できるよう、宣言の
+    /// encoding を尊重して復号してから置換し、UTF-8 で再エンコードする
+    /// (Shift_JIS + &nbsp; 等は日本の旧来 EPUB で頻出のため、これを取りこぼすと
+    /// OPF なら本が開けず、本文なら抽出・検索が黙って空になる)
+    private static func sanitizeEntities(_ rawData: Data) -> Data {
+        // UTF-16 は先に UTF-8 バイトへ畳む
+        let data = normalizedXMLBytes(rawData)
+        guard var text = decodeXMLText(data) else { return data }
         let replacements: [(String, String)] = [
             ("&nbsp;", "&#160;"), ("&copy;", "&#169;"), ("&reg;", "&#174;"),
             ("&trade;", "&#8482;"), ("&hellip;", "&#8230;"), ("&mdash;", "&#8212;"),
@@ -253,7 +259,42 @@ enum WashiXML {
         for (entity, numeric) in replacements {
             text = text.replacingOccurrences(of: entity, with: numeric)
         }
-        return Data(text.utf8)
+        // 出力バイトは UTF-8。宣言の encoding が別物のままだと再パースが
+        // "switching encoding" で失敗するため、宣言も UTF-8 に書き換える
+        return Data(rewriteXMLEncodingToUTF8(text).utf8)
+    }
+
+    /// XML 宣言の encoding を尊重してテキスト化する。UTF-8 で読めればそのまま、
+    /// 読めなければ宣言の encoding(Shift_JIS/EUC-JP 等)で復号する。
+    /// 宣言のない非 UTF-8 は判別不能なので nil(誤推測して壊さない)
+    private static func decodeXMLText(_ data: Data) -> String? {
+        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
+        guard let encoding = declaredEncoding(data) else { return nil }
+        return String(data: data, encoding: encoding)
+    }
+
+    /// 先頭の XML 宣言から encoding="X" を読み、String.Encoding へ写す。
+    /// 宣言部は ASCII なので Latin-1 でそのまま読める
+    private static func declaredEncoding(_ data: Data) -> String.Encoding? {
+        guard let head = String(data: data.prefix(256), encoding: .isoLatin1),
+              let match = head.firstMatch(
+                of: /encoding\s*=\s*["']([^"'<>]+)["']/) else { return nil }
+        let cfEncoding = CFStringConvertIANACharSetNameToEncoding(
+            String(match.1) as CFString)
+        guard cfEncoding != kCFStringEncodingInvalidId else { return nil }
+        return String.Encoding(
+            rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
+    }
+
+    /// 先頭 XML 宣言内の encoding 属性を UTF-8 へ書き換える(宣言が無ければ無変更)
+    private static func rewriteXMLEncodingToUTF8(_ text: String) -> String {
+        guard text.hasPrefix("<?xml"), let end = text.range(of: "?>") else {
+            return text
+        }
+        let declaration = text[text.startIndex..<end.upperBound]
+        let rewritten = declaration.replacing(
+            /encoding\s*=\s*["'][^"'<>]+["']/, with: "encoding=\"UTF-8\"")
+        return String(rewritten) + String(text[end.upperBound...])
     }
 }
 
