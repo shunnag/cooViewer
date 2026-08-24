@@ -4,6 +4,18 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [0.3.0] - 2026-08-25
+
+### 追加
+- `EPUBPublication.extractText(forSpineIndex:)` と `search(_:snippetRadius:)` —
+  WebKit を介さない本文プレーンテキスト抽出と全文検索(ルビの読みを除去、
+  大小・濁点・全半角を無視)。索引・検索・引用に使える。`EPUBSearchHit` は
+  spine index・文字オフセット・スニペットを持ち、将来のハイライトの土台
+- `EPUBReaderSettings.forwardsKeyEventsNatively` と
+  `EPUBReaderViewDelegate.readerView(_:didReceiveNativeKey:)` —
+  ネイティブ `NSEvent` のキーを WKWebView より先に横取り転送する経路。
+  ホスト独自のキーバインド向けの推奨経路(JS 経路のキー取りこぼしを回避)
+
 ## [0.2.0] - 2026-08-25
 
 ### 追加

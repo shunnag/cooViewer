@@ -8,8 +8,8 @@ with **zero third-party dependencies**, MIT licensed. The parsing layer needs
 only Foundation / Compression / CryptoKit / ImageIO (usable headless); the
 rendering layer adds AppKit / WebKit. Japanese typography — vertical writing
 (`vertical-rl`), ruby, tate-chu-yoko, kenten, right-to-left page progression —
-is a first-class citizen. Documentation (README and doc comments) is currently
-Japanese-first.
+is a first-class citizen. Public API doc comments are English; the README and
+internal comments are Japanese.
 
 ## 特徴
 
@@ -57,7 +57,9 @@ Japanese-first.
     `adjustFontScale(by:)` で段階調整も可、変更は delegate へ通知
   - ホスト統合: キー/クリック/ファイルドロップの delegate 転送
     (アプリ独自のキーバインドやページ送りに接続できる。既定では
-    左右端タップでページ送り)
+    左右端タップでページ送り)。キーは `forwardsKeyEventsNatively` で
+    ネイティブ `NSEvent` を横取り転送でき、WKWebView にキーを食われる
+    問題を避けられる(ホスト独自バインド向けの推奨経路)
 - **固定レイアウト**: viewport 解析、`page-spread-left/right/center`、
   「画像 1 枚だけのページ」の検出(WebKit を介さず画像を直接取り出せる —
   日本の漫画 EPUB の大多数がこの形)、複雑ページの
@@ -96,6 +98,12 @@ reader.turnPageLeft()                      // 物理方向(右綴じなら「進
 // 表紙(ライブラリ一覧用。宣言がない本もフォールバック連鎖で解決)
 let cover = publication.coverImage(maxPixelSize: 480)   // CGImage?
 
+// 本文抽出・全文検索(WebKit 不要。索引・検索・引用に)
+let plain = try publication.extractText(forSpineIndex: 0)
+for hit in publication.search("吾輩") {                 // 大小・全半角無視
+    print(hit.spineIndex, hit.characterOffset, hit.snippet)
+}
+
 // 固定レイアウトの画像直取り
 let info = try publication.fixedLayoutInfo(forSpineIndex: 0)
 if let path = info.simpleImagePath {
@@ -113,6 +121,7 @@ if let path = info.simpleImagePath {
 | フォント難読化(IDPF / Adobe) | ✅ |
 | リフロー描画(縦組み・ルビ・縦中横・圏点・右綴じ) | ✅ |
 | 固定レイアウト(viewport / spread 指定 / SVG ラッパー) | ✅ |
+| 本文テキスト抽出・全文検索(ルビ除去・大小/全半角無視) | ✅(解析層のみ) |
 | scripted コンテンツ | 任意(既定オフ。CSP 込みで有効化可) |
 | メディアオーバーレイ | パースのみ(再生は未実装) |
 | DRM(ADEPT / LCP / FairPlay) | 非対応(検出して報告) |

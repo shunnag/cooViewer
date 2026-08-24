@@ -15,6 +15,10 @@ public final class EPUBReaderView: NSView {
         didSet {
             guard oldValue != settings else { return }
             applyTheme()
+            if oldValue.forwardsKeyEventsNatively
+                != settings.forwardsKeyEventsNatively {
+                updateNativeKeyMonitor()
+            }
             if oldValue.allowsScriptedContent != settings.allowsScriptedContent {
                 // JS 許可はビュー構成ごと作り直す(WKWebViewConfiguration は不変)
                 reloadCurrentPublication()
@@ -75,6 +79,8 @@ public final class EPUBReaderView: NSView {
     /// 現在有効なナビゲーション(didFinish/didFail の遅延配達を、後続の
     /// loadSpineItem 後に古い文書ぶんとして無視するための同一性チェック)
     private var currentNavigation: WKNavigation?
+    /// ネイティブキー横取りのローカルモニタ(forwardsKeyEventsNatively)
+    private var keyEventMonitor: Any?
     /// めくりアニメーションのオーバーレイ(spine 切替時に掃除)
     private var turnOverlays: [NSView] = []
     /// 直前のめくり時刻(高速連打時はアニメーションを省略して即めくり)
@@ -1001,12 +1007,39 @@ public final class EPUBReaderView: NSView {
     /// 再表示されれば次の runSetup / layout が census を自然に再開する
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateNativeKeyMonitor()
         guard window == nil else { return }
         cancelPageCensus()
         censusEngine?.invalidate()
         censusEngine = nil
         thumbnailRenderer?.invalidate()
         thumbnailRenderer = nil
+    }
+
+    // MARK: - ネイティブキー横取り(forwardsKeyEventsNatively)
+
+    /// ウインドウ在席と設定に応じてローカルキーモニタを付け外しする。
+    /// WKWebView がファーストレスポンダを握るとビューの keyDown は呼ばれず
+    /// JS 経路のキーも取りこぼすため、ホストが確実に NSEvent を受け取れるよう
+    /// ウインドウレベルの local monitor で横取りする(cooViewer が自前で
+    /// やっていた対処をパッケージ側の任意機能として提供)
+    private func updateNativeKeyMonitor() {
+        let shouldMonitor = window != nil && settings.forwardsKeyEventsNatively
+        if shouldMonitor, keyEventMonitor == nil {
+            keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+                [weak self] event in
+                guard let self, let window = self.window,
+                      event.window === window, self.delegate != nil,
+                      // 自分(またはその子 WebView)がこのウインドウで
+                      // 表示中のときだけ横取りする
+                      !self.isHidden, self.superview != nil else { return event }
+                return self.delegate?.readerView(self, didReceiveNativeKey: event)
+                    == true ? nil : event
+            }
+        } else if !shouldMonitor, let monitor = keyEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyEventMonitor = nil
+        }
     }
 
     /// メトリクスが変わっていれば census を(デバウンス付きで)再実測する。

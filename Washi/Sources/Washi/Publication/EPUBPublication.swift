@@ -514,8 +514,9 @@ public final class EPUBPublication: Sendable {
         return nil
     }
 
-    private static func firstDescendant(_ localName: String,
-                                        in element: XMLElement) -> XMLElement? {
+    // 別ファイルの extension(本文抽出)からも使うため internal
+    static func firstDescendant(_ localName: String,
+                                in element: XMLElement) -> XMLElement? {
         for node in element.children ?? [] {
             guard let child = node as? XMLElement else { continue }
             if child.localName == localName { return child }

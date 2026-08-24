@@ -103,6 +103,65 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(roundTrip, modern)
     }
 
+    /// 本文抽出: ルビの読み(rt)を除いた本文が取れ、章題も含まれる
+    func testExtractTextStripsRuby() throws {
+        let publication = try openVerticalNovel()
+        let text = try publication.extractText(forSpineIndex: 0)
+        XCTAssertTrue(text.contains("吾輩は猫である"), "本文が連続していない: \(text)")
+        XCTAssertTrue(text.contains("名前はまだ無い"))
+        XCTAssertTrue(text.contains("第一章"))
+        // ルビの読みは本文から除かれる
+        XCTAssertFalse(text.contains("わがはい"))
+        XCTAssertFalse(text.contains("ねこ"))
+    }
+
+    /// 全文検索: 章を跨いでヒットし、位置とスニペットが返る
+    func testSearchAcrossSpine() throws {
+        let publication = try openVerticalNovel()
+        let hits = publication.search("猫")
+        XCTAssertFalse(hits.isEmpty)
+        XCTAssertTrue(hits.allSatisfy { $0.length == 1 })
+        // ヒットは spine 順
+        XCTAssertEqual(hits.map(\.spineIndex), hits.map(\.spineIndex).sorted())
+        // スニペットにヒット語が含まれる
+        XCTAssertTrue(hits.allSatisfy { $0.snippet.contains("猫") })
+        // 別の章の語も引ける
+        XCTAssertEqual(publication.search("生れた").first?.spineIndex, 1)
+        // 空クエリは無ヒット
+        XCTAssertTrue(publication.search("   ").isEmpty)
+    }
+
+    /// 検索の文字オフセットは抽出テキスト上で一致する(ハイライトの土台)
+    func testSearchOffsetPointsAtMatch() throws {
+        let publication = try openVerticalNovel()
+        let text = try publication.extractText(forSpineIndex: 0)
+        let chars = Array(text)
+        guard let hit = publication.search("猫").first(where: { $0.spineIndex == 0 })
+        else { return XCTFail("ヒットなし") }
+        let end = hit.characterOffset + hit.length
+        let matched = String(chars[hit.characterOffset..<end])
+        XCTAssertEqual(matched, "猫")
+    }
+
+    /// 複数ヒットでも各 characterOffset が増分計算で正しく整合する
+    func testSearchMultipleOffsetsConsistent() throws {
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(EPUBFixtures.verticalNovelEntries(), method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/multi.epub"))
+        // 「は」は 1 章内に複数出現する(吾輩は / 名前は)
+        let hits = publication.search("は").filter { $0.spineIndex == 0 }
+        XCTAssertGreaterThan(hits.count, 1)
+        let text = try publication.extractText(forSpineIndex: 0)
+        let chars = Array(text)
+        for hit in hits {
+            let end = hit.characterOffset + hit.length
+            XCTAssertEqual(String(chars[hit.characterOffset..<end]), "は")
+        }
+        // オフセットは狭義単調増加(重複・逆行なし)
+        XCTAssertEqual(hits.map(\.characterOffset),
+                       hits.map(\.characterOffset).sorted())
+    }
+
     func testNavigationResolution() throws {
         let publication = try openVerticalNovel()
         XCTAssertEqual(publication.navigation.toc.count, 2)

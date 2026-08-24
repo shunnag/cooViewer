@@ -99,6 +99,14 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// true なら矢印・スペース等の既定キー操作をビュー内で処理する。
     /// false ならキーは delegate へ転送される(ホストのキーバインド優先)
     public var handlesKeyboardNavigation = true
+    /// When true, the view installs a native key monitor and forwards each
+    /// `NSEvent` key-down to `readerView(_:didReceiveNativeKey:)` before the
+    /// embedded `WKWebView` can consume it. Use this instead of the JS-based
+    /// `didReceiveKey` path when the host has its own key bindings and needs
+    /// reliable, in-order `NSEvent`s (the JS path silently drops keys whenever
+    /// the web view holds first responder). Independent of
+    /// `handlesKeyboardNavigation`. Default false.
+    public var forwardsKeyEventsNatively = false
     /// scripted コンテンツ(本の JavaScript)を許可するか(既定 false)
     public var allowsScriptedContent = false
 
@@ -208,6 +216,18 @@ public protocol EPUBReaderViewDelegate: AnyObject {
     func readerView(_ view: EPUBReaderView, shouldOpenExternalURL url: URL) -> Bool
     /// handlesKeyboardNavigation = false のときのキー転送
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent)
+    /// A native key-down event, delivered only when
+    /// `EPUBReaderSettings.forwardsKeyEventsNatively` is true. Return true to
+    /// consume the event (the web view never sees it); return false to let it
+    /// propagate normally. Preferred over `didReceiveKey` for hosts with their
+    /// own key bindings — it is a real `NSEvent`, in order, and reaches you even
+    /// while the web view holds first responder.
+    ///
+    /// The monitor runs before the responder chain, so returning true also
+    /// suppresses menu key equivalents (⌘C, ⌘W, …) for that event. Return true
+    /// only for keys your host actually handles; return false for the rest.
+    func readerView(_ view: EPUBReaderView,
+                    didReceiveNativeKey event: NSEvent) -> Bool
     /// ページ面のクリック(リンク以外。左・中・サイドボタン+修飾キー付き)。
     /// true を返すと処理済み、false で既定動作(修飾なし左クリックの
     /// 左右端タップめくりのみ)
@@ -240,6 +260,8 @@ public extension EPUBReaderViewDelegate {
     func readerView(_ view: EPUBReaderView,
                     shouldOpenExternalURL url: URL) -> Bool { true }
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent) {}
+    func readerView(_ view: EPUBReaderView,
+                    didReceiveNativeKey event: NSEvent) -> Bool { false }
     func readerView(_ view: EPUBReaderView,
                     didClick event: EPUBClickEvent) -> Bool { false }
     func readerView(_ view: EPUBReaderView,
