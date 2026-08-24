@@ -200,6 +200,26 @@ final class PublicationTests: XCTestCase {
         XCTAssertFalse(ZipError.corruptEntry("z").localizedDescription.isEmpty)
     }
 
+    /// アクセシビリティ・メタデータの型付きサーフェス
+    func testAccessibilityMetadata() throws {
+        let a11y = try openVerticalNovel().metadata.accessibility
+        XCTAssertFalse(a11y.isEmpty)
+        XCTAssertEqual(a11y.accessModes, ["textual", "visual"])
+        XCTAssertEqual(a11y.accessModesSufficient, [["textual", "visual"]])
+        XCTAssertEqual(a11y.features, ["structuralNavigation"])
+        XCTAssertEqual(a11y.hazards, ["noFlashingHazard"])
+        XCTAssertNotNil(a11y.summary)
+        XCTAssertEqual(a11y.conformsTo.count, 1)
+    }
+
+    /// 便利アクセサ: authors(role=aut・display-seq 順)と series
+    func testAuthorsAndSeriesAccessors() throws {
+        let metadata = try openVerticalNovel().metadata
+        XCTAssertEqual(metadata.authors, ["夏目漱石"])
+        XCTAssertEqual(metadata.series?.name, "漱石全集")
+        XCTAssertEqual(metadata.series?.type, "series")
+    }
+
     func testNavigationResolution() throws {
         let publication = try openVerticalNovel()
         XCTAssertEqual(publication.navigation.toc.count, 2)

@@ -4,6 +4,24 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [0.5.0] - 2026-08-25
+
+### 追加
+- `EPUBMetadata.accessibility` (`EPUBAccessibility`) — schema.org / EPUB
+  Accessibility のメタデータ(accessMode・feature・hazard・summary・
+  conformsTo・certifiedBy)を型付きで公開。EU アクセシビリティ法などで
+  表示が求められる情報を一覧アプリがそのまま出せる
+- `EPUBMetadata.authors`(role=aut を display-seq 順)と `EPUBMetadata.series`
+  の便利アクセサ
+
+### 修正
+- 固定レイアウトの `page-spread-*` プロパティで、接頭辞なし(EPUB 3.0)と
+  `rendition:` 付き(EPUB 3.1+)の両同義形を認識するように
+
+### 既知の制限
+- リフロー本の `rendition:spread="none"` は未反映(見開き判定は
+  columnMode と画面幅で決まる)。固定レイアウトの見開き指定は反映される
+
 ## [0.4.0] - 2026-08-25
 
 ### 追加

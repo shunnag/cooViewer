@@ -163,6 +163,13 @@ enum EPUBFixtures {
             <meta property="belongs-to-collection" id="series">漱石全集</meta>
             <meta refines="#series" property="collection-type">series</meta>
             <meta refines="#series" property="group-position">1</meta>
+            <meta property="schema:accessMode">textual</meta>
+            <meta property="schema:accessMode">visual</meta>
+            <meta property="schema:accessModeSufficient">textual,visual</meta>
+            <meta property="schema:accessibilityFeature">structuralNavigation</meta>
+            <meta property="schema:accessibilityHazard">noFlashingHazard</meta>
+            <meta property="schema:accessibilitySummary">目次による構造ナビゲーションに対応。</meta>
+            <meta property="dcterms:conformsTo">http://www.idpf.org/epub/a11y/accessibility-20170105.html#wcag-aa</meta>
           </metadata>
           <manifest>
             <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
@@ -294,7 +301,7 @@ enum EPUBFixtures {
           </manifest>
           <spine page-progression-direction="rtl">
             <itemref idref="p1" properties="rendition:page-spread-center"/>
-            <itemref idref="p2" properties="page-spread-left"/>
+            <itemref idref="p2" properties="rendition:page-spread-left"/>
             <itemref idref="p3" properties="page-spread-right"/>
           </spine>
         </package>

@@ -416,12 +416,19 @@ public final class EPUBPublication: Sendable {
             throw EPUBError.resourceNotFound("spine index \(index)")
         }
         let entry = readingOrder[index]
+        // page-spread は接頭辞なし(EPUB 3.0 遺物)と rendition: 付き
+        // (EPUB 3.1+)の両同義形を受ける
+        let props = entry.itemRef.properties
+        func hasSpread(_ slot: String) -> Bool {
+            props.contains("page-spread-\(slot)")
+                || props.contains("rendition:page-spread-\(slot)")
+        }
         let spread: PageSpreadSlot?
-        if entry.itemRef.properties.contains("page-spread-left") {
+        if hasSpread("left") {
             spread = .left
-        } else if entry.itemRef.properties.contains("page-spread-right") {
+        } else if hasSpread("right") {
             spread = .right
-        } else if entry.itemRef.properties.contains("rendition:page-spread-center") {
+        } else if hasSpread("center") {
             spread = .center
         } else {
             spread = nil

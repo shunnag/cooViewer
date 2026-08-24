@@ -48,7 +48,8 @@ final class PackageDocumentTests: XCTestCase {
         XCTAssertEqual(package.metadata.rendition.spread, .landscape)
         let refs = package.spine.itemRefs
         XCTAssertTrue(refs[0].properties.contains("rendition:page-spread-center"))
-        XCTAssertTrue(refs[1].properties.contains("page-spread-left"))
+        // EPUB 3.1+ の接頭辞付き同義形もそのまま保持される
+        XCTAssertTrue(refs[1].properties.contains("rendition:page-spread-left"))
         XCTAssertTrue(refs[2].properties.contains("page-spread-right"))
     }
 
