@@ -4,6 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.2.1] - 2026-08-25
+
+### 追加
+- Swift Package Index 設定(`.spi.yml`)。登録すれば WashiCore / Washi 両
+  プロダクトの DocC ドキュメントがホストされる(公開 API doc は英語)
+
 ## [1.2.0] - 2026-08-25
 
 ### 追加

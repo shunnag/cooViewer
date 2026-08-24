@@ -163,6 +163,12 @@ macOS 14+ / Swift 6(strict concurrency)/ Apple Silicon・Intel 両対応の
 - 表示・計測系(Rendering/)は全て `@MainActor`。GUI セッションのないデーモン
   からは解析層(`EPUBPublication` ほか)だけを使う
 
+## ドキュメント
+
+公開 API の doc コメントは英語で、DocC で生成できる。Swift Package Index の
+設定(`.spi.yml`)を同梱しているので、[パッケージを登録](https://swiftpackageindex.com/add-a-package)
+すれば WashiCore / Washi 両プロダクトの DocC がホストされる。
+
 ## 開発体制
 
 このリポジトリは [cooViewer](https://github.com/shunnag/cooViewer) モノレポ内の
