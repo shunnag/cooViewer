@@ -61,21 +61,15 @@ extension EPUBReaderView {
 
     // MARK: - コントローラ用の内部フック
 
-    /// 指定断片へハイライトを移し、必要ならそのページへめくる(id=nil で解除)
+    /// 指定断片へハイライトを移し、必要ならそのページへめくる(id=nil で解除)。
+    /// 断片 id・クラス名は EPUB 由来(信頼できない)ので、文字列連結ではなく
+    /// callAsyncJavaScript の引数として渡し WebKit に完全にエスケープさせる
+    /// (手動 \\・' エスケープでは \n・\r・U+2028・U+2029 を取りこぼす)
     func mediaOverlayHighlight(fragmentID: String?, cssClass: String) {
-        let cls = cssClass
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-        let idArg: String
-        if let fragmentID {
-            let escaped = fragmentID
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "'", with: "\\'")
-            idArg = "'\(escaped)'"
-        } else {
-            idArg = "null"
-        }
-        evaluateWashi("__washi.mediaOverlayHighlight(\(idArg), '\(cls)');")
+        let idArg: Any
+        if let fragmentID { idArg = fragmentID } else { idArg = NSNull() }
+        callWashiAsync("return __washi.mediaOverlayHighlight(id, cls);",
+                       arguments: ["id": idArg, "cls": cssClass])
     }
 
     /// 連続再生で次の項目へ移動する(先頭から表示)

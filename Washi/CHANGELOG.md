@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.8.1] - 2026-08-25
+
+### セキュリティ
+- リーダーへの JS 呼び出しで、EPUB 由来の断片 id・`media:active-class` を
+  文字列連結で埋め込んでいた箇所(メディアオーバーレイのハイライトと
+  フラグメント移動)を、`callAsyncJavaScript` の引数渡しに変更。手動の
+  `\`/`'` エスケープでは取りこぼす改行・行区切り(U+2028/U+2029)による
+  細工 EPUB からの JS インジェクションを防ぐ
+
 ## [1.8.0] - 2026-08-25
 
 ### 追加

@@ -741,10 +741,10 @@ public final class EPUBReaderView: NSView {
         case .progression(let progression):
             evaluate("__washi.showProgression(\(progression));")
         case .fragment(let fragment):
-            let escaped = fragment
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "'", with: "\\'")
-            evaluate("__washi.showFragment('\(escaped)');")
+            // 断片 id は EPUB 由来(信頼できない)。文字列連結でなく引数渡しで
+            // WebKit に完全エスケープさせる(手動 \\・' では改行・行区切りを取りこぼす)
+            callWashiAsync("return __washi.showFragment(id);",
+                           arguments: ["id": fragment])
         }
     }
 
@@ -754,6 +754,18 @@ public final class EPUBReaderView: NSView {
 
     /// washi ワールドで JS を評価する(メディアオーバーレイ拡張から使う)
     func evaluateWashi(_ script: String) { evaluate(script) }
+
+    /// washi ワールドで JS を引数付きで呼ぶ(値は WebKit が完全にエスケープ
+    /// するので、EPUB 由来の断片 id・クラス名を文字列連結で埋め込まない)。
+    /// 表示中の webView への呼び出しなので QoS 逆転(オフスクリーン初回)には
+    /// 該当しない
+    func callWashiAsync(_ body: String, arguments: [String: Any]) {
+        guard let webView else { return }
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                body, arguments: arguments, in: nil, contentWorld: Self.washiWorld)
+        }
+    }
 
     // MARK: - レイアウト
 
