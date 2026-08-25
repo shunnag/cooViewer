@@ -162,6 +162,10 @@ macOS 14+ / Swift 6(strict concurrency)/ Apple Silicon・Intel 両対応の
   応答が返らず永久待ちになる(実測)
 - 表示・計測系(Rendering/)は全て `@MainActor`。GUI セッションのないデーモン
   からは解析層(`EPUBPublication` ほか)だけを使う
+- 全文ページ数の実測(census)はオフスクリーン WebKit で数秒かかることが
+  ある。`EPUBReaderView.exportCensus()` の結果を保存し、再オープン時に
+  `importCensus(_:)` で注入すると再実測を省ける(同一メトリクス・同一版のみ
+  採用。ページ番号/バーが即座に出る)
 
 ## ドキュメント
 

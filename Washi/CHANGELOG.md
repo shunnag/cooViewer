@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.4.0] - 2026-08-25
+
+### 追加
+- 全文ページ census の永続化 API。`EPUBReaderView.exportCensus()` /
+  `importCensus(_:)` と `EPUBCensusRecord`(Codable)。実測済みのページ数を
+  ホストが保存し、同一メトリクス・同一版で再オープンしたときに注入すると、
+  オフスクリーンの再実測を省いて N/M ページ表示・ページバーが即座に出る
+  (版識別子と spine 数で他版の値を安全に拒否)
+
 ## [1.3.0] - 2026-08-25
 
 ### 追加

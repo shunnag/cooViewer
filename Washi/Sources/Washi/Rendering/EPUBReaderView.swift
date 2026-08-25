@@ -907,6 +907,41 @@ public final class EPUBReaderView: NSView {
     /// Total page count across the whole book (nil until the census completes).
     public var censusTotalPages: Int? { pageCensus?.reduce(0, +) }
 
+    /// Exports the completed whole-book census so a host can persist it and
+    /// re-inject it on a later open, skipping the offscreen re-measure (the
+    /// N/M page label and page bar then appear immediately). Nil until the
+    /// census for the current metrics has completed.
+    public func exportCensus() -> EPUBCensusRecord? {
+        guard let counts = pageCensus, let key = pageCensusMetricsKey else {
+            return nil
+        }
+        return EPUBCensusRecord(
+            metricsKey: key, counts: counts,
+            releaseIdentifier: publication?.metadata.releaseIdentifier)
+    }
+
+    /// Seeds a previously exported census. It is accepted only if it matches
+    /// the current book — same spine item count and same release identifier
+    /// (an unversioned book has a nil identifier and matches only another nil,
+    /// with the spine count as the remaining guard). When its metrics key also
+    /// matches the current display metrics, it takes effect immediately;
+    /// otherwise it is cached and used the moment the display settles to those
+    /// metrics. Returns whether it was accepted.
+    @discardableResult
+    public func importCensus(_ record: EPUBCensusRecord) -> Bool {
+        guard let publication,
+              record.counts.count == publication.readingOrder.count,
+              record.releaseIdentifier == publication.metadata.releaseIdentifier
+        else { return false }
+        censusCache[record.metricsKey] = record.counts
+        if record.metricsKey == censusOptionsJSON() {
+            censusKey = record.metricsKey
+            pageCensus = record.counts
+            delegate?.readerViewDidUpdatePageCensus(self)
+        }
+        return true
+    }
+
     /// The metrics key of the completed census (for the host to validate a
     /// match when reusing the census in its own cache). Returns a value only
     /// once the measurement has completed — `censusKey` alone cannot be trusted,
