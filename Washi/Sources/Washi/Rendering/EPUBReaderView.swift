@@ -82,6 +82,8 @@ public final class EPUBReaderView: NSView {
     private var currentNavigation: WKNavigation?
     /// ネイティブキー横取りのローカルモニタ(forwardsKeyEventsNatively)
     private var keyEventMonitor: Any?
+    /// メディアオーバーレイ(SMIL)再生エンジン(再生時に生成)
+    var mediaOverlayController: MediaOverlayController?
     /// めくりアニメーションのオーバーレイ(spine 切替時に掃除)
     private var turnOverlays: [NSView] = []
     /// 直前のめくり時刻(高速連打時はアニメーションを省略して即めくり)
@@ -271,6 +273,9 @@ public final class EPUBReaderView: NSView {
 
     /// Opens a book. Pass a locator to resume from the previous position.
     public func load(publication: EPUBPublication, at locator: EPUBLocator? = nil) {
+        // 別の本を開くのでメディアオーバーレイ再生は止める(本に紐づく)
+        mediaOverlayController?.stop()
+        mediaOverlayController = nil
         self.publication = publication
         fxlViewportCache.removeAll()
         // 旧本あての再ページ割り予約を破棄(新 webView に古い設定同期由来の
@@ -746,6 +751,9 @@ public final class EPUBReaderView: NSView {
     private func evaluate(_ script: String) {
         webView?.evaluateJavaScript(script, in: nil, in: Self.washiWorld)
     }
+
+    /// washi ワールドで JS を評価する(メディアオーバーレイ拡張から使う)
+    func evaluateWashi(_ script: String) { evaluate(script) }
 
     // MARK: - レイアウト
 
@@ -1406,7 +1414,7 @@ public final class EPUBReaderView: NSView {
     /// コンテナ内パスへの移動(リンクの共通経路)。必ず loadSpineItem を
     /// 経由して currentSpineIndex を保つ — WKWebView に直接遷移させると
     /// 柱・ページバー・読書位置の保存がすべて旧 spine 項目のまま狂う
-    fileprivate func goToContainerPath(_ path: String, fragment: String?) {
+    func goToContainerPath(_ path: String, fragment: String?) {
         guard let publication,
               publication.readingOrder.indices.contains(currentSpineIndex)
         else { return }

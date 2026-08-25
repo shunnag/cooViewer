@@ -35,6 +35,13 @@ public struct EPUBAccessibility: Sendable, Equatable {
 }
 
 extension EPUBMetadata {
+    /// The CSS class a reading system applies to the text currently being read
+    /// during media-overlay playback (`media:active-class`), if declared.
+    public var mediaOverlayActiveClass: String? {
+        metaItems.first { $0.refines == nil && $0.property == "media:active-class" }?
+            .value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The publication's accessibility metadata, assembled from the document's
     /// schema.org / EPUB-a11y meta properties.
     public var accessibility: EPUBAccessibility {

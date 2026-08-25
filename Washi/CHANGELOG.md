@@ -4,6 +4,18 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.8.0] - 2026-08-25
+
+### 追加
+- **メディアオーバーレイ(SMIL)の音声同期再生**。`EPUBReaderView` に
+  `playMediaOverlay()` / `pauseMediaOverlay()` / `stopMediaOverlay()` /
+  `toggleMediaOverlayPlayback()` と `isPlayingMediaOverlay` /
+  `hasMediaOverlayForCurrentItem` を追加。par 単位で音声(AVFoundation)を
+  再生しながら、読み上げ中のテキストへ `media:active-class` を付与し、
+  必要なページへ自動でめくる。項目末尾では次の音声付き項目へ連続再生
+  (オーディオブック)。`EPUBReaderViewDelegate` に再生状態・終了の通知を追加
+- `EPUBMetadata.mediaOverlayActiveClass`(`media:active-class` の読み出し)
+
 ## [1.7.0] - 2026-08-25
 
 ### 追加

@@ -298,6 +298,33 @@ enum ReaderScripts {
             return washi.showPage(page);
         };
 
+        /// メディアオーバーレイ再生: 直前の active を外して id 要素へ付け直し、
+        /// その要素が現在のスプレッドに無ければそのページへめくる(ページ計数は
+        /// showPage 経由で同期)。id が空なら全 active を解除するだけ
+        let mediaOverlayActiveIds = [];
+        washi.mediaOverlayHighlight = function (id, cls) {
+            try {
+                mediaOverlayActiveIds.forEach(function (prev) {
+                    const p = document.getElementById(prev);
+                    if (p) { p.classList.remove(cls); }
+                });
+            } catch (e) {}
+            mediaOverlayActiveIds.length = 0;
+            if (!id) { return currentPage; }
+            let el = null;
+            try { el = document.getElementById(id); } catch (e) { el = null; }
+            if (!el) { return currentPage; }
+            el.classList.add(cls);
+            mediaOverlayActiveIds.push(id);
+            // 現在のスプレッド外なら該当ページへめくる(既に見えていれば据え置き)
+            const before = currentPage;
+            const target = washi.showFragment(id);
+            if (target >= before && target < before + pagesPerScreen) {
+                washi.showPage(before);  // 既に可視: めくらない
+            }
+            return currentPage;
+        };
+
         /// 文書内で 1 画面(単ページ=1、見開き=2 ページ)進む/戻る。
         /// ページが変わったら true。境界を越えるときは native へ通知して false。
         /// setup 前(ready=false)は何もしない(読み込み直後の連打で

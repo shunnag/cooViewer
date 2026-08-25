@@ -254,6 +254,12 @@ public protocol EPUBReaderViewDelegate: AnyObject {
     /// or invalidated). See view.pageCensus / censusTotalPages /
     /// currentGlobalPageRange.
     func readerViewDidUpdatePageCensus(_ view: EPUBReaderView)
+    /// Media-overlay (SMIL) playback started or paused/stopped. Use it to keep
+    /// a play/pause control in sync.
+    func readerView(_ view: EPUBReaderView,
+                    isPlayingMediaOverlayDidChange isPlaying: Bool)
+    /// Media-overlay playback reached the end of the book (nothing more to play).
+    func readerViewMediaOverlayDidFinish(_ view: EPUBReaderView)
 }
 
 public extension EPUBReaderViewDelegate {
@@ -275,4 +281,7 @@ public extension EPUBReaderViewDelegate {
                     forward: Bool, in pageRect: CGRect) -> Bool { false }
     func readerView(_ view: EPUBReaderView, didFailWith error: any Error) {}
     func readerViewDidUpdatePageCensus(_ view: EPUBReaderView) {}
+    func readerView(_ view: EPUBReaderView,
+                    isPlayingMediaOverlayDidChange isPlaying: Bool) {}
+    func readerViewMediaOverlayDidFinish(_ view: EPUBReaderView) {}
 }

@@ -44,6 +44,29 @@ final class PublicationTests: XCTestCase {
         XCTAssertNil(publication.spineIndex(forHref: "text/missing.xhtml"))
     }
 
+    /// media:active-class メタデータのアクセサ
+    func testMediaOverlayActiveClass() throws {
+        let opf = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" \
+        unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title>t</dc:title><dc:language>ja</dc:language>
+            <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
+            <meta property="media:active-class">correct</meta>
+          </metadata>
+          <manifest>
+            <item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine><itemref idref="a"/></spine>
+        </package>
+        """
+        let package = try PackageDocumentParser.parse(
+            data: Data(opf.utf8), at: "OEBPS/package.opf")
+        XCTAssertEqual(package.metadata.mediaOverlayActiveClass, "correct")
+    }
+
     /// メディアオーバーレイ(SMIL)の有無。縦組み小説は持たない
     func testHasMediaOverlays() throws {
         let publication = try openVerticalNovel()
