@@ -526,7 +526,18 @@ final class Book {
     // MARK: - サブフォルダ移動(仕様書 §4.3.5: containerPath 単位で巡回)
 
     func nextSubFolderIndex() -> Int? {
-        guard !entries.isEmpty else { return nil }
+        Self.nextSubFolderIndex(in: entries, from: currentIndex)
+    }
+
+    func previousSubFolderIndex() -> Int? {
+        Self.previousSubFolderIndex(in: entries, from: currentIndex)
+    }
+
+    /// containerPath 単位で次の構成巻(サブフォルダ)先頭へ。合本内の EPUB 巻
+    /// からも同じ規則で移動できるよう純関数として切り出す(監査 #7。テスト対象)
+    static func nextSubFolderIndex(in entries: [PageEntry], from currentIndex: Int)
+        -> Int? {
+        guard entries.indices.contains(currentIndex) else { return nil }
         let current = entries[currentIndex].containerPath
         for offset in 1...entries.count {
             let index = (currentIndex + offset) % entries.count
@@ -535,8 +546,9 @@ final class Book {
         return nil
     }
 
-    func previousSubFolderIndex() -> Int? {
-        guard !entries.isEmpty else { return nil }
+    static func previousSubFolderIndex(in entries: [PageEntry], from currentIndex: Int)
+        -> Int? {
+        guard entries.indices.contains(currentIndex) else { return nil }
         let current = entries[currentIndex].containerPath
         var index = currentIndex
         for _ in 1...entries.count {

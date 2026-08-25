@@ -1260,7 +1260,10 @@ public final class EPUBReaderView: NSView {
             guard !isLoadingSpineItem else { break }
             let forward = dict["forward"] as? Bool ?? true
             if dict["horizontal"] as? Bool ?? false {
-                forward ? turnPageRight() : turnPageLeft()
+                // native 経路と同じくホスト設定でゲート・反転する
+                guard settings.horizontalWheelTurnsPages else { break }
+                let towardRight = forward != settings.reversesHorizontalWheelTurn
+                towardRight ? turnPageRight() : turnPageLeft()
             } else {
                 forward ? goForward() : goBackward()
             }
@@ -1402,7 +1405,11 @@ public final class EPUBReaderView: NSView {
         // AppKit の scrollingDelta は DOM の wheel と符号が逆(正=文書の
         // 先頭方向へのスクロール)なので、JS の wheelTurn と対になる写像
         if marginWheelHorizontal {
-            positive ? turnPageLeft() : turnPageRight()
+            // 水平めくりはホスト設定でゲート・反転できる(ホストが自前の
+            // スワイプめくりを持つ場合に二重発火を避け、綴じ方向をそろえる)
+            guard settings.horizontalWheelTurnsPages else { return }
+            let towardLeft = positive != settings.reversesHorizontalWheelTurn
+            towardLeft ? turnPageLeft() : turnPageRight()
         } else {
             positive ? goBackward() : goForward()
         }

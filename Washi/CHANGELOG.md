@@ -4,6 +4,19 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.10.0] - 2026-08-25
+
+### 追加
+- `EPUBReaderSettings.horizontalWheelTurnsPages`(既定 true)。false にすると
+  水平トラックパッド/ホイールジェスチャでページをめくらない — ホストが自前の
+  スワイプめくりを持つ場合に二重発火を避け、ホストの「スワイプでめくる」設定を
+  尊重できる。縦方向のページ送り(縦積みのスクロール読み)は影響を受けない。
+- `EPUBReaderSettings.reversesHorizontalWheelTurn`(既定 false)。水平ホイール
+  めくりの読書方向を反転する。ホストのスワイプ方向設定や、合本(単巻と異なる
+  読み順のコレクション)の綴じ方向にホイールめくりをそろえるために使う。
+- どちらも表示条件(ページ割り・census メトリクス)には影響しない挙動のみの
+  設定で、`cacheKey`/census には含めない。
+
 ## [1.9.0] - 2026-08-25
 
 ### 追加

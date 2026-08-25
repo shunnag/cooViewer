@@ -64,7 +64,16 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         syncEPUBViewSettings()
         readerViewForInput.isHidden = true
         view.isHidden = false
-        window?.title = publication.metadata.mainTitle ?? url.lastPathComponent
+        let epubTitle = publication.metadata.mainTitle ?? url.lastPathComponent
+        if let collectionContext {
+            // 合本内の巻に入ったとき、題名を子 EPUB 単独の題名にすると『合本を
+            // 抜けた』ように見え「今どこにいるか」を失う。合本名を残して現在巻を
+            // 併記する(画像巻へ戻れば openBookFlow が合本名へ戻す。監査 UX 提案)
+            window?.title =
+                "\(collectionContext.folderURL.lastPathComponent) — \(epubTitle)"
+        } else {
+            window?.title = epubTitle
+        }
         window?.representedURL = url
 
         let spineCount = publication.readingOrder.count
@@ -97,6 +106,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             BookHistoryStore.shared.noteOpened(path: url.path)
         }
         installEPUBKeyMonitorIfNeeded()
+        installEPUBGestureMonitorIfNeeded()
         // フォーカスも EPUB ビューへ(隠れた ReaderView に残さない)
         window?.makeFirstResponder(view)
         // ページバー(仕様書 §3.4)は EPUB でも設定どおり出す。進捗は
@@ -145,7 +155,26 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubSettings.insets = Self.epubInsets(forMargins: settings.epubPageMargins)
         epubSettings.defaultFontFamily =
             settings.epubDefaultFont.isEmpty ? nil : settings.epubDefaultFont
+        // 水平スワイプ/ホイールめくりを画像本と同じトグル・向きにそろえる
+        // (Washi は既定で内部的にめくるため、SwipeToTurnPage/FlipSwipeDirection
+        // やコレクションの綴じ方向が効かず非対称だった。監査 #2)
+        epubSettings.horizontalWheelTurnsPages = settings.swipeToTurnPage
+        epubSettings.reversesHorizontalWheelTurn = epubHorizontalWheelReversed
         return epubSettings
+    }
+
+    /// Washi の水平ホイールめくりを画像本のスワイプめくりと同じ論理方向へ
+    /// そろえるための反転フラグ。画像側 f=「次」⟺(実効綴じ方向 != 反転設定)、
+    /// Washi 側 g=「次」⟺ 本が RTL。両者が食い違うとき反転する(監査 #2。
+    /// 混在方向コレクションでは Washi は本の宣言方向でめくるため、コレクション
+    /// の readMode との差もここで吸収される)
+    private var epubHorizontalWheelReversed: Bool {
+        let bookRTL = epubPublication?.readingDirection == .rtl
+        // 実効綴じ方向(コレクション文脈はコレクション設定、単体は本の宣言)
+        let effReadsFromLeft = epubCollectionContext?.readsFromLeft ?? !bookRTL
+        let gIsNext = bookRTL
+        let fIsNext = effReadsFromLeft != settings.flipSwipeDirection
+        return gIsNext != fIsNext
     }
 
     /// 実際に(次に)開いたときのリーダー設定。columnMode(s キーの単/見開き
@@ -227,9 +256,18 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                   !publication.isDRMProtected else {
                 // 開けない本(DRM 等)は以後「静的な表紙ページ」に降格して
                 // 同じ場所を再表示する(隣へ素通りさせると、全滅フォルダ +
-                // ループ設定で openBook が無限循環する)
-                NSSound.beep()
-                self.epubFailedPlaceholders.insert(url)
+                // ループ設定で openBook が無限循環する)。初回降格のときだけ、
+                // DRM なら単体で開いた EPUB と同じ説明を出す(合本内で無説明に
+                // 表紙へ化けると『なぜこの巻だけ読めないか』が分からない。監査 #9)
+                let inserted = self.epubFailedPlaceholders.insert(url).inserted
+                if inserted, let publication, publication.isDRMProtected {
+                    let alert = NSAlert()
+                    alert.messageText = String(localized: "This book is protected by DRM.")
+                    alert.informativeText = publication.drmSchemeName ?? ""
+                    alert.runModal()
+                } else {
+                    NSSound.beep()
+                }
                 self.openBook(at: context.folderURL, atPage: entryIndex)
                 return
             }
@@ -501,6 +539,22 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubView.go(to: EPUBLocator(spineIndex: next))
     }
 
+    /// 合本内の EPUB 巻から次/前の構成巻(サブフォルダ=containerPath 境界)へ。
+    /// 画像巻の goToSubFolder(Book.*SubFolderIndex)と同じ巡回規則を合本の
+    /// entries に対して使い、対称に動けるようにする。単体 EPUB には構成巻の
+    /// 概念が無いので false を返して呼び出し側でビープ(監査 #7)
+    private func epubGoToAdjacentSubFolder(forward: Bool) -> Bool {
+        guard let context = epubCollectionContext else { return false }
+        let target = forward
+            ? Book.nextSubFolderIndex(in: context.entries, from: context.entryIndex)
+            : Book.previousSubFolderIndex(in: context.entries, from: context.entryIndex)
+        guard let target else { return false }
+        // 次/前いずれも構成巻グループの先頭に着地する(画像巻と同じ)。対象が
+        // 代理 EPUB でもその巻の先頭ページから開く(atFirst)
+        openCollectionEntry(context: context, at: target, forward: true, atFirst: true)
+        return true
+    }
+
     // MARK: - キー入力(WKWebView がキーを食うためローカルモニタで捕捉)
 
     func installEPUBKeyMonitorIfNeeded() {
@@ -513,11 +567,97 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         }
     }
 
+    /// ハードウェアのスワイプ(3 本指の「ページ間スワイプ」)・回転ジェスチャは
+    /// swipe(with:)/rotate(with:) を実装する ReaderView が EPUB モードでは
+    /// 隠れているため届かない。キーと同じくローカルモニタで拾って画像本と同じ
+    /// スワイプ仮想ボタンへ写像する(監査 #10。既定 swipeDown=次の本/
+    /// swipeUp=前の本/水平=前後ページ、割当はカスタムも尊重)
+    func installEPUBGestureMonitorIfNeeded() {
+        guard epubGestureMonitor == nil else { return }
+        epubGestureMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.swipe, .rotate]) { [weak self] event in
+            guard let self, self.isEPUBMode, event.window === self.window,
+                  self.window?.isKeyWindow == true else { return event }
+            return self.handleEPUBGestureEvent(event) ? nil : event
+        }
+    }
+
+    /// swipe/rotate NSEvent を仮想ボタンへ写像して EPUB ジェスチャ処理へ。
+    /// 写像は ReaderView.swipe(with:)/rotate(with:) と同一
+    private func handleEPUBGestureEvent(_ event: NSEvent) -> Bool {
+        let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
+        let leftHalf = epubLeftHalf(locationInWindow: event.locationInWindow)
+        switch event.type {
+        case .swipe:
+            let button: Int
+            if abs(event.deltaX) >= abs(event.deltaY) {
+                button = event.deltaX > 0
+                    ? VirtualButton.swipeLeft : VirtualButton.swipeRight
+            } else {
+                button = event.deltaY > 0
+                    ? VirtualButton.swipeUp : VirtualButton.swipeDown
+            }
+            return handleEPUBGesture(virtualButton: button, modifiers: modifiers,
+                                     leftHalf: leftHalf)
+        case .rotate:
+            if event.phase == .began { epubRotationSum = 0 }
+            epubRotationSum += CGFloat(event.rotation)
+            guard event.phase == .ended else { return true }  // 途中は消費のみ
+            defer { epubRotationSum = 0 }
+            guard abs(epubRotationSum) > 5 else { return false }
+            let button = epubRotationSum > 0
+                ? VirtualButton.rotateLeft : VirtualButton.rotateRight
+            return handleEPUBGesture(virtualButton: button, modifiers: modifiers,
+                                     leftHalf: leftHalf)
+        default:
+            return false
+        }
+    }
+
+    /// スワイプ/回転の仮想ボタンを EPUB 用にディスパッチする。水平スワイプの
+    /// ページ送りだけ SwipeToTurnPage/FlipSwipeDirection を適用する点も画像本の
+    /// handleGesture と同じ(綴じ方向はコレクション文脈では合本の readMode)
+    @discardableResult
+    private func handleEPUBGesture(virtualButton: Int, modifiers: Int,
+                                  leftHalf: Bool) -> Bool {
+        var button = virtualButton
+        if button == VirtualButton.swipeLeft || button == VirtualButton.swipeRight {
+            let action = bindings.resolveMouse(
+                button: button, modifiers: modifiers,
+                fitMode: 0, readsFromLeft: epubInputReadsFromLeft)?.action
+            if action == .nextPage || action == .previousPage {
+                guard settings.swipeToTurnPage else { return true }
+                if settings.flipSwipeDirection {
+                    button = button == VirtualButton.swipeLeft
+                        ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+                }
+            }
+        }
+        guard let binding = bindings.resolveMouse(
+            button: button, modifiers: modifiers,
+            fitMode: 0, readsFromLeft: epubInputReadsFromLeft),
+            let action = binding.action else { return false }
+        return performEPUB(action, value: binding.value, leftHalf: leftHalf)
+    }
+
+    /// ジェスチャ位置が EPUB ビューの左半分か(positional 系アクション用)
+    private func epubLeftHalf(locationInWindow: CGPoint) -> Bool {
+        guard let epubView else { return true }
+        return epubView.convert(locationInWindow, from: nil).x < epubView.bounds.midX
+    }
+
     private func handleEPUBKeyEvent(_ event: NSEvent) -> Bool {
         // ⌘付きはメニューのキーイクイバレントに任せる(+Input.swift と同じ)
         guard !event.modifierFlags.contains(.command) else { return false }
         guard let character = event.charactersIgnoringModifiers?.first else {
             return false
+        }
+        // サムネイルオーバーレイ表示中の Esc は一覧を閉じる(画像本の
+        // handleKeyEvent と同じ特例。Esc は未割当で resolveKey には載らないため
+        // ここで先取りしないと WKWebView へ抜けてビープする。監査 #3)
+        if isThumbnailOverlayVisible, character == "\u{1B}" {
+            hideThumbnailOverlay()
+            return true
         }
         let modifiers = LegacyModifier.encode(keyEvent: event)
         // EPUB にフィットモードの概念はない。探索順は [keyMode2, keyNormal]
@@ -598,6 +738,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             openAdjacentBook(forward: true)
         case .previousBook:
             openAdjacentBook(forward: false)
+        case .nextSubFolder:
+            // 合本内の構成巻移動。画像巻の goToSubFolder と対称(監査 #7)
+            return epubGoToAdjacentSubFolder(forward: true)
+        case .previousSubFolder:
+            return epubGoToAdjacentSubFolder(forward: false)
+        case .positionalNextPrevSubFolder:
+            guard let leftHalf else { return false }
+            return epubGoToAdjacentSubFolder(forward: epubIsNextSide(leftHalf))
         case .positionalNextPrevPage, .positionalHalfNextPrev,
              .positionalPageUpDownTurn:
             // クリック位置の側へめくる(実効綴じ方向 — 単体では本の宣言と

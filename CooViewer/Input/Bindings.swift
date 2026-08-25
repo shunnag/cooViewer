@@ -254,7 +254,12 @@ struct BindingConfiguration: Sendable {
                 return fallback
             }
             var bindings = keyBindings(fromLegacyArray: array)
-            guard !bindings.isEmpty else { return fallback }
+            // 明示的に保存された空配列(UI で全割当を削除した状態)は既定へ
+            // 戻さず尊重する。array 自体は非空なのに変換結果だけ空=全行が不正の
+            // ときだけ既定へ戻す。key 自体が無い(未設定)は上の nil ガードで既に
+            // fallback 済み。以前は空配列も一律 fallback で、UI で全削除しても
+            // 再起動で既定が復活していた(UserEdited フラグより手前で短絡。監査 #8)
+            guard !bindings.isEmpty || array.isEmpty else { return fallback }
             // 保存済み配列への新既定の移行: f が未使用かつ補間切替(53)が
             // 未割当のときだけ追記する(ユーザーのカスタマイズは尊重)。
             // 2.0 の UI で編集済み(KeyArrayUserEdited)なら注入しない —
@@ -273,7 +278,12 @@ struct BindingConfiguration: Sendable {
                 return fallback
             }
             var bindings = mouseBindings(fromLegacyArray: array)
-            guard !bindings.isEmpty else { return fallback }
+            // 明示的に保存された空配列(UI で全割当を削除した状態)は既定へ
+            // 戻さず尊重する。array 自体は非空なのに変換結果だけ空=全行が不正の
+            // ときだけ既定へ戻す。key 自体が無い(未設定)は上の nil ガードで既に
+            // fallback 済み。以前は空配列も一律 fallback で、UI で全削除しても
+            // 再起動で既定が復活していた(UserEdited フラグより手前で短絡。監査 #8)
+            guard !bindings.isEmpty || array.isEmpty else { return fallback }
             // 保存済み配列への新既定の移行(メモリ内注入): サイドボタンを
             // 戻る/進むに。ユーザーが button 3/4 を既に使っている場合と、
             // 2.0 の設定 UI で MouseArray を編集済み(MouseArrayUserEdited)の

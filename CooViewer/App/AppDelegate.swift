@@ -87,10 +87,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let root = ArchiveSource.spoolRoot()
             if let children = try? FileManager.default.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: nil) {
+                // 生存判定を kill(pid,0)==0 だけで行うと、OS の pid 再利用で
+                // 無関係な同一ユーザープロセスがその pid を握っているときに
+                // 『生存』と誤判定し、暗号化祖先由来の復号済み平文スプールが
+                // 回収されず残留する(監査 #4)。実際に生きている cooViewer の
+                // pid 集合と照合する(Debug の ad-hoc ビルドも同じ bundle id)
+                let livePids = Set(NSRunningApplication.runningApplications(
+                    withBundleIdentifier: "jp.coo.cooViewer")
+                    .map { $0.processIdentifier })
                 for child in children {
                     let pid = child.lastPathComponent.split(separator: "-").first
-                        .flatMap { Int32($0) }
-                    if let pid, kill(pid, 0) == 0 { continue }  // 生存プロセスの分は残す
+                        .flatMap { pid_t($0) }
+                    // 生きている cooViewer の分だけ残す
+                    if let pid, livePids.contains(pid) { continue }
                     try? FileManager.default.removeItem(at: child)
                 }
             }
