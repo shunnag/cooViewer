@@ -60,7 +60,16 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// background, and each page's folio (page number) sits in the bottom
     /// margin — mirroring Apple Books' page-layout design. Not applied to
     /// fixed-layout (FXL) pages (which display full-bleed).
+    ///
+    /// This is the base value, used for single-page display and as the default
+    /// for spread display; set ``spreadInsets`` to give the spread (two-up)
+    /// layout different margins.
     public var insets = EPUBReaderInsets(top: 56, left: 56, bottom: 52, right: 56)
+    /// Content insets used in spread (two-up) display. When nil (the default),
+    /// spread display uses ``insets``. Set it to give the two-page layout its
+    /// own margins — e.g. wider outer margins on a large window. The center
+    /// gutter between the two pages is added automatically on top of these.
+    public var spreadInsets: EPUBReaderInsets?
     /// Spread-display policy (default: automatic, based on window width).
     public var columnMode: EPUBColumnMode = .auto
     /// Color theme (default: follows the system appearance).

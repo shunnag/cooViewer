@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.9.0] - 2026-08-25
+
+### 追加
+- `EPUBReaderSettings.spreadInsets`(見開き専用の余白)。nil のとき見開きも
+  `insets` を使う(従来互換)。設定すると単ページと見開きで別々の余白を
+  適用できる(例: 大きなウインドウの見開きで外側を広めに)。見開き判定は
+  基準 `insets` の内容幅で行うので切替閾値は揺れない。webView フレーム・
+  ノンブル位置・census メトリクスすべてがモードに応じた余白で整合する
+
 ## [1.8.1] - 2026-08-25
 
 ### セキュリティ

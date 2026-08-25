@@ -25,6 +25,7 @@ public final class EPUBReaderView: NSView {
             } else if oldValue.fontScale != settings.fontScale
                         || oldValue.pageGap != settings.pageGap
                         || oldValue.insets != settings.insets
+                        || oldValue.spreadInsets != settings.spreadInsets
                         || oldValue.columnMode != settings.columnMode
                         || oldValue.defaultFontFamily != settings.defaultFontFamily {
                 // ページ割りに影響する変更のみ再ページ割り(余白は webView
@@ -368,11 +369,20 @@ public final class EPUBReaderView: NSView {
 
     /// リフロー時の webView 配置(設定の余白でインセット)。
     /// FXL は全面(余白なし)に配置してページ自体を版面として見せる
+    /// 現在の表示モード(単ページ/見開き)に応じた実効余白。見開きは
+    /// spreadInsets があればそちら、無ければ insets(EPUBScreenMetrics と同じ規則)
+    private var activeInsets: EPUBReaderInsets {
+        let isSpread = shouldUseSpread(forContentWidth:
+            max(1, bounds.width - settings.insets.left - settings.insets.right))
+        return isSpread ? (settings.spreadInsets ?? settings.insets)
+                        : settings.insets
+    }
+
     private func contentFrame() -> NSRect {
         if isFixedLayoutItem {
             return NSRect(origin: .zero, size: bounds.size)
         }
-        let insets = settings.insets
+        let insets = activeInsets
         return NSRect(
             x: insets.left,
             y: insets.bottom,
@@ -384,7 +394,7 @@ public final class EPUBReaderView: NSView {
     /// 見開き時は左右のページそれぞれの下、単ページ時は中央)。
     /// AppKit 座標系: 下原点
     private func layoutFurniture() {
-        let insets = settings.insets
+        let insets = activeInsets
         let contentWidth = max(1, bounds.width - insets.left - insets.right)
         // ページスロットの中心 x(見開きはノドを挟んだ半幅 2 面)
         let centers: [CGFloat]

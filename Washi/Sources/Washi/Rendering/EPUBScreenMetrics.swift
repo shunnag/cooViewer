@@ -24,13 +24,20 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
     private let themedCSSDark: String
 
     public init(viewportSize: CGSize, settings: EPUBReaderSettings) {
-        let insets = settings.insets
+        // 見開き判定は基準余白(insets)の内容幅で行う。モード別余白
+        // (spreadInsets)を入れても見開き/単ページの切替閾値が揺れないように
+        let base = settings.insets
+        let baseWidth = max(1, viewportSize.width - base.left - base.right)
+        let usesSpread = Self.usesSpread(contentWidth: baseWidth,
+                                         columnMode: settings.columnMode)
+        // 実際の内容寸法は、そのモードの余白で算出(見開きは spreadInsets が
+        // あればそちら、無ければ insets)
+        let active = usesSpread ? (settings.spreadInsets ?? base) : base
         let size = CGSize(
-            width: max(1, viewportSize.width - insets.left - insets.right),
-            height: max(1, viewportSize.height - insets.top - insets.bottom))
+            width: max(1, viewportSize.width - active.left - active.right),
+            height: max(1, viewportSize.height - active.top - active.bottom))
         contentSize = size
-        spread = Self.usesSpread(contentWidth: size.width,
-                                 columnMode: settings.columnMode)
+        spread = usesSpread
         gutter = Double(Self.spreadGutter(forContentWidth: size.width))
         gap = settings.pageGap
         pagesPerScreen = spread ? 2 : 1
