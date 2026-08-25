@@ -31,6 +31,8 @@ final class SettingsStore {
             "PlayAnimatedImages": true,
             "EPUBPinchFontScale": true,
             "EPUBPageMargins": 1,
+            "EPUBTheme": 0,                    // 0=システム / 1=ライト / 2=ダーク
+            "EPUBForceReadableColors": true,   // 既定は読みやすさ優先
         ])
     }
 
@@ -432,6 +434,21 @@ final class SettingsStore {
     var epubDefaultFont: String {
         get { defaults.string(forKey: "EPUBDefaultFont") ?? "" }
         set { defaults.set(newValue, forKey: "EPUBDefaultFont") }
+    }
+
+    /// EPUB リフローの背景(配色テーマ)。0=システムに従う / 1=ライト / 2=ダーク。
+    /// Washi の EPUBReaderTheme への写像は ReaderWindowController が行う(新設キー)
+    var epubTheme: Int {
+        get { min(2, max(0, defaults.integer(forKey: "EPUBTheme"))) }
+        set { defaults.set(min(2, max(0, newValue)), forKey: "EPUBTheme") }
+    }
+
+    /// EPUB リフローで「読みやすさ優先」にするか(既定 ON)。ON のとき、本が
+    /// 色を指定していてもテーマの文字色を強制してコントラストを確保する。
+    /// OFF は本の配色を尊重する(Washi の forcesReadableColors へ写像。新設キー)
+    var epubForceReadableColors: Bool {
+        get { defaults.bool(forKey: "EPUBForceReadableColors") }
+        set { defaults.set(newValue, forKey: "EPUBForceReadableColors") }
     }
 
     /// バブルのサムネイル表示。旧既定は OFF だったが新実装では ON を既定にする
