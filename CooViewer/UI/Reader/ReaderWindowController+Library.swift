@@ -186,9 +186,9 @@ extension ReaderWindowController {
     /// 巻末付近では毎ページ表示ごとに呼ばれる(次の本の事前準備)ため、
     /// 5 秒間キャッシュしてメインスレッドのディレクトリ走査を抑える
     /// (NAS/HDD の大きなフォルダで毎ページ数十 ms 止まるのを防ぐ)
-    private func siblingBooks() -> [String] {
-        guard let book else { return [] }
-        let parent = book.source.url.deletingLastPathComponent()
+    private func siblingBooks(of currentURL: URL) -> [String] {
+        // EPUB モードでも同じ兄弟走査を使う(次/前の本の操作感を揃える)
+        let parent = currentURL.deletingLastPathComponent()
         if let cached = cachedSiblings, cached.parent == parent.path,
            Date().timeIntervalSince1970 - cached.timestamp < 5 {
             return cached.paths
@@ -210,11 +210,14 @@ extension ReaderWindowController {
     }
 
     /// 次/前の本へ(端でラップアラウンド。§4.3.4)。openLast=前の本を末尾から開く。
+    /// コレクション(合本)内から開いた EPUB では「本」はコレクション自体
+    /// なので、基準をコレクションフォルダへ読み替える(設計書 §2.4 EPUB 対応)
     func openAdjacentBook(forward: Bool, openLast: Bool = false) {
-        guard let book else { return }
-        let siblings = siblingBooks()
+        guard let currentURL =
+            epubCollectionContext?.folderURL ?? currentBookFileURL else { return }
+        let siblings = siblingBooks(of: currentURL)
         guard !siblings.isEmpty,
-              let current = siblings.firstIndex(of: book.source.url.path) else { return }
+              let current = siblings.firstIndex(of: currentURL.path) else { return }
         let target = (current + (forward ? 1 : -1) + siblings.count) % siblings.count
         // ナビゲーションではコレクションフォルダへ潜らない: フォルダ自身に
         // 着地して階層を保つ(潜ると以後の次/前の本が中の階層の兄弟を走査し、
@@ -505,8 +508,9 @@ extension ReaderWindowController {
     func maybePrepareNextBook() {
         let threshold = settings.prepareNextBookPages  // 0 は無効(設定「高度」)
         guard threshold > 0, let book, book.pageCount > 0,
-              book.currentIndex >= book.pageCount - threshold else { return }
-        let siblings = siblingBooks()
+              book.currentIndex >= book.pageCount - threshold,
+              let currentURL = currentBookFileURL else { return }
+        let siblings = siblingBooks(of: currentURL)
         guard siblings.count > 1,
               let current = siblings.firstIndex(of: book.source.url.path) else { return }
         let nextPath = siblings[(current + 1) % siblings.count]
@@ -549,7 +553,13 @@ extension ReaderWindowController {
     @objc func nextBookMenu(_ sender: Any?) { openAdjacentBook(forward: true) }
     @objc func previousBookMenu(_ sender: Any?) { openAdjacentBook(forward: false) }
     @objc func openLastBookMenu(_ sender: Any?) { openTheLastBook() }
-    @objc func showInFinderMenu(_ sender: Any?) { showInFinder(leftSide: nil) }
+    @objc func showInFinderMenu(_ sender: Any?) {
+        if isEPUBMode, let epubBookURL {
+            NSWorkspace.shared.activateFileViewerSelecting([epubBookURL])
+            return
+        }
+        showInFinder(leftSide: nil)
+    }
     @objc func showOtherPageInFinderMenu(_ sender: Any?) { showOtherPageInFinder() }
     @objc func showFileInfoMenu(_ sender: Any?) { showFileInfo() }
     @objc func toggleSlideshowMenu(_ sender: Any?) { toggleSlideshow() }
@@ -591,6 +601,23 @@ final class ChapterListMenuDelegate: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         let controller = NSApp.windows
             .compactMap { $0.windowController as? ReaderWindowController }.first
+        // EPUB モードでは目次(nav)を章メニューとして出す(操作感の統一)
+        if let controller, controller.isEPUBMode {
+            for (index, entry) in controller.epubFlattenedToc.enumerated() {
+                let item = menu.addItem(
+                    withTitle: entry.title,
+                    action: #selector(ReaderWindowController.goToEPUBChapterItem(_:)),
+                    keyEquivalent: "")
+                item.indentationLevel = entry.indent
+                item.representedObject = index
+            }
+            if controller.epubFlattenedToc.isEmpty {
+                let empty = menu.addItem(withTitle: String(localized: "No Chapters"),
+                                         action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+            }
+            return
+        }
         let chapters = controller?.book?.chapterMarks ?? []
         for chapter in chapters {
             let item = menu.addItem(

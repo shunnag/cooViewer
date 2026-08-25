@@ -134,6 +134,18 @@ actor NestedFolderSource: BookSource {
         if SupportedTypes.isPDF(candidate.fileURL) {
             guard let pdf = try? PDFSource(url: candidate.fileURL) else { return nil }
             child = pdf
+        } else if SupportedTypes.isEPUB(candidate.fileURL) {
+            if let epub = try? EPUBSource(url: candidate.fileURL) {
+                // 固定レイアウトはページとして統合
+                child = epub
+            } else if let placeholder =
+                try? ReflowEPUBPlaceholderSource(url: candidate.fileURL) {
+                // リフローは表紙 1 ページの代理エントリで組み込む
+                // (表示到達で ReaderWindowController が EPUB モードへ切替)
+                child = placeholder
+            } else {
+                return nil  // 壊れた EPUB は従来どおり黙って飛ばす
+            }
         } else {
             guard let nested = try? ArchiveSource(
                 url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker,
@@ -177,7 +189,8 @@ actor NestedFolderSource: BookSource {
                 pathInBook: candidate.relativePath + "/" + childEntry.pathInBook,
                 fileURL: nil,
                 creationDate: nil,
-                modificationDate: nil
+                modificationDate: nil,
+                reflowEPUBURL: childEntry.reflowEPUBURL  // 代理ページ印を保つ
             ))
         }
     }

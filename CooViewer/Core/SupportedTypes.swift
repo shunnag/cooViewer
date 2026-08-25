@@ -39,6 +39,13 @@ enum SupportedTypes {
         url.pathExtension.lowercased() == "pdf"
     }
 
+    /// EPUB か(拡張子ベース。UTI は org.idpf.epub-container)。
+    /// 固定レイアウトは EPUBSource(画像パイプライン)、リフローは同じ
+    /// リーダーウインドウの EPUB 表示モード(設計書 §2.4 EPUB 対応)
+    static func isEPUB(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "epub"
+    }
+
     /// UTType 上は画像に適合するが表示できない拡張子(.ai は ImageIO でも
     /// NSImage でも開けないため除外)
     static let undisplayableImageExtensions: Set<String> = ["ai"]
@@ -80,7 +87,7 @@ enum SupportedTypes {
 
     /// 「本」として開ける URL か(フォルダ判定は呼び出し側で行う)
     static func isBookFile(_ url: URL) -> Bool {
-        isArchive(url) || isPDF(url)
+        isArchive(url) || isPDF(url) || isEPUB(url)
             || folderLikeExtensions.contains(url.pathExtension.lowercased())
     }
 }

@@ -159,6 +159,13 @@ enum MainMenuBuilder {
             keyEquivalent: "")
         readModeItem.submenu = readModeMenu
 
+        // 音声メディアオーバーレイ(SMIL)の再生切替。既定オフ(切替式・
+        // オーバーレイを持つ EPUB のときだけ有効)
+        menu.addItem(
+            withTitle: String(localized: "Play Audio Narration"),
+            action: #selector(ReaderWindowController.toggleMediaOverlayMenu(_:)),
+            keyEquivalent: "")
+
         // 補間=描画品質 5 段階(基礎補間+ML 高画質化の統合。
         // タグは RenderQuality の rawValue。f キーの切替アクションもここから)
         let interpolationItem = menu.addItem(

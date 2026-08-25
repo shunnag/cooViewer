@@ -14,6 +14,10 @@ struct PageEntry: Sendable, Hashable, Identifiable {
     let fileURL: URL?
     let creationDate: Date?
     let modificationDate: Date?
+    /// コレクション(合本)内のリフロー EPUB の代理ページなら、その EPUB の
+    /// URL(表紙 1 ページで本を代表し、表示到達で EPUB モードへ切り替える)。
+    /// 常に単独表示(見開きに混ぜない — Book.isSmall が除外する)
+    var reflowEPUBURL: URL? = nil
 
     /// 本の中でこのページが属するフォルダ(サブフォルダ移動の判定単位。仕様書 §4.3.5)
     var containerPath: String {
@@ -168,6 +172,11 @@ enum BookSourceFactory {
         }
         if SupportedTypes.isPDF(url) {
             return try PDFSource(url: url)
+        }
+        if SupportedTypes.isEPUB(url) {
+            // 固定レイアウトのみ(リフローは openBookFlow が専用リーダーへ
+            // 振り分け済み。ここへ来た場合は unsupportedFormat で弾かれる)
+            return try EPUBSource(url: url)
         }
         if SupportedTypes.isArchive(url) {
             return try ArchiveSource(url: url, unlocker: unlocker,

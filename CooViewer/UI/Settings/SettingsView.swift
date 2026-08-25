@@ -16,12 +16,13 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
     case pageBar = 7
     case decoders = 8
     case mouseBindings = 9
+    case epub = 10
 
     var id: Int { rawValue }
 
     /// サイドバーの表示順(rawValue の並びとは独立)
     static let sidebarOrder: [SettingsPane] = [
-        .general, .books, .display, .pageNumber, .pageBar,
+        .general, .books, .epub, .display, .pageNumber, .pageBar,
         .control, .keyBindings, .mouseBindings, .decoders, .advanced,
     ]
 
@@ -29,6 +30,7 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
         switch self {
         case .general: String(localized: "General")
         case .books: String(localized: "Books")
+        case .epub: "EPUB"
         case .display: String(localized: "Display")
         case .pageNumber: String(localized: "Page Number")
         case .pageBar: String(localized: "Page Bar")
@@ -44,6 +46,7 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .books: "books.vertical"
+        case .epub: "book.pages"
         case .display: "book"
         case .pageNumber: "number"
         case .pageBar: "slider.horizontal.below.rectangle"
@@ -59,6 +62,7 @@ enum SettingsPane: Int, CaseIterable, Identifiable {
         switch self {
         case .general: .gray
         case .books: .blue
+        case .epub: .mint
         case .display: .purple
         case .pageNumber: .orange
         case .pageBar: .teal
@@ -156,6 +160,10 @@ struct SettingsView: View {
     @AppStorage("GestureHUDEnabled") private var gestureHUDEnabled = true
     @AppStorage("SmartZoomEnabled") private var smartZoomEnabled = true
     @AppStorage("ForceClickLoupe") private var forceClickLoupe = true
+    @AppStorage("EPUBPinchFontScale") private var epubPinchFontScale = true
+    @AppStorage("EPUBFontScale") private var epubFontScale = 1.0
+    @AppStorage("EPUBPageMargins") private var epubPageMargins = 1
+    @AppStorage("EPUBDefaultFont") private var epubDefaultFont = ""
     @AppStorage("WheelSensitivity") private var wheelSensitivity = 1.0
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
@@ -318,6 +326,12 @@ struct SettingsView: View {
             String(localized: "Unlock with saved passwords"),
             String(localized: "Delete All…"),
         ]
+        case .epub: [
+            String(localized: "Text size:"),
+            String(localized: "Pinch to change EPUB text size"),
+            String(localized: "Page margins:"),
+            String(localized: "Default font (when the book doesn't specify):"),
+        ]
         case .display: [
             String(localized: "Reading direction:"),
             String(localized: "Show the Cover Page Alone"),
@@ -399,6 +413,7 @@ struct SettingsView: View {
         switch selectedPane {
         case .general: generalPane
         case .books: booksPane
+        case .epub: epubPane
         case .display: displayPane
         case .pageNumber: pageNumberPane
         case .pageBar: pageBarPane
@@ -726,6 +741,47 @@ struct SettingsView: View {
                     value: $slideshowDelay, range: 0...30,
                     display: String(format: "%.1f", slideshowDelay)
                 )
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - EPUB
+
+    /// リフロー EPUB の版面設定(設計書 §2.4 EPUB 対応)。変更は即時反映され、
+    /// 読書位置(進行率)を保ったまま再ページ割りされる。既定フォントは
+    /// 「本が font-family を指定しないときだけ」効く(本の指定が最優先)
+    private var epubPane: some View {
+        Form {
+            Section {
+                sliderRow(
+                    label: String(localized: "Text size:"),
+                    value: $epubFontScale, range: 0.5...3.0,
+                    display: String(format: "%d%%",
+                                    Int((epubFontScale * 100).rounded()))
+                )
+                Toggle(String(localized: "Pinch to change EPUB text size"),
+                       isOn: $epubPinchFontScale)
+                Picker(String(localized: "Page margins:"),
+                       selection: $epubPageMargins) {
+                    Text(String(localized: "Narrow")).tag(0)
+                    Text(String(localized: "Standard")).tag(1)
+                    Text(String(localized: "Wide")).tag(2)
+                }
+            }
+            Section {
+                Picker(String(localized: "Default font (when the book doesn't specify):"),
+                       selection: $epubDefaultFont) {
+                    Text(String(localized: "System default")).tag("")
+                    Text(verbatim: "ヒラギノ明朝 ProN").tag("Hiragino Mincho ProN")
+                    Text(verbatim: "ヒラギノ角ゴシック").tag("Hiragino Sans")
+                    Text(verbatim: "游明朝").tag("YuMincho")
+                    Text(verbatim: "游ゴシック体").tag("YuGothic")
+                }
+                Text(String(localized:
+                    "Applies only when the book itself doesn't specify a font. Text size and margins reflow the pages while keeping your reading position."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

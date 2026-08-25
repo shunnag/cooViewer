@@ -630,6 +630,14 @@ extension ReaderWindowController {
 
     private func jumpToPercent(_ percent: Double) {
         guard let book else { return }
+        // 合本に全体マップがあれば「合本全体」基準(EPUB の途中への
+        // 直接ジャンプ込み。書庫内 zip と同じ §3.4 の意味論)。
+        // 100% 以上は従来経路へ落とす — goToPercent の hitEnd →
+        // handleEndOfBook の loopCheck 意味論(仕様書 §4.3.3 #8/§13.3)を保つ
+        if let map = activeCollectionPageMap(), percent < 1.0 {
+            jumpToCollectionFraction(percent, map: map)
+            return
+        }
         if book.goToPercent(percent) == .moved {
             refreshAfterJump()
         } else {

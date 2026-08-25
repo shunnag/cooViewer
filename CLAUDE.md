@@ -33,6 +33,24 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 
 - A run-script phase builds XADMaster/UniversalDetector into `Frameworks/` (skipped while
   outputs exist). After updating the submodules, `rm -rf Frameworks` to force a rebuild.
+- EPUB support lives in `Washi/` — an independent, MIT-licensed, zero-dependency SwiftPM
+  package (see `Washi/README.md`), published as a one-way subtree mirror at
+  https://github.com/shunnag/Washi (procedure: development-guide §3.5; commits
+  touching `Washi/` become public history there). A second run-script phase
+  (`Scripts/build-washi-framework.sh`) assembles it into `Frameworks/Washi.framework`
+  because Xcode cannot combine SwiftPM package references with this project's legacy
+  build locations. After editing `Washi/` sources, `rm -rf Frameworks/Washi.framework`
+  to force a rebuild. Washi's own tests run with `cd Washi && swift test`.
+  - Washi is **two SwiftPM targets** (since 1.2.0): `WashiCore` (parse layer,
+    Foundation-family only, headless) and `Washi` (rendering layer, adds
+    AppKit/WebKit) which `@_exported import`s WashiCore. The `WashiDynamic`
+    product bundles **both** targets into one dylib; the framework script
+    installs **both** swiftmodules under `Washi.framework/Modules/`. cooViewer
+    keeps `import Washi` (sees everything via the re-export) but the project
+    needs `SWIFT_INCLUDE_PATHS = …/Washi.framework/Modules` (so the compiler
+    resolves the re-exported WashiCore module) and the **test target must link
+    Washi.framework explicitly** (its autolink for the now-separate WashiCore
+    module can't otherwise resolve). All three are already set in the pbxproj.
 - The pbxproj is hand-written (objectVersion 77, filesystem-synchronized groups): files
   added under `CooViewer/` or `CooViewerTests/` are picked up automatically — do not add
   per-file entries to the pbxproj.
@@ -80,6 +98,11 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   or design doc (`設計書 §n`) for any behavior that mirrors or deliberately deviates
   from the legacy app. Prefer explaining *why* (spec, avoided bug, performance)
   over *what*.
+  - **Exception — `Washi/` public API doc comments are English** (decided
+    2026-08-25 for the standalone-package audience; see cooViewer-gse.11).
+    `///` doc comments on `public` symbols are written in English so DocC and
+    external consumers read naturally. Internal (`private`/`internal`) comments
+    and all `// …` inline comments in `Washi/` stay Japanese per the rule above.
 - Persisted-data compatibility (updated for 2.0b5): the UserDefaults domain
   `jp.coo.cooViewer` and the binding array schema (`KeyArray*`/`MouseArray*`) remain
   legacy-compatible (§13.2) — never change those without a migration mapping (§13.5).
@@ -97,7 +120,33 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
   `ArchiveSource` (actor over XADMaster; filename encoding auto-detection comes from
-  XADMaster+UniversalDetector), `PDFSource` (actor over PDFKit, point-size rendering).
+  XADMaster+UniversalDetector), `PDFSource` (actor over PDFKit, point-size rendering),
+  `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
+  extraction for single-image pages, WebKit rasterization fallback).
+- `Washi/` — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
+  DRM detection, reflowable WKWebView renderer with vertical-writing pagination,
+  paper-book page furniture (running head + page number), light/dark theming,
+  fixed-layout support). Reflowable EPUBs display **in the same reader window** as an
+  alternate mode (`ReaderWindowController+EPUB.swift` swaps `readerView` ↔ `epubView`;
+  same key/mouse bindings, menus, recents, and next/prev-book navigation); format
+  routing happens at one point in `ReaderWindowController.openBookFlow`. Reading
+  position is stored as `lastReflowPosition` (spine index + progression) in the v2
+  book-state store. Whole-book page counts come from `EPUBPaginationCensus`
+  (offscreen re-measure of every spine item with identical metrics; recomputed on
+  font-size/viewport changes) and drive the N/M page label, page bar, and percent
+  jumps. Reflowable EPUBs inside a collection folder join the merged book as a
+  one-page cover placeholder (`ReflowEPUBPlaceholderSource`, `PageEntry.reflowEPUBURL`,
+  never paired into spreads); landing on it auto-enters EPUB mode, book edges return
+  to the adjacent collection entry, and key/mouse direction resolution follows the
+  **collection's readMode** (`EPUBCollectionContext`) while rendering keeps the
+  book's declared direction. EPUB display settings (font scale / margins / default
+  font when unspecified) live in a dedicated Settings pane (`SettingsPane.epub`).
+  The thumbnail overlay (t) works in EPUB mode too: census-aligned per-screen
+  offscreen renders (`EPUBScreenThumbnailRenderer` in Washi, fed to the existing
+  overlay via the `EPUBScreenThumbnailSource` adapter). Offscreen WebKit work
+  (rasterizer/census/thumbnails) must run its jobs at explicit `.userInitiated`
+  priority — issuing the first JS call at a low inherited QoS (e.g. `.utility`
+  prefetch) hangs the reply forever (measured).
 - `CooViewer/Core/Book/` — `Book` (@MainActor: sorted entries, current index, spread
   pairing per §4.2, prefetch), `PageLayout`/`PageMarks` (spread decision, legacy "N"/"N-M"
   mark strings), `ReadMode`.
