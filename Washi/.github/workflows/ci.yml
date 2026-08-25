@@ -1,0 +1,15 @@
+# 公開ミラー(shunnag/Washi)用 CI。テストは全て解析レベル(WebKit 不使用)
+# なので GitHub の macOS ランナーでそのまま動く
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - run: swift test

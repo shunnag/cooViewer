@@ -244,6 +244,11 @@ final class Book {
 
     /// サイズ索引による見開き候補判定。寸法が取れなければ nil(従来判定へ)
     private func isSmallFromIndex(at index: Int) async -> Bool? {
+        // リフロー EPUB の代理ページは常に単独: 見開きに混ぜると「隣のページの
+        // おまけ」として素通りし、EPUB モードへの切替が飛ばされる
+        if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+            return false
+        }
         guard let size = await pageSize(at: index) else { return nil }
         return PageLayout.isSmall(size: size, index: index,
                                   marks: marks, singleSetting: singleSetting,
@@ -267,6 +272,10 @@ final class Book {
     }
 
     private func isSmall(_ image: CGImage?, at index: Int) -> Bool {
+        // リフロー EPUB の代理ページは常に単独(isSmallFromIndex と同じ規則)
+        if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+            return false
+        }
         guard let image else { return false }
         return PageLayout.isSmall(
             size: CGSize(width: image.width, height: image.height),
@@ -418,6 +427,10 @@ final class Book {
         // サイズ未取得でも marks・表紙単ページの規則は適用したいので、
         // 不明なページは縦長サイズを仮定して通常判定に流す
         func assumedSmall(at index: Int) async -> Bool {
+            // 代理ページ(リフロー EPUB)は常に単独(isSmallFromIndex と同じ規則)
+            if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+                return false
+            }
             let size = await pageSize(at: index) ?? CGSize(width: 70, height: 100)
             return PageLayout.isSmall(size: size, index: index, marks: marks,
                                       singleSetting: singleSetting,

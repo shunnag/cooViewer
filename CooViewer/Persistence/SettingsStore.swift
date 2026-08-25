@@ -29,6 +29,8 @@ final class SettingsStore {
             "ForceClickLoupe": true,
             "PasswordVaultEnabled": true,
             "PlayAnimatedImages": true,
+            "EPUBPinchFontScale": true,
+            "EPUBPageMargins": 1,
         ])
     }
 
@@ -398,6 +400,38 @@ final class SettingsStore {
     var pageBarAutoHide: Bool {
         get { defaults.bool(forKey: "PageBarAutoHide") }
         set { defaults.set(newValue, forKey: "PageBarAutoHide") }
+    }
+
+    /// EPUB のピンチで文字サイズを変更するか(新設キー・既定 ON は
+    /// registerDefaults 登録。OFF でもキー 51/52 の段階調整は有効。
+    /// 設計書 §2.4 EPUB 対応)
+    var epubPinchFontScale: Bool {
+        get { defaults.bool(forKey: "EPUBPinchFontScale") }
+        set { defaults.set(newValue, forKey: "EPUBPinchFontScale") }
+    }
+
+    /// EPUB リフローの本文フォント倍率(新設キー・既定 1.0、0.5...3.0 に丸め。
+    /// ピンチ/キー 51・52 で変更され Washi の再ページ割りに反映。設計書 §2.4 EPUB 対応)
+    var epubFontScale: Double {
+        get {
+            let value = defaults.double(forKey: "EPUBFontScale")
+            return value > 0 ? min(3.0, max(0.5, value)) : 1.0
+        }
+        set { defaults.set(min(3.0, max(0.5, newValue)), forKey: "EPUBFontScale") }
+    }
+
+    /// EPUB リフローの版面余白(新設キー。0=狭い / 1=標準 / 2=広い。
+    /// Washi の EPUBReaderInsets への写像は ReaderWindowController が行う)
+    var epubPageMargins: Int {
+        get { min(2, max(0, defaults.integer(forKey: "EPUBPageMargins"))) }
+        set { defaults.set(min(2, max(0, newValue)), forKey: "EPUBPageMargins") }
+    }
+
+    /// EPUB リフローで本が font-family を指定しないときの既定フォント
+    /// (CSS ファミリー名。空 = WebKit 既定に任せる。新設キー)
+    var epubDefaultFont: String {
+        get { defaults.string(forKey: "EPUBDefaultFont") ?? "" }
+        set { defaults.set(newValue, forKey: "EPUBDefaultFont") }
     }
 
     /// バブルのサムネイル表示。旧既定は OFF だったが新実装では ON を既定にする

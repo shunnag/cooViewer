@@ -22,6 +22,27 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   ビルドする(成果物があればスキップ)。サブモジュール更新後は
   `rm -rf Frameworks` で作り直しを強制し、その後
   `Scripts/sign-sparkle-nested.sh` を再実行する(Sparkle の再取得時)。
+- **Washi(EPUB 3 ツールキット)**は `Washi/` の独立 SwiftPM パッケージで、
+  Run Script フェーズ(`Scripts/build-washi-framework.sh`)が
+  `Frameworks/Washi.framework` を組み立てて埋め込む(SwiftPM 参照でないのは
+  Xcode が legacy build location とパッケージ参照を併用できないため)。
+  **Washi のソースを変更したら `rm -rf Frameworks/Washi.framework`** で
+  再ビルドを強制する。パッケージ単体のテストは `cd Washi && swift test`。
+  **注意(実害あり)**: まれにアプリへの**埋め込みコピーがスキップ**され、
+  `build/Debug/cooViewer.app/Contents/Frameworks/Washi.framework` が旧版の
+  まま残ることがある(Frameworks/ 側だけ新しくなる)。挙動が変わらない
+  ときは埋め込み側も `rm -rf` してからビルドし直す。確認は
+  `strings <app 内の Washi> | grep <新シンボルや文字列>`。
+- **Washi と複数バージョンの Xcode**: バイナリ `.swiftmodule` はコンパイラの
+  バージョンに固定されるため、フレームワークには library evolution の
+  **`.swiftinterface` を同梱**している(別バージョンの Xcode/CLI はこれへ
+  フォールバックして import できる)。スクリプトは Swift バージョンを
+  スタンプし、ツールチェーンが変わると自動で作り直す。
+  「Module compiled with Swift X cannot be imported by Y」が出たら
+  `rm -rf Frameworks/Washi.framework` してビルドし直せば確実に直る。
+  なお SwiftPM の出力レイアウトはバージョンで異なる(6.3 系:
+  `Modules/` 平置き、6.4 の swiftbuild: トリプル別ディレクトリ+
+  interface は Intermediates 配下)——スクリプトは両対応済み。
 
 ### プロジェクトファイルの約束
 
@@ -47,9 +68,9 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 
 | 引数 | 内容 |
 |---|---|
-| `--open <path>` | 指定の本を開く(`--at-page <1 始まり>` で開始ページ指定) |
+| `--open <path>` | 指定の本を開く(`--at-page <1 始まり>` で開始ページ指定。リフロー EPUB では spine 項目の指定になる) |
 | `--snapshot <png>` | 2 秒後に contentView を PNG 出力して終了 |
-| `--show-thumbnails` | サムネイルオーバーレイを開いてから撮る |
+| `--show-thumbnails` | サムネイルオーバーレイを開いて撮る(EPUB モードでは census 一致の画面単位一覧。生成は逐次なのでセルが埋まるまで `--then-goto-percent` 等でステップを足して撮影を遅らせる) |
 | `--show-bookmark-editor` | しおり編集をウインドウ表示(シートは撮れないため) |
 | `--show-file-info` | ファイル情報パネルを開く(`--snapshot` はパネルを撮る) |
 | `--show-opening-progress` | オープン進捗 HUD を固定内容で表示 |
@@ -58,13 +79,25 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--show-activity` | アクティビティ窓を開いて撮る(`--snapshot` は ImageRenderer で内容を描画。ScrollView は headless の cacheDisplay で写らないため) |
 | `--show-password-dialog <png>` | パスワード入力欄+保存チェックボックスのアクセサリを撮る(はみ出し確認用) |
 | `--then-next-book` / `--then-previous-book` | 表示後に次/前の本へ移動(複数回可) |
-| `--then-next-page` | 表示後にページ送りする(めくり効果の完了後状態の確認等) |
+| `--then-next-page` | 表示後にページ送りする(めくり効果の完了後状態の確認等)。リフロー EPUB リーダーが開いていればそちらを送る(複数回可) |
+| `--then-goto-percent <n>` | 表示後に比率ジャンプ(数字キー 0-9 の goToPercent 経路の検証。**EPUB モード中のみ**動作) |
+| `--then-show-thumbnails` | サムネイル一覧をトグル(EPUB 入場後に開く順序制御用) |
+| `--then-show-bubble <0-1>` | ページバーのホバーバブルを指定比率位置に表示(マウスホバーは CLI から再現できないため。EPUB では census 完了後に出すこと) |
+| `--then-play-narration` | 音声メディアオーバーレイ(SMIL)の再生をトグル(EPUB でオーバーレイを持つ項目のとき。読み上げ中テキストの active-class ハイライトの検証用。2 回で一時停止になる) |
 | `--then-open <path>` | 表示後に別の本へ切り替える |
 | `--then-toggle-cover-single` | 表示後に「表紙を単ページで表示」を切り替える |
 | `--snapshot-settings <png>` | 設定ウインドウを撮って終了 |
 | `-SettingsSelectedTab <n>` | 設定ウインドウの表示ペイン(SettingsPane.rawValue) |
 | `-SettingsSearchText <語>` | 設定検索の初期値を注入(検索 UI の検証用) |
+| `--appearance <dark\|light>` | 外観を強制(EPUB のテーマ追従などダークモード検証用) |
+| `--dump-first-responder <txt>` | 3 秒後に first responder の型名を書き出して終了(EPUB⇔画像本のフォーカス復帰検証) |
 | `-キー名 <値>` | 任意の defaults を引数ドメインで上書き(例 `-SpreadCoverSingle 1`) |
+
+`--then-next-book` / `--then-previous-book` / `--then-next-page` / `--then-goto-percent` / `--then-show-thumbnails` / `--then-show-bubble`
+は**コマンドライン順に 1 秒間隔で逐次実行**され、`--snapshot` はステップ数ぶん
+待ってから撮る。組合せ例: コレクション内 EPUB の巻末超え復帰の検証は
+`--open <フォルダ> --then-next-page --then-next-page --then-goto-percent 100 --then-next-page`
+(送りで代理ページへ→自動入場→EPUB 内 100%→巻末超えで合本の次エントリへ)。
 
 パスワードマネージャーの検証: テスト・`--snapshot` 実行では Keychain に触れない(保管庫は「利用できません」になる)。実際に保存・自動解錠を検証するときは、**Debug ビルド限定**の環境変数 `COOVIEWER_TEST_VAULT_KEY=<hex64桁>` と `COOVIEWER_TEST_VAULT_DIR=<一時ディレクトリ>`(必ず両方セットで指定)により使い捨ての鍵と保存先を注入して起動する(開発機の Keychain とプロンプトを汚さない。Release は環境変数を受け付けない)。
 
@@ -82,6 +115,16 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 サンプル本が要るときは、縦長 PNG を数枚入れたフォルダを作ればよい
 (git 履歴の `makepages.swift` 参照)。
 
+EPUB の検証: `--open x.epub --snapshot` はリフローなら EPUB 表示モードを
+WKWebView の takeSnapshot 合成で、固定レイアウトなら通常の contentView で撮る
+(layer.render に WKWebView は写らないため撮り分けている)。サンプル EPUB
+(縦組み小説=ルビ・圏点・縦中横入り/電書協風 FXL 漫画)の生成:
+
+```sh
+swift Scripts/make-sample-pages.swift /tmp/pages 6          # 番号入りページ画像
+python3 Scripts/make-sample-epub.py /tmp /tmp/pages          # 2 冊の .epub を出力
+```
+
 ## 3. テスト
 
 - ロジック(ソート・見開き判定・バインディング・レイアウト・永続化・検索
@@ -89,6 +132,29 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 - テスト実行は XCTest ホストとしてアプリを起動するが、`AutomatedRun.isXCTest`
   ガードにより「前回の本を開く」等でユーザーの実データに触れない。
 - テスト出力に CGImageSource のエラーが混ざるのは壊れ画像の意図的テスト。
+
+## 3.5 Washi の公開ミラー(https://github.com/shunnag/Washi)
+
+Washi は本リポジトリ(モノレポ)内 `Washi/` で開発し、公開リポジトリへは
+`git subtree split` による**片方向ミラー**で反映する(0.1.0 として公開済み。
+初回手順もこの形で検証済み)。公開更新のたびに:
+
+```bash
+# Washi/ に触れたコミットを済ませたブランチ上で
+git subtree split --prefix=Washi -b washi-public   # 冪等・増分(再実行で更新)
+git ls-tree --name-only washi-public                # Package.swift がルートにあること
+git push https://github.com/shunnag/Washi.git washi-public:main
+git tag X.Y.Z washi-public                          # SwiftPM は semver タグで解決
+git push https://github.com/shunnag/Washi.git X.Y.Z
+```
+
+- **コミットメッセージは公開される**: `Washi/` を触るコミットはそのまま
+  ミラーの履歴になるため、公開されて困る文面を書かない。
+- 別ブランチ系列から split し直すと SHA が変わり non-fast-forward で
+  拒否されることがある。ミラーは片方向なので、その場合は
+  `git push --force` で上書きしてよい(マージはしない)。
+- 公開側で受けた PR はモノレポへ手で取り込んでからミラーに反映する
+  (`Washi/README.md` の「開発体制」に明記済み)。
 
 ## 4. リリース手順(2.0b14 まで検証済み)
 

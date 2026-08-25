@@ -13,6 +13,9 @@
 		C00000000000000000000010 /* UniversalDetector.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000C /* UniversalDetector.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C00000000000000000000032 /* Sparkle.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000034 /* Sparkle.framework */; };
 		C00000000000000000000033 /* Sparkle.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000034 /* Sparkle.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C00000000000000000000037 /* Washi.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; };
+		C00000000000000000000039 /* Washi.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C0000000000000000000003F /* Washi.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +38,7 @@
 				C0000000000000000000000F /* XADMaster.framework in Embed Frameworks */,
 				C00000000000000000000010 /* UniversalDetector.framework in Embed Frameworks */,
 				C00000000000000000000033 /* Sparkle.framework in Embed Frameworks */,
+				C00000000000000000000039 /* Washi.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -47,6 +51,7 @@
 		C0000000000000000000000B /* XADMaster.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XADMaster.framework; path = Frameworks/XADMaster.framework; sourceTree = "<group>"; };
 		C0000000000000000000000C /* UniversalDetector.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniversalDetector.framework; path = Frameworks/UniversalDetector.framework; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Sparkle.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Sparkle.framework; path = Frameworks/Sparkle.framework; sourceTree = "<group>"; };
+		C00000000000000000000038 /* Washi.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Washi.framework; path = Frameworks/Washi.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -83,6 +88,7 @@
 				C0000000000000000000000D /* XADMaster.framework in Frameworks */,
 				C0000000000000000000000E /* UniversalDetector.framework in Frameworks */,
 				C00000000000000000000032 /* Sparkle.framework in Frameworks */,
+				C00000000000000000000037 /* Washi.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -90,6 +96,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C0000000000000000000003F /* Washi.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -120,6 +127,7 @@
 			children = (
 				C0000000000000000000000B /* XADMaster.framework */,
 				C00000000000000000000034 /* Sparkle.framework */,
+				C00000000000000000000038 /* Washi.framework */,
 				C0000000000000000000000C /* UniversalDetector.framework */,
 			);
 			name = Frameworks;
@@ -133,6 +141,7 @@
 			buildConfigurationList = C0000000000000000000001A /* Build configuration list for PBXNativeTarget "cooViewer" */;
 			buildPhases = (
 				C00000000000000000000015 /* Build XADMaster frameworks */,
+				C0000000000000000000003A /* Build Washi framework */,
 				C00000000000000000000011 /* Sources */,
 				C00000000000000000000012 /* Frameworks */,
 				C00000000000000000000013 /* Resources */,
@@ -245,6 +254,21 @@
 			shellPath = /bin/zsh;
 			shellScript = "exec \"${PROJECT_DIR}/Scripts/build-frameworks.sh\"\n";
 		};
+		C0000000000000000000003A /* Build Washi framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build Washi framework";
+			outputPaths = (
+				"$(PROJECT_DIR)/Frameworks/Washi.framework/Versions/A/Washi",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "exec \"${PROJECT_DIR}/Scripts/build-washi-framework.sh\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -291,6 +315,10 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
 				);
+				SWIFT_INCLUDE_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks/Washi.framework/Modules",
+				);
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -320,6 +348,10 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
 				);
+				SWIFT_INCLUDE_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks/Washi.framework/Modules",
+				);
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
@@ -337,7 +369,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2024;
+				CURRENT_PROJECT_VERSION = 2025;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CooViewer/Info.plist;
@@ -347,7 +379,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0b24;
+				MARKETING_VERSION = 2.0b25;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.cooViewer;
 				PRODUCT_NAME = cooViewer;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -362,7 +394,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2024;
+				CURRENT_PROJECT_VERSION = 2025;
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = FQTM2788K5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -373,7 +405,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0b24;
+				MARKETING_VERSION = 2.0b25;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.cooViewer;
 				PRODUCT_NAME = cooViewer;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -384,9 +416,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CURRENT_PROJECT_VERSION = 2024;
+				CURRENT_PROJECT_VERSION = 2025;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 2.0b24;
+				MARKETING_VERSION = 2.0b25;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.CooViewerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -398,9 +430,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CURRENT_PROJECT_VERSION = 2024;
+				CURRENT_PROJECT_VERSION = 2025;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 2.0b24;
+				MARKETING_VERSION = 2.0b25;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.CooViewerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

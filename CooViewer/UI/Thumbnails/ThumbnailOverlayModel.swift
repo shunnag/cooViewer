@@ -101,7 +101,7 @@ final class ThumbnailOverlayModel: ObservableObject {
 
     /// book の内容でオーバーレイを組み(直す)。本の切替時にも使う
     func present(book: Book, displayedIndices: [Int] = []) {
-        snapshot = Snapshot(
+        present(snapshot: Snapshot(
             entries: book.entries,
             source: book.source,
             bookKey: book.cacheKey,
@@ -113,7 +113,13 @@ final class ThumbnailOverlayModel: ObservableObject {
             marks: book.marks,
             singleSetting: book.singleSetting,
             coverSingle: book.coverSingleFirst,
-            prefetchConcurrency: book.mediaProfile.thumbnailPrefetchConcurrency)
+            prefetchConcurrency: book.mediaProfile.thumbnailPrefetchConcurrency))
+    }
+
+    /// スナップショット直渡しの組み直し(EPUB リフローの画面単位一覧など、
+    /// Book を持たない供給元用。設計書 §2.4 EPUB 対応)
+    func present(snapshot newSnapshot: Snapshot) {
+        snapshot = newSnapshot
         measuredAspects = [:]
         showScreenContainingCurrentPage()
         prefetchAroundScreen()
@@ -160,6 +166,12 @@ final class ThumbnailOverlayModel: ObservableObject {
         snapshot.displayedIndices = displayed
         showScreenContainingCurrentPage()
         prefetchAroundScreen()
+    }
+
+    /// 現在ページ強調と画面追従だけを更新する(展開一覧など、エントリ列が
+    /// book と一致しないスナップショットの追従用。follow の代替)
+    func focus(currentIndex: Int, displayedIndices: [Int] = []) {
+        focusCurrentIndex(currentIndex, displayedIndices: displayedIndices)
     }
 
     /// 先読みだけを止める(オーバーレイを閉じたときに呼ぶ)。低速媒体で

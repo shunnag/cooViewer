@@ -205,7 +205,10 @@ actor ArchiveSource: BookSource {
                     modificationDate: nil
                 ))
             } else if nestingDepth < 2,
-                      SupportedTypes.isBookFile(URL(fileURLWithPath: lastComponent)) {
+                      SupportedTypes.isBookFile(URL(fileURLWithPath: lastComponent)),
+                      !SupportedTypes.isEPUB(URL(fileURLWithPath: lastComponent)) {
+                // 書庫内 EPUB は未対応のまま従来どおり無視する(メモリ展開経路が
+                // PDF/書庫前提のため。フォルダ内 EPUB は NestedFolderSource が扱う)
                 candidates.append((index: index, path: name))
             }
         }

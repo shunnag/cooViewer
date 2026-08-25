@@ -106,6 +106,16 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>EPUB Publication</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.idpf.epub-container</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>JPEG Image</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>

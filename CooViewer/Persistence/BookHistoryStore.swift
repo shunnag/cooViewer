@@ -80,11 +80,36 @@ final class BookHistoryStore {
         /// 一覧から外れた後の復元可否は「閉じた時」の設定で決まる。§7.3)
         var rememberBeyondRecents: Bool?
         var lastOpened: Double?
+        /// リフロー EPUB の最終位置(固定ページ index と排他ではなく併存可。
+        /// オプショナル追加のみなので旧ビルドとの相互読み書きは壊れない)
+        var lastReflowPosition: ReflowPosition?
+        /// リフロー EPUB の全文ページ実測(census)。再オープン時に注入すると
+        /// オフスクリーン再実測を省けて N/M・ページバーが即出る(オプショナル追加)
+        var lastCensus: StoredCensus?
 
         var isEmpty: Bool {
             readMode == nil && sortMode == nil && marks.isEmpty
                 && bookmarks.isEmpty && (lastPageIndex ?? 0) <= 0
+                && lastReflowPosition == nil && lastCensus == nil
         }
+    }
+
+    /// リフロー EPUB の全文ページ実測(表示メトリクスキー + 項目別ページ数 +
+    /// 版識別子)。メトリクス・版が一致する再オープンでのみ再利用する
+    private struct StoredCensus: Codable {
+        var metricsKey: String
+        var counts: [Int]
+        var releaseIdentifier: String?
+    }
+
+    /// リフロー EPUB の読書位置(spine 項目 + 項目内進行率 0..1)。
+    /// リフローに固定ページ番号は存在しないため進行率で持つ
+    private struct ReflowPosition: Codable {
+        var spineIndex: Int
+        var progression: Double
+        /// spine itemref の idref(あれば配信本の改版で spine が並べ替わっても
+        /// 正しい章へ復元できる。旧 JSON は idref を持たずデコード互換)
+        var idref: String?
     }
 
     private struct StoredBookmark: Codable {
@@ -267,6 +292,75 @@ final class BookHistoryStore {
         state.lastOpened = Date().timeIntervalSince1970
         writeState(state, forNormalizedPath: path)
         touchRecents(path: path)
+    }
+
+    /// リフロー EPUB の位置を記録(noteClosed のリフロー版。§7.3 と同じ
+    /// write-time 意味論)。**recents は並べ替えない**: 位置はページ送りの
+    /// たびにデバウンス保存され、⌘Q でも両ウインドウ分が保存されるため、
+    /// ここで touch すると「昔開いた EPUB」が終了のたびに最前列へ来てしまう
+    /// (最近の一覧の順序は noteOpened =「開いた時」だけが動かす)
+    /// forceRememberBeyondRecents: コレクション(合本)経由の子 EPUB 用。
+    /// 子は意図的に recents へ入れないため、復元ゲート(inRecents ||
+    /// rememberBeyondRecents)を書込時に通しておかないと保存が永遠に
+    /// 復元されない(§7.3 write-time 意味論の継承)
+    func noteClosedReflow(path rawPath: String, spineIndex: Int,
+                          progression: Double, idref: String? = nil,
+                          forceRememberBeyondRecents: Bool = false) {
+        let path = normalize(rawPath)
+        var state = loadState(forNormalizedPath: path)
+            ?? BookState(path: path)
+        // 先頭位置は「復帰なし」と不可分のため保存しない(savedPage と同じ規則)
+        if spineIndex == 0 && progression <= 0 {
+            state.lastReflowPosition = nil
+        } else {
+            state.lastReflowPosition = ReflowPosition(
+                spineIndex: spineIndex, progression: progression, idref: idref)
+        }
+        state.rememberBeyondRecents =
+            defaults.bool(forKey: "AlwaysRememberLastPage")
+                || forceRememberBeyondRecents
+        // 移動追跡用の URL ブックマーク(画像本は save() が書くが EPUB は
+        // save() を通らないためここで書く。無いと relocateState が成立せず
+        // ファイル移動で読書位置が失われる。cooViewer-c6s.18)
+        if let data = try? URL(fileURLWithPath: path).bookmarkData() {
+            state.urlBookmark = data
+        }
+        writeState(state, forNormalizedPath: path)
+    }
+
+    /// リフロー EPUB の保存位置(savedPage と同じ復元可否ゲート)
+    func savedReflowPosition(forPath rawPath: String)
+        -> (spineIndex: Int, progression: Double, idref: String?)? {
+        let path = normalize(rawPath)
+        guard let state = loadState(forNormalizedPath: path),
+              let position = state.lastReflowPosition else { return nil }
+        let inRecents = recentBookPaths().contains(path)
+        guard inRecents || state.rememberBeyondRecents == true else { return nil }
+        return (position.spineIndex, position.progression, position.idref)
+    }
+
+    /// リフロー EPUB の census(全文ページ実測)を保存する。位置と同居させ、
+    /// 存在する状態にだけ追記する(census だけのために新規状態は作らない)
+    func noteReflowCensus(path rawPath: String, metricsKey: String,
+                          counts: [Int], releaseIdentifier: String?) {
+        let path = normalize(rawPath)
+        // 既存の状態にだけ追記する。census だけのために状態ファイルを新規作成
+        // しない — さもないと「ちょっと開いただけ」の本や合本の子(recents に
+        // 入れない設計)にまで census 専用ファイルが残り、回収経路が無いため
+        // 際限なく増える。位置やしおりを持つ「読んでいる本」にのみ相乗りさせる
+        guard var state = loadState(forNormalizedPath: path) else { return }
+        state.lastCensus = StoredCensus(metricsKey: metricsKey, counts: counts,
+                                        releaseIdentifier: releaseIdentifier)
+        writeState(state, forNormalizedPath: path)
+    }
+
+    /// 保存済みの census(再オープン時の注入用。整合検証は注入側=Washi が行う)
+    func savedReflowCensus(forPath rawPath: String)
+        -> (metricsKey: String, counts: [Int], releaseIdentifier: String?)? {
+        let path = normalize(rawPath)
+        guard let state = loadState(forNormalizedPath: path),
+              let census = state.lastCensus else { return nil }
+        return (census.metricsKey, census.counts, census.releaseIdentifier)
     }
 
     /// 保存ページの探索(仕様書 §4.1.2 手順 7)。

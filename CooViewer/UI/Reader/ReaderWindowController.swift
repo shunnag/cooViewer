@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Washi
 
 /// メインウインドウ。本のオープンフロー・表示更新・メニューアクションを担う。
 /// 旧 Controller の表示/ナビゲーション部分に相当する(仕様書 §4.1-4.3)。
@@ -14,7 +15,7 @@ final class ReaderWindowController: NSWindowController {
     private(set) var currentBookIsEncrypted = false
     private let readerView = ReaderView()
     private let pageBar = PageBarView()
-    private let pageLabel = NSTextField(labelWithString: "")
+    let pageLabel = NSTextField(labelWithString: "")  // +EPUB からも更新する
     /// 開けなかった本の理由等をウインドウ中央に表示するラベル
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
@@ -35,6 +36,46 @@ final class ReaderWindowController: NSWindowController {
 
     /// 入力ディスパッチ(+Input.swift)からのビューアクセス
     var readerViewForInput: ReaderView { readerView }
+
+    // MARK: リフロー EPUB モード(実装は +EPUB.swift。設計書 §2.4 EPUB 対応)
+    /// リフロー EPUB の表示ビュー(初回オープン時に生成し readerView と入替表示)
+    var epubView: EPUBReaderView?
+    var epubPublication: EPUBPublication?
+    var epubBookURL: URL?
+    /// WKWebView がキーイベントを食うため、EPUB モード中はローカルモニタで拾う
+    var epubKeyMonitor: Any?
+    /// EPUB の「N/M (章題)」ページ番号表示(census 完了時のみ非 nil)
+    var epubPageLabelText: String?
+    /// コレクション(合本)経由で開いた EPUB の文脈(nil = 単体で開いた EPUB)
+    var epubCollectionContext: EPUBCollectionContext?
+    /// 合本復帰時の到達方向(代理ページへの着地時に消費。自動入場の向き)
+    var epubCollectionArrivalForward: Bool?
+    /// 開けなかった代理ページ(DRM 等)。自動入場せず静的な表紙として表示する
+    /// (全滅フォルダ + ループ設定での無限循環防止)
+    var epubFailedPlaceholders: Set<URL> = []
+    /// 合本への復帰オープンが進行中(EPUB 側の巻端イベントを抑止する。
+    /// 巻端でのキーリピートが二重の復帰・単体モード誤爆になるのを防ぐ)
+    var epubCollectionReturnPending = false
+    /// 合本の巻末ループ(LoopCheck 0)による前進再入場では保存位置を復元せず
+    /// 先頭から開く(画像本の goToFirst と同じ意味論)
+    var epubCollectionArrivalAtFirst = false
+    /// コレクション一覧の展開(census 収集 → 差し替え)の進行タスク
+    var collectionOverlayTask: Task<Void, Never>?
+    /// 表示中の展開済みコレクション一覧(refreshDisplay の follow が
+    /// 未展開へ巻き戻さないための対応表)
+    var activeCollectionOverlay: ActiveCollectionOverlay?
+    /// 合本の「全体ページ」対応表(ページバー・ページ番号・%ジャンプを
+    /// 書庫内 zip と同じ全体基準にする。census が揃ってから有効)
+    var collectionPageMap: CollectionPageMap?
+    var collectionPageMapTask: Task<Void, Never>?
+    /// 構築中のキー(folder#metrics。同じ対象の二重構築防止)
+    var collectionPageMapPendingKey: String?
+    /// 位置保存のデバウンス(ページ送りのたびに書き込まない)
+    var epubSaveDebounce: Task<Void, Never>?
+    /// EPUB のページカール演出のホストビュー(連打時の掃除用)
+    var epubCurlHosts: [NSView] = []
+    /// 章メニュー用に平坦化した目次(representedObject は添字)
+    var epubFlattenedToc: [(title: String, indent: Int, item: EPUBNavItem)] = []
 
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
@@ -68,6 +109,11 @@ final class ReaderWindowController: NSWindowController {
     private let bubbleImageView = NSImageView()
     private let bubbleLabel = NSTextField(labelWithString: "")
     private var bubbleHoverIndex = -1
+    /// ホバーサムネイルの進行中/待機中ジョブ(スクラブで EPUB のオフスクリーン
+    /// レンダー FIFO にジョブを積み残さないよう、常に in-flight 1 本+最新 1 本
+    /// にコアレスする。配達ガードだけでは「結果」しか捨てられない)
+    private var bubbleThumbnailInFlight = false
+    private var bubbleThumbnailPending: (key: Int, request: () async -> CGImage?)?
 
     /// 壊れページ用の実行時生成プレースホルダ(多言語対応。旧 broken.png の置換)
     private lazy var brokenPlaceholder: CGImage? = PlaceholderImage.make(
@@ -83,7 +129,7 @@ final class ReaderWindowController: NSWindowController {
     var loadedAnimationFrameCaps: [Int: Int] = [:]
 
     /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
-    private var openGeneration = 0
+    var openGeneration = 0  // +EPUB(コレクション自動入場)も競合ガードに読む
     /// 消費したスワイプの慣性イベントを飲み込むあいだ true(+Input.swift)
     var swipeConsumeMomentum = false
 
@@ -218,9 +264,25 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
+    /// 版面余白プリセット(EPUBPageMargins: 0=狭い/1=標準/2=広い)→ Washi の
+    /// insets。下辺はノンブルの居場所として最低限を確保する
+    static func epubInsets(forMargins preset: Int) -> EPUBReaderInsets {
+        switch preset {
+        case 0: EPUBReaderInsets(top: 28, left: 24, bottom: 30, right: 24)
+        case 2: EPUBReaderInsets(top: 76, left: 96, bottom: 64, right: 96)
+        default: EPUBReaderInsets(top: 56, left: 56, bottom: 52, right: 56)
+        }
+    }
+
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
+        // EPUB 表示モード中のみ設定を反映する(退出後の隠れたビューへ流すと、
+        // 見えない本の再ページ割り+全文 census が走る。再入場時は
+        // presentReflowableEPUB が syncEPUBViewSettings で追い付かせる)
+        if isEPUBMode {
+            syncEPUBViewSettings()
+        }
         let filterChanged = readerView.interpolation != settings.interpolation
             || readerView.noiseReductionLevel != settings.noiseReductionLevel
         readerView.interpolation = settings.interpolation
@@ -336,13 +398,45 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// ShowNumber/ShowPageBar と自動隠し状態から表示可否を決める
-    /// (ページのない本では常に隠す)
-    private func updateIndicatorVisibility() {
+    /// (ページのない本では常に隠す。EPUB モードからも呼ぶため internal)。
+    /// EPUB モードはページ番号を Washi の柱(ヘッダ)が担うため、
+    /// ページ番号ラベルは出さずページバーだけを設定どおり出す
+    func updateIndicatorVisibility() {
         let hasPages = (book?.pageCount ?? 0) > 0
-        pageLabel.isHidden = !hasPages || !settings.showNumber
+        // EPUB は census(全文ページ数の実測)完了後に N/M を表示できる
+        let epubHasNumber = isEPUBMode && epubPageLabelText != nil
+        pageLabel.isHidden = !(hasPages || epubHasNumber) || !settings.showNumber
             || (settings.pageNumAutoHide && !indicatorsTemporarilyVisible)
-        pageBar.isHidden = !hasPages || !settings.showPageBar
+        pageBar.isHidden = !(hasPages || isEPUBMode) || !settings.showPageBar
             || (settings.pageBarAutoHide && !indicatorsTemporarilyVisible)
+    }
+
+    /// EPUB モードのページバー更新(+EPUB.swift から。進捗は本全体の進行率)
+    func updateEPUBPageBar(progress: Double, readsFromLeft: Bool) {
+        pageBar.progress = min(max(progress, 0), 1)
+        pageBar.readsFromLeft = readsFromLeft
+        updateIndicatorVisibility()
+    }
+
+    /// 検証用: ページバーのホバーバブルを指定位置で表示する
+    /// (--then-show-bubble。マウスホバーは CLI から再現できないため)
+    func debugShowPageBarBubble(fraction: Double) {
+        pageBar.onHover?((x: pageBar.bounds.width * CGFloat(fraction),
+                          fraction: fraction))
+    }
+
+    /// 検証用: 表示中のページインジケータの画像と位置(EPUB スナップショット
+    /// への合成用。WKWebView 合成には contentView のオーバーレイが写らないため)
+    func debugIndicatorOverlays() -> [(image: NSImage, frame: NSRect)] {
+        [pageBar, pageLabel, pageBarBubble].compactMap { view in
+            guard !view.isHidden, view.bounds.width > 0,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+            else { return nil }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let image = NSImage(size: view.bounds.size)
+            image.addRepresentation(rep)
+            return (image, view.frame)
+        }
     }
 
     /// 画像の読み込み〜補間(ML 高画質化含む)完成までの控えめな進行表示
@@ -656,7 +750,17 @@ final class ReaderWindowController: NSWindowController {
             self?.setResampleIndicator(active)
         }
         pageBar.onJump = { [weak self] fraction in
-            guard let self, let book = self.book else { return }
+            guard let self else { return }
+            if self.isEPUBMode {
+                self.epubJump(toBookFraction: fraction)  // 合本文脈は全体基準
+                return
+            }
+            // 合本にマップがあれば全体基準(EPUB の途中への直接ジャンプ込み)
+            if let map = self.activeCollectionPageMap() {
+                self.jumpToCollectionFraction(fraction, map: map)
+                return
+            }
+            guard let book = self.book else { return }
             if book.goToPercent(fraction) == .moved {
                 Task { await self.refreshDisplay() }
             }
@@ -702,6 +806,16 @@ final class ReaderWindowController: NSWindowController {
            SupportedTypes.isImageFile(url.lastPathComponent) {
             bookURL = url.deletingLastPathComponent()
             initialPageURL = url
+        }
+
+        // EPUB の形式振り分け(設計書 追補: Washi 統合)。全オープン入口が
+        // openBook(at:) に合流するため、分岐はこの 1 点に集約する:
+        // リフロー → 同ウインドウの EPUB 表示モード(+EPUB.swift)へ、
+        // 固定レイアウト → EPUBSource で通常の画像パイプラインへ
+        if !isDirectory.boolValue, SupportedTypes.isEPUB(bookURL),
+           await routeEPUBIfNeeded(bookURL, generation: generation,
+                                   atPage: atPage, atLastPage: atLastPage) {
+            return
         }
 
         // ドロップ/関連付けで開いた画像が**現在の本のページ**なら、本を
@@ -780,6 +894,7 @@ final class ReaderWindowController: NSWindowController {
             stopSlideshow()
             self.book?.cancelPrefetch()  // 旧本のバックグラウンド I/O を止める
             saveCurrentBookState()
+            dismissEPUBMode()  // EPUB モード中なら位置を保存して画像表示へ戻す
 
             // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)。
             // [#1] 初回描画をこの判定でブロックしないため Task にして待たない(async let は
@@ -920,12 +1035,61 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
+    /// EPUB の事前判定。リフローなら同じウインドウの EPUB 表示モードへ切り替えて
+    /// true、固定レイアウトなら false(通常フローが EPUBSource で開く)。
+    /// DRM 保護は対処可能性をユーザーへ伝える(黙殺 §4.17 の例外:
+    /// ファイル自体は正常で、原因がストア側の保護だと分かるため)
+    private func routeEPUBIfNeeded(_ url: URL, generation: Int,
+                                   atPage: Int? = nil,
+                                   atLastPage: Bool = false) async -> Bool {
+        let publication = await Task.detached(priority: .userInitiated) {
+            try? EPUBPublication(url: url)
+        }.value
+        // 解析の await 中に新しいオープンが始まっていたら、この古いフローは
+        // 何も起こさず終える(連打時の巻き戻り防止。openBookFlow と同じ規則)
+        guard generation == openGeneration else {
+            endAnyOpeningProgress()
+            return true
+        }
+        guard let publication else {
+            return false  // 壊れた EPUB は通常フローの黙殺(ビープ)に任せる
+        }
+        if publication.isDRMProtected {
+            endAnyOpeningProgress()  // ドリルダウンから引き継いだ HUD を畳む
+            let alert = NSAlert()
+            alert.messageText = String(localized: "This book is protected by DRM.")
+            alert.informativeText = publication.drmSchemeName ?? ""
+            alert.runModal()
+            return true
+        }
+        guard !publication.isFixedLayout else { return false }
+        endAnyOpeningProgress()
+        presentReflowableEPUB(publication, url: url,
+                              atPage: atPage, atLastPage: atLastPage)
+        return true
+    }
+
+    /// EPUB モードへ入る前に画像本を落とす(+EPUB.swift から使用。
+    /// openBookFlow の「旧本の後始末」と同じ手順 + 表示のリセット)
+    func unloadImageBookForEPUB() {
+        stopSlideshow()
+        book?.cancelPrefetch()
+        saveCurrentBookState()
+        book = nil
+        hideThumbnailOverlay()
+        thumbnailOverlayModel.clear()
+        lockedBookReason = nil
+        statusLabel.isHidden = true
+        updateIndicatorVisibility()
+    }
+
     /// 開けなかった本(パスワードのキャンセル/試行超過)を「現在の本」として
     /// 空の状態で表示する。これによりページ送りや「次の本」でこの本を
     /// 飛ばして先へ進める。履歴・設定には記録しない。
     private func presentLockedPlaceholder(source: any BookSource, reason: String) {
         stopSlideshow()
         saveCurrentBookState()
+        dismissEPUBMode()
         let placeholder = Book(source: source, entries: [])
         book = placeholder
         hideThumbnailOverlay()
@@ -967,11 +1131,20 @@ final class ReaderWindowController: NSWindowController {
 
     func windowWillClose(_ notification: Notification) {
         stopSlideshow()
+        collectionOverlayTask?.cancel()  // 全冊 census をウインドウ亡き後に残さない
+        collectionPageMapTask?.cancel()
+        // キャンセルしたタスクは自分では pendingKey を消せない(isCancelled
+        // guard で先に抜ける)。残すと同キーの再構築が恒久的に塞がる
+        collectionPageMapPendingKey = nil
+        epubView?.stopMediaOverlay()  // ウインドウを閉じたら音声も止める
+        epubView?.cancelPageCensus()
         saveCurrentBookState()
+        saveEPUBState()
     }
 
     func saveStateBeforeTermination() {
         saveCurrentBookState()
+        saveEPUBState()
     }
 
     // MARK: - ウインドウのタイル状態除去(macOS 26)
@@ -1206,6 +1379,12 @@ final class ReaderWindowController: NSWindowController {
         // ページ送りの向きはこの表示で消費する(未設定ならめくり効果なし)
         let turnForward = pendingTurnForward
         pendingTurnForward = nil
+        // 合本復帰の到達方向・先頭強制も必ずここで消費する(代理ページ以外へ
+        // 着地した場合に残留すると、後の自動入場を汚染する)
+        let collectionArrival = epubCollectionArrivalForward
+        epubCollectionArrivalForward = nil
+        let collectionArrivalAtFirst = epubCollectionArrivalAtFirst
+        epubCollectionArrivalAtFirst = false
         // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
         // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
         // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
@@ -1228,6 +1407,21 @@ final class ReaderWindowController: NSWindowController {
         let spread = await book.currentSpread()
         // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
         guard generation == displayGeneration, book === self.book else { return }
+
+        // コレクション(合本)内のリフロー EPUB 代理ページ: 表示せず EPUB
+        // モードへ切り替える(前進到達は先頭/復元、後退到達は末尾から。
+        // 代理ページは常に単独スプレッドなので素通りしない)。
+        // 開けなかった本(DRM 等)は自動入場せず静的な表紙として表示する
+        if let (entryIndex, epubURL) = spread.indices.lazy.compactMap({ index in
+            book.entries.indices.contains(index)
+                ? book.entries[index].reflowEPUBURL.map { (index, $0) } : nil
+        }).first, !epubFailedPlaceholders.contains(epubURL) {
+            setResampleIndicator(false)  // この表示は Web ビューが担う(消し忘れ防止)
+            enterCollectionReflowEPUB(url: epubURL, entryIndex: entryIndex,
+                                      forward: collectionArrival ?? turnForward ?? true,
+                                      atFirst: collectionArrivalAtFirst)
+            return
+        }
 
         if spread.indices.isEmpty {
             // ページのない本: 理由をウインドウ中央に表示する
@@ -1326,7 +1520,26 @@ final class ReaderWindowController: NSWindowController {
         // ソート変更等でエントリ列が変わった場合は一覧を組み直す)
         lastSpreadIndices = spread.indices
         if isThumbnailOverlayVisible {
-            thumbnailOverlayModel.follow(book: book, displayedIndices: spread.indices)
+            if let active = activeCollectionOverlay {
+                if active.baseEntries == book.entries {
+                    // 展開一覧: エントリ列が合本と異なるため follow に渡さない
+                    // (渡すと未展開へ巻き戻り、残った plan ベースの onJump が
+                    // 誤ジャンプする)。セルへ写像して強調・画面追従だけ更新
+                    thumbnailOverlayModel.focus(
+                        currentIndex: active.plan.overlayIndex(
+                            forBookPage: book.currentIndex),
+                        displayedIndices: spread.indices.map {
+                            active.plan.overlayIndex(forBookPage: $0)
+                        })
+                } else {
+                    // 並び替え等でエントリ列が変わった: onJump ごと組み直し、
+                    // 展開も再スケジュールする
+                    presentThumbnailOverlay(for: book)
+                }
+            } else {
+                thumbnailOverlayModel.follow(book: book,
+                                             displayedIndices: spread.indices)
+            }
         }
         preresampleAdjacentSpread()
     }
@@ -1502,45 +1715,228 @@ final class ReaderWindowController: NSWindowController {
 
     /// ページバーホバー: ページ番号+サムネイルの吹き出し(仕様書 §3.4)
     private func handlePageBarHover(_ info: (x: CGFloat, fraction: Double)?) {
-        guard let info, let book, book.pageCount > 0,
-              let contentView = window?.contentView else {
+        guard let info, let contentView = window?.contentView else {
             pageBarBubble.isHidden = true
             bubbleHoverIndex = -1
+            bubbleThumbnailPending = nil
             return
         }
-        let index = min(book.pageCount - 1,
-                        max(0, Int(info.fraction * Double(book.pageCount))))
-        // サムネイル無しのときは番号だけの小さなバブルにする(§6.1 PageBarShowThumbnail)
+        if isEPUBMode {
+            handleEPUBPageBarHover(info, contentView: contentView)
+            return
+        }
+        guard let book, book.pageCount > 0 else {
+            pageBarBubble.isHidden = true
+            bubbleHoverIndex = -1
+            bubbleThumbnailPending = nil
+            return
+        }
+        // 合本の全体マップがあるときは吹き出しも全体基準に揃える
+        // (バーの進捗・クリック着地と同じ式。ずれるとプレビューと違う場所へ飛ぶ)
+        let map = activeCollectionPageMap()
+        let globalPage: Int
+        let totalLabel: Int
+        var thumbnailRequest: (() async -> CGImage?)?
+        let imageThumbnail: (Int) -> (() async -> CGImage?)? = { index in
+            guard book.entries.indices.contains(index) else { return nil }
+            let entry = book.entries[index]
+            let source = book.source
+            let bookKey = book.cacheKey
+            return {
+                await ThumbnailCache.shared.thumbnail(
+                    for: entry, in: source, bookKey: bookKey)
+            }
+        }
+        if let map {
+            globalPage = Int((min(max(info.fraction, 0), 1)
+                * Double(max(1, map.total - 1))).rounded())
+            totalLabel = map.total
+            switch map.target(forGlobalPage: globalPage) {
+            case .bookPage(let bookIndex):
+                thumbnailRequest = imageThumbnail(bookIndex)
+            case .epubPage(let url, _, let spineIndex, let pageInItem, _):
+                // EPUB 区間は該当画面の実プレビュー(代理表紙ではなく)。
+                // マップの census と同一メトリクスで整合させる
+                // (EPUB モード側の「別 URL」分岐と同じ経路)
+                let metrics = EPUBScreenMetrics(
+                    viewportSize: contentView.bounds.size,
+                    settings: plannedEPUBSettings())
+                let isDark = isDarkWindowAppearance
+                thumbnailRequest = {
+                    await EPUBAtlasStore.shared.thumbnail(
+                        for: url, spineIndex: spineIndex,
+                        pageInItem: pageInItem, metrics: metrics,
+                        isDark: isDark, width: 296)
+                }
+            }
+        } else {
+            globalPage = min(book.pageCount - 1,
+                             max(0, Int(info.fraction * Double(book.pageCount))))
+            totalLabel = book.pageCount
+            thumbnailRequest = imageThumbnail(globalPage)
+        }
+        // EPUB モードのキー空間(page / 1_000_000+page / -2)と衝突させない
+        let hoverKey = 2_000_000 + globalPage
         let showsThumbnail = settings.pageBarShowThumbnail
+            && thumbnailRequest != nil
+        layoutPageBarBubble(hoverX: info.x, label: "\(globalPage + 1)/\(totalLabel)",
+                            showsThumbnail: showsThumbnail,
+                            contentView: contentView)
+        guard hoverKey != bubbleHoverIndex else { return }
+        bubbleHoverIndex = hoverKey
+        bubbleImageView.image = nil
+        guard showsThumbnail, let thumbnailRequest else { return }
+        requestBubbleThumbnail(hoverKey: hoverKey) { [weak self] in
+            let image = await thumbnailRequest()
+            // 本の切替を跨いだ配達を防ぐ(キーは本をまたいで重複し得る)
+            return self?.book === book ? image : nil
+        }
+    }
+
+    /// バブルの寸法・位置・番号の共通レイアウト(画像本/EPUB 共用)。
+    /// サムネイル無しのときは番号だけの小さなバブルにする(§6.1 PageBarShowThumbnail)
+    private func layoutPageBarBubble(hoverX: CGFloat, label: String,
+                                     showsThumbnail: Bool, contentView: NSView) {
         bubbleImageView.isHidden = !showsThumbnail
         pageBarBubble.setFrameSize(showsThumbnail
             ? NSSize(width: 148, height: 190) : NSSize(width: 96, height: 30))
-        bubbleLabel.frame = NSRect(x: 0, y: 6, width: pageBarBubble.frame.width, height: 18)
+        bubbleLabel.frame = NSRect(x: 0, y: 6, width: pageBarBubble.frame.width,
+                                   height: 18)
         let barFrame = pageBar.frame
-        var x = barFrame.minX + info.x - pageBarBubble.frame.width / 2
+        var x = barFrame.minX + hoverX - pageBarBubble.frame.width / 2
         x = min(max(8, x), contentView.bounds.width - pageBarBubble.frame.width - 8)
         // バーが画面下半分なら上側へ出す(下配置設定への対応)
         let bubbleY = barFrame.midY < contentView.bounds.midY
             ? barFrame.maxY + 6
             : barFrame.minY - pageBarBubble.frame.height - 6
         pageBarBubble.setFrameOrigin(NSPoint(x: x, y: bubbleY))
-        bubbleLabel.stringValue = "\(index + 1)/\(book.pageCount)"
+        bubbleLabel.stringValue = label
         pageBarBubble.isHidden = false
-        guard index != bubbleHoverIndex else { return }
-        bubbleHoverIndex = index
-        bubbleImageView.image = nil
-        guard showsThumbnail, book.entries.indices.contains(index) else { return }
-        let entry = book.entries[index]
+    }
+
+    /// ホバーサムネイルの要求(画像本/EPUB 共用)。最新の要求だけを残し、
+    /// 完了時に待機分があれば 1 本だけ流す。EPUB の画面レンダラは FIFO 直列で
+    /// キャンセル不能のため、要求側で本数を絞らないとスクラブで放棄ジョブが
+    /// 積もり、最後のプレビューが全排出後まで届かない(レビュー指摘)
+    private func requestBubbleThumbnail(hoverKey: Int,
+                                        request: @escaping () async -> CGImage?) {
+        bubbleThumbnailPending = (hoverKey, request)
+        pumpBubbleThumbnail()
+    }
+
+    private func pumpBubbleThumbnail() {
+        guard !bubbleThumbnailInFlight,
+              let pending = bubbleThumbnailPending else { return }
+        bubbleThumbnailPending = nil
+        bubbleThumbnailInFlight = true
         Task { [weak self] in
+            let image = await pending.request()
             guard let self else { return }
-            if let thumbnail = await ThumbnailCache.shared.thumbnail(
-                for: entry, in: book.source, bookKey: book.cacheKey),
-               self.bubbleHoverIndex == index, book === self.book {
+            self.bubbleThumbnailInFlight = false
+            if self.bubbleHoverIndex == pending.key, let image {
                 self.bubbleImageView.image = NSImage(
-                    cgImage: thumbnail,
-                    size: NSSize(width: thumbnail.width, height: thumbnail.height))
+                    cgImage: image,
+                    size: NSSize(width: image.width, height: image.height))
             }
+            self.pumpBubbleThumbnail()
         }
+    }
+
+    /// EPUB モードのページバーホバー。合本マップがあれば全体基準
+    /// (バー進捗・クリック着地と同じ式)、単体はリーダー census の
+    /// 本単位、census 未完了は進行率のみの小バブル。プレビューは
+    /// 実ページ=ThumbnailCache / 同一 EPUB=画面レンダラ / 別 EPUB=アトラス
+    private func handleEPUBPageBarHover(_ info: (x: CGFloat, fraction: Double),
+                                        contentView: NSView) {
+        guard let epubView else {
+            pageBarBubble.isHidden = true
+            bubbleHoverIndex = -1
+            bubbleThumbnailPending = nil
+            return
+        }
+        let fraction = min(max(info.fraction, 0), 1)
+        let label: String
+        let hoverKey: Int
+        var thumbnailRequest: (() async -> CGImage?)?
+        if let map = activeCollectionPageMap(),
+           epubView.currentGlobalPageRange != nil,
+           let context = epubCollectionContext {
+            // 合本全体基準
+            let page = Int((fraction * Double(max(1, map.total - 1))).rounded())
+            label = "\(page + 1)/\(map.total)"
+            hoverKey = page
+            switch map.target(forGlobalPage: page) {
+            case .bookPage(let index):
+                if context.entries.indices.contains(index) {
+                    let entry = context.entries[index]
+                    let source = context.source
+                    // 未展開一覧と同じキー(キャッシュ共有)
+                    let bookKey =
+                        "col:\(context.folderURL.path)#raw\(context.entries.count)"
+                    thumbnailRequest = {
+                        await ThumbnailCache.shared.thumbnail(
+                            for: entry, in: source, bookKey: bookKey)
+                    }
+                }
+            case .epubPage(let url, _, let spineIndex, let pageInItem, _):
+                if url == epubBookURL {
+                    thumbnailRequest = { [weak epubView] in
+                        await epubView?.screenThumbnail(
+                            spineIndex: spineIndex, pageInItem: pageInItem,
+                            width: 296)
+                    }
+                } else {
+                    let metrics = EPUBScreenMetrics(
+                        viewportSize: contentView.bounds.size,
+                        settings: plannedEPUBSettings())
+                    let isDark = isDarkWindowAppearance
+                    thumbnailRequest = {
+                        await EPUBAtlasStore.shared.thumbnail(
+                            for: url, spineIndex: spineIndex,
+                            pageInItem: pageInItem, metrics: metrics,
+                            isDark: isDark, width: 296)
+                    }
+                }
+            }
+        } else if let counts = epubView.pageCensus,
+                  let total = epubView.censusTotalPages, total > 0 {
+            // 本単位(単体 EPUB、または合本マップ未構築)
+            let page = Int((fraction * Double(max(1, total - 1))).rounded())
+            label = "\(page + 1)/\(total)"
+            hoverKey = 1_000_000 + page  // 合本キーと区別
+            var spineIndex = max(0, counts.count - 1)
+            var pageInItem = max(0, max(1, counts.last ?? 1) - 1)
+            var cursor = page
+            for (item, count) in counts.enumerated() {
+                let pages = max(1, count)
+                if cursor < pages {
+                    spineIndex = item
+                    pageInItem = cursor
+                    break
+                }
+                cursor -= pages
+            }
+            let targetSpine = spineIndex
+            let targetPage = pageInItem
+            thumbnailRequest = { [weak epubView] in
+                await epubView?.screenThumbnail(
+                    spineIndex: targetSpine, pageInItem: targetPage, width: 296)
+            }
+        } else {
+            // census 未完了: 進行率だけ(バー表示と同じ近似基準)
+            label = "\(Int((fraction * 100).rounded()))%"
+            hoverKey = -2
+        }
+        let showsThumbnail = settings.pageBarShowThumbnail
+            && thumbnailRequest != nil
+        layoutPageBarBubble(hoverX: info.x, label: label,
+                            showsThumbnail: showsThumbnail,
+                            contentView: contentView)
+        guard hoverKey != bubbleHoverIndex else { return }
+        bubbleHoverIndex = hoverKey
+        bubbleImageView.image = nil
+        guard showsThumbnail, let thumbnailRequest else { return }
+        requestBubbleThumbnail(hoverKey: hoverKey, request: thumbnailRequest)
     }
 
     // MARK: - オープン進捗 HUD
@@ -1621,25 +2017,38 @@ final class ReaderWindowController: NSWindowController {
     }
 
     private func updatePageIndicators(spread: Book.Spread) {
+        updatePageIndicators(indices: spread.indices)
+    }
+
+    func updatePageIndicators(indices: [Int]) {
         guard let book, book.pageCount > 0 else {
             pageLabel.stringValue = ""
             pageBar.progress = 0
             return
         }
-        let shown = spread.indices.map { String($0 + 1) }
+        // 合本に展開マップがあれば「全体ページ」基準(EPUB を census
+        // ページ数で数える。書庫内 zip と同じ §3.4 の意味論)。
+        // 無ければ従来どおり合本ページ基準(census が揃うまでの繋ぎ)
+        ensureCollectionPageMap()
+        let map = activeCollectionPageMap()
+        let pageNumber: (Int) -> Int = { index in
+            map.map { $0.globalStart(forEntry: index) + 1 } ?? (index + 1)
+        }
+        let totalPages = map?.total ?? book.pageCount
+        let shown = indices.map { String(pageNumber($0)) }
         let numbers = shown.count == 2 ? "\(shown[0])-\(shown[1])" : (shown.first ?? "-")
         // 旧実装のページ番号表示は「#N-M/総数 (ファイル名 / ファイル名)」と
         // 表示中のファイル名を併記していた(仕様書 §3.4)。読み順に並べる
         let relativePaths = settings.showRelativePaths
-        let names = spread.indices.compactMap { index in
+        let names = indices.compactMap { index in
             book.entries.indices.contains(index)
                 ? book.entries[index].displayTitle(relativePath: relativePaths) : nil
         }.joined(separator: " / ")
         pageLabel.stringValue = names.isEmpty
-            ? " \(numbers)/\(book.pageCount) "
-            : " \(numbers)/\(book.pageCount) (\(names)) "
-        let lastShown = (spread.indices.last ?? 0) + 1
-        pageBar.progress = Double(lastShown) / Double(book.pageCount)
+            ? " \(numbers)/\(totalPages) "
+            : " \(numbers)/\(totalPages) (\(names)) "
+        let lastShown = pageNumber(indices.last ?? 0)
+        pageBar.progress = Double(lastShown) / Double(totalPages)
         pageBar.readsFromLeft = book.readMode.readsFromLeft
     }
 
@@ -1757,13 +2166,16 @@ final class ReaderWindowController: NSWindowController {
     }
 
     @objc func nextPage(_ sender: Any?) {
+        if isEPUBMode { epubGoForward(); return }
         turningPage { [weak self] in self?.showNext() }
     }
     @objc func previousPage(_ sender: Any?) {
+        if isEPUBMode { epubGoBackward(); return }
         turningPage { [weak self] in self?.showPrevious() }
     }
 
     @objc func halfNextPage(_ sender: Any?) {
+        if isEPUBMode { epubGoForward(); return }
         turningPage { [weak self] in
             guard let self, let book = self.book else { return }
             if book.moveHalfNext() == .moved {
@@ -1774,6 +2186,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     @objc func halfPreviousPage(_ sender: Any?) {
+        if isEPUBMode { epubGoBackward(); return }
         turningPage { [weak self] in
             guard let self, let book = self.book else { return }
             if book.moveHalfPrevious() == .moved {
@@ -1784,11 +2197,13 @@ final class ReaderWindowController: NSWindowController {
     }
 
     @objc func goToFirstPage(_ sender: Any?) {
+        if isEPUBMode { epubGoToFirst(); return }
         book?.goToFirst()
         Task { await refreshDisplay() }
     }
 
     @objc func goToLastPage(_ sender: Any?) {
+        if isEPUBMode { epubGoToLast(); return }
         Task {
             await book?.goToLast()
             await refreshDisplay()
@@ -1889,6 +2304,13 @@ final class ReaderWindowController: NSWindowController {
         settings.gestureHUDEnabled.toggle()
     }
 
+    /// 音声メディアオーバーレイ(SMIL)の再生⇔一時停止(既定オフ。EPUB で
+    /// オーバーレイを持つ項目のときだけ有効。切替式なので既定は再生していない)
+    @objc func toggleMediaOverlayMenu(_ sender: Any?) {
+        guard isEPUBMode else { return }
+        epubView?.toggleMediaOverlayPlayback()
+    }
+
     @objc func rotateLeft(_ sender: Any?) {
         readerView.rotation += 1  // 仕様書 §4.15: rotateLeft はインクリメント
     }
@@ -1899,33 +2321,57 @@ final class ReaderWindowController: NSWindowController {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        // ---- 画像表示専用の設定項目: EPUB モードでは無効(灰色)にする。
+        // かつては validate 対象外で「有効表示のまま無効果」だった
+        // (cooViewer-c6s.20。回転は非表示の readerView に効いて画像モード
+        // 復帰時に残る副作用まであった)
         case #selector(changeFitMode(_:)):
             menuItem.state = readerView.fitMode.rawValue == menuItem.tag ? .on : .off
-            return true
+            return !isEPUBMode
         case #selector(changeReadMode(_:)):
             menuItem.state = book?.readMode.rawValue == menuItem.tag ? .on : .off
             return book != nil
         case #selector(changeInterpolation(_:)):
             menuItem.state = settings.renderQuality.rawValue == menuItem.tag ? .on : .off
-            return true
+            return !isEPUBMode
+        case #selector(toggleInterpolationMenu(_:)),
+             #selector(rotateLeft(_:)), #selector(rotateRight(_:)):
+            return !isEPUBMode
         case #selector(toggleCoverSingleMenu(_:)):
             menuItem.state = settings.spreadCoverSingle ? .on : .off
-            return true
+            return !isEPUBMode
+        case #selector(toggleMediaOverlayMenu(_:)):
+            // 再生中はチェック。オーバーレイを持つ EPUB 項目のときだけ有効
+            menuItem.state = (epubView?.isPlayingMediaOverlay ?? false) ? .on : .off
+            return isEPUBMode && (epubView?.hasMediaOverlayForCurrentItem ?? false)
         case #selector(changePageTurnAnimation(_:)):
             menuItem.state = settings.pageTurnAnimation.rawValue == menuItem.tag
                 ? .on : .off
-            return true
+            return true  // めくり効果は EPUB でも有効(カール含む)
         case #selector(toggleLoupeMenu(_:)):
             menuItem.state = readerView.isLoupeEnabled ? .on : .off
             return (book?.pageCount ?? 0) > 0
         case #selector(toggleGestureHUDMenu(_:)):
             menuItem.state = settings.gestureHUDEnabled ? .on : .off
-            return true
+            return !isEPUBMode  // EPUB にドラッグジェスチャ経路がない
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
-             #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)),
-             #selector(cycleReadMode(_:)), #selector(showThumbnailsMenu(_:)),
-             #selector(editBookmarksMenu(_:)):
+             #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)):
+            // ページ送り系は EPUB モードでも有効
+            return (book?.pageCount ?? 0) > 0 || isEPUBMode
+        // ---- 本(Book)前提の機能: 空の本・EPUB モードでは無効。
+        // かつて default(常に有効)だった項目も guard book で無反応だったため
+        // 明示的に灰色へ(しおり・スライドショー・ファイル情報等。c6s.20)
+        case #selector(showThumbnailsMenu(_:)):
+            // サムネイル一覧は EPUB(画面単位の一覧)でも有効
+            return (book?.pageCount ?? 0) > 0 || isEPUBMode
+        case #selector(cycleReadMode(_:)),
+             #selector(editBookmarksMenu(_:)),
+             #selector(addRemoveBookmarkMenu(_:)),
+             #selector(nextBookmarkMenu(_:)), #selector(previousBookmarkMenu(_:)),
+             #selector(toggleSlideshowMenu(_:)),
+             #selector(showFileInfoMenu(_:)),
+             #selector(showOtherPageInFinderMenu(_:)):
             return (book?.pageCount ?? 0) > 0
         default:
             return true

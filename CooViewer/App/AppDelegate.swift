@@ -1,6 +1,7 @@
 import AppKit
 import Sparkle
 import SwiftUI
+import Washi
 
 /// 自動実行(XCTest / スナップショット検証)の判定。
 /// テストホストがユーザーの実データ(最後に開いた本)に触ったり、
@@ -105,6 +106,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// PNG 出力して終了する。
     private func handleDebugArguments() {
         let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--dump-first-responder"),
+           index + 1 < arguments.count {
+            // 検証用: キーウインドウの first responder 型名を書き出して終了
+            // (EPUB⇔画像本のモード切替でフォーカスが戻るかの確認)
+            let path = arguments[index + 1]
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                let name = self.readerWindowController?.window?.firstResponder
+                    .map { String(describing: type(of: $0)) } ?? "nil"
+                try? name.write(toFile: path, atomically: true, encoding: .utf8)
+                NSApp.terminate(nil)
+            }
+        }
+        if let index = arguments.firstIndex(of: "--appearance"),
+           index + 1 < arguments.count {
+            // 検証用: 外観を強制(dark / light)。EPUB テーマ追従等の確認
+            NSApp.appearance = NSAppearance(
+                named: arguments[index + 1] == "dark" ? .darkAqua : .aqua)
+        }
         if let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count {
             // --at-page <1 始まり> で開始ページも指定できる(検証用)
             var page: Int?
@@ -124,9 +144,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if arguments.contains("--show-thumbnails") {
             // 本のロード完了を待ってからサムネイルオーバーレイを開く
+            // (EPUB モードなら画面単位の一覧)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))
-                self.readerWindowController?.showThumbnail()
+                self.readerWindowController?.toggleThumbnailOverlay()
             }
         }
         if arguments.contains("--show-bookmark-editor") {
@@ -147,26 +168,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.debugPreviewWindow = window
             }
         }
-        if arguments.contains("--then-previous-book") || arguments.contains("--then-next-book") {
-            // 検証用: 最初の本を表示した後に前/次の本へ移動する(Ctrl+D 相当。
-            // 階層ナビゲーションのスナップショット検証のため)。フラグを複数
-            // 並べると回数分繰り返す(多段ナビゲーションの着地確認用)
-            let steps = arguments.filter {
-                $0 == "--then-previous-book" || $0 == "--then-next-book"
-            }
-            Task { @MainActor in
-                for step in steps {
-                    try? await Task.sleep(for: .seconds(1))
-                    self.readerWindowController?.openAdjacentBook(
-                        forward: step == "--then-next-book")
+        // 検証用: --then-* のナビゲーション系フラグは**コマンドライン順に
+        // 1 秒間隔で逐次実行**する(組合せ・繰り返しの検証: 例
+        // --then-goto-percent 100 --then-next-page で巻末超えの着地確認)。
+        // --then-previous-book / --then-next-book: 前/次の本へ(Ctrl+D 相当)
+        // --then-next-page: ページ送り(EPUB はリフローのページ送りに分岐)
+        // --then-goto-percent N: 比率ジャンプ(数字キー 0-9 の goToPercent 経路)
+        var navigationSteps: [@MainActor () -> Void] = []
+        var argIndex = 0
+        while argIndex < arguments.count {
+            switch arguments[argIndex] {
+            case "--then-previous-book", "--then-next-book":
+                let forward = arguments[argIndex] == "--then-next-book"
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.openAdjacentBook(forward: forward)
                 }
+            case "--then-next-page":
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.nextPage(nil)
+                }
+            case "--then-show-thumbnails":
+                // サムネイル一覧のトグル(EPUB 入場後に開く検証用)
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.toggleThumbnailOverlay()
+                }
+            case "--then-play-narration":
+                // 音声メディアオーバーレイ再生を開始(SMIL 同期ハイライトの検証用)
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.toggleMediaOverlayMenu(nil)
+                }
+            case "--then-show-bubble":
+                // ページバーのホバーバブル表示(ホバーは再現不能のため)
+                if argIndex + 1 < arguments.count,
+                   let fraction = Double(arguments[argIndex + 1]) {
+                    argIndex += 1
+                    navigationSteps.append { [weak self] in
+                        self?.readerWindowController?
+                            .debugShowPageBarBubble(fraction: fraction)
+                    }
+                }
+            case "--then-goto-percent":
+                if argIndex + 1 < arguments.count,
+                   let percent = Double(arguments[argIndex + 1]) {
+                    argIndex += 1
+                    navigationSteps.append { [weak self] in
+                        self?.readerWindowController?.performEPUB(
+                            .goToPercent, value: percent, leftHalf: nil)
+                    }
+                }
+            default:
+                break
             }
+            argIndex += 1
         }
-        if arguments.contains("--then-next-page") {
-            // 検証用: 表示後にページ送りする(めくり効果の完了後状態の確認等)
+        if !navigationSteps.isEmpty {
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                self.readerWindowController?.nextPage(nil)
+                for step in navigationSteps {
+                    try? await Task.sleep(for: .seconds(1))
+                    step()
+                }
             }
         }
         if arguments.contains("--then-toggle-cover-single") {
@@ -244,11 +304,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
             // 多段ナビゲーション指定時は 1 段ごとに 1 秒待ちを足す
+            // (ステップは 1 秒間隔で逐次実行されるため、最後のステップの
+            // 完了+読み込みの余裕を見て撮影する)
             let navSteps = arguments.filter {
-                $0 == "--then-previous-book" || $0 == "--then-next-book"
+                ["--then-previous-book", "--then-next-book",
+                 "--then-next-page", "--then-goto-percent",
+                 "--then-show-thumbnails", "--then-show-bubble",
+                 "--then-play-narration"].contains($0)
             }.count
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2 + Double(max(0, navSteps - 1))))
+                try? await Task.sleep(for: .seconds(2 + Double(navSteps)))
                 // アクティビティ窓が開いていれば ImageRenderer で撮る
                 // (NSHostingView + ScrollView はヘッドレスの cacheDisplay で
                 // テキストが写らないため。FileInfoView と同じ流儀)
@@ -268,6 +333,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 // しおり編集シート/ファイル情報パネルが開いていればそちらを撮る
                 // (NSHostingView は反転補正)
+                if self.readerWindowController?.isEPUBMode == true {
+                    // EPUB モードは WKWebView のため layer.render に写らない。
+                    // takeSnapshot 合成(EPUBReaderView.snapshot)で撮る
+                    if let image = await self.readerWindowController?.epubDebugSnapshot(),
+                       let tiff = image.tiffRepresentation,
+                       let rep = NSBitmapImageRep(data: tiff) {
+                        try? rep.representation(using: .png, properties: [:])?
+                            .write(to: URL(fileURLWithPath: path))
+                    }
+                    NSApp.terminate(nil)
+                    return
+                }
                 if let sheet = self.readerWindowController?.bookmarkEditorWindow {
                     self.writeCachedSnapshot(of: sheet.contentView, to: path)
                 } else if let details = self.readerWindowController?
