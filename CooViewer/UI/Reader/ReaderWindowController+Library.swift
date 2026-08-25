@@ -217,7 +217,14 @@ extension ReaderWindowController {
             epubCollectionContext?.folderURL ?? currentBookFileURL else { return }
         let siblings = siblingBooks(of: currentURL)
         guard !siblings.isEmpty,
-              let current = siblings.firstIndex(of: currentURL.path) else { return }
+              let current = siblings.firstIndex(of: currentURL.path) else {
+            // 兄弟が無い/現在の本が一覧に見つからない(読書中の外部改名・移動、
+            // 親フォルダの列挙失敗、現在の本自身がドットファイル)ときは無反応に
+            // せず、失敗ナビの慣習どおり音で「これ以上進めない」を返す
+            // (goToBookmark と同じフィードバック。監査 #6)
+            NSSound.beep()
+            return
+        }
         let target = (current + (forward ? 1 : -1) + siblings.count) % siblings.count
         // ナビゲーションではコレクションフォルダへ潜らない: フォルダ自身に
         // 着地して階層を保つ(潜ると以後の次/前の本が中の階層の兄弟を走査し、
@@ -519,11 +526,16 @@ extension ReaderWindowController {
               preparingNextBookPath != nextPath,
               SupportedTypes.isArchive(URL(fileURLWithPath: nextPath)) else { return }
         preparingNextBookPath = nextPath
+        // 準備対象は「今の本の次の兄弟」。準備中に別の本へ切り替わったら、古い
+        // フォルダの隣接書庫をスロットに入れない(スプール済み一時データが居座る
+        // リーク+古いスロットの再導入を防ぐ。監査 #11)
+        let preparingForBook = book
         Task {
             defer { preparingNextBookPath = nil }
             guard let source = try? await BookSourceFactory.make(
                 for: URL(fileURLWithPath: nextPath),
                 readSubFolders: settings.readSubFolder) else { return }
+            guard self.book === preparingForBook else { return }
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
                 // 実効プロファイル(自動判定+高度設定の明示上書き)を適用してから展開
@@ -533,6 +545,7 @@ extension ReaderWindowController {
                 await source.beginBackgroundPreparation(
                     spoolSizeLimit: settings.archiveSpoolSizeLimit)
             }
+            guard self.book === preparingForBook else { return }
             preparedNextBook = (nextPath, source)
         }
     }

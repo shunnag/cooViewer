@@ -288,6 +288,50 @@ extension BindingTests {
         suite.removePersistentDomain(forName: "test.cooViewer.mouse.edited")
     }
 
+    // MARK: - 全割当削除の定着(監査 #8: 明示的な空配列は既定を復活させない)
+
+    func testEmptyMouseArrayHonoredAfterUserEdit() {
+        // UI でマウス割当を全削除(空を保存)したら、再起動でも既定が復活しない
+        let suite = UserDefaults(suiteName: "test.cooViewer.mouse.empty")!
+        suite.removePersistentDomain(forName: "test.cooViewer.mouse.empty")
+        BindingConfiguration.saveMouseBindings([], arrayName: "MouseArray", to: suite)
+        XCTAssertTrue(suite.bool(forKey: "MouseArrayUserEdited"))
+        let loaded = BindingConfiguration.load(from: suite)
+        XCTAssertTrue(loaded.mouseNormal.isEmpty,
+                      "明示的に空保存した配列は既定へ戻してはならない")
+        suite.removePersistentDomain(forName: "test.cooViewer.mouse.empty")
+    }
+
+    func testAbsentMouseArrayFallsBackToDefaults() {
+        // 未設定(キー自体が無い)は従来どおり既定へ
+        let suite = UserDefaults(suiteName: "test.cooViewer.mouse.absent")!
+        suite.removePersistentDomain(forName: "test.cooViewer.mouse.absent")
+        let loaded = BindingConfiguration.load(from: suite)
+        XCTAssertFalse(loaded.mouseNormal.isEmpty)
+        suite.removePersistentDomain(forName: "test.cooViewer.mouse.absent")
+    }
+
+    func testCorruptMouseArrayFallsBackToDefaults() {
+        // 非空だが全行が不正(action/button 欠落)= 壊れたデータは既定へ戻す
+        let suite = UserDefaults(suiteName: "test.cooViewer.mouse.corrupt")!
+        suite.removePersistentDomain(forName: "test.cooViewer.mouse.corrupt")
+        suite.set([["nonsense": 1]], forKey: "MouseArray")
+        let loaded = BindingConfiguration.load(from: suite)
+        XCTAssertFalse(loaded.mouseNormal.isEmpty)
+        suite.removePersistentDomain(forName: "test.cooViewer.mouse.corrupt")
+    }
+
+    func testEmptyKeyArrayHonoredAfterUserEdit() {
+        let suite = UserDefaults(suiteName: "test.cooViewer.keys.empty")!
+        suite.removePersistentDomain(forName: "test.cooViewer.keys.empty")
+        BindingConfiguration.saveKeyBindings([], arrayName: "KeyArray", to: suite)
+        XCTAssertTrue(suite.bool(forKey: "KeyArrayUserEdited"))
+        let loaded = BindingConfiguration.load(from: suite)
+        XCTAssertTrue(loaded.keyNormal.isEmpty,
+                      "明示的に空保存したキー配列は既定へ戻してはならない")
+        suite.removePersistentDomain(forName: "test.cooViewer.keys.empty")
+    }
+
     func testDragFallbackDiscardsModifiers() {
         // フォールバック段は修飾キーを捨てた素の 100 固定(仕様書 §5.3、
         // Controller_input.m:1012-1026)。shift 付きドラッグでも (button,100)

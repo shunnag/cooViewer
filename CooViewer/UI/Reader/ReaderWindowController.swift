@@ -44,6 +44,11 @@ final class ReaderWindowController: NSWindowController {
     var epubBookURL: URL?
     /// WKWebView がキーイベントを食うため、EPUB モード中はローカルモニタで拾う
     var epubKeyMonitor: Any?
+    /// EPUB モード中、readerView が隠れて拾えなくなるハードウェアの
+    /// スワイプ/回転ジェスチャをローカルモニタで拾い直す(監査 #10)
+    var epubGestureMonitor: Any?
+    /// 回転ジェスチャの累積角(.began でリセット・.ended で発火。ReaderView と同型)
+    var epubRotationSum: CGFloat = 0
     /// EPUB の「N/M (章題)」ページ番号表示(census 完了時のみ非 nil)
     var epubPageLabelText: String?
     /// コレクション(合本)経由で開いた EPUB の文脈(nil = 単体で開いた EPUB)
@@ -856,6 +861,15 @@ final class ReaderWindowController: NSWindowController {
                     source = prepared.source
                 }
             } else {
+                // prepared が今回開く本と一致せず、しかも別フォルダの本を開いた
+                // ときは、旧フォルダの隣接書庫を握り続けない(スプール済み一時
+                // データを抱えたまま居座るリーク。監査 #11)。同フォルダ内なら
+                // 巻末で maybePrepareNextBook が置換するので保持のままでよい
+                if let prepared = preparedNextBook,
+                   URL(fileURLWithPath: prepared.path).deletingLastPathComponent().path
+                       != bookURL.deletingLastPathComponent().path {
+                    preparedNextBook = nil
+                }
                 source = try await BookSourceFactory.make(
                     for: bookURL, readSubFolders: settings.readSubFolder,
                     nestedPasswordProvider: nestedPasswordProvider())
@@ -993,6 +1007,10 @@ final class ReaderWindowController: NSWindowController {
             } else if let atPage {
                 book.goTo(index: atPage)
             } else if atLastPage {
+                // 後退到達(前の本を末尾から)の意図を代理ページ入場へ伝える。
+                // 末尾が合本内リフロー EPUB のとき、これが無いと refreshDisplay の
+                // forward 既定が true になり EPUB が先頭で開いてしまう(監査 #1)
+                epubCollectionArrivalForward = false
                 await book.goToLast()
             }
             window?.title = await book.displayTitle()  // ComicInfo 優先(cooViewer-4fi.3)
@@ -1376,15 +1394,6 @@ final class ReaderWindowController: NSWindowController {
 
     func refreshDisplay() async {
         guard let book else { return }
-        // ページ送りの向きはこの表示で消費する(未設定ならめくり効果なし)
-        let turnForward = pendingTurnForward
-        pendingTurnForward = nil
-        // 合本復帰の到達方向・先頭強制も必ずここで消費する(代理ページ以外へ
-        // 着地した場合に残留すると、後の自動入場を汚染する)
-        let collectionArrival = epubCollectionArrivalForward
-        epubCollectionArrivalForward = nil
-        let collectionArrivalAtFirst = epubCollectionArrivalAtFirst
-        epubCollectionArrivalAtFirst = false
         // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
         // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
         // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
@@ -1407,6 +1416,20 @@ final class ReaderWindowController: NSWindowController {
         let spread = await book.currentSpread()
         // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
         guard generation == displayGeneration, book === self.book else { return }
+
+        // 一回消費フラグ(めくり向き・合本到達方向・先頭強制)は、連打・競合を
+        // 弾く supersession ガードを通過した「勝ち残る表示」でだけ消費する。
+        // ガードより前で消費すると、await 中に後発の表示が displayGeneration を
+        // 進めた場合に本 pass は上の guard で return して意味を失い、勝ち残る
+        // pass には nil が渡る(合本の後退到達が末尾でなく先頭で開く等の取り
+        // こぼし)。代理ページ以外へ着地しても必ずここで消費・クリアするため、
+        // 残留が後の自動入場を汚染することはない
+        let turnForward = pendingTurnForward
+        pendingTurnForward = nil
+        let collectionArrival = epubCollectionArrivalForward
+        epubCollectionArrivalForward = nil
+        let collectionArrivalAtFirst = epubCollectionArrivalAtFirst
+        epubCollectionArrivalAtFirst = false
 
         // コレクション(合本)内のリフロー EPUB 代理ページ: 表示せず EPUB
         // モードへ切り替える(前進到達は先頭/復元、後退到達は末尾から。
@@ -2111,6 +2134,9 @@ final class ReaderWindowController: NSWindowController {
         switch settings.loopCheck {
         case 0:
             Task {
+                // 巻頭ループで同じ合本の末尾へ戻る。末尾が代理 EPUB のとき
+                // 後退到達として末尾から開く(監査 #1。設定なしだと先頭で開く)
+                epubCollectionArrivalForward = false
                 await book.goToLast()
                 await refreshDisplay()
             }

@@ -114,6 +114,19 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// When true, right-click (and control-click) does not open the web view's
     /// context menu, so the host can provide its own. Default false.
     public var suppressesContextMenu = false
+    /// When true (default), a horizontal trackpad/wheel gesture turns one page.
+    /// Set false when the host drives horizontal swipe page-turns itself (so the
+    /// two do not both fire, and the host's "swipe turns pages" preference is
+    /// honored). Vertical wheel scrolling through paginated content is
+    /// unaffected either way.
+    public var horizontalWheelTurnsPages = true
+    /// Inverts the reading direction of horizontal trackpad/wheel page turns.
+    /// By default a leftward gesture turns toward the left-hand page (physical
+    /// mapping via the book's writing direction). The host sets this to align
+    /// wheel turns with its own swipe-direction preference and, in a merged
+    /// collection whose reading order differs from an individual volume, with
+    /// the collection's direction. Default false.
+    public var reversesHorizontalWheelTurn = false
 
     public init() {}
 

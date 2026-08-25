@@ -621,18 +621,23 @@ actor ArchiveSource: BookSource {
         // 暗号化書庫の復号済みページを平文で temp に残さない(CWE-312。
         // 保存パスワードの自動解錠で無人でも展開が走るため)。スプールは
         // プロセス生存中しか読まれないので、鍵はメモリのみの使い捨て —
-        // プロセス終了で残骸ファイルは復号不能なゴミになる
-        spoolEncrypted = password != nil
+        // プロセス終了で残骸ファイルは復号不能なゴミになる。暗号化祖先由来で
+        // sensitive な子(復号済み)がスプール経路に乗った場合も平文を書かない
+        // よう暗号化対象に含める(監査 #4。先回りの堅牢化)
+        spoolEncrypted = password != nil || contentIsSensitive
         var total: Int64 = 0
         for entry in outerImages {
             total += Int64(archive.size(ofEntry: Int32(entry.id)))
         }
         guard total <= sizeLimit else { return }
 
+        // ネスト temp(:359)と同じく所有者限定(0o700)で作る。復号済み平文が
+        // 乗り得るため他ユーザーから列挙・読み取りされないようにする(監査 #4)
         let directory = Self.spoolRoot().appendingPathComponent(
             "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)")
         guard (try? FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)) != nil else { return }
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])) != nil else { return }
         spoolDirectory = directory
 
         let ids = outerImages.map(\.id)
