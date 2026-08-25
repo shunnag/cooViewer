@@ -94,6 +94,15 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     public var backgroundColorCSS: String?
     /// Body text CSS color (nil = theme default).
     public var textColorCSS: String?
+    /// When true, the reader forces its theme's text color onto the book's
+    /// content, overriding the book's own color declarations (via `!important`),
+    /// so pages stay legible against the themed background — the "prioritize
+    /// readability" mode. When false (default), the book's own colors win and
+    /// the theme only supplies a fallback (respect-the-book mode). Ignored when
+    /// `textColorCSS` is set (an explicit host color always wins). Trade-off:
+    /// a book's intentional colors and light-background call-outs may lose
+    /// contrast, so expose it as a user choice.
+    public var forcesReadableColors = false
     /// Additional user CSS (injected last).
     public var userCSS: String?
     /// When true, default key actions (arrows, space, etc.) are handled within
@@ -134,7 +143,18 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// ほぼ黒 + 明灰文字)。明示指定(backgroundColorCSS 等)が最優先
     func effectiveColors(isDark: Bool) -> (background: String, text: String?) {
         let background = backgroundColorCSS ?? (isDark ? "#1a1a1c" : "#ffffff")
-        let text = textColorCSS ?? (isDark ? "#d5d5d0" : nil)
+        let text: String?
+        if let explicit = textColorCSS {
+            text = explicit
+        } else if forcesReadableColors {
+            // 読みやすさ優先: 本が色を指定していても、テーマ背景に対して確実に
+            // 読める文字色を両モードで用意する(Apple Books のダーク相当)
+            text = isDark ? "#ececec" : "#1a1a1a"
+        } else {
+            // 本の配色を尊重: ダークだけ継承用の明灰を用意(本が色指定を持つ
+            // ページはそちらが勝つ=本来の見た目のまま)
+            text = isDark ? "#d5d5d0" : nil
+        }
         return (background, text)
     }
 
@@ -179,11 +199,19 @@ public struct EPUBReaderSettings: Sendable, Equatable {
         css += ":root { color-scheme: \(isDark ? "dark" : "light"); }\n"
         css += "html { background-color: \(colors.background) !important; }\n"
         if let text = colors.text {
-            // body への継承指定のみ(本文が色指定を持つ本はそちらが勝つ)。
-            // リンクはダークで読める青へ
-            css += "body { color: \(text); }\n"
-            if isDark {
-                css += "a { color: #7fb2ff; }\n"
+            if forcesReadableColors, textColorCSS == nil {
+                // 読みやすさ優先: 本の色指定(class・要素セレクタ等)より強く
+                // 上書きして必ず読める色に(!important で継承の壁を越える)。
+                // リンクだけは読みやすい色を別途指定して区別を残す
+                css += "body, body *:not(a) { color: \(text) !important; }\n"
+                css += "a { color: \(isDark ? "#7fb2ff" : "#1a56db") !important; }\n"
+            } else {
+                // 本の配色を尊重: body への継承指定のみ(本文が色指定を持つ本は
+                // そちらが勝つ)。リンクはダークで読める青へ
+                css += "body { color: \(text); }\n"
+                if isDark {
+                    css += "a { color: #7fb2ff; }\n"
+                }
             }
         }
         if let extra = userCSS {

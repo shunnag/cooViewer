@@ -164,6 +164,8 @@ struct SettingsView: View {
     @AppStorage("EPUBFontScale") private var epubFontScale = 1.0
     @AppStorage("EPUBPageMargins") private var epubPageMargins = 1
     @AppStorage("EPUBDefaultFont") private var epubDefaultFont = ""
+    @AppStorage("EPUBTheme") private var epubTheme = 0
+    @AppStorage("EPUBForceReadableColors") private var epubForceReadableColors = true
     @AppStorage("WheelSensitivity") private var wheelSensitivity = 1.0
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
@@ -327,6 +329,8 @@ struct SettingsView: View {
             String(localized: "Delete All…"),
         ]
         case .epub: [
+            String(localized: "Background:"),
+            String(localized: "Colors:"),
             String(localized: "Text size:"),
             String(localized: "Pinch to change EPUB text size"),
             String(localized: "Page margins:"),
@@ -753,6 +757,22 @@ struct SettingsView: View {
     /// 「本が font-family を指定しないときだけ」効く(本の指定が最優先)
     private var epubPane: some View {
         Form {
+            Section {
+                Picker(String(localized: "Background:"), selection: $epubTheme) {
+                    Text(String(localized: "Follow system")).tag(0)
+                    Text(String(localized: "Light")).tag(1)
+                    Text(String(localized: "Dark")).tag(2)
+                }
+                Picker(String(localized: "Colors:"),
+                       selection: $epubForceReadableColors) {
+                    Text(String(localized: "Prioritize readability")).tag(true)
+                    Text(String(localized: "Respect the book")).tag(false)
+                }
+                Text(String(localized:
+                    "\"Prioritize readability\" overrides the book's own text colors so pages stay legible against the background (e.g. books that hard-code black text in dark mode). \"Respect the book\" keeps the book's colors."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 sliderRow(
                     label: String(localized: "Text size:"),

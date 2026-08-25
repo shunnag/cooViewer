@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.11.0] - 2026-08-25
+
+### 追加
+- `EPUBReaderSettings.forcesReadableColors`(既定 false)。true にすると、本が
+  色を指定していても(class・要素セレクタ含む)テーマの文字色を `!important` で
+  上書きし、テーマ背景に対して確実に読める色にする「読みやすさ優先」モード。
+  false のままなら本の配色を尊重(従来どおり、ダークは継承用の明灰のみ)。
+  `textColorCSS` 明示時は無視(ホストの明示色が最優先)。ダークモードで黒文字を
+  ハードコードした本(電書協系・自動生成本など)の可読性を確保する。
+
 ## [1.10.0] - 2026-08-25
 
 ### 追加

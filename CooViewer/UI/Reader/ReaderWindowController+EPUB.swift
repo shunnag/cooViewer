@@ -155,6 +155,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubSettings.insets = Self.epubInsets(forMargins: settings.epubPageMargins)
         epubSettings.defaultFontFamily =
             settings.epubDefaultFont.isEmpty ? nil : settings.epubDefaultFont
+        // 背景(配色テーマ): システムに従う / ライト / ダーク
+        epubSettings.theme = EPUBReaderTheme(rawValue: settings.epubTheme) ?? .system
+        // 読みやすさ優先(既定 ON): 本が色を指定していてもテーマ文字色を強制し、
+        // ダーク背景で黒文字がハードコードされた本でも読めるようにする
+        epubSettings.forcesReadableColors = settings.epubForceReadableColors
         // 水平スワイプ/ホイールめくりを画像本と同じトグル・向きにそろえる
         // (Washi は既定で内部的にめくるため、SwipeToTurnPage/FlipSwipeDirection
         // やコレクションの綴じ方向が効かず非対称だった。監査 #2)

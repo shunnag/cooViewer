@@ -5110,6 +5110,86 @@
           }
         }
       }
+    },
+    "Background:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景:"
+          }
+        }
+      }
+    },
+    "Follow system": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システムに従う"
+          }
+        }
+      }
+    },
+    "Light": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ライト"
+          }
+        }
+      }
+    },
+    "Dark": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダーク"
+          }
+        }
+      }
+    },
+    "Colors:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配色:"
+          }
+        }
+      }
+    },
+    "Prioritize readability": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読みやすさ優先"
+          }
+        }
+      }
+    },
+    "Respect the book": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本の配色を尊重"
+          }
+        }
+      }
+    },
+    "\"Prioritize readability\" overrides the book's own text colors so pages stay legible against the background (e.g. books that hard-code black text in dark mode). \"Respect the book\" keeps the book's colors.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「読みやすさ優先」は本自身の文字色を上書きし、背景に対して確実に読めるようにします(ダークモードで黒文字をハードコードした本など)。「本の配色を尊重」は本の配色をそのまま使います。"
+          }
+        }
+      }
     }
   },
   "version": "1.1"
