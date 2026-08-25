@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.3.0] - 2026-08-25
+
+### 追加
+- `EPUBReadStrategy`(`.mappedIfSafe` 既定 / `.alwaysCopy`)を
+  `EPUBPublication.open`・`init(url:)`・`ZipArchive(url:)` に追加。
+  `.alwaysCopy` は memory-map を使わず全読みするので、揮発・信頼できない
+  ストレージ(ネットワークボリューム・未検証アップロード)の SIGBUS を避ける。
+  ヘッドレス/サーバ利用向け
+
 ## [1.2.1] - 2026-08-25
 
 ### 追加

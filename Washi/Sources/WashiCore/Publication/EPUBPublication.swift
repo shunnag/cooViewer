@@ -50,26 +50,35 @@ public final class EPUBPublication: Sendable {
     /// actor stay responsive. Prefer this over the synchronous initializer in
     /// UI code.
     ///
-    /// - Parameter url: a `.epub` file or an unpacked EPUB directory.
-    public static func open(url: URL) async throws -> EPUBPublication {
+    /// - Parameters:
+    ///   - url: a `.epub` file or an unpacked EPUB directory.
+    ///   - readStrategy: how the bytes are read from disk (see
+    ///     ``EPUBReadStrategy``; `.alwaysCopy` avoids memory-mapping for
+    ///     volatile or untrusted files).
+    public static func open(url: URL,
+                            readStrategy: EPUBReadStrategy = .mappedIfSafe)
+        async throws -> EPUBPublication {
         try await Task.detached(priority: .userInitiated) {
-            try EPUBPublication(url: url)
+            try EPUBPublication(url: url, readStrategy: readStrategy)
         }.value
     }
 
     /// Opens a `.epub` file or an already-unpacked EPUB directory.
-    public convenience init(url: URL) throws {
+    /// `readStrategy` controls how the bytes are read (see ``EPUBReadStrategy``).
+    public convenience init(url: URL,
+                            readStrategy: EPUBReadStrategy = .mappedIfSafe) throws {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path,
                                              isDirectory: &isDirectory) else {
             throw EPUBError.notAnEPUB(url.path)
         }
         if isDirectory.boolValue {
-            try self.init(url: url, reader: FolderContainerReader(rootURL: url))
+            try self.init(url: url, reader: FolderContainerReader(
+                rootURL: url, readStrategy: readStrategy))
         } else {
             let archive: ZipArchive
             do {
-                archive = try ZipArchive(url: url)
+                archive = try ZipArchive(url: url, readStrategy: readStrategy)
             } catch {
                 throw EPUBError.notAnEPUB("ZIP として読めない: \(error)")
             }

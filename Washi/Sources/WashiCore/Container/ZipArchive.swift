@@ -85,8 +85,9 @@ public final class ZipArchive: Sendable {
     private let maxEntrySize: Int
 
     public convenience init(url: URL,
-                            maxEntrySize: Int = ZipArchive.defaultMaxEntrySize) throws {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                            maxEntrySize: Int = ZipArchive.defaultMaxEntrySize,
+                            readStrategy: EPUBReadStrategy = .mappedIfSafe) throws {
+        let data = try Data(contentsOf: url, options: readStrategy.dataOptions)
         try self.init(data: data, maxEntrySize: maxEntrySize)
     }
 

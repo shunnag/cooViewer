@@ -179,6 +179,33 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(publication.metadata.mainTitle, "吾輩は猫である")
     }
 
+    /// readStrategy=.alwaysCopy でも(mmap せず全読みで)同じ結果を返す
+    /// (揮発/信頼できないストレージ向けの堅牢オプション)
+    func testAlwaysCopyReadStrategy() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("washi-copy-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for (name, data) in EPUBFixtures.verticalNovelEntries() {
+            let url = dir.appendingPathComponent(name)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+        // フォルダ(逐次リソース読み)と .epub(全体読み)の両経路
+        let folder = try EPUBPublication(url: dir, readStrategy: .alwaysCopy)
+        XCTAssertEqual(folder.metadata.mainTitle, "吾輩は猫である")
+        XCTAssertFalse(try folder.extractText(forSpineIndex: 0).isEmpty)
+
+        let epubURL = dir.deletingLastPathComponent()
+            .appendingPathComponent("washi-copy-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: epubURL) }
+        try ZipBuilder.build(EPUBFixtures.verticalNovelEntries(), method: 8)
+            .write(to: epubURL)
+        let zipped = try EPUBPublication(url: epubURL, readStrategy: .alwaysCopy)
+        XCTAssertEqual(zipped.metadata.mainTitle, "吾輩は猫である")
+    }
+
     /// resourcePaths はコンテナ内の実リソースを列挙する
     func testResourcePathsEnumerated() throws {
         let publication = try openVerticalNovel()

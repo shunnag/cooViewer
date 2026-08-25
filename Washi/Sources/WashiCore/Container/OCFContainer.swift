@@ -1,5 +1,24 @@
 import Foundation
 
+/// How the file bytes are read from disk.
+public enum EPUBReadStrategy: Sendable {
+    /// Memory-map the file when the OS deems it safe, otherwise read it into
+    /// memory (Foundation's `.mappedIfSafe`). Fast and low-memory; the default.
+    case mappedIfSafe
+    /// Always read the whole file into memory (never memory-map). Safer for
+    /// files on volatile or untrusted storage — a mapped read can crash with
+    /// SIGBUS if the file is truncated underneath it or a network volume drops.
+    /// Prefer this in headless/server contexts processing untrusted uploads.
+    case alwaysCopy
+
+    var dataOptions: Data.ReadingOptions {
+        switch self {
+        case .mappedIfSafe: [.mappedIfSafe]
+        case .alwaysCopy: []
+        }
+    }
+}
+
 /// An error raised while opening or reading an EPUB.
 public enum EPUBError: Error, Sendable, Equatable, LocalizedError {
     /// The file is not a recognizable EPUB (not a ZIP, no container.xml, …).
@@ -60,6 +79,7 @@ struct ZipContainerReader: ContainerReader {
 /// 展開済みフォルダのコンテナ(開発時・解凍済み配布物向け)
 struct FolderContainerReader: ContainerReader {
     let rootURL: URL
+    var readStrategy: EPUBReadStrategy = .mappedIfSafe
 
     var allPaths: [String] {
         let root = rootURL.standardizedFileURL
@@ -124,7 +144,7 @@ struct FolderContainerReader: ContainerReader {
             throw EPUBError.resourceNotFound(path)
         }
         do {
-            return try Data(contentsOf: url, options: .mappedIfSafe)
+            return try Data(contentsOf: url, options: readStrategy.dataOptions)
         } catch {
             throw EPUBError.resourceNotFound(path)
         }
