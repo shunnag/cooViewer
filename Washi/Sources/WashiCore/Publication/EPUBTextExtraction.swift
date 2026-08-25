@@ -107,27 +107,42 @@ extension EPUBPublication {
 
     // MARK: - 実装(内部コメントは日本語)
 
-    /// query の出現位置を全て返す。比較は大小・濁点・全半角を無視するため、
-    /// 折り畳んだ文字列上で範囲を求め、元テキストの同一 index 範囲へ戻す
-    /// (folded と原文は Character 数が 1:1 に保たれる範囲でのみ扱う)
+    /// 検索用の 1 文字畳み込み。半角濁点カナ(ｶﾞ 等)は 1 書記素で、
+    /// widthInsensitive では全角(ガ)に畳まれず取りこぼす。全角/半角形ブロック
+    /// (U+FF00–FFEF)を含む文字だけ NFKC で畳んで全角化する(1 文字に畳める
+    /// ものだけ。稀な合字は 1:1 を保つためそのまま)。他の文字は素通しなので、
+    /// 通常のテキストでは畳み結果=原文(既存挙動は不変)で高速
+    private static func foldForSearch(_ c: Character) -> Character {
+        guard c.unicodeScalars.contains(where: { (0xFF00...0xFFEF).contains($0.value) })
+        else { return c }
+        let n = String(c).precomposedStringWithCompatibilityMapping
+        return n.count == 1 ? n.first! : c
+    }
+
+    /// query の出現位置を全て返す。比較は大小・濁点・全半角・半角濁点カナを
+    /// 無視する。畳み込みは 1 文字→1 文字なので、畳み文字列上のオフセットは
+    /// 元テキストのオフセットにそのまま一致する(写像不要)
     private static func matches(of needle: String, in text: String,
                                 spineIndex: Int,
                                 snippetRadius: Int) -> [EPUBSearchHit] {
         let chars = Array(text)
+        let foldedText = String(chars.map(Self.foldForSearch))
+        let foldedNeedle = String(Array(needle).map(Self.foldForSearch))
+        guard !foldedNeedle.isEmpty else { return [] }
         let options: String.CompareOptions =
             [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
         var hits: [EPUBSearchHit] = []
-        var searchStart = text.startIndex
-        // searchStart の文字オフセットを持ち回り、offset は「前回マッチ末尾
-        // からの距離」だけを足して増分計算する(毎回 startIndex から数え直すと
-        // 高頻度クエリ×長い項目で O(M·n) になる)
+        var searchStart = foldedText.startIndex
+        // オフセットは前回マッチ末尾からの距離だけ足して増分計算(毎回
+        // startIndex から数え直すと高頻度クエリ×長い項目で O(M·n) になる)
         var baseOffset = 0
-        while let range = text.range(of: needle, options: options,
-                                     range: searchStart..<text.endIndex) {
+        while let range = foldedText.range(of: foldedNeedle, options: options,
+                                           range: searchStart..<foldedText.endIndex) {
             let offset = baseOffset
-                + text.distance(from: searchStart, to: range.lowerBound)
-            let length = text.distance(from: range.lowerBound,
-                                       to: range.upperBound)
+                + foldedText.distance(from: searchStart, to: range.lowerBound)
+            let length = foldedText.distance(from: range.lowerBound,
+                                             to: range.upperBound)
+            // 1:1 畳み込みなので offset/length は元テキストの chars にそのまま対応
             let lower = max(0, offset - snippetRadius)
             let upper = min(chars.count, offset + length + snippetRadius)
             let snippet = String(chars[lower..<upper])

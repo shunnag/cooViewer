@@ -333,6 +333,15 @@ public final class EPUBPublication: Sendable {
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
+    /// The resolved cover image's raw bytes and media type, without decoding —
+    /// useful to store or serve the original file as-is (e.g. a library cache
+    /// or a web response). Uses the same fallback chain as ``coverImage``.
+    /// Nil if no cover resolves or it cannot be read (e.g. DRM).
+    public func coverImageData() -> (data: Data, mediaType: String)? {
+        guard let path = resolvedCoverImagePath else { return nil }
+        return try? resource(at: path)
+    }
+
     // MARK: - リソース読み出し
 
     /// Reads a resource by its container path, transparently reversing font

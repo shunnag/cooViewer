@@ -35,6 +35,16 @@ final class PublicationTests: XCTestCase {
         XCTAssertLessThanOrEqual(max(thumb?.width ?? 0, thumb?.height ?? 0), 2)
     }
 
+    /// 表紙の生バイト取得(デコードせず元ファイルのまま)
+    func testCoverImageData() throws {
+        let publication = try openVerticalNovel()
+        let cover = try XCTUnwrap(publication.coverImageData())
+        XCTAssertEqual(cover.mediaType, "image/png")
+        XCTAssertFalse(cover.data.isEmpty)
+        // PNG シグネチャ
+        XCTAssertEqual(Array(cover.data.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
+    }
+
     /// 表紙 API: 宣言なしでも「cover を含む名前の manifest 画像」へフォールバック
     func testCoverImageFallsBackToNamedManifestImage() throws {
         var entries = EPUBFixtures.verticalNovelEntries()
@@ -130,6 +140,47 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(publication.search("生れた").first?.spineIndex, 1)
         // 空クエリは無ヒット
         XCTAssertTrue(publication.search("   ").isEmpty)
+    }
+
+    /// 半角濁点カナ(ｶﾞ)を全角(ガ)クエリで引ける。オフセットも元テキストに一致
+    func testSearchFoldsHalfWidthDakutenKana() throws {
+        let opf = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" \
+        unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title>t</dc:title><dc:language>ja</dc:language>
+          </metadata>
+          <manifest>
+            <item id="c" href="c.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine><itemref idref="c"/></spine>
+        </package>
+        """
+        // 本文は半角濁点カナ「ガギグ」の半角表記
+        let body = "\u{FF76}\u{FF9E}\u{FF77}\u{FF9E}\u{FF78}\u{FF9E}"
+        let xhtml = "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\">"
+            + "<body><p>\(body)</p></body></html>"
+        let entries: [(name: String, data: Data)] = [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(EPUBFixtures.containerXML.utf8)),
+            ("OEBPS/package.opf", Data(opf.utf8)),
+            ("OEBPS/c.xhtml", Data(xhtml.utf8)),
+        ]
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/kana.epub"))
+        // 全角クエリ「ガ」で半角「ｶﾞ」がヒットする
+        let hits = publication.search("ガ")
+        XCTAssertEqual(hits.count, 1)
+        let hit = try XCTUnwrap(hits.first)
+        // オフセット・長さは元テキスト(半角 2 文字)を指す
+        let chars = Array(try publication.extractText(forSpineIndex: 0))
+        let matched = String(chars[hit.characterOffset..<(hit.characterOffset + hit.length)])
+        XCTAssertEqual(matched, "\u{FF76}\u{FF9E}")  // ｶﾞ
+        // 半角クエリ「ｷﾞ」で全角同等(ギ)を引ける
+        XCTAssertEqual(publication.search("\u{FF77}\u{FF9E}").count, 1)
     }
 
     /// 検索の文字オフセットは抽出テキスト上で一致する(ハイライトの土台)

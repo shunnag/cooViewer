@@ -17,6 +17,17 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(navigation.landmarks[0].epubType, "bodymatter")
     }
 
+    /// TOC の深さ平坦化(見出しツリーを depth 付きの一列へ)
+    func testFlattenedTOC() throws {
+        let navigation = try NavigationDocumentParser.parse(
+            data: Data(EPUBFixtures.navXHTML.utf8), at: "OEBPS/nav.xhtml")
+        let flat = navigation.flattenedTOC
+        // 第一章(0) → 一の一(1) → 第二章(0) の深さ優先
+        XCTAssertEqual(flat.map(\.title), ["第一章", "一の一", "第二章"])
+        XCTAssertEqual(flat.map(\.depth), [0, 1, 0])
+        XCTAssertEqual(flat[1].href, "text/ch1.xhtml#sec1")
+    }
+
     func testNCX() throws {
         let navigation = try NCXParser.parse(
             data: Data(EPUBFixtures.ncx.utf8), at: "OEBPS/toc.ncx")

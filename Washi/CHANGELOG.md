@@ -4,6 +4,19 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.6.0] - 2026-08-25
+
+### 追加
+- `EPUBPublication.coverImageData()` — 表紙をデコードせず生バイト+メディア
+  タイプで取得(元ファイルの保存・配信用。`coverImage` と同じフォールバック連鎖)
+- `EPUBNavigation.flattenedTOC` と `EPUBNavItem.flattened(startingAt:)` —
+  目次ツリーを depth 付きの一列へ平坦化(フラットな目次 UI 向け)
+
+### 修正
+- 全文検索が半角濁点カナ(`ｶﾞ` 等)を全角(`ガ`)と一致させるように
+  (NFKC 畳み込み。全角/半角形ブロックのみ対象で 1:1・高速、オフセットは
+  元テキストに正確)。1.5.x までの既知の取りこぼしを解消
+
 ## [1.5.0] - 2026-08-25
 
 ### 追加

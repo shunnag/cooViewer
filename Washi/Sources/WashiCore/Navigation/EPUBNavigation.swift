@@ -154,3 +154,38 @@ enum NCXParser {
         return EPUBNavItem(title: label, href: src)
     }
 }
+
+/// One entry of a depth-flattened table of contents.
+public struct EPUBFlatTOCEntry: Sendable, Hashable {
+    public let title: String
+    /// The href relative to the navigation document (with any fragment), or nil
+    /// for a heading-only entry.
+    public let href: String?
+    /// Nesting depth, 0 for a top-level entry.
+    public let depth: Int
+
+    public init(title: String, href: String?, depth: Int) {
+        self.title = title
+        self.href = href
+        self.depth = depth
+    }
+}
+
+extension EPUBNavItem {
+    /// This subtree flattened to a depth-first list with depth levels.
+    public func flattened(startingAt depth: Int = 0) -> [EPUBFlatTOCEntry] {
+        var result = [EPUBFlatTOCEntry(title: title, href: href, depth: depth)]
+        for child in children {
+            result.append(contentsOf: child.flattened(startingAt: depth + 1))
+        }
+        return result
+    }
+}
+
+extension EPUBNavigation {
+    /// The table of contents flattened to a depth-first list with depth levels,
+    /// for hosts that render a flat outline instead of walking the tree.
+    public var flattenedTOC: [EPUBFlatTOCEntry] {
+        toc.flatMap { $0.flattened() }
+    }
+}
