@@ -19,4 +19,19 @@ final class WashiCoreHeadlessTests: XCTestCase {
         let locator = publication.locator(forSpineIndex: 1, progression: 0.5)
         XCTAssertEqual(publication.resolve(locator)?.spineIndex, 1)
     }
+
+    /// 軽量ページ数見積り(WebKit 不要)。項目別と合計、charactersPerPage の効果
+    func testEstimatedPageCount() throws {
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(EPUBFixtures.verticalNovelEntries(), method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/estimate.epub"))
+        let perItem = publication.estimatedPageCounts()
+        XCTAssertEqual(perItem.count, publication.readingOrder.count)
+        XCTAssertTrue(perItem.allSatisfy { $0 >= 1 })  // 各項目 1 ページ以上
+        XCTAssertEqual(publication.estimatedPageCount(), perItem.reduce(0, +))
+        // charactersPerPage を小さくするとページ数見積りは増える(単調)
+        let dense = publication.estimatedPageCount(charactersPerPage: 100)
+        let sparse = publication.estimatedPageCount(charactersPerPage: 5000)
+        XCTAssertGreaterThanOrEqual(dense, sparse)
+    }
 }

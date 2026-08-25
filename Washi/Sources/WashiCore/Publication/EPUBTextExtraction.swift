@@ -47,6 +47,29 @@ extension EPUBPublication {
         return Self.collapsingWhitespace(text)
     }
 
+    /// A fast, WebKit-free estimate of each spine item's page count, based on
+    /// extracted text length. Useful to show an approximate "~N pages" instantly
+    /// before the exact offscreen census completes. Image-only pages (no body
+    /// text) count as one page.
+    ///
+    /// - Parameter charactersPerPage: assumed characters per reflowed page.
+    ///   Calibrate it from a real census (total characters ÷ measured pages) for
+    ///   the current font and viewport to sharpen the estimate; the default
+    ///   suits a typical body font at a comfortable reading width.
+    public func estimatedPageCounts(charactersPerPage: Int = 1200) -> [Int] {
+        let perPage = Double(max(1, charactersPerPage))
+        return readingOrder.indices.map { index in
+            let chars = (try? extractText(forSpineIndex: index))?.count ?? 0
+            return max(1, Int((Double(chars) / perPage).rounded(.up)))
+        }
+    }
+
+    /// A fast, WebKit-free estimate of the whole book's page count.
+    /// See ``estimatedPageCounts(charactersPerPage:)``.
+    public func estimatedPageCount(charactersPerPage: Int = 1200) -> Int {
+        estimatedPageCounts(charactersPerPage: charactersPerPage).reduce(0, +)
+    }
+
     /// Searches the whole publication for a substring, in reading order.
     ///
     /// Each spine item is extracted with ``extractText(forSpineIndex:)`` and

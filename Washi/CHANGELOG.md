@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.5.0] - 2026-08-25
+
+### 追加
+- `EPUBPublication.estimatedPageCount(charactersPerPage:)` /
+  `estimatedPageCounts(charactersPerPage:)` — WebKit 不要で本文文字数から
+  概算ページ数を即時に得る(オフスクリーン census 完了前の「約 N ページ」
+  表示や、ヘッドレスでの規模把握に)。画像のみのページは 1 とみなす。
+  実 census(総文字数÷実測ページ)から charactersPerPage を較正すると精度が上がる
+
 ## [1.4.0] - 2026-08-25
 
 ### 追加
