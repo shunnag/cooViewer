@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.7.0] - 2026-08-25
+
+### 追加
+- `EPUBPublication.spineIndex(forHref:)` — 目次や相互参照の href(フラグメント
+  可)を収録項目の spine index へ解決(`spineIndex(forNavItem:)` の一般化)
+- `EPUBPublication.hasMediaOverlays` — メディアオーバーレイ(SMIL)を持つ本かの
+  判定。項目ごとの取得は既存の `mediaOverlay(forSpineIndex:)`(音声・テキストの
+  対を返すのでホスト側で同期再生を組める)
+
 ## [1.6.0] - 2026-08-25
 
 ### 追加

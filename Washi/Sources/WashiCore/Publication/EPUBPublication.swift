@@ -400,10 +400,27 @@ public final class EPUBPublication: Sendable {
 
     /// Resolves a navigation item's href into a reading-order spine index.
     public func spineIndex(forNavItem item: EPUBNavItem) -> Int? {
-        guard let href = item.href,
-              let path = ContainerPath.resolve(base: navigation.basePath,
-                                               href: href) else { return nil }
+        guard let href = item.href else { return nil }
+        return spineIndex(forHref: href)
+    }
+
+    /// Resolves an href (as written in the navigation document, with an optional
+    /// fragment) into a reading-order spine index. The fragment is ignored — the
+    /// result is the spine item that contains the target. Nil if it resolves to
+    /// no spine item. Useful for navigating from a TOC or a cross-reference.
+    public func spineIndex(forHref href: String) -> Int? {
+        let withoutFragment = href.split(separator: "#", maxSplits: 1,
+                                         omittingEmptySubsequences: false)[0]
+        guard let path = ContainerPath.resolve(base: navigation.basePath,
+                                               href: String(withoutFragment))
+        else { return nil }
         return readingOrder.firstIndex { $0.containerPath == path }
+    }
+
+    /// Whether any spine item declares a media overlay (SMIL narration). Use
+    /// ``mediaOverlay(forSpineIndex:)`` to get the parsed clips for one item.
+    public var hasMediaOverlays: Bool {
+        readingOrder.contains { $0.item.mediaOverlay != nil }
     }
 
     /// The chapter title a spine index belongs to (the TOC is flattened and the

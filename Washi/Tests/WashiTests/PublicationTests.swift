@@ -35,6 +35,22 @@ final class PublicationTests: XCTestCase {
         XCTAssertLessThanOrEqual(max(thumb?.width ?? 0, thumb?.height ?? 0), 2)
     }
 
+    /// href → spine index の解決(フラグメントは無視して収録項目を返す)
+    func testSpineIndexForHref() throws {
+        let publication = try openVerticalNovel()
+        // nav の basePath(OEBPS/nav.xhtml)からの相対 href
+        XCTAssertEqual(publication.spineIndex(forHref: "text/ch1.xhtml"), 0)
+        XCTAssertEqual(publication.spineIndex(forHref: "text/ch2.xhtml#sec"), 1)
+        XCTAssertNil(publication.spineIndex(forHref: "text/missing.xhtml"))
+    }
+
+    /// メディアオーバーレイ(SMIL)の有無。縦組み小説は持たない
+    func testHasMediaOverlays() throws {
+        let publication = try openVerticalNovel()
+        XCTAssertFalse(publication.hasMediaOverlays)
+        XCTAssertNil(publication.mediaOverlay(forSpineIndex: 0))
+    }
+
     /// 表紙の生バイト取得(デコードせず元ファイルのまま)
     func testCoverImageData() throws {
         let publication = try openVerticalNovel()
