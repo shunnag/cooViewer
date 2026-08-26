@@ -363,7 +363,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2027;
+				CURRENT_PROJECT_VERSION = 2028;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CooViewer/Info.plist;
@@ -373,7 +373,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0b27;
+				MARKETING_VERSION = 2.0b28;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.cooViewer;
 				PRODUCT_NAME = cooViewer;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -388,7 +388,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2027;
+				CURRENT_PROJECT_VERSION = 2028;
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = FQTM2788K5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -399,7 +399,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0b27;
+				MARKETING_VERSION = 2.0b28;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.cooViewer;
 				PRODUCT_NAME = cooViewer;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -410,9 +410,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CURRENT_PROJECT_VERSION = 2027;
+				CURRENT_PROJECT_VERSION = 2028;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 2.0b27;
+				MARKETING_VERSION = 2.0b28;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.CooViewerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -424,9 +424,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CURRENT_PROJECT_VERSION = 2027;
+				CURRENT_PROJECT_VERSION = 2028;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 2.0b27;
+				MARKETING_VERSION = 2.0b28;
 				PRODUCT_BUNDLE_IDENTIFIER = jp.coo.CooViewerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
