@@ -4468,22 +4468,22 @@
         }
       }
     },
-    "Thumbnail columns: %lld": {
+    "Thumbnail size:": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "サムネイルの列数: %lld"
+            "value": "サムネイルの大きさ:"
           }
         }
       }
     },
-    "Thumbnail rows: %lld": {
+    "Rows and columns adjust to the window size. Pinch on the thumbnail view to zoom.": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "サムネイルの行数: %lld"
+            "value": "行数と列数はウインドウサイズに合わせて自動で決まります。一覧の上でピンチすると拡大縮小できます。"
           }
         }
       }

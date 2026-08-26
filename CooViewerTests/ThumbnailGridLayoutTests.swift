@@ -86,4 +86,51 @@ final class ThumbnailGridLayoutTests: XCTestCase {
         XCTAssertEqual(layout.clamped(screen: -5), 0)
         XCTAssertEqual(layout.clamped(screen: 5), 1)
     }
+
+    // MARK: - 自動グリッド(セルサイズ基準。設計書 §2.4)
+
+    func testDimensionsFitViewport() {
+        // 幅 1000: (1000+8) / (160+8) = 6 列(6×160+5×8 = 1000 でちょうど収まる)。
+        // 高さ 600: セル高 160×1.45 = 232 → (600+8) / (232+8) = 2.53 → 2 行
+        let dims = ThumbnailGridLayout.dimensions(
+            for: CGSize(width: 1000, height: 600), cellSize: 160)
+        XCTAssertEqual(dims.columns, 6)
+        XCTAssertEqual(dims.rows, 2)
+    }
+
+    func testDimensionsNeverBelowOneByOne() {
+        // ビューポートより大きいセル・ゼロ寸法でも最低 1×1
+        let small = ThumbnailGridLayout.dimensions(
+            for: CGSize(width: 50, height: 40), cellSize: 400)
+        XCTAssertEqual(small.rows, 1)
+        XCTAssertEqual(small.columns, 1)
+        let zero = ThumbnailGridLayout.dimensions(for: .zero, cellSize: 160)
+        XCTAssertEqual(zero.rows, 1)
+        XCTAssertEqual(zero.columns, 1)
+    }
+
+    func testDimensionsClampCellSize() {
+        // 可動域外のセルサイズは丸めてから計算する(極小値で列数が爆発しない)
+        let viewport = CGSize(width: 1000, height: 600)
+        let tiny = ThumbnailGridLayout.dimensions(for: viewport, cellSize: 1)
+        let atMin = ThumbnailGridLayout.dimensions(
+            for: viewport, cellSize: ThumbnailZoomSetting.range.lowerBound)
+        XCTAssertEqual(tiny.columns, atMin.columns)
+        XCTAssertEqual(tiny.rows, atMin.rows)
+    }
+
+    func testZoomSettingReadWriteClamp() {
+        let suite = "ThumbnailZoomSettingTests"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        // 未保存なら既定サイズ
+        XCTAssertEqual(ThumbnailZoomSetting.read(from: defaults),
+                       ThumbnailZoomSetting.defaultSize)
+        // 可動域の外は書き込み時に丸める
+        ThumbnailZoomSetting.write(9999, to: defaults)
+        XCTAssertEqual(ThumbnailZoomSetting.read(from: defaults),
+                       ThumbnailZoomSetting.range.upperBound)
+        ThumbnailZoomSetting.write(200, to: defaults)
+        XCTAssertEqual(ThumbnailZoomSetting.read(from: defaults), 200)
+    }
 }

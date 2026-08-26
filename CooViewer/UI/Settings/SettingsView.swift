@@ -137,8 +137,7 @@ struct SettingsView: View {
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
     @AppStorage("PlayAnimatedImages") private var playAnimatedImages = true
-    @State private var thumbnailRows = ThumbnailGridSetting.read().rows
-    @State private var thumbnailColumns = ThumbnailGridSetting.read().columns
+    @State private var thumbnailCellSize = Double(ThumbnailZoomSetting.read())
 
     // ページ番号/ページバー(仕様書 §3.4, §6.1。色と寸法は SettingsStore 経由)
     @AppStorage("ShowRelativePaths") private var showRelativePaths = false
@@ -347,6 +346,7 @@ struct SettingsView: View {
             String(localized: "Play animated images (GIF, WebP, etc.)"),
             String(localized: "Background color:"),
             String(localized: "Thumbnails"),
+            String(localized: "Thumbnail size:"),
         ]
         case .pageNumber: [
             String(localized: "Show page number"),
@@ -620,12 +620,33 @@ struct SettingsView: View {
                             selection: backgroundColorBinding, supportsOpacity: false)
             }
             Section(String(localized: "Thumbnails")) {
-                Stepper(String(localized: "Thumbnail rows: \(thumbnailRows)"),
-                        value: $thumbnailRows, in: 1...8)
-                    .onChange(of: thumbnailRows) { saveThumbnailGrid() }
-                Stepper(String(localized: "Thumbnail columns: \(thumbnailColumns)"),
-                        value: $thumbnailColumns, in: 1...8)
-                    .onChange(of: thumbnailColumns) { saveThumbnailGrid() }
+                // 行×列の固定指定は廃止(設計書 §2.4): セルサイズだけを持ち、
+                // 行列はウインドウサイズから自動算出。開いている一覧へは
+                // applySettings 経由で即時反映される
+                let sizeRange = Double(ThumbnailZoomSetting.range.lowerBound)
+                    ... Double(ThumbnailZoomSetting.range.upperBound)
+                LabeledContent(String(localized: "Thumbnail size:")) {
+                    Slider(value: $thumbnailCellSize, in: sizeRange) {
+                        EmptyView()
+                    } minimumValueLabel: {
+                        Image(systemName: "square.grid.3x3")
+                    } maximumValueLabel: {
+                        Image(systemName: "square.grid.2x2")
+                    }
+                    .frame(minWidth: 220)
+                    // 一覧のピンチも同じ値を書くため、表示のたびに読み直す
+                    // (設定ウインドウはキャッシュされ、@State は生成時のまま残る)
+                    .onAppear {
+                        thumbnailCellSize = Double(ThumbnailZoomSetting.read())
+                    }
+                    .onChange(of: thumbnailCellSize) {
+                        ThumbnailZoomSetting.write(CGFloat(thumbnailCellSize))
+                    }
+                }
+                Text(String(localized:
+                    "Rows and columns adjust to the window size. Pinch on the thumbnail view to zoom."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -1052,10 +1073,6 @@ struct SettingsView: View {
             get: { Color(nsColor: SettingsStore.shared[keyPath: keyPath]) },
             set: { SettingsStore.shared[keyPath: keyPath] = NSColor($0) }
         )
-    }
-
-    private func saveThumbnailGrid() {
-        ThumbnailGridSetting.write(rows: thumbnailRows, columns: thumbnailColumns)
     }
 
     private var backgroundColorBinding: Binding<Color> {

@@ -299,6 +299,9 @@ final class ReaderWindowController: NSWindowController {
             preresampleAdjacentSpread(sparingInFlight: true)
         }
         readerView.backgroundColor = settings.viewBackgroundColor
+        // サムネイルのセルサイズ(設定スライダ → 開いている一覧へ即時反映。
+        // 一覧側のピンチ確定が書いた同値は equality ガードで無視される)
+        thumbnailOverlayModel.syncCellSizeFromDefaults()
         // ページ番号/ページバーの見た目(仕様書 §3.4, §6.1)
         pageLabel.font = settings.pageNumFont
         pageLabel.textColor = settings.pageNumTextColor
@@ -348,7 +351,8 @@ final class ReaderWindowController: NSWindowController {
         let numPosition = settings.pageNumPosition
         let barPosition = settings.pageBarPosition
         let barSize = settings.pageBarSize
-        let signature = "\(numPosition)-\(barPosition)-\(barSize)"
+        // showPageBar は「バーとの間隔制約を張るか」を変えるため署名に含める
+        let signature = "\(numPosition)-\(barPosition)-\(barSize)-\(settings.showPageBar)"
         guard signature != indicatorLayoutSignature else { return }
         indicatorLayoutSignature = signature
 
@@ -378,6 +382,26 @@ final class ReaderWindowController: NSWindowController {
                     equalTo: pageBar.leadingAnchor, constant: -6),
         ]
         let stacked = numPosition == barPosition
+        // 長いファイル名対策(仕様書 §3.4 のファイル名併記が横へ伸びる):
+        // (a) ラベルはウインドウの反対端を超えない(必須制約。圧縮耐性を
+        //     下げてあるので超過分は尾部省略に落ちる)。
+        // (b) バーと同じ上下帯の別コーナーに置かれたときは、バー内側の
+        //     スピナー箱(常設・バーに隣接)との間隔も強制して食い込みを防ぐ。
+        //     バー非表示設定では張らない(不要な切り詰めを避ける)
+        constraints.append(numPosition % 2 == 0
+            ? pageLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: contentView.trailingAnchor, constant: -8)
+            : pageLabel.leadingAnchor.constraint(
+                greaterThanOrEqualTo: contentView.leadingAnchor, constant: 8))
+        let sameBand = !stacked && (numPosition < 2) == (barPosition < 2)
+        if sameBand && settings.showPageBar {
+            constraints.append(numPosition % 2 == 0
+                ? resampleSpinnerBox.leadingAnchor.constraint(
+                    greaterThanOrEqualTo: pageLabel.trailingAnchor, constant: 8)
+                : pageLabel.leadingAnchor.constraint(
+                    greaterThanOrEqualTo: resampleSpinnerBox.trailingAnchor,
+                    constant: 8))
+        }
         if numPosition < 2 {
             constraints.append(pageLabel.topAnchor.constraint(
                 equalTo: contentView.topAnchor, constant: 6))
@@ -622,6 +646,12 @@ final class ReaderWindowController: NSWindowController {
         pageLabel.wantsLayer = true
         pageLabel.layer?.cornerRadius = 4
         pageLabel.layer?.masksToBounds = true
+        // 長いファイル名はラベル側を尾部省略で切り詰める(番号が先頭の書式
+        // 「N/M (名前)」なので N/M は必ず残る)。layoutPageIndicators の
+        // 必須の間隔制約に負けて省略が起きるよう圧縮耐性を下げる
+        pageLabel.lineBreakMode = .byTruncatingTail
+        pageLabel.setContentCompressionResistancePriority(.defaultLow,
+                                                          for: .horizontal)
         pageLabel.isHidden = true
         contentView.addSubview(pageLabel)
 
@@ -844,7 +874,23 @@ final class ReaderWindowController: NSWindowController {
 
         do {
             let source: any BookSource
-            if let prepared = preparedNextBook, prepared.path == bookURL.path {
+            if epubCollectionReturnPending, let context = epubCollectionContext,
+               CanonicalPath.normalize(context.folderURL.path)
+                   == CanonicalPath.normalize(bookURL.path) {
+                // EPUB(合本内の巻)から同じ合本へ戻る復帰は、入場時に文脈へ
+                // 保持した合本ソースをそのまま使い回す。作り直すと NestedUnlocker
+                // の状態(解錠済みの子・パスワード入力のキャンセル記憶)が失われ、
+                // 「キャンセル後は同じ本で再度尋ねない」(設計書 §2.4)に反して
+                // 復帰のたびにダイアログが出てしまう。巨大フォルダの統合再構築の
+                // 待ちも避けられる。provider は最新のものへ付け替える
+                // (setProvider はキャンセル状態を変えない)。復帰フローが途中で
+                // 断念した場合 returnPending は残るが、次に開くのも同一セッションの
+                // 同じ合本なので再利用でよい(意図した決定)。スプールの再開始は
+                // beginSpooling の spoolTask ガードが冪等に吸収する
+                await context.source.attachNestedPasswordProvider(
+                    nestedPasswordProvider())
+                source = context.source
+            } else if let prepared = preparedNextBook, prepared.path == bookURL.path {
                 preparedNextBook = nil
                 if await prepared.source.hasSkippedLockedContent() {
                     // バックグラウンド準備(パスワード UI なし)がロック済みの
@@ -1766,8 +1812,9 @@ final class ReaderWindowController: NSWindowController {
             let source = book.source
             let bookKey = book.cacheKey
             return {
+                // ホバー中のプレビューは対話的要求 → 生成ゲートの優先レーンへ
                 await ThumbnailCache.shared.thumbnail(
-                    for: entry, in: source, bookKey: bookKey)
+                    for: entry, in: source, bookKey: bookKey, urgent: true)
             }
         }
         if let map {
@@ -1897,8 +1944,9 @@ final class ReaderWindowController: NSWindowController {
                     let bookKey =
                         "col:\(context.folderURL.path)#raw\(context.entries.count)"
                     thumbnailRequest = {
+                        // ホバープレビューは対話的要求 → 優先レーンへ
                         await ThumbnailCache.shared.thumbnail(
-                            for: entry, in: source, bookKey: bookKey)
+                            for: entry, in: source, bookKey: bookKey, urgent: true)
                     }
                 }
             case .epubPage(let url, _, let spineIndex, let pageInItem, _):

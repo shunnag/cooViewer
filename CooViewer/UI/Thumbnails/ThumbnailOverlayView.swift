@@ -2,7 +2,8 @@ import SwiftUI
 
 /// サムネイルオーバーレイの描画(仕様書 §4.8)。
 /// 別ウインドウではなくリーダーウインドウ内の半透明オーバーレイとして表示し、
-/// 旧来どおり「行×列の固定グリッド+ページめくり」で閲覧する(§3.1, §4.8)。
+/// 旧来どおり「グリッド+ページめくり」で閲覧する(§3.1, §4.8)。行列は
+/// ウインドウサイズとセルサイズから自動算出(Photos 風、設計書 §2.4)。
 /// 状態はすべて ThumbnailOverlayModel が持ち、本ビューは描画と操作の転送に徹する。
 struct ThumbnailOverlayView: View {
     @ObservedObject var model: ThumbnailOverlayModel
@@ -25,9 +26,28 @@ struct ThumbnailOverlayView: View {
             }
             .padding(16)
         }
+        // オーバーレイ上のピンチはセルサイズの連続変更(Photos 風)。最前面の
+        // ホスティングビューが捕捉するので背面 ReaderView のページズームへは届かない
+        .simultaneousGesture(magnifyGesture)
         // 右綴じでは右上から左へ並べる(グリッドごと反転させる)
         .environment(\.layoutDirection,
                      model.snapshot.readsFromLeft ? .leftToRight : .rightToLeft)
+    }
+
+    /// ピンチでセルサイズを連続変更する。ジェスチャ中は保存・先読みなし
+    /// (60Hz で走るため)。指を離した時点の値を確定・保存し、固定サイズ描画から
+    /// 余白吸収の整列描画へ短いアニメーションで沈める(状態はモデル側が持つ —
+    /// 閉じ方によって onEnded が来なくても present がリセットできるように)
+    private var magnifyGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                model.pinchChanged(magnification: value.magnification)
+            }
+            .onEnded { value in
+                withAnimation(.snappy(duration: 0.2)) {
+                    model.pinchEnded(magnification: value.magnification)
+                }
+            }
     }
 
     private func header(_ layout: ThumbnailGridLayout) -> some View {
@@ -62,12 +82,27 @@ struct ThumbnailOverlayView: View {
 
     private func grid(_ layout: ThumbnailGridLayout) -> some View {
         let groups = layout.groups(onScreen: layout.clamped(screen: model.screen))
+        // ピンチ中は指に追従する固定サイズ、静止時は余白を均等吸収して
+        // ビューポートを埋める(Photos 風: ジェスチャ中だけ生のサイズで滑らかに
+        // 動き、離すと整列へ沈む)。行列はセルサイズ基準の自動算出なので原則
+        // 収まるが、極小ウインドウでは行列が 1 に下駄止めされてセルが領域を
+        // 超えるため clipped で抑える(ジェスチャ中のみの一過性)
+        let zooming = model.pinchBaseCellSize != nil
         return GeometryReader { geometry in
-            let spacing: CGFloat = 8
-            let cellWidth = (geometry.size.width
-                - spacing * CGFloat(layout.columns - 1)) / CGFloat(layout.columns)
-            let cellHeight = (geometry.size.height
-                - spacing * CGFloat(layout.rows - 1)) / CGFloat(layout.rows)
+            let spacing = ThumbnailGridLayout.spacing
+            // ジオメトリ未到着(viewportSize == .zero)の間は描かない:
+            // フォールバック 3×4 で一度組んでから実寸グリッドへ組み替えると、
+            // 全セルの担当ページが変わって「一旦表示 → チラついて再描画」になる
+            // (GeometryReader 自体は残して onGeometryChange の報告は続ける)
+            if model.viewportSize != .zero {
+            let cellWidth = zooming
+                ? model.cellSize * (model.comicMode ? 2 : 1)
+                : (geometry.size.width
+                    - spacing * CGFloat(layout.columns - 1)) / CGFloat(layout.columns)
+            let cellHeight = zooming
+                ? model.cellSize * ThumbnailZoomSetting.cellHeightFactor
+                : (geometry.size.height
+                    - spacing * CGFloat(layout.rows - 1)) / CGFloat(layout.rows)
             Grid(horizontalSpacing: spacing, verticalSpacing: spacing) {
                 ForEach(0..<layout.rows, id: \.self) { row in
                     GridRow {
@@ -87,10 +122,24 @@ struct ThumbnailOverlayView: View {
                     }
                 }
             }
+            // ピンチ中は中央基準で拡縮させる(グリッド全体がビューポートより
+            // 小さくなり得るため)。静止時はセルが埋めるので見た目は不変
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             // セル間の隙間クリックが背面の「クリックで閉じる」に抜けて、
             // ジャンプせずオーバーレイだけ閉じる誤動作を防ぐ(グリッド内は不感帯)
             .contentShape(Rectangle())
             .onTapGesture {}
+            // 行列の組み替え(ズーム中のしきい値越え・ウインドウリサイズ)は
+            // 短い整列アニメーションで滑らかに見せる
+            .animation(.snappy(duration: 0.18), value: layout.columns)
+            .animation(.snappy(duration: 0.18), value: layout.rows)
+            .clipped()
+            }
+        }
+        // グリッド領域の実寸をモデルへ報告(初回表示とウインドウリサイズ)。
+        // ここから行列が自動算出される
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+            model.updateViewport(size)
         }
     }
 
@@ -168,7 +217,8 @@ private struct ThumbnailCell: View {
                             entry: snapshot.entries[index],
                             source: snapshot.source,
                             bookKey: snapshot.bookKey,
-                            isBookmarked: snapshot.bookmarkedPages.contains(index))
+                            isBookmarked: snapshot.bookmarkedPages.contains(index),
+                            presentationEpoch: snapshot.presentationEpoch)
                     }
                 }
             }
@@ -201,6 +251,7 @@ private struct ThumbnailPageImage: View {
     let source: (any BookSource)?
     let bookKey: String
     let isBookmarked: Bool
+    let presentationEpoch: Int
 
     @AppStorage("ShowRelativePaths") private var showRelativePaths = false
 
@@ -214,6 +265,16 @@ private struct ThumbnailPageImage: View {
 
     /// 本の識別子込みのページ識別キー(ThumbnailCache のキーと同じ形)
     private var pageKey: String { bookKey + "/" + String(entry.id) }
+
+    /// 読み込みタスクの再実行キー: ページ識別+提示世代。開き直し(present)で
+    /// 世代が変わると**未取得セルだけ**が読み直す(loaded 済みセルは世代を
+    /// 含めない = t 連打のたびに全セルが再要求・キャンセルされる嵐を防ぐ。
+    /// 再挑戦を使い切って残ったプレースホルダは開き直しで回復できる)。
+    /// 取得成功の瞬間は id が「#世代付き → 素の pageKey」へ一度だけ変わるため
+    /// .task も一度だけ再実行される(メモリヒットで即返り、以後は不変)
+    private var loadTaskID: String {
+        loaded?.key == pageKey ? pageKey : pageKey + "#\(presentationEpoch)"
+    }
 
     var body: some View {
         ZStack {
@@ -234,14 +295,24 @@ private struct ThumbnailPageImage: View {
             }
         }
         .help(entry.displayTitle(relativePath: showRelativePaths))
-        .task(id: pageKey) {
+        .task(id: loadTaskID) {
             guard let source else { return }
             // 常に読み直す(キャッシュ命中は即時)。キーを添えて保存するため、
-            // 旧タスクの遅延代入が現エントリの表示を汚すことはない
+            // 旧タスクの遅延代入が現エントリの表示を汚すことはない。
+            // 失敗(nil)は一度だけ間を置いて再挑戦する: 多数の PDF を同時に
+            // 開いた直後の一時失敗で恒久プレースホルダにしないため(キャッシュの
+            // 恒久記録は 2 回完走失敗からなので、再挑戦は新しい生成になる)
             let key = pageKey
-            if let image = await ThumbnailCache.shared.thumbnail(
-                for: entry, in: source, bookKey: bookKey) {
-                loaded = (key, image)
+            for attempt in 0..<2 {
+                guard !Task.isCancelled else { return }
+                if let image = await ThumbnailCache.shared.thumbnail(
+                    for: entry, in: source, bookKey: bookKey, urgent: true) {
+                    loaded = (key, image)
+                    return
+                }
+                if attempt == 0 {
+                    try? await Task.sleep(for: .milliseconds(800))
+                }
             }
         }
     }

@@ -181,7 +181,12 @@ actor SourceReadGate {
     }
 
     func acquire() async {
-        let interactive = Task.currentPriority >= .userInitiated
+        await acquire(interactive: Task.currentPriority >= .userInitiated)
+    }
+
+    /// レーン明示版。優先度継承が呼び出し元の意図と一致しない場合
+    /// (サムネイルの可視セル要求 vs 先読みの区別など)に使う
+    func acquire(interactive: Bool) async {
         if active < limit {
             active += 1
             return
@@ -198,6 +203,11 @@ actor SourceReadGate {
     func release() {
         active -= 1
         wakeWaitersIfPossible()
+    }
+
+    /// 検証用: 現在の使用中/待機数(--dump-thumbnail-stats)
+    func debugCounts() -> (active: Int, queued: Int) {
+        (active, interactiveWaiters.count + backgroundWaiters.count)
     }
 
     private func wakeWaitersIfPossible() {

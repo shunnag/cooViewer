@@ -201,6 +201,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 navigationSteps.append { [weak self] in
                     self?.readerWindowController?.toggleThumbnailOverlay()
                 }
+            case "--then-rapid-thumbnails":
+                // 検証用: サムネイル一覧を約 70ms 間隔で N 回トグルする
+                // (t キー連打の再現。奇数なら開いた状態で終わる)
+                if argIndex + 1 < arguments.count,
+                   let count = Int(arguments[argIndex + 1]) {
+                    argIndex += 1
+                    // 連打は fire-and-forget(1 秒間隔の逐次実行の唯一の例外)。
+                    // 撮影は rapidWait が所要時間ぶん遅延を補償する
+                    navigationSteps.append { [weak self] in
+                        Task { @MainActor in
+                            for _ in 0..<max(0, count) {
+                                self?.readerWindowController?.toggleThumbnailOverlay()
+                                try? await Task.sleep(for: .milliseconds(70))
+                            }
+                        }
+                    }
+                }
             case "--then-play-narration":
                 // 音声メディアオーバーレイ再生を開始(SMIL 同期ハイライトの検証用)
                 navigationSteps.append { [weak self] in
@@ -319,10 +336,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 ["--then-previous-book", "--then-next-book",
                  "--then-next-page", "--then-goto-percent",
                  "--then-show-thumbnails", "--then-show-bubble",
-                 "--then-play-narration"].contains($0)
+                 "--then-play-narration", "--then-rapid-thumbnails"].contains($0)
             }.count
+            // 連打ステップは自分の所要時間(N×70ms)+整定のぶん撮影を遅らせる
+            var rapidWait = 0.0
+            var scanIndex = 0
+            while scanIndex < arguments.count {
+                if arguments[scanIndex] == "--then-rapid-thumbnails",
+                   scanIndex + 1 < arguments.count,
+                   let count = Int(arguments[scanIndex + 1]) {
+                    rapidWait += Double(count) * 0.07 + 2
+                }
+                scanIndex += 1
+            }
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2 + Double(navSteps)))
+                try? await Task.sleep(for: .seconds(2 + Double(navSteps) + rapidWait))
+                // 検証用: サムネイル機構の内部状態を stdout へ出力
+                // (--dump-thumbnail-stats。欠けセルの原因判別用)
+                if arguments.contains("--dump-thumbnail-stats") {
+                    let stats = await ThumbnailCache.shared.debugStats()
+                    var protectedFlag = "n/a"
+                    if let source = self.readerWindowController?.book?.source {
+                        protectedFlag = String(await source.containsProtectedContent())
+                    }
+                    print("[thumbnail-stats] protected=\(protectedFlag)\n\(stats)")
+                }
                 // アクティビティ窓が開いていれば ImageRenderer で撮る
                 // (NSHostingView + ScrollView はヘッドレスの cacheDisplay で
                 // テキストが写らないため。FileInfoView と同じ流儀)

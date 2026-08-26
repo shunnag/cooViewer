@@ -1,26 +1,51 @@
 import Foundation
 
-/// 旧設定 Thumbnail{row, column} の読み書き(仕様書 §6.1)。1...8 に丸める
-enum ThumbnailGridSetting {
-    static func read(from defaults: UserDefaults = .standard)
-        -> (rows: Int, columns: Int) {
-        let dict = defaults.dictionary(forKey: "Thumbnail")
-        return (clamp(dict?["row"] as? Int ?? 3),
-                clamp(dict?["column"] as? Int ?? 4))
+/// サムネイルのセルサイズ設定(Photos 風の自動グリッド+ピンチ拡縮)。
+/// 行×列の固定指定(旧設定 Thumbnail{row, column}、仕様書 §6.1)は廃止し、
+/// ウインドウサイズとセルサイズから行列を自動算出する(設計書 §2.4)。
+/// 旧キーは 1.x 用に凍結(以後読み書きしない)。新キーは追加のみなので
+/// §13.5 の移行マッピングは不要。
+enum ThumbnailZoomSetting {
+    static let defaultsKey = "ThumbnailCellSize"
+    /// セル幅の可動域(pt)。ピンチ・設定スライダ共通
+    static let range: ClosedRange<CGFloat> = 80...400
+    static let defaultSize: CGFloat = 160
+    /// セルの縦横比(縦長ページ+番号ラベルのぶん縦に長い)
+    static let cellHeightFactor: CGFloat = 1.45
+
+    static func read(from defaults: UserDefaults = .standard) -> CGFloat {
+        let value = defaults.double(forKey: defaultsKey)
+        guard value > 0 else { return defaultSize }
+        return clamp(CGFloat(value))
     }
 
-    static func write(rows: Int, columns: Int,
-                      to defaults: UserDefaults = .standard) {
-        defaults.set(["row": rows, "column": columns], forKey: "Thumbnail")
+    static func write(_ size: CGFloat, to defaults: UserDefaults = .standard) {
+        defaults.set(Double(clamp(size)), forKey: defaultsKey)
     }
 
-    private static func clamp(_ value: Int) -> Int { min(8, max(1, value)) }
+    static func clamp(_ size: CGFloat) -> CGFloat {
+        min(range.upperBound, max(range.lowerBound, size))
+    }
 }
 
 /// サムネイルグリッドの構成計算(仕様書 §4.8)。
 /// 「どのエントリをどのセルに束ね、何画面に分けるか」だけを扱う純粋な値型。
 /// 表示状態(現在画面・強調)はモデル側、描画はビュー側の責務。
 struct ThumbnailGridLayout: Equatable {
+    /// グリッドのセル間隔(行列計算と描画で共有)
+    static let spacing: CGFloat = 8
+
+    /// ビューポートにセル幅 cellSize のセルが何行何列入るか(Photos 風の
+    /// 自動グリッド)。極小・非正の寸法でも最低 1×1 を返す
+    static func dimensions(for viewport: CGSize, cellSize: CGFloat)
+        -> (rows: Int, columns: Int) {
+        let size = ThumbnailZoomSetting.clamp(cellSize)
+        let columns = Int((viewport.width + spacing) / (size + spacing))
+        let rows = Int((viewport.height + spacing)
+            / (size * ThumbnailZoomSetting.cellHeightFactor + spacing))
+        return (max(1, rows), max(1, columns))
+    }
+
     let rows: Int
     /// 実効列数(見開きモードでは設定値の半分。セルが 2 ページ幅になるため)
     let columns: Int

@@ -136,6 +136,50 @@ final class NestedFolderSourceTests: XCTestCase {
                       "続き巻だけならフォルダは従来どおり(並列・日付ソート維持)")
     }
 
+    /// パスワード入力をキャンセルした合本ソースを(EPUB 往復の復帰のように)
+    /// 使い回したとき、provider を付け替えても再度尋ねないこと。
+    /// openBookFlow の復帰時ソース再利用はこの契約(キャンセル記憶と構築済み
+    /// エントリ列が setProvider をまたいで保たれる)に依存する(cooViewer-a1a)
+    func testReusedSourceDoesNotRepromptAfterCancel() async throws {
+        let plain = tempDir.appendingPathComponent("p1.png")
+        try png(width: 41).write(to: plain)
+        let lockedURL = tempDir.appendingPathComponent("locked.zip")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.arguments = ["-j", "-P", "sesame", lockedURL.path, plain.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        try FileManager.default.removeItem(at: plain)
+        try png(width: 40).write(to: tempDir.appendingPathComponent("00.png"))
+
+        let prompts = OSAllocatedUnfairLock(initialState: 0)
+        let source = try await BookSourceFactory.make(
+            for: tempDir, readSubFolders: false,
+            nestedPasswordProvider: { _, _ in
+                prompts.withLock { $0 += 1 }
+                return nil  // ユーザーのキャンセル
+            })
+        let first = try await source.entries()
+        XCTAssertEqual(first.map(\.pathInBook), ["00.png"],
+                       "解除できない子は黙って外れること(§4.17)")
+        XCTAssertEqual(prompts.withLock { $0 }, 1)
+
+        // 復帰の再利用契約: 新しい provider を付け替えて entries を取り直しても
+        // 再度尋ねず、エントリ列は構築時のまま凍結されていること。
+        // 凍結の検証のためフォルダへ画像を 1 枚追加してから取り直す —
+        // 再構築が走れば現れてしまう(プロンプト抑止だけでは隠れる破れの検出)
+        try png(width: 42).write(to: tempDir.appendingPathComponent("99.png"))
+        await source.attachNestedPasswordProvider { _, _ in
+            prompts.withLock { $0 += 1 }
+            return NestedPasswordAnswer(password: "sesame", saveRequested: false)
+        }
+        let second = try await source.entries()
+        XCTAssertEqual(second.map(\.pathInBook), ["00.png"],
+                       "エントリ列は構築時のまま(再構築されていないこと)")
+        XCTAssertEqual(prompts.withLock { $0 }, 1, "復帰で再度尋ねないこと")
+    }
+
     /// 暗号化された書庫は provider へ問い合わせて解除されること
     func testEncryptedArchiveInFolderUnlockedViaProvider() async throws {
         // zip CLI で暗号化 ZIP を作る

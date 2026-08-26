@@ -12,6 +12,15 @@ extension ReaderWindowController {
             return
         }
         presentThumbnailOverlay(for: book)
+        revealThumbnailOverlay()
+    }
+
+    /// オーバーレイを表示する。表示前にレイアウトを確定させ、グリッド領域の
+    /// 実寸(onGeometryChange)が最初の可視フレームより先にモデルへ届くように
+    /// する — 非表示中のウインドウリサイズ後などに古いビューポートのグリッドが
+    /// 一瞬見えてから組み替わるチラつきを防ぐ
+    private func revealThumbnailOverlay() {
+        thumbnailHostingView?.layoutSubtreeIfNeeded()
         thumbnailHostingView?.isHidden = false
     }
 
@@ -138,7 +147,7 @@ extension ReaderWindowController {
         snapshot.singleSetting = 0
         activeCollectionOverlay = nil  // 単体一覧は展開計画ではない
         thumbnailOverlayModel.present(snapshot: snapshot)
-        thumbnailHostingView?.isHidden = false
+        revealThumbnailOverlay()
     }
 
     // MARK: - 合本の全体ページマップ(ページバー等の全体基準化)
@@ -396,7 +405,7 @@ extension ReaderWindowController {
             plan.overlayIndex(forBookPage: $0)
         })
         thumbnailOverlayModel.present(snapshot: snapshot)
-        thumbnailHostingView?.isHidden = false
+        revealThumbnailOverlay()
     }
 
     /// EPUB モード(コレクション文脈)からの合本全体の一覧。
@@ -439,7 +448,7 @@ extension ReaderWindowController {
         initial.coverSingle = context.coverSingle
         initial.bookmarkedPages = context.bookmarkedPages
         thumbnailOverlayModel.present(snapshot: initial)
-        thumbnailHostingView?.isHidden = false
+        revealThumbnailOverlay()
 
         // census が揃い次第、展開版へ差し替える
         let metrics = EPUBScreenMetrics(
