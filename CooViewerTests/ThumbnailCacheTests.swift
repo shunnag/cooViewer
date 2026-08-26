@@ -19,6 +19,80 @@ private actor FailingSource: BookSource {
     }
 }
 
+/// 1 回目だけ失敗し、以後は成功するスタブ(一時失敗の再挑戦検証用)
+private actor FlakyOnceSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/flaky")
+    nonisolated var supportsDateSort: Bool { false }
+    private(set) var attemptCount = 0
+
+    func entries() async throws -> [PageEntry] {
+        [PageEntry(id: 0, name: "flaky.png", pathInBook: "flaky.png",
+                   fileURL: nil, creationDate: nil, modificationDate: nil)]
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        attemptCount += 1
+        if attemptCount == 1 {
+            // 併走する待ち手が同じ失敗生成に合流できる時間を確保する
+            try? await Task.sleep(for: .milliseconds(60))
+            throw BookSourceError.pageLoadFailed(entry.name)
+        }
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 40, height: 60), maxPixelSize: maxPixelSize)
+    }
+}
+
+/// 同時実行数を計測するスタブ(生成ゲートの検証用)
+private actor ConcurrencyProbeSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/probe")
+    nonisolated var supportsDateSort: Bool { false }
+    private var active = 0
+    private(set) var maxActive = 0
+
+    func entries() async throws -> [PageEntry] {
+        (0..<12).map {
+            PageEntry(id: $0, name: "\($0).png", pathInBook: "\($0).png",
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        active += 1
+        maxActive = max(maxActive, active)
+        try? await Task.sleep(for: .milliseconds(40))
+        active -= 1
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 20, height: 30), maxPixelSize: maxPixelSize)
+    }
+}
+
+/// 最初の N 回だけ失敗し、以後は成功するスタブ(TTL 回復の検証用)
+private actor FlakyNTimesSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/flaky-n")
+    nonisolated var supportsDateSort: Bool { false }
+    private var failuresRemaining: Int
+    private(set) var attemptCount = 0
+
+    init(failures: Int) {
+        failuresRemaining = failures
+    }
+
+    func entries() async throws -> [PageEntry] {
+        [PageEntry(id: 0, name: "n.png", pathInBook: "n.png",
+                   fileURL: nil, creationDate: nil, modificationDate: nil)]
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        attemptCount += 1
+        if failuresRemaining > 0 {
+            failuresRemaining -= 1
+            throw BookSourceError.pageLoadFailed(entry.name)
+        }
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 40, height: 60), maxPixelSize: maxPixelSize)
+    }
+}
+
 /// ソースへのロード回数を数えるスタブ(キャッシュヒットの検証用)
 private actor CountingSource: BookSource {
     nonisolated let url = URL(fileURLWithPath: "/stub/counting")
@@ -112,19 +186,101 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(loads, 1)
     }
 
-    func testFailedGenerationIsNotRetried() async throws {
-        // 生成失敗(壊れページ・パスワード付きネスト書庫等)は記録され、
-        // 画面に入り直すたびに展開し直さない(ネガティブキャッシュ)
+    func testFailedGenerationIsNotRetriedAfterTwoFailures() async throws {
+        // 生成失敗(壊れページ・パスワード付きネスト書庫等)は 2 回の完走失敗で
+        // 恒久記録され、以後は画面に入り直すたびに展開し直さない(ネガティブ
+        // キャッシュ)。1 回目は再挑戦を許す — 多数 PDF の同時オープン直後の
+        // 一時失敗を恒久プレースホルダにしないため
         let cache = ThumbnailCache(diskRoot: diskRoot)
         let source = FailingSource()
         let entry = try await source.entries()[0]
 
         let first = await cache.thumbnail(for: entry, in: source, bookKey: "bad")
         let second = await cache.thumbnail(for: entry, in: source, bookKey: "bad")
+        let third = await cache.thumbnail(for: entry, in: source, bookKey: "bad")
         XCTAssertNil(first)
         XCTAssertNil(second)
+        XCTAssertNil(third)
         let attempts = await source.attemptCount
-        XCTAssertEqual(attempts, 1, "失敗ページに再挑戦しないこと")
+        XCTAssertEqual(attempts, 2, "2 回完走失敗した後は再挑戦しないこと")
+    }
+
+    func testTransientFailureIsRetriedEvenWithMultipleWaiters() async throws {
+        // 1 回の完走失敗では恒久記録しない。複数の待ち手が同じ失敗生成に
+        // 合流していても失敗は 1 回として数える(待ち手単位で数えると
+        // 1 回の失敗で即恒久化してしまう)
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = FlakyOnceSource()
+        let entry = try await source.entries()[0]
+
+        async let a = cache.thumbnail(for: entry, in: source, bookKey: "flaky")
+        async let b = cache.thumbnail(for: entry, in: source, bookKey: "flaky")
+        let firstResults = await (a, b)
+        XCTAssertNil(firstResults.0)
+        XCTAssertNil(firstResults.1)
+
+        // 再挑戦は新しい生成として走り、今度は成功する
+        let retried = await cache.thumbnail(for: entry, in: source, bookKey: "flaky")
+        XCTAssertNotNil(retried)
+        let attempts = await source.attemptCount
+        XCTAssertEqual(attempts, 2)
+    }
+
+    func testPermanentFailureIsForgivenAfterTTL() async throws {
+        // 恒久記録には有効期限があり、期限が切れたら勘定ごと赦して再挑戦する
+        // (稀な一時要因で 2 回失敗したページがセッション中ずっと欠けたままに
+        // ならないように)
+        let cache = ThumbnailCache(diskRoot: diskRoot,
+                                   failureTTL: .milliseconds(50))
+        let source = FailingSource()
+        let entry = try await source.entries()[0]
+
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "ttl")  // 1 回目
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "ttl")  // 2 回目 → 恒久
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "ttl")  // 期限内 → 即 nil
+        var attempts = await source.attemptCount
+        XCTAssertEqual(attempts, 2, "期限内は再挑戦しないこと")
+
+        try? await Task.sleep(for: .milliseconds(200))
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "ttl")  // 赦し → 再挑戦
+        attempts = await source.attemptCount
+        XCTAssertEqual(attempts, 3, "期限切れ後は赦して再挑戦すること")
+    }
+
+    func testPageEventuallyLoadsAfterTransientFailures() async throws {
+        // 「待っても表示されない」の再発防止: 一時失敗が続いて一旦恒久記録に
+        // 達しても、TTL 後の再要求(セルの再挑戦・開き直し)で必ず回復する
+        let cache = ThumbnailCache(diskRoot: diskRoot,
+                                   failureTTL: .milliseconds(50))
+        let source = FlakyNTimesSource(failures: 3)
+        let entry = try await source.entries()[0]
+
+        var image: CGImage?
+        for _ in 0..<40 {
+            image = await cache.thumbnail(for: entry, in: source, bookKey: "heal")
+            if image != nil { break }
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        XCTAssertNotNil(image, "一時失敗が続いても最終的に必ず表示されること")
+    }
+
+    func testGenerationConcurrencyIsGated() async throws {
+        // 多数のセルが一斉に生成要求しても、実生成の同時実行は 4 に絞られる
+        // (多数の PDF 文書の並列レンダリング暴走の防止)
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = ConcurrencyProbeSource()
+        let entries = try await source.entries()
+
+        await withTaskGroup(of: Void.self) { group in
+            for entry in entries {
+                group.addTask {
+                    _ = await cache.thumbnail(for: entry, in: source, bookKey: "gate")
+                }
+            }
+        }
+        let peak = await source.maxActive
+        XCTAssertGreaterThan(peak, 0)
+        XCTAssertLessThanOrEqual(peak, 4, "生成ゲート(limit 4)を超えないこと")
     }
 
     func testTrimDiskCacheRemovesOldBooks() async throws {
@@ -172,14 +328,61 @@ final class ThumbnailPrefetchTests: XCTestCase {
         let book = Book(source: source, entries: entries)
         // 実 UserDefaults に依存しないよう専用スイートを注入する
         let defaults = UserDefaults(suiteName: "thumb-test-\(UUID().uuidString)")!
-        defaults.set(["row": 2, "column": 2], forKey: "Thumbnail")
         let model = ThumbnailOverlayModel(defaults: defaults)
 
-        // 1 画面 4 セル(単ページ)で present → 画面 0 と 1 の 8 ページ全て先読み
+        // 1 画面 4 セル(2×2。セル 160pt が 2 列 2 行入るビューポート)で
+        // present → 画面 0 と 1 の 8 ページ全て先読み(±3 画面の先読み検証)
+        model.updateViewport(CGSize(width: 340, height: 490))
         model.present(book: book)
         await model.waitForPrefetch()
         let loaded = await source.loadedIDs
         XCTAssertEqual(loaded, Set(0..<8))
+    }
+}
+
+/// 大量ページのスタブ(先読み上限の検証用)
+private actor ManyPageCountingSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/many-\(UUID().uuidString)")
+    nonisolated var supportsDateSort: Bool { false }
+    private(set) var loadedIDs: Set<Int> = []
+
+    func entries() async throws -> [PageEntry] {
+        (0..<600).map {
+            PageEntry(id: $0, name: "p\($0).png", pathInBook: "p\($0).png",
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        loadedIDs.insert(entry.id)
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 10, height: 14), maxPixelSize: maxPixelSize)
+    }
+}
+
+@MainActor
+final class ThumbnailPrefetchCapTests: XCTestCase {
+    func testPrefetchTargetsAreCapped() async throws {
+        // 自動グリッドの大画面(102 セル/画面)では ±3 画面 = 408 対象になるが、
+        // 先読みは近い順「現在画面の 2 面ぶん」(= 204 件)で打ち切られること
+        // (メモリ LRU 400 を 1 波で追い越して可視画面分を追い出さないための
+        // 上限。下限 180・上限 360)。「近い順」= 現在画面が全数含まれ、
+        // 対象は ±3 画面の範囲内に収まることも併せて検証する
+        let source = ManyPageCountingSource()
+        let entries = try await source.entries()
+        let book = Book(source: source, entries: entries)
+        let suite = "thumb-cap-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let model = ThumbnailOverlayModel(defaults: defaults)
+        model.updateViewport(CGSize(width: 3000, height: 1500))  // 17×6 = 102 セル
+        model.present(book: book)
+        await model.waitForPrefetch()
+        let loaded = await source.loadedIDs
+        XCTAssertEqual(loaded.count, 204)  // 102 × 2 面
+        XCTAssertTrue(loaded.isSuperset(of: Set(0..<102)),
+                      "現在画面の全ページが先読みに含まれること(近い順)")
+        XCTAssertLessThan(loaded.max() ?? 0, 408, "±3 画面の範囲内であること")
     }
 }
 

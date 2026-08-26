@@ -74,6 +74,8 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         let model = makeModel()
         model.onlyBookmarks = false
         model.comicMode = true
+        // 先読み(縦横比の計測)はビューポート確定後のみ走る
+        model.updateViewport(CGSize(width: 1000, height: 600))
         model.present(book: book)
         await model.waitForPrefetch()
         XCTAssertEqual(model.knownLargePages, [1])
@@ -94,6 +96,8 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         let model = makeModel()
         model.onlyBookmarks = false
         model.comicMode = true
+        // 先読み(縦横比の計測)はビューポート確定後のみ走る
+        model.updateViewport(CGSize(width: 1000, height: 600))
         model.present(book: book)
         await model.waitForPrefetch()
         // 横長 1 は強制ペアで許容、2 は強制単ページで分離
@@ -112,6 +116,8 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         let model = makeModel()
         model.onlyBookmarks = false
         model.comicMode = true
+        // 先読み(縦横比の計測)はビューポート確定後のみ走る
+        model.updateViewport(CGSize(width: 1000, height: 600))
         model.present(book: book)
         await model.waitForPrefetch()
         XCTAssertEqual(model.layout.cellGroups, [[0], [1, 2], [3, 4]])
@@ -151,5 +157,74 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot.currentIndex, 2)
         XCTAssertEqual(model.snapshot.displayedIndices, [2])
         await model.waitForPrefetch()
+    }
+
+    // MARK: - 自動グリッドとズーム(設計書 §2.4)
+
+    /// ソース無しの大きなスナップショット(先読みは source ガードで走らない)
+    private func presentPages(_ count: Int, currentIndex: Int = 0,
+                              on model: ThumbnailOverlayModel) {
+        var snapshot = ThumbnailOverlayModel.Snapshot()
+        snapshot.entries = (0..<count).map {
+            PageEntry(id: $0, name: "\($0).png", pathInBook: "\($0).png",
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+        snapshot.currentIndex = currentIndex
+        snapshot.displayedIndices = [currentIndex]
+        model.present(snapshot: snapshot)
+    }
+
+    /// ズーム(セルサイズ変更)を何度繰り返しても表示位置がドリフトしないこと。
+    /// screen×旧セル数→新セル数の逐次換算だと床関数の丸めが累積して先頭方向へ
+    /// 這うため、先頭セル組アンカーからの導出を検証する
+    func testZoomKeepsAnchorStable() {
+        let model = makeModel()
+        model.onlyBookmarks = false
+        presentPages(100, on: model)
+        model.updateViewport(CGSize(width: 1000, height: 600))  // 6×2 = 12 セル/画面
+        model.moveScreen(by: 3)  // 先頭セル組 36
+        let anchorEntry = model.layout.groups(onScreen: model.screen).first?.first
+        XCTAssertNotNil(anchorEntry)
+        // 60Hz のピンチを模して細かく往復させる
+        for step in 0..<120 {
+            model.setCellSize(160 + CGFloat(step % 40), commit: false)
+        }
+        model.setCellSize(160, commit: false)
+        XCTAssertEqual(model.layout.groups(onScreen: model.screen).first?.first,
+                       anchorEntry)
+    }
+
+    /// セルサイズはジェスチャ確定(commit)時のみ保存され、
+    /// defaults 側の変更は sync で反映されること
+    func testCellSizePersistsOnCommitOnly() {
+        let suite = "ThumbnailOverlayModelZoomTests"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let model = ThumbnailOverlayModel(defaults: defaults)
+        XCTAssertEqual(model.cellSize, ThumbnailZoomSetting.defaultSize)
+
+        model.setCellSize(240, commit: false)  // ジェスチャ中
+        XCTAssertEqual(model.cellSize, 240)
+        XCTAssertEqual(defaults.double(forKey: ThumbnailZoomSetting.defaultsKey), 0)
+
+        model.setCellSize(240, commit: true)  // 指を離した
+        XCTAssertEqual(defaults.double(forKey: ThumbnailZoomSetting.defaultsKey), 240)
+
+        // 設定スライダ → applySettings 経由の同期
+        ThumbnailZoomSetting.write(120, to: defaults)
+        model.syncCellSizeFromDefaults()
+        XCTAssertEqual(model.cellSize, 120)
+    }
+
+    /// 最初のジオメトリ到着ではフォールバック 3×4 のアンカー換算ではなく、
+    /// 現在ページを含む画面を取り直すこと
+    func testFirstViewportShowsCurrentPage() {
+        let model = makeModel()
+        model.onlyBookmarks = false
+        presentPages(100, currentIndex: 50, on: model)
+        // 400×400 @ セル 160: 列 (408/168)=2・行 (408/240)=1 → 2 セル/画面
+        model.updateViewport(CGSize(width: 400, height: 400))
+        XCTAssertEqual(model.screen, 25)  // 50 を含む画面
+        XCTAssertEqual(model.layout.groups(onScreen: model.screen).first?.first, 50)
     }
 }

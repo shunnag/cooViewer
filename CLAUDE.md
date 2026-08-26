@@ -171,7 +171,15 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 ## Licensing constraints
 
 XADMaster and UniversalDetector are LGPL 2.1: keep them dynamically linked (embedded
-frameworks), keep the About-panel XAD credit (`Credits.rtf`), keep license files.
+frameworks), keep the About-panel credits in `Credits.rtf` (the original libxad credit,
+plus the XADMaster / UniversalDetector blocks with the LGPL 2.1 notice, added
+2026-08-26 for §6), keep the bundled license text (`CooViewer/Resources/LGPL-2.1.txt`,
+copied into the app's Resources — §6 requires shipping the license with the binary),
+keep license files. Because Release uses the hardened runtime (users cannot swap the
+frameworks in a signed app), §6 compliance rests on §6(a)/(d) — complete source
+availability: the forks (github.com/shunnag/XADMaster, github.com/shunnag/
+universal-detector) must stay public, and the pinned submodule commits must be pushed
+to them before any Release build ships.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
