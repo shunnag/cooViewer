@@ -421,7 +421,7 @@ public final class EPUBReaderView: NSView {
     /// FXL・画像ページ(表紙)では隠す。右綴じは右スロットが先のページ
     private func updateFurniture() {
         let visible = settings.showsPageFurniture && publication != nil
-            && !isFixedLayoutItem && !isImagePage
+            && !isFixedLayoutItem && !isImagePage && !furnitureSuppressed
         guard visible else {
             for label in pageNumberLabels { label.isHidden = true }
             return
@@ -486,6 +486,7 @@ public final class EPUBReaderView: NSView {
             overlay.removeFromSuperview()
         }
         turnOverlays.removeAll { $0 !== pendingSpineTurn?.cover }
+        updateFurnitureSuppression()
         let entry = publication.readingOrder[index]
         isFixedLayoutItem =
             publication.package.effectiveLayout(for: entry.itemRef) == .prePaginated
@@ -565,16 +566,19 @@ public final class EPUBReaderView: NSView {
     private func beginFXLSpineTurn(forward: Bool, webView: WKWebView) async {
         let fast = WKSnapshotConfiguration()
         fast.afterScreenUpdates = false
-        guard let oldPage = try? await webView.takeSnapshot(configuration: fast)
+        guard let oldWeb = try? await webView.takeSnapshot(configuration: fast)
         else {
             advanceSpine(forward: forward)
             return
         }
+        // FXL でもレターボックス(余白)込みの全面でめくる(リフローと同じ扱い)
+        let oldPage = composeFullPage(webImage: oldWeb, in: webView.frame)
         let cover = NSImageView(image: oldPage)
         cover.imageScaling = .scaleAxesIndependently
-        cover.frame = webView.frame
+        cover.frame = bounds
         addSubview(cover, positioned: .above, relativeTo: webView)
         turnOverlays.append(cover)
+        updateFurnitureSuppression()
         pendingSpineTurn = PendingSpineTurn(
             oldPage: oldPage, cover: cover, forward: forward)
         scheduleSpineTurnTimeout(for: cover)
@@ -591,11 +595,25 @@ public final class EPUBReaderView: NSView {
     }
     private var pendingSpineTurn: PendingSpineTurn?
 
+    /// めくりカバー掲示中はライブのノンブルを隠す。番号はカバー(全面合成)に
+    /// 焼き込み済みで、カバーはラベルより背面に入るため、隠さないと演出中に
+    /// ライブ側の新番号と焼き込みの旧番号が二重に見える。章読み込み中に
+    /// ラベルが一瞬「1」へ戻って見えていた従来のチラつきも同時に消える
+    private var furnitureSuppressed = false {
+        didSet { if furnitureSuppressed != oldValue { updateFurniture() } }
+    }
+
+    /// turnOverlays を増減させた後に必ず呼ぶ(カバーの有無と抑制を同期)
+    private func updateFurnitureSuppression() {
+        furnitureSuppressed = !turnOverlays.isEmpty
+    }
+
     private func clearPendingSpineTurn() {
         guard let pending = pendingSpineTurn else { return }
         pendingSpineTurn = nil
         pending.cover.removeFromSuperview()
         turnOverlays.removeAll { $0 === pending.cover }
+        updateFurnitureSuppression()
     }
 
     /// 読み込みが来ないままカバーが残る事態(端で何も起きない・失敗)の安全弁
@@ -612,16 +630,21 @@ public final class EPUBReaderView: NSView {
         //    見え続け、下でめくりが起きても分からない)
         let fast = WKSnapshotConfiguration()
         fast.afterScreenUpdates = false
-        guard let oldPage = try? await webView.takeSnapshot(configuration: fast)
+        guard let oldWeb = try? await webView.takeSnapshot(configuration: fast)
         else {
             evaluate("__washi.turnInDoc(\(forward));")
             return
         }
+        // 余白・ノンブル込みの全面(紙のページ全体)でめくる。本文領域だけを
+        // 動かすと余白が静止して実際の本と違って見えるため、以降のカバーと
+        // 演出はすべてビュー全面を対象にする
+        let oldPage = composeFullPage(webImage: oldWeb, in: webView.frame)
         let cover = NSImageView(image: oldPage)
         cover.imageScaling = .scaleAxesIndependently
-        cover.frame = webView.frame
+        cover.frame = bounds
         addSubview(cover, positioned: .above, relativeTo: webView)
         turnOverlays.append(cover)
+        updateFurnitureSuppression()
 
         // 2. カバーの下でめくる。境界なら次項目の表示完了までカバーを持ち越す
         //    (boundary 通知 → advanceSpine → runSetup 完了時に演出)。
@@ -645,13 +668,17 @@ public final class EPUBReaderView: NSView {
             pendingSpineTurn = nil
             cover.removeFromSuperview()
             turnOverlays.removeAll { $0 === cover }
+            updateFurnitureSuppression()
             return
         }
 
         // 3. 新ページを描画完了込みで撮り、演出でカバーを取り除く
         let after = WKSnapshotConfiguration()
         after.afterScreenUpdates = true
-        let newPage = try? await webView.takeSnapshot(configuration: after)
+        // showPage は turnInDoc の返答前に pageChanged を post するため、
+        // ここに来た時点でノンブルは新ページの値に更新済み(合成に正しく載る)
+        let newPage = (try? await webView.takeSnapshot(configuration: after))
+            .map { composeFullPage(webImage: $0, in: webView.frame) }
         runTurnEffect(oldPage: oldPage, newPage: newPage,
                       cover: cover, forward: forward)
     }
@@ -664,8 +691,10 @@ public final class EPUBReaderView: NSView {
         func removeCover() {
             cover.removeFromSuperview()
             turnOverlays.removeAll { $0 === cover }
+            updateFurnitureSuppression()
         }
-        let frame = webView?.frame ?? bounds
+        // カバー・スナップショットとも全面合成なので演出矩形もビュー全面
+        let frame = bounds
         if let newPage,
            delegate?.readerView(self, animatePageTurnFrom: oldPage, to: newPage,
                                 forward: forward, in: frame) == true {
@@ -911,8 +940,12 @@ public final class EPUBReaderView: NSView {
                 pendingSpineTurn = nil
                 let config = WKSnapshotConfiguration()
                 config.afterScreenUpdates = true
-                let newPage = try? await webView.takeSnapshot(
-                    configuration: config)
+                // ノンブルは runSetup の updateFurniture(前進)または
+                // .end 適用時の pageChanged(後退。snapshot 待ちの間に届く)で
+                // 新項目の値になっている
+                let newPage = (try? await webView.takeSnapshot(
+                    configuration: config))
+                    .map { self.composeFullPage(webImage: $0, in: webView.frame) }
                 guard generation == spineLoadGeneration else { return }
                 runTurnEffect(oldPage: pending.oldPage, newPage: newPage,
                               cover: pending.cover, forward: pending.forward)
@@ -1196,35 +1229,60 @@ public final class EPUBReaderView: NSView {
     /// Returns an image compositing the whole view (margins + web content).
     /// WKWebView does not appear in layer-based drawing (cacheDisplay, etc.),
     /// so the result of takeSnapshot is composited over the background (for
-    /// headless verification and thumbnails).
+    /// headless verification, thumbnails, and the page-turn effects).
     public func snapshot() async throws -> NSImage {
         guard let webView else { throw EPUBError.malformed("本が開かれていない") }
         let configuration = WKSnapshotConfiguration()
         configuration.afterScreenUpdates = true
         let webImage = try await webView.takeSnapshot(configuration: configuration)
+        return composeFullPage(webImage: webImage, in: webView.frame)
+    }
+
+    /// 背景(余白)+本文+ノンブルを 1 枚に焼いた「紙のページ全体」の像。
+    /// snapshot()(検証・サムネイル)とページめくり演出が共用する:
+    /// webView のスナップショットには本文領域しか写らないため、めくりを
+    /// 実際の本のように余白ごと動かすにはこの合成が要る。
+    /// 演出側は cgImage(forProposedRect:) でビットマップを取り出すので、
+    /// 描画ハンドラ形式(環境によっては 1x で取り出されて文字がぼける)では
+    /// なく、backing scale のビットマップへ直接合成して解像度を固定する
+    func composeFullPage(webImage: NSImage, in webFrame: NSRect) -> NSImage {
+        let size = bounds.size
+        let scale = window?.backingScaleFactor ?? 2
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: max(1, Int(size.width * scale)),
+            pixelsHigh: max(1, Int(size.height * scale)),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return webImage }
+        rep.size = size
         let background = NSColor(cgColor: layer?.backgroundColor
             ?? NSColor.textBackgroundColor.cgColor) ?? .white
-        let size = bounds.size
-        let webFrame = webView.frame
         let furniture = pageNumberLabels
             .filter { !$0.isHidden }
             .map { (text: $0.attributedStringValue, frame: $0.frame,
                     color: $0.textColor ?? .secondaryLabelColor,
                     font: $0.font ?? .systemFont(ofSize: 11)) }
-        return NSImage(size: size, flipped: false) { rect in
+        NSGraphicsContext.saveGraphicsState()
+        if let context = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = context
             background.setFill()
-            rect.fill()
+            NSRect(origin: .zero, size: size).fill()
             webImage.draw(in: webFrame)
             for item in furniture {
-                // 柱・ノンブルも合成する(検証スナップショットで版面を確認するため)
+                // 柱・ノンブルも合成する(ページと一緒にめくれて見えるように)
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: item.font, .foregroundColor: item.color,
                 ]
                 NSAttributedString(string: item.text.string,
                                    attributes: attributes).draw(in: item.frame)
             }
-            return true
+            context.flushGraphics()
         }
+        NSGraphicsContext.restoreGraphicsState()
+        let image = NSImage(size: size)
+        image.addRepresentation(rep)
+        return image
     }
 
     // MARK: - JS からのメッセージ
