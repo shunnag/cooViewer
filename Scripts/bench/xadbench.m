@@ -9,6 +9,19 @@
 #import <XADMaster/XADArchive.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <time.h>
+#include <libproc.h>
+#include <sys/resource.h>
+
+// 物理ディスク読み込みバイト/ページインの取得(cold cache の定量化。sudo 不要)
+static void diskio(unsigned long long *bytesread, unsigned long long *pageins) {
+    struct rusage_info_v4 ri;
+    if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ri) == 0) {
+        *bytesread = ri.ri_diskio_bytesread;
+        *pageins = ri.ri_pageins;
+    } else {
+        *bytesread = 0; *pageins = 0;
+    }
+}
 
 static double now_ms(void) {
     return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6;
@@ -36,6 +49,8 @@ int main(int argc, char **argv) {
     CC_SHA256_Init(&overall);
     BOOL hashed = NO;
 
+    unsigned long long diskBefore = 0, pageinsBefore = 0, diskAfter = 0, pageinsAfter = 0;
+    diskio(&diskBefore, &pageinsBefore);
     if ([mode isEqualToString:@"open"] || [mode isEqualToString:@"data-open"]) {
         BOOL fromData = [mode isEqualToString:@"data-open"];
         for (int r = 0; r < reps; r++) {
@@ -175,9 +190,12 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    diskio(&diskAfter, &pageinsAfter);
     NSMutableString *json = [NSMutableString string];
-    [json appendFormat:@"{\"mode\":\"%@\",\"archive\":\"%@\",\"entries\":%lld,\"bytes\":%llu,\"rep_ms\":[",
-        mode, [path lastPathComponent], entryCount, totalBytes];
+    [json appendFormat:@"{\"mode\":\"%@\",\"archive\":\"%@\",\"entries\":%lld,\"bytes\":%llu,"
+        @"\"diskread\":%llu,\"pageins\":%llu,\"rep_ms\":[",
+        mode, [path lastPathComponent], entryCount, totalBytes,
+        diskAfter - diskBefore, pageinsAfter - pageinsBefore];
     for (NSUInteger i = 0; i < repMs.count; i++) {
         [json appendFormat:@"%s%.2f", i ? "," : "", [repMs[i] doubleValue]];
     }

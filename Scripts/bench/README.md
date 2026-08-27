@@ -104,3 +104,17 @@ Lhasa(brew の lha)は展開専用なので、作成には正統 LHA が要る:
 `lha a -o5|o6|o7 out.lzh *.jpg` で lh5/6/7 を作成。
 CooViewerTests/Fixtures/book.lzh は PNG×4 を lha -o5 で固めた lh5 fixture
 (FastLZSS 移植のデコード正当性テスト testLZH5ArchiveExtractsCorrectly 用)。
+
+## cold cache 計測
+
+xadbench は open/data-open で rusage の物理 read バイト(diskread)とページイン
+(pageins)も JSON に出す。cold の測り方は 2 通り:
+- `coldopen.sh <variant> <archive>`: disk image(cold.sparseimage)を
+  detach/attach してキャッシュを落とす。ただしスパースイメージ APFS は
+  全ファイル readahead するため物理 read の差は出にくい(時間は測れる)。
+- `sudo zsh purge-cold.sh`: 内蔵 SSD で `sudo purge` して真の cold を測る
+  (認証が要る)。2026-08 の計測では zip open は cold でも全ファイルを
+  readahead するため物理 read は不変・時間だけ −16〜18%(変更 63)。
+
+zip の嘘 centralsize テスト書庫は EOCD の centralsize フィールドを過大/過小に
+patch して作る(makemutants.py と同様の struct.pack_into)。
