@@ -95,3 +95,12 @@ nonsolid/solid/blocks.7z は「PNG(4x6)+8KB 乱数パディング」×4 ペー�
 ページ生成の python スクリプトはレポート artifact のセッション記録参照、
 または同等の PNG+パディングを用意して
 `7zz a -t7z -m0=lzma2 -ms=off|on|20k fixture.7z *.png`。
+
+## LHA(lh4-7)コーパスと fixture
+
+Lhasa(brew の lha)は展開専用なので、作成には正統 LHA が要る:
+`brew install automake` 後に jca02266/lha をソースから
+`autoreconf -i && ./configure && make`(バイナリは src/lha)。
+`lha a -o5|o6|o7 out.lzh *.jpg` で lh5/6/7 を作成。
+CooViewerTests/Fixtures/book.lzh は PNG×4 を lha -o5 で固めた lh5 fixture
+(FastLZSS 移植のデコード正当性テスト testLZH5ArchiveExtractsCorrectly 用)。

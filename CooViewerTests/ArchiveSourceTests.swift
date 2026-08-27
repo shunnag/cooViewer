@@ -437,9 +437,13 @@ final class NestedArchiveTests: XCTestCase {
     // MARK: - 7z の並列粒度(cooViewer-7ni)
 
     private func fixture(_ name: String) throws -> URL {
+        try fixture7z(name, ext: "7z")
+    }
+
+    private func fixture7z(_ name: String, ext: String) throws -> URL {
         let bundle = Bundle(for: ArchiveSourceTests.self)
-        return try XCTUnwrap(bundle.url(forResource: name, withExtension: "7z"),
-                             "テストリソース \(name).7z がバンドルにない")
+        return try XCTUnwrap(bundle.url(forResource: name, withExtension: ext),
+                             "テストリソース \(name).\(ext) がバンドルにない")
     }
 
     func testSevenZipParallelModeFollowsStructure() async throws {
@@ -498,6 +502,22 @@ final class NestedArchiveTests: XCTestCase {
         await solid.waitForSpoolCompletion()
         let solidSpooled = await solid.spooledEntryCount
         XCTAssertEqual(solidSpooled, 4)
+    }
+
+    // MARK: - LHA lh5 展開(cooViewer-7ni: FastLZSS 移植のデコード正当性)
+
+    func testLZH5ArchiveExtractsCorrectly() async throws {
+        // XADLZHStaticHandle を per-byte から FastLZSS へ移植したので、lh5 の
+        // 全ページが正しい寸法・内容でデコードされることをフィクスチャで固定する。
+        // fixtures/book.lzh は 4x6 PNG(+パディング)×4 を lha -o5 で固めたもの。
+        let source = try ArchiveSource(url: fixture7z("book", ext: "lzh"))
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 4)
+        for entry in entries {
+            let image = try await source.image(for: entry, maxPixelSize: nil)
+            XCTAssertEqual(image.width, 4)
+            XCTAssertEqual(image.height, 6)
+        }
     }
 
     func testRarStaysOnFilePath() async throws {
