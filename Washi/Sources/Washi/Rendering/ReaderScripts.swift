@@ -314,7 +314,10 @@ enum ReaderScripts {
             let el = null;
             try { el = document.getElementById(id); } catch (e) { el = null; }
             if (!el) { return currentPage; }
-            el.classList.add(cls);
+            // cls 不正(空・空白入り)なら classList.add が throw する。主対策は
+            // Swift 側(mediaOverlayActiveClass が不正値を既定へフォールバック)だが、
+            // ここでも try で囲みページ追従(下)が無音停止しないよう多層防御する
+            try { el.classList.add(cls); } catch (e) {}
             mediaOverlayActiveIds.push(id);
             // 現在のスプレッド外なら該当ページへめくる(既に見えていれば据え置き)
             const before = currentPage;

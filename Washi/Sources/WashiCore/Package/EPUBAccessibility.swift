@@ -37,9 +37,18 @@ public struct EPUBAccessibility: Sendable, Equatable {
 extension EPUBMetadata {
     /// The CSS class a reading system applies to the text currently being read
     /// during media-overlay playback (`media:active-class`), if declared.
+    /// Returns nil when the declared value is empty or not a single CSS token
+    /// (e.g. contains internal whitespace), so the caller falls back to a valid
+    /// default — passing such a value to `classList.add` throws and would
+    /// silently break page-following during narration.
     public var mediaOverlayActiveClass: String? {
-        metaItems.first { $0.refines == nil && $0.property == "media:active-class" }?
-            .value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = metaItems.first(where: {
+            $0.refines == nil && $0.property == "media:active-class"
+        })?.value.trimmingCharacters(in: .whitespacesAndNewlines),
+        !value.isEmpty,
+        value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+        else { return nil }
+        return value
     }
 
     /// The publication's accessibility metadata, assembled from the document's

@@ -74,8 +74,8 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     public var columnMode: EPUBColumnMode = .auto
     /// Color theme (default: follows the system appearance).
     public var theme: EPUBReaderTheme = .system
-    /// Whether to show the running head (book/chapter title) and folio (page
-    /// number) in the margins.
+    /// Whether to show the folio (page number) centered in each page's bottom
+    /// margin.
     public var showsPageFurniture = true
     /// The page-turn effect (automatically skipped when "Reduce Motion" is on
     /// and during rapid repeated presses). The delegate's animatePageTurn can
@@ -176,8 +176,15 @@ public struct EPUBReaderSettings: Sendable, Equatable {
             // !important なし + html レベル = 継承でしか効かないため、
             // 「本が指定しなかったときだけ」の既定フォントになる。
             // 値は CSS 文字列としてエスケープ(defaults 直書きの任意文字列で
-            // 規則が壊れたり CSS が注入されたりしないように)
-            let escaped = family
+            // 規則が壊れたり CSS が注入されたりしないように)。改行・制御文字は
+            // CSS 文字列トークンを終端させ後続を新規規則として注入できてしまう
+            // ため、エスケープ前に除去する(U+2028/2029 は controlCharacters に
+            // 含まれないので明示除去。CJK フォント名を通すため allowlist は使わない)
+            let stripped = family.unicodeScalars.filter {
+                !CharacterSet.controlCharacters.contains($0)
+                    && $0 != "\u{2028}" && $0 != "\u{2029}"
+            }
+            let escaped = String(String.UnicodeScalarView(stripped))
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
             css += "html { font-family: \"\(escaped)\", serif; }\n"
