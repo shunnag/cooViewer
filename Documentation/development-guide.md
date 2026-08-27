@@ -135,6 +135,15 @@ python3 Scripts/make-sample-epub.py /tmp /tmp/pages          # 2 冊の .epub �
   ガードにより「前回の本を開く」等でユーザーの実データに触れない。
 - テスト出力に CGImageSource のエラーが混ざるのは壊れ画像の意図的テスト。
 
+## 3.2 XADMaster の性能計測(Scripts/bench/)
+
+XADMaster/UniversalDetector の性能に触る変更は `Scripts/bench/` の
+ベンチマーク基盤で**実測してから**採否を判断する(コーパス生成→ハーネス→
+バリアント別ビルド→交互実行→SHA-256 相互検証つき集計)。使い方・計測の
+作法(交互実行ペア必須、±10% ドリフトの罠、破損入力バッテリー)は
+`Scripts/bench/README.md` 参照。2026-08-27 監査(MODERNIZATION.md 51–56、
+stored cbz 2.5×/RAR 3×/暗号化 7z 30× 等)の生データも同ディレクトリに同梱。
+
 ## 3.5 Washi の公開ミラー(https://github.com/shunnag/Washi)
 
 Washi は本リポジトリ(モノレポ)内 `Washi/` で開発し、公開リポジトリへは
