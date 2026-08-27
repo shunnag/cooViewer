@@ -9,7 +9,15 @@
 # EN: (and again whenever Frameworks/ is recreated).
 set -euo pipefail
 
-IDENTITY="${1:-Developer ID Application: shunnag (FQTM2788K5)}"
+# 署名 ID は名前をハードコードしない: team ID (FQTM2788K5) から証明書ハッシュを
+# 解決する。第 1 引数でセレクタ(ハッシュ等)を明示指定して上書きも可。
+IDENTITY="${1:-$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/Developer ID Application.*FQTM2788K5/{print $2; exit}')}"
+if [[ -z "$IDENTITY" ]]; then
+    echo "error: no Developer ID Application identity for team FQTM2788K5 found." >&2
+    echo "       (pass a signing identity as \$1 to override)" >&2
+    exit 1
+fi
 
 cd "$(dirname "$0")/.."
 FW="Frameworks/Sparkle.framework"
@@ -33,4 +41,4 @@ sign "$FW/Versions/B/Updater.app"
 sign "$FW"
 
 codesign --verify --strict --deep "$FW"
-echo "Sparkle nested executables signed with: $IDENTITY"
+echo "Sparkle nested executables signed (identity: $IDENTITY)"
