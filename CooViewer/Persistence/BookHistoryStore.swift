@@ -17,8 +17,14 @@ final class BookHistoryStore {
 
     /// 読み込んだ状態のメモリキャッシュ(正規化パス → 状態)
     private var stateCache: [String: BookState] = [:]
-    /// 参照ミスの記録(状態のない本を開くたびに再配置スキャンしないため)
+    /// 参照ミス(ファイルが本当に無い本)の記録。状態のない本を開くたびに
+    /// 再配置スキャンしないため。**「在るのに読めなかった」本はここに入れない**
+    /// (一過性の失敗で恒久 nil 化しないため。回復すれば読み直せる)
     private var missCache: Set<String> = []
+    /// 当セッションで一度でも「在るのに読めなかった」本。以後その本への書き込みを
+    /// 抑止し、一過性の失敗で空状態を読んだ後に回復した中身を空で上書きするのを
+    /// 防ぐ(open 時失敗→session 空状態→close 時回復→save が空で上書き、の遮断)
+    private var unreadableObserved: Set<String> = []
     private var recentsCache: [RecentEntry]?
 
     init(defaults: UserDefaults = .standard, directory: URL? = nil) {
@@ -137,23 +143,62 @@ final class BookHistoryStore {
 
     private var recentsURL: URL { directory.appendingPathComponent("recents.json") }
 
+    /// 状態読み取りの三態。found = 復元してよい / absent = 本当に無い(新規化可) /
+    /// unreadable = 在るのに読めない(中身を潰さないこと)
+    private enum StateLoad { case found(BookState); case absent; case unreadable }
+
+    /// 三態読み取り。**unreadable は missCache に入れない**(回復時に読み直せる)。
+    /// allowRelocation は「一括取込モードでない=通常運用」の意味も兼ねる:
+    /// 移行中は全パスが必然的にミスなので再配置も unreadableObserved の記録も
+    /// しない(allowRelocation:false)
+    private func loadStateResult(forNormalizedPath path: String,
+                                 allowRelocation: Bool = true) -> StateLoad {
+        if let cached = stateCache[path] { return .found(cached) }
+        if missCache.contains(path) { return .absent }
+        let url = stateURL(forNormalizedPath: path)
+        switch PersistedFile.readBytes(at: url) {
+        case .data(let data):
+            if let state = try? JSONDecoder().decode(BookState.self, from: data),
+               state.version <= 2 {  // 版検証: 未知の新版を旧ビルドが潰さない
+                stateCache[path] = state
+                return .found(state)
+            }
+            // 在るのにデコード不能/未知の版 → 潰さない(missCache に入れない)
+            if allowRelocation { unreadableObserved.insert(path) }
+            return .unreadable
+        case .unreadable:
+            if allowRelocation { unreadableObserved.insert(path) }
+            return .unreadable
+        case .absent:
+            // 本当に無いときだけ: 移動した本を URL ブックマークで探して付け替える
+            if allowRelocation,
+               let relocated = relocateState(toNormalizedPath: path) {
+                return .found(relocated)
+            }
+            missCache.insert(path)
+            return .absent
+        }
+    }
+
+    /// 読み取り専用の薄いラッパ: absent も unreadable も nil(=復元しない=安全側)
     private func loadState(forNormalizedPath path: String,
                            allowRelocation: Bool = true) -> BookState? {
-        if let cached = stateCache[path] { return cached }
-        if missCache.contains(path) { return nil }
-        let url = stateURL(forNormalizedPath: path)
-        if let data = try? Data(contentsOf: url),
-           let state = try? JSONDecoder().decode(BookState.self, from: data) {
-            stateCache[path] = state
+        if case .found(let state) = loadStateResult(
+            forNormalizedPath: path, allowRelocation: allowRelocation) {
             return state
         }
-        // ミス時のみ: 移動した本を URL ブックマークで探して付け替える
-        // (移行中は全パスが必然的にミスなのでスキャンしない)
-        if allowRelocation, let relocated = relocateState(toNormalizedPath: path) {
-            return relocated
-        }
-        missCache.insert(path)
         return nil
+    }
+
+    /// 書き込み用に既存状態を返す(無ければ新規)。ただし当セッションで一度でも
+    /// 読めなかった本は nil を返し、呼び出し側に書込中止を促す(回復後の空上書き防止)
+    private func mutableState(forNormalizedPath path: String) -> BookState? {
+        if unreadableObserved.contains(path) { return nil }
+        switch loadStateResult(forNormalizedPath: path) {
+        case .found(let state): return state
+        case .absent: return BookState(path: path)  // 初回オープン/クローズ(正常)
+        case .unreadable: return nil  // loadStateResult 側で unreadableObserved 記録済み
+        }
     }
 
     @discardableResult
@@ -220,15 +265,33 @@ final class BookHistoryStore {
 
     // MARK: - 最近使った本
 
-    private func loadRecents() -> [RecentEntry] {
+    /// 三態読み取り。在るのに読めない(I/O 失敗・デコード不能)は nil を返し、
+    /// **キャッシュしない**(次回再試行)= 上書き禁止シグナル。absent は空でキャッシュ
+    private func loadRecentsOrNil() -> [RecentEntry]? {
         if let cached = recentsCache { return cached }
-        let recents = (try? Data(contentsOf: recentsURL))
-            .flatMap { try? JSONDecoder().decode([RecentEntry].self, from: $0) } ?? []
-        recentsCache = recents
-        return recents
+        switch PersistedFile.readBytes(at: recentsURL) {
+        case .absent:
+            recentsCache = []  // 初回=空(以後キャッシュ可)
+            return []
+        case .unreadable:
+            return nil  // 一過性失敗はキャッシュせず、次回読み直す
+        case .data(let data):
+            guard let recents = try? JSONDecoder().decode(
+                [RecentEntry].self, from: data) else {
+                return nil  // デコード不能も上書き禁止(空で潰さない)
+            }
+            recentsCache = recents
+            return recents
+        }
     }
 
+    /// 読取側は空でフォールバック(復元しない=安全側)
+    private func loadRecents() -> [RecentEntry] { loadRecentsOrNil() ?? [] }
+
     private func writeRecents(_ recents: [RecentEntry]) {
+        // 在るのに読めない間は全消去を避ける(一過性失敗で 1 件だけの recents.json に
+        // 全履歴を上書きしない)。absent/正常時のみ書く
+        guard loadRecentsOrNil() != nil else { return }
         recentsCache = recents
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
@@ -271,10 +334,12 @@ final class BookHistoryStore {
 
     func noteOpened(path rawPath: String) {
         let path = normalize(rawPath)
-        var state = loadState(forNormalizedPath: path)
-            ?? BookState(path: path)
-        state.lastOpened = Date().timeIntervalSince1970
-        writeState(state, forNormalizedPath: path)
+        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)。recents は
+        // 別ファイル・独自ガードなので常に touch する
+        if var state = mutableState(forNormalizedPath: path) {
+            state.lastOpened = Date().timeIntervalSince1970
+            writeState(state, forNormalizedPath: path)
+        }
         touchRecents(path: path)
     }
 
@@ -282,15 +347,16 @@ final class BookHistoryStore {
     /// pagePath はそのページの本の中の相対パス(照合用)
     func noteClosed(path rawPath: String, pageIndex: Int, pagePath: String? = nil) {
         let path = normalize(rawPath)
-        var state = loadState(forNormalizedPath: path)
-            ?? BookState(path: path)
-        state.lastPageIndex = pageIndex
-        state.lastPagePath = pagePath
-        // 一覧から外れた後も復元できるかは「閉じた時点」の設定で固定する
-        // (旧 LastPages の write-time 意味論 §7.3)
-        state.rememberBeyondRecents = defaults.bool(forKey: "AlwaysRememberLastPage")
-        state.lastOpened = Date().timeIntervalSince1970
-        writeState(state, forNormalizedPath: path)
+        // 在るのに読めなかった本は書込抑止(回復後の空上書き/削除防止)
+        if var state = mutableState(forNormalizedPath: path) {
+            state.lastPageIndex = pageIndex
+            state.lastPagePath = pagePath
+            // 一覧から外れた後も復元できるかは「閉じた時点」の設定で固定する
+            // (旧 LastPages の write-time 意味論 §7.3)
+            state.rememberBeyondRecents = defaults.bool(forKey: "AlwaysRememberLastPage")
+            state.lastOpened = Date().timeIntervalSince1970
+            writeState(state, forNormalizedPath: path)
+        }
         touchRecents(path: path)
     }
 
@@ -307,8 +373,8 @@ final class BookHistoryStore {
                           progression: Double, idref: String? = nil,
                           forceRememberBeyondRecents: Bool = false) {
         let path = normalize(rawPath)
-        var state = loadState(forNormalizedPath: path)
-            ?? BookState(path: path)
+        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)
+        guard var state = mutableState(forNormalizedPath: path) else { return }
         // 先頭位置は「復帰なし」と不可分のため保存しない(savedPage と同じ規則)
         if spineIndex == 0 && progression <= 0 {
             state.lastReflowPosition = nil
@@ -400,8 +466,9 @@ final class BookHistoryStore {
     /// (OFF での保存は旧仕様どおり既存値も消す)
     func save(displayName: String, path rawPath: String, settings: BookSettings) {
         let path = normalize(rawPath)
-        var state = loadState(forNormalizedPath: path)
-            ?? BookState(path: path)
+        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)。open 時に
+        // 失敗し session が空設定を持ったまま閉じても、既存のしおりを潰さない
+        guard var state = mutableState(forNormalizedPath: path) else { return }
         state.displayName = displayName
         if let data = try? URL(fileURLWithPath: path).bookmarkData() {
             state.urlBookmark = data

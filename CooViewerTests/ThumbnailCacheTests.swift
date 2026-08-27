@@ -113,6 +113,24 @@ private actor CountingSource: BookSource {
     }
 }
 
+/// 生成がソースへ届いた時点の優先度を記録するスタブ(urgent レーン検証用)
+private actor PriorityRecordingSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/prio")
+    nonisolated var supportsDateSort: Bool { false }
+    private(set) var observed: TaskPriority?
+
+    func entries() async throws -> [PageEntry] {
+        [PageEntry(id: 0, name: "a.png", pathInBook: "a.png",
+                   fileURL: nil, creationDate: nil, modificationDate: nil)]
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        observed = Task.currentPriority  // 生成が源へ届いた時点の優先度
+        return try ImageDecoding.decode(
+            TestFixtures.pngData(width: 40, height: 60), maxPixelSize: maxPixelSize)
+    }
+}
+
 final class ThumbnailCacheTests: XCTestCase {
     private var diskRoot: URL!
 
@@ -122,6 +140,39 @@ final class ThumbnailCacheTests: XCTestCase {
 
     override func tearDownWithError() throws {
         try FileManager.default.removeItem(at: diskRoot)
+    }
+
+    // MARK: - urgent の 2 段目レーン(cooViewer-470)
+
+    func testUrgentGenerationReachesSourceAtInteractivePriority() async throws {
+        // urgent の生成タスクは userInitiated 起動 → 源へ届く時点でも userInitiated
+        // 以上(基底が床なのでエスカレーションで下がらない)。直 await で決定論的
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = PriorityRecordingSource()
+        let entry = try await source.entries()[0]
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "u", urgent: true)
+        let observed = await source.observed
+        XCTAssertNotNil(observed)
+        XCTAssertGreaterThanOrEqual(observed!, .userInitiated)
+    }
+
+    func testNonUrgentGenerationStaysBelowInteractive() async throws {
+        // 先読み(urgent:false)は utility のまま。テスト本体から await すると
+        // エスカレーションで判定が壊れるため、記録アクター越しにサイドチャネル観測
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let source = PriorityRecordingSource()
+        let entry = try await source.entries()[0]
+        let probe = Task.detached(priority: .utility) {
+            _ = await cache.thumbnail(for: entry, in: source, bookKey: "n", urgent: false)
+        }
+        while await source.observed == nil {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let observed = await source.observed
+        XCTAssertNotNil(observed)
+        XCTAssertLessThan(observed!, .userInitiated)
+        probe.cancel()
+        _ = await probe.value
     }
 
     func testSecondRequestHitsMemoryCache() async throws {

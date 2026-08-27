@@ -337,4 +337,97 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.settings(displayName: "same.zip", path: a)?
             .bookmarks, [.init(name: "x", pageIndex: 1)])
     }
+
+    // MARK: - 一過性の読み取り失敗で状態を潰さない(cooViewer-iuj)
+
+    /// stateDir 内の非 recents 状態ファイル URL(private stateURL を避ける)
+    private func stateFileURL() throws -> URL {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: stateDir, includingPropertiesForKeys: nil)
+        return try XCTUnwrap(files.first { $0.pathExtension == "json"
+            && $0.lastPathComponent != "recents.json" })
+    }
+
+    func testUnreadableStateFileIsNotOverwrittenOnClose() throws {
+        let a = try makeBookFile("a.zip")
+        store.save(displayName: "a.zip", path: a,
+                   settings: .init(readMode: nil, sortMode: nil, marks: PageMarks(),
+                                   bookmarks: [.init(name: "mark", pageIndex: 5)]))
+        let url = try stateFileURL()
+        let garbage = Data("garbage".utf8)
+        try garbage.write(to: url)
+        // 別ストア(=別プロセス相当。読みキャッシュ前)で在るのに読めない状態を再現
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        fresh.noteClosed(path: a, pageIndex: 0)  // 旧なら isEmpty で削除
+        fresh.save(displayName: "a.zip", path: a,
+                   settings: .init(readMode: nil, sortMode: nil, marks: PageMarks(),
+                                   bookmarks: []))  // 旧なら空で上書き
+        // ファイルは存在し、中身は garbage のまま(削除も上書きもされない)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try Data(contentsOf: url), garbage)
+    }
+
+    func testUnreadableStateFileSelfHealsForReads() throws {
+        let a = try makeBookFile("a.zip")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteClosed(path: a, pageIndex: 42)
+        let url = try stateFileURL()
+        let good = try Data(contentsOf: url)
+        // 破損 → 読めないので settings/savedPage は nil(復元しない=安全側)
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        try Data("garbage".utf8).write(to: url)
+        XCTAssertNil(fresh.savedPage(forPath: a))
+        // 正バイト復旧 → 別ストアで読み直せる(unreadable を負キャッシュしない)
+        try good.write(to: url)
+        let healed = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(healed.savedPage(forPath: a)?.page, 42)
+    }
+
+    func testUnreadableThenRecoveredStillSuppressesWrite() throws {
+        let a = try makeBookFile("a.zip")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteClosed(path: a, pageIndex: 42)
+        let url = try stateFileURL()
+        let good = try Data(contentsOf: url)
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        try Data("garbage".utf8).write(to: url)
+        _ = fresh.savedPage(forPath: a)   // 読み → unreadableObserved に記録
+        try good.write(to: url)           // 回復
+        fresh.noteClosed(path: a, pageIndex: 3)  // 同セッションは書込抑止継続
+        // 別ストアで読むと元の 42 のまま(回復後もその session は書かない)
+        let other = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(other.savedPage(forPath: a)?.page, 42)
+    }
+
+    func testStateVersionMismatchIsNotOverwritten() throws {
+        let a = try makeBookFile("a.zip")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteClosed(path: a, pageIndex: 42)
+        let url = try stateFileURL()
+        // BookState としてデコード可・version のみ未来
+        let future = Data(#"{"version":3,"path":"\#(a)","marks":[],"bookmarks":[]}"#.utf8)
+        try future.write(to: url)
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertNil(fresh.savedPage(forPath: a))  // 未知版は復元しない
+        fresh.noteClosed(path: a, pageIndex: 0)
+        fresh.save(displayName: "a.zip", path: a,
+                   settings: .init(readMode: nil, sortMode: nil, marks: PageMarks(),
+                                   bookmarks: []))
+        XCTAssertEqual(try Data(contentsOf: url), future)  // 上書きしていない
+    }
+
+    func testUnreadableRecentsIsNotClobbered() throws {
+        let a = try makeBookFile("a.zip")
+        let b = try makeBookFile("b.zip")
+        store.noteOpened(path: a)
+        store.noteOpened(path: b)
+        let recentsURL = stateDir.appendingPathComponent("recents.json")
+        let garbage = Data("garbage".utf8)
+        try garbage.write(to: recentsURL)
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(fresh.recentBookPaths(), [])  // 読めない → 空(復元しない)
+        let c = try makeBookFile("c.zip")
+        fresh.noteOpened(path: c)  // touchRecents → writeRecents は拒否
+        XCTAssertEqual(try Data(contentsOf: recentsURL), garbage)  // 潰していない
+    }
 }

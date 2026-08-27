@@ -162,8 +162,10 @@ struct MediaProfile: Sendable, Equatable {
 
 /// ソースの同時読み取りを絞るゲート(FolderSource 等が全読者に適用する)。
 /// 待ち行列は 2 レーン: 表示中ページの読み込み(userInitiated 以上の Task)は
-/// サムネイル生成(utility)の行列を追い越して先に許可される。これがないと
-/// 低速媒体でページ表示がサムネイルの後ろに数秒並ばされる。
+/// 先読みサムネイル生成(utility)の行列を追い越して先に許可される。これがないと
+/// 低速媒体でページ表示がサムネイルの後ろに数秒並ばされる。可視セルのサムネイル
+/// (urgent)は生成タスクを userInitiated で起動するため、表示中ページと同じ
+/// 対話レーンに入り先読みの後ろで飢餓しない(ThumbnailCache 参照)。
 /// limit の縮小は実行中の読者には作用しない(次の acquire から効く)
 actor SourceReadGate {
     private var limit: Int

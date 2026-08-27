@@ -65,6 +65,20 @@ final class PublicationTests: XCTestCase {
         let package = try PackageDocumentParser.parse(
             data: Data(opf.utf8), at: "OEBPS/package.opf")
         XCTAssertEqual(package.metadata.mediaOverlayActiveClass, "correct")
+
+        // 不正な値(空・空白のみ・内部空白)は nil = 呼び出し側で既定へフォールバック。
+        // classList.add へ渡すと throw しページ追従が無音停止するため
+        func activeClass(_ raw: String) throws -> String? {
+            let doc = opf.replacingOccurrences(
+                of: ">correct<", with: ">\(raw)<")
+            return try PackageDocumentParser.parse(
+                data: Data(doc.utf8), at: "OEBPS/package.opf")
+                .metadata.mediaOverlayActiveClass
+        }
+        XCTAssertNil(try activeClass(""))
+        XCTAssertNil(try activeClass("   "))
+        XCTAssertNil(try activeClass("a b"))
+        XCTAssertEqual(try activeClass("  trimmed  "), "trimmed")
     }
 
     /// メディアオーバーレイ(SMIL)の有無。縦組み小説は持たない
@@ -548,6 +562,13 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(SMILParser.parseClockValue("1250ms"), 1.25)
         XCTAssertEqual(SMILParser.parseClockValue("1:02:03.5"), 3723.5)
         XCTAssertEqual(SMILParser.parseClockValue("02:03"), 123)
+        // 不正なクロック値(NaN/Inf/負)は nil = 省略扱い。AVAudioPlayer への
+        // 不正シーク・クリップ終端の恒偽化(ティッカー空回り)を防ぐ
+        XCTAssertNil(SMILParser.parseClockValue("nans"))
+        XCTAssertNil(SMILParser.parseClockValue("1e999s"))
+        XCTAssertNil(SMILParser.parseClockValue("-5s"))
+        XCTAssertNil(SMILParser.parseClockValue("-1:00"))
+        XCTAssertNil(SMILParser.parseClockValue(""))
         let smil = """
         <?xml version="1.0"?>
         <smil xmlns="http://www.w3.org/ns/SMIL"

@@ -58,33 +58,41 @@ enum SMILParser {
         }
     }
 
-    /// SMIL クロック値("12.5s" / "1:02:03.5" / "02:03" / "1250ms")→ 秒
+    /// SMIL クロック値("12.5s" / "1:02:03.5" / "02:03" / "1250ms")→ 秒。
+    /// NaN・Inf・負値(細工/雑な SMIL の "nan"・"1e999s"・"-5s" 等)は nil を返し
+    /// 省略扱いにする — AVAudioPlayer.currentTime へ不正値を渡すとシーク破綻・
+    /// クリップ終端判定の恒偽化(ティッカーの空回り)を招くため
     static func parseClockValue(_ text: String) -> Double? {
+        // NaN は `>= 0` が false になるので、この 1 つの検査で NaN/Inf/負を弾ける
+        func valid(_ value: Double?) -> Double? {
+            guard let value, value.isFinite, value >= 0 else { return nil }
+            return value
+        }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         if trimmed.hasSuffix("ms") {
-            return Double(trimmed.dropLast(2)).map { $0 / 1000 }
+            return valid(Double(trimmed.dropLast(2)).map { $0 / 1000 })
         }
         if trimmed.hasSuffix("s") {
-            return Double(trimmed.dropLast())
+            return valid(Double(trimmed.dropLast()))
         }
         if trimmed.hasSuffix("min") {
-            return Double(trimmed.dropLast(3)).map { $0 * 60 }
+            return valid(Double(trimmed.dropLast(3)).map { $0 * 60 })
         }
         if trimmed.hasSuffix("h") {
-            return Double(trimmed.dropLast()).map { $0 * 3600 }
+            return valid(Double(trimmed.dropLast()).map { $0 * 3600 })
         }
         let parts = trimmed.split(separator: ":").map(String.init)
         switch parts.count {
         case 3:
             guard let hours = Double(parts[0]), let minutes = Double(parts[1]),
                   let seconds = Double(parts[2]) else { return nil }
-            return hours * 3600 + minutes * 60 + seconds
+            return valid(hours * 3600 + minutes * 60 + seconds)
         case 2:
             guard let minutes = Double(parts[0]),
                   let seconds = Double(parts[1]) else { return nil }
-            return minutes * 60 + seconds
+            return valid(minutes * 60 + seconds)
         case 1:
-            return Double(parts[0])
+            return valid(Double(parts[0]))
         default:
             return nil
         }

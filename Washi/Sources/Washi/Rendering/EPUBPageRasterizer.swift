@@ -181,23 +181,50 @@ public final class EPUBPageRasterizer {
 @MainActor
 final class NavigationWaiter: NSObject, WKNavigationDelegate {
     private var continuation: CheckedContinuation<Void, any Error>?
+    private var timeoutTask: Task<Void, Never>?
+    /// continuation を設置する前にキャンセルが着弾したときのフラグ(直列
+    /// MainActor 上で install が先に走るので通常は不要だが、多重防御)
+    private var cancelledBeforeInstall = false
 
     enum WaitError: Error {
         case timeout
         case contentProcessTerminated
     }
 
+    /// 待機。キャンセルに即応する(タスクを cancel すると 15/30 秒のタイムアウト
+    /// 満了を待たず CancellationError で抜ける — census の invalidate 直後に
+    /// オフスクリーンが最大 15 秒生き残る/次の census が FIFO で連鎖待ちに
+    /// なるのを防ぐ)。タイマは解決時に必ず回収する
     func wait(timeout: Duration) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            Task { [weak self] in
-                try? await Task.sleep(for: timeout)
-                self?.resume(throwing: WaitError.timeout)
+        // 同一インスタンスを再利用する呼び出し元に備えた防御(現状は 1 wait 1 個)。
+        // withTaskCancellationHandler が登録する前なので今回の onCancel とは競合しない
+        cancelledBeforeInstall = false
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                if cancelledBeforeInstall {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                self.continuation = continuation
+                self.timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    self?.resume(throwing: WaitError.timeout)
+                }
+            }
+        } onCancel: {
+            // onCancel は @Sendable・非分離 → MainActor へホップして解決する
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.cancelledBeforeInstall = true
+                self.resume(throwing: CancellationError())
             }
         }
     }
 
     private func resume(throwing error: (any Error)? = nil) {
+        timeoutTask?.cancel()  // タイムアウトタイマを回収(15/30 秒生き残らせない)
+        timeoutTask = nil
         guard let continuation else { return }
         self.continuation = nil
         if let error {

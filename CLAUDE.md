@@ -125,7 +125,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   extraction for single-image pages, WebKit rasterization fallback).
 - `Washi/` — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
   DRM detection, reflowable WKWebView renderer with vertical-writing pagination,
-  paper-book page furniture (running head + page number), light/dark theming,
+  paper-book page furniture (folio / page number in the bottom margin), light/dark theming,
   fixed-layout support). Reflowable EPUBs display **in the same reader window** as an
   alternate mode (`ReaderWindowController+EPUB.swift` swaps `readerView` ↔ `epubView`;
   same key/mouse bindings, menus, recents, and next/prev-book navigation); format

@@ -109,6 +109,19 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertTrue(reducer.reduce(source, level: .none) === source)
     }
 
+    func testCachesFallbackDecision() {
+        // ML 一過性フォールバック(モデル DL 中)はキャッシュしない=再計算させる。
+        // 恒久不可(!mlRetryPossible)や CI 本来の結果(!usedMLFallback)は許可
+        XCTAssertTrue(ImageResampler.cachesFallback(
+            usedMLFallback: true, mlRetryPossible: false))
+        XCTAssertFalse(ImageResampler.cachesFallback(
+            usedMLFallback: true, mlRetryPossible: true))
+        XCTAssertTrue(ImageResampler.cachesFallback(
+            usedMLFallback: false, mlRetryPossible: true))
+        XCTAssertTrue(ImageResampler.cachesFallback(
+            usedMLFallback: false, mlRetryPossible: false))
+    }
+
     func testResamplerCachesSeparatelyPerReductionLevel() async {
         // 同サイズでもノイズ低減指定があれば処理され、レベル別にキャッシュされる
         let resampler = ImageResampler(byteLimit: 8 << 20)

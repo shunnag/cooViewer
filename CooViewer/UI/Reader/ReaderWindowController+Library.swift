@@ -530,7 +530,12 @@ extension ReaderWindowController {
         // フォルダの隣接書庫をスロットに入れない(スプール済み一時データが居座る
         // リーク+古いスロットの再導入を防ぐ。監査 #11)
         let preparingForBook = book
-        Task {
+        // 次の本の事前準備は best-effort の背面作業。明示的に utility へ落として
+        // 現在の本のページ読み込みと同一ボリュームで競合させない(内側の
+        // buildTask/spoolTask はこの優先度を継承する)。現在の本の準備
+        // (openBookFlow 側の Task→beginBackgroundPreparation)は別ソース・別 Task で
+        // 意図的に高優先のまま — この変更の影響を受けない
+        Task(priority: .utility) {
             defer { preparingNextBookPath = nil }
             guard let source = try? await BookSourceFactory.make(
                 for: URL(fileURLWithPath: nextPath),

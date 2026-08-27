@@ -31,21 +31,37 @@ struct CollectionPageMap: Sendable {
     /// 構築時のエントリ列(ソート・シャッフル・削除で並びが変わったら
     /// マップは無効 — 消費側が同一性を比較する)
     let entries: [PageEntry]
+    /// census が全代理 EPUB 分そろっているか。false = 未計測の巻を暫定 1 ページで
+    /// 表示中で、ensureCollectionPageMap が欠落巻だけ測り直して差し替える
+    /// (部分マップの焼き付き防止)
+    let isComplete: Bool
+    /// 計測できず暫定 1 ページ扱いの代理エントリ index(再計測対象)
+    let missingEntries: Set<Int>
 
     static func make(folderPath: String, metricsKey: String,
                      entries: [PageEntry],
                      counts: [Int: [Int]]) -> CollectionPageMap {
         var segments: [Segment] = []
+        var missing: Set<Int> = []
         var offset = 0
         for (index, entry) in entries.enumerated() {
-            if let url = entry.reflowEPUBURL, let itemCounts = counts[index],
-               !itemCounts.isEmpty {
-                let pages = itemCounts.reduce(0) { $0 + max(1, $1) }
-                segments.append(Segment(
-                    entryIndex: index, epubURL: url, itemCounts: itemCounts,
-                    pageCount: max(1, pages), globalStart: offset))
-                offset += max(1, pages)
+            if let url = entry.reflowEPUBURL {
+                if let itemCounts = counts[index], !itemCounts.isEmpty {
+                    let pages = itemCounts.reduce(0) { $0 + max(1, $1) }
+                    segments.append(Segment(
+                        entryIndex: index, epubURL: url, itemCounts: itemCounts,
+                        pageCount: max(1, pages), globalStart: offset))
+                    offset += max(1, pages)
+                } else {
+                    // 代理 EPUB だが census 欠落 → 暫定 1 ページ・再計測対象
+                    missing.insert(index)
+                    segments.append(Segment(
+                        entryIndex: index, epubURL: nil, itemCounts: nil,
+                        pageCount: 1, globalStart: offset))
+                    offset += 1
+                }
             } else {
+                // 画像・FXL 統合ページは正当な 1 ページ(欠落ではない)
                 segments.append(Segment(
                     entryIndex: index, epubURL: nil, itemCounts: nil,
                     pageCount: 1, globalStart: offset))
@@ -54,7 +70,8 @@ struct CollectionPageMap: Sendable {
         }
         return CollectionPageMap(segments: segments, total: max(1, offset),
                                  metricsKey: metricsKey, folderPath: folderPath,
-                                 entries: entries)
+                                 entries: entries,
+                                 isComplete: missing.isEmpty, missingEntries: missing)
     }
 
     /// 合本の実ページ index → 全体ページの開始位置(0 始まり)

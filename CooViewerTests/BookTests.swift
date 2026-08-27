@@ -85,6 +85,25 @@ final class BookTests: XCTestCase {
         XCTAssertTrue(book.chapterMarks.isEmpty)
     }
 
+    /// 再アンカーが ComicInfo の見開き補助(comicSingleIndices)を尊重する(2za-7)。
+    /// 補助を無視すると設定切替で現在ページを含まないスプレッド先頭に着地する
+    func testReanchorRespectsComicSingleIndices() async throws {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 6))
+        var info = ComicInfo()
+        info.pages = [.init(image: 2, doublePage: true)]  // index 2 を単ページに
+        stub.comicInfoStub = info
+        let book = try await Book.open(source: stub)
+        book.readMode = .rightToLeftSpread
+        await book.loadComicInfoState(useLayoutHints: true)
+        XCTAssertEqual(book.comicSingleIndices, [2])
+        book.goTo(index: 3)
+        await book.reanchorToLeadingPartition()
+        let spread = await book.currentSpread()
+        // comicSingle=2 を尊重: 区分 (0,1)(2)(3,4)(5) → 3 が先頭に整列 → [3,4]。
+        // 無視すると (0,1)(2,3)(4,5) で 2 起点に落ち currentSpread=[2] になる
+        XCTAssertEqual(spread.indices, [3, 4])
+    }
+
     func testSpreadPairsTwoPortraitPages() async throws {
         let book = try await makeBook([portrait, portrait, portrait])
         let spread = await book.currentSpread()

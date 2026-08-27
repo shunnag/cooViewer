@@ -86,7 +86,7 @@ public final class EPUBReaderView: NSView {
     /// メディアオーバーレイ(SMIL)再生エンジン(再生時に生成)
     var mediaOverlayController: MediaOverlayController?
     /// めくりアニメーションのオーバーレイ(spine 切替時に掃除)
-    private var turnOverlays: [NSView] = []
+    var turnOverlays: [NSView] = []
     /// 直前のめくり時刻(高速連打時はアニメーションを省略して即めくり)
     private var lastTurnDate = Date.distantPast
     /// セットアップ実行中に届いた再ページ割り要求(捨てずに後追い実行する)
@@ -289,7 +289,7 @@ public final class EPUBReaderView: NSView {
         censusEngine?.invalidate()  // 旧本のオフスクリーンを確実に畳む
         censusEngine = nil
         censusCache.removeAll()
-        censusFailureCounts.removeAll()
+        censusFailures.clear()
         censusKey = nil
         thumbnailRenderer?.invalidate()  // サムネイルレンダラも本に紐づく
         thumbnailRenderer = nil
@@ -480,13 +480,13 @@ public final class EPUBReaderView: NSView {
         spineLoadGeneration += 1
         repaginateWork?.cancel()  // 旧文書あての再ページ割りを新文書へ流さない
         // 進行中のめくり演出は新しい章の表示を隠すので畳む。
-        // spine 遷移演出の持ち越しカバー(旧ページ)だけは読み込み中も残す
+        // spine 遷移演出の持ち越しカバー(旧ページ)だけは読み込み中も残す。
+        // foldTurnCover 経由で各カバーの時間切れ回収タスクも確実に止める
         if !preservingTurnCover { clearPendingSpineTurn() }
-        for overlay in turnOverlays where overlay !== pendingSpineTurn?.cover {
-            overlay.removeFromSuperview()
+        let survivor = pendingSpineTurn?.cover
+        for overlay in turnOverlays where overlay !== survivor {
+            foldTurnCover(overlay)
         }
-        turnOverlays.removeAll { $0 !== pendingSpineTurn?.cover }
-        updateFurnitureSuppression()
         let entry = publication.readingOrder[index]
         isFixedLayoutItem =
             publication.package.effectiveLayout(for: entry.itemRef) == .prePaginated
@@ -538,6 +538,11 @@ public final class EPUBReaderView: NSView {
         let wantsAnimation = settings.pageTurnStyle != .none
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             && Date().timeIntervalSince(lastTurnDate) > 0.3
+            // spine 読込中は演出を張らない: 章境界の重い読込中に再度めくると、
+            // 読込中 webView のスナップショットでゴミカバーを作り pendingSpineTurn を
+            // 上書きして画面を固着させる。演出なしの fast-path に降格することで
+            // FXL のキーリピートめくりは従来どおり動く
+            && !isLoadingSpineItem
         lastTurnDate = Date()
         if isFixedLayoutItem {
             // FXL 項目は常に隣接 spine への移動。演出ありなら旧ページの
@@ -579,6 +584,10 @@ public final class EPUBReaderView: NSView {
         addSubview(cover, positioned: .above, relativeTo: webView)
         turnOverlays.append(cover)
         updateFurnitureSuppression()
+        // 既存の持ち越しカバー(前のめくりの旧ページ)を先に畳んでから上書きする。
+        // 畳まないと旧カバーが所有権(pendingSpineTurn)を失って回収経路を全て
+        // 失い、画面が旧ページで固着する
+        clearPendingSpineTurn()
         pendingSpineTurn = PendingSpineTurn(
             oldPage: oldPage, cover: cover, forward: forward)
         scheduleSpineTurnTimeout(for: cover)
@@ -588,18 +597,24 @@ public final class EPUBReaderView: NSView {
     /// spine 遷移(章間・表紙→本文)もめくり演出で見せるための持ち越し状態。
     /// 境界めくり(turnInDoc が boundary)から次項目の表示完了までカバーで
     /// 旧ページを見せ続け、完了時に項目内めくりと同じ演出で切り替える
-    private struct PendingSpineTurn {
+    struct PendingSpineTurn {
         let oldPage: NSImage
         let cover: NSImageView
         let forward: Bool
     }
-    private var pendingSpineTurn: PendingSpineTurn?
+    var pendingSpineTurn: PendingSpineTurn?
+
+    /// カバー同一性 → 時間切れ回収タスク。所有権を失った(上書きされた)カバーも
+    /// membership で回収するため、pendingSpineTurn ではなくカバーごとに持つ。
+    /// 演出中(runTurnEffect)や仕上げ時は明示 cancel してスライド途中で
+    /// カバーを引き剥がさない
+    var spineTurnTimeouts: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     /// めくりカバー掲示中はライブのノンブルを隠す。番号はカバー(全面合成)に
     /// 焼き込み済みで、カバーはラベルより背面に入るため、隠さないと演出中に
     /// ライブ側の新番号と焼き込みの旧番号が二重に見える。章読み込み中に
     /// ラベルが一瞬「1」へ戻って見えていた従来のチラつきも同時に消える
-    private var furnitureSuppressed = false {
+    var furnitureSuppressed = false {
         didSet { if furnitureSuppressed != oldValue { updateFurniture() } }
     }
 
@@ -608,21 +623,48 @@ public final class EPUBReaderView: NSView {
         furnitureSuppressed = !turnOverlays.isEmpty
     }
 
-    private func clearPendingSpineTurn() {
-        guard let pending = pendingSpineTurn else { return }
-        pendingSpineTurn = nil
-        pending.cover.removeFromSuperview()
-        turnOverlays.removeAll { $0 === pending.cover }
+    /// カバー 1 枚を確実に回収する単一経路(旧: removeCover/timeout/clear に散っていた
+    /// 除去を統合)。所有権(このカバーが現 pendingSpineTurn か)を判定して
+    /// pending を壊さない。所有権を失って上書きされた孤児カバーもこれで畳める
+    func foldTurnCover(_ cover: NSView) {
+        let id = ObjectIdentifier(cover)
+        spineTurnTimeouts[id]?.cancel()  // 時間切れ回収タスクを止める
+        spineTurnTimeouts[id] = nil
+        cover.removeFromSuperview()
+        turnOverlays.removeAll { $0 === cover }
+        if pendingSpineTurn?.cover === cover { pendingSpineTurn = nil }
         updateFurnitureSuppression()
     }
 
-    /// 読み込みが来ないままカバーが残る事態(端で何も起きない・失敗)の安全弁
-    private func scheduleSpineTurnTimeout(for cover: NSImageView) {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard let self, self.pendingSpineTurn?.cover === cover else { return }
-            self.clearPendingSpineTurn()
+    private func clearPendingSpineTurn() {
+        guard let pending = pendingSpineTurn else { return }
+        foldTurnCover(pending.cover)  // pending の nil 化・overlay 除去・timeout 停止を一括
+    }
+
+    /// テスト用: カバーを本番と同じ手順で turnOverlays に載せる(任意で pending 化)。
+    /// 実 WKWebView 無しでカバーのライフサイクル(孤児回収・所有権)を検証するため
+    func installTurnCover(_ cover: NSImageView, pending: Bool, forward: Bool = true) {
+        addSubview(cover)
+        turnOverlays.append(cover)
+        updateFurnitureSuppression()
+        if pending {
+            pendingSpineTurn = PendingSpineTurn(
+                oldPage: cover.image ?? NSImage(), cover: cover, forward: forward)
         }
+    }
+
+    /// 読み込みが来ないままカバーが残る事態(端で何も起きない・失敗、または
+    /// 別のめくりに pendingSpineTurn を上書きされて所有権を失ったカバー)の安全弁。
+    /// pendingSpineTurn 一致ではなく turnOverlays の membership で回収する
+    func scheduleSpineTurnTimeout(for cover: NSImageView,
+                                  after duration: Duration = .seconds(2)) {
+        let task = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, !Task.isCancelled,
+                  self.turnOverlays.contains(cover) else { return }
+            self.foldTurnCover(cover)  // 所有権を問わず、まだ残っていれば畳む
+        }
+        spineTurnTimeouts[ObjectIdentifier(cover)] = task
     }
 
     private func performAnimatedTurn(forward: Bool, webView: WKWebView) async {
@@ -649,7 +691,10 @@ public final class EPUBReaderView: NSView {
         // 2. カバーの下でめくる。境界なら次項目の表示完了までカバーを持ち越す
         //    (boundary 通知 → advanceSpine → runSetup 完了時に演出)。
         //    JS 呼び出しの**前に**登録する: boundary メッセージが戻り値より
-        //    先に届いても loadSpineItem がカバーを保持できるように
+        //    先に届いても loadSpineItem がカバーを保持できるように。
+        //    代入前に旧 pending を畳む: 畳まないと前のめくりのカバーが所有権を
+        //    失って回収経路を全て失い、画面が旧ページで固着する
+        clearPendingSpineTurn()
         pendingSpineTurn = PendingSpineTurn(
             oldPage: oldPage, cover: cover, forward: forward)
         let result = try? await webView.callAsyncJavaScript(
@@ -657,18 +702,17 @@ public final class EPUBReaderView: NSView {
             arguments: [:], in: nil, contentWorld: Self.washiWorld)
         switch result as? String {
         case "turned":
-            pendingSpineTurn = nil
+            // await 中に別のめくり(B)が入って自分の pending を上書きしていたら、
+            // B の境界持ち越しを壊さないよう自分が現 pending のときだけ nil にする
+            if pendingSpineTurn?.cover === cover { pendingSpineTurn = nil }
         case "boundary":
             // カバーの後始末は advanceSpine / didReachBookEdge /
-            // runSetup(表示完了)側が引き取る
+            // runSetup(表示完了)側、または所有権喪失時は timeout(foldTurnCover)が引き取る
             scheduleSpineTurnTimeout(for: cover)
             return
         default:
             // 'ignored'(setup 前)・nil(評価失敗): 何も起きないので畳む
-            pendingSpineTurn = nil
-            cover.removeFromSuperview()
-            turnOverlays.removeAll { $0 === cover }
-            updateFurnitureSuppression()
+            foldTurnCover(cover)
             return
         }
 
@@ -688,11 +732,12 @@ public final class EPUBReaderView: NSView {
     /// スライド/フェードでカバー(旧ページ)を取り除く
     private func runTurnEffect(oldPage: NSImage, newPage: NSImage?,
                                cover: NSImageView, forward: Bool) {
-        func removeCover() {
-            cover.removeFromSuperview()
-            turnOverlays.removeAll { $0 === cover }
-            updateFurnitureSuppression()
-        }
+        // 演出に入る前に、このカバーの時間切れ回収タスクを止める(membership 判定の
+        // タイムアウトがスライド/フェード中に発火してカバーを途中で引き剥がさない)
+        let coverID = ObjectIdentifier(cover)
+        spineTurnTimeouts[coverID]?.cancel()
+        spineTurnTimeouts[coverID] = nil
+        func removeCover() { foldTurnCover(cover) }
         // カバー・スナップショットとも全面合成なので演出矩形もビュー全面
         let frame = bounds
         if let newPage,
@@ -938,6 +983,13 @@ public final class EPUBReaderView: NSView {
                 // spine 遷移演出の仕上げ: 新ページの描画完了を待って撮り、
                 // 項目内めくりと同じ演出でカバー(旧ページ)を取り除く
                 pendingSpineTurn = nil
+                // このカバーの時間切れ回収タスクを **snapshot の await より前** に
+                // 止める。runTurnEffect 冒頭でも止めるが、下の takeSnapshot 待ちの
+                // 間に membership タイムアウトが発火するとカバーを途中で引き剥がし、
+                // superview を失ったビューを演出することになる
+                let coverID = ObjectIdentifier(pending.cover)
+                spineTurnTimeouts[coverID]?.cancel()
+                spineTurnTimeouts[coverID] = nil
                 let config = WKSnapshotConfiguration()
                 config.afterScreenUpdates = true
                 // ノンブルは runSetup の updateFurniture(前進)または
@@ -1098,10 +1150,11 @@ public final class EPUBReaderView: NSView {
         currentScreenMetrics.censusOptionsJSON
     }
 
-    /// メトリクスごとの実測失敗回数(タイムアウト・WebContent 死等)。
-    /// 上限を超えたキーは再スケジュールしない(壊れた spine を持つ本で
-    /// runSetup のたびに 15 秒タイムアウトを繰り返さないため)
-    private var censusFailureCounts: [String: Int] = [:]
+    /// メトリクスごとの実測失敗台帳(2-strike + TTL)。上限を超えたキーは
+    /// 再スケジュールしない(壊れた spine を持つ本で runSetup のたびに 15 秒
+    /// タイムアウトを繰り返さないため)が、TTL 経過で赦して再挑戦させる
+    /// (一時要因で欠けたページ数がセッション中ずっと出ないのを防ぐ)
+    private var censusFailures = CensusFailureLedger()
 
     /// Stops the background census (for when the host leaves the EPUB view; it
     /// is naturally rescheduled by the next runSetup / layout).
@@ -1170,8 +1223,10 @@ public final class EPUBReaderView: NSView {
             if pageCensus != nil { return }
             // 同一メトリクスで実測中なら継続させる(spine 遷移のたびに
             // runSetup から呼ばれるため、ここで中断すると大きい本で
-            // いつまでも完走しない)。失敗完了したタスクは censusTask = nil に
-            // 戻してあるので、この分岐が再実測を塞ぐことはない
+            // いつまでも完走しない)。成功・失敗・非キャンセル離脱のすべてで
+            // censusTask を nil に戻すので(下記 3 経路)、この分岐が再実測を
+            // 塞ぐことはない。この不変条件は「censusTask の再代入は必ず先行
+            // cancel を伴う」規律(下の Task 生成箇所)に依存する
             if let censusTask, !censusTask.isCancelled { return }
         }
         if let cached = censusCache[key] {
@@ -1183,16 +1238,21 @@ public final class EPUBReaderView: NSView {
             delegate?.readerViewDidUpdatePageCensus(self)
             return
         }
-        if censusFailureCounts[key, default: 0] >= 2 { return }
+        if censusFailures.shouldSkip(key) { return }
         // 古いメトリクスの番号を出し続けないよう、まず無効化を通知
         if pageCensus != nil {
             pageCensus = nil
             delegate?.readerViewDidUpdatePageCensus(self)
         }
         censusKey = key
+        // 規律: censusTask の再代入は必ず先行 cancel を伴う(上のガードの
+        // 不変条件がこれに依存する。この規律を崩すと居座り/取り違えが再発する)
         censusTask?.cancel()
         let previous = censusTask
-        censusTask = Task { [weak self] in
+        // オフスクリーン WebKit のジョブは明示 .userInitiated で起動する
+        // (低 QoS 継承だと最初の JS 実行の返信が返らない。兄弟の census/
+        // rasterizer/thumbnail レンダラと規約を揃える)
+        censusTask = Task(priority: .userInitiated) { [weak self] in
             // リサイズ嵐・連続の設定変更を合流させる
             try? await Task.sleep(for: .milliseconds(300))
             // 旧計測の完全な離脱を待つ(FIFO 直列化)。同じ WKWebView 上で
@@ -1202,10 +1262,13 @@ public final class EPUBReaderView: NSView {
             _ = await previous?.value
             // measure の await をまたいで self を強参照しない: ホストが
             // ビューを手放したら、全 spine 実測(壊れた本は 1 項目 15 秒
-            // タイムアウト×N)を道連れにビューが生き残らないように
-            guard !Task.isCancelled,
-                  let publication = self?.publication, self?.censusKey == key
-            else { return }
+            // タイムアウト×N)を道連れにビューが生き残らないように。
+            // キャンセルは素通し(新タスクを潰さない)、非キャンセルの離脱は
+            // censusTask を自己退去する(完了済みタスクが居座って再実測を
+            // 永久に塞ぐのを防ぐ。成功・失敗経路と対称にする)
+            guard !Task.isCancelled else { return }
+            guard let publication = self?.publication, self?.censusKey == key
+            else { self?.censusTask = nil; return }
             let engine = self?.censusEngine ?? EPUBPaginationCensus()
             self?.censusEngine = engine
             let counts = await engine.measure(
@@ -1213,13 +1276,14 @@ public final class EPUBReaderView: NSView {
             guard let self, !Task.isCancelled, self.censusKey == key else { return }
             guard let counts else {
                 // 失敗完了は「実測中」ではない — タスクを解放して次の
-                // runSetup での再実測を許す(回数はキーごとに上限あり)
-                self.censusFailureCounts[key, default: 0] += 1
+                // runSetup での再実測を許す(回数はキーごとに上限あり + TTL)
+                self.censusFailures.recordFailure(key)
                 self.censusTask = nil
                 return
             }
             self.censusCache[key] = counts
             self.pageCensus = counts
+            self.censusTask = nil  // 成功完了も自己退去(不変条件を対称に保つ)
             self.delegate?.readerViewDidUpdatePageCensus(self)
         }
     }

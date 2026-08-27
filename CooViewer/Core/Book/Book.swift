@@ -432,9 +432,13 @@ final class Book {
                 return false
             }
             let size = await pageSize(at: index) ?? CGSize(width: 70, height: 100)
+            // comicSingleIndices を渡す(isSmallFromIndex/isSmall と対称に):
+            // 再アンカーの歩き直しでも ComicInfo の DoublePage/FrontCover を尊重し、
+            // 設定切替で現在ページを含まないスプレッド先頭に着地するズレを防ぐ
             return PageLayout.isSmall(size: size, index: index, marks: marks,
                                       singleSetting: singleSetting,
-                                      coverSingle: coverSingleFirst)
+                                      coverSingle: coverSingleFirst,
+                                      comicSingleIndices: comicSingleIndices)
         }
         var start = 0
         while start < currentIndex {

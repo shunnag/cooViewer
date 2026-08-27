@@ -36,6 +36,38 @@ final class SourceReadGateTests: XCTestCase {
                        "後から並んだ interactive が background を追い越すこと")
         XCTAssertEqual(noted.count, 2)
     }
+
+    /// 無引数 acquire()(currentPriority 推論)版。urgent 生成タスクを
+    /// userInitiated で起動する 470 修正が依拠する「優先度→レーン」写像を被覆する
+    func testInferredInteractiveLaneOvertakesBackgroundQueue() async throws {
+        let gate = SourceReadGate(limit: 1)
+        await gate.acquire(interactive: false)  // スロットを占有
+
+        let order = OrderRecorder()
+        let background = Task(priority: .utility) {
+            await gate.acquire()  // 推論 → utility なので background レーン
+            await order.note("background")
+            await gate.release()
+        }
+        while await gate.debugCounts().queued < 1 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let interactive = Task(priority: .userInitiated) {
+            await gate.acquire()  // 推論 → userInitiated なので interactive レーン
+            await order.note("interactive")
+            await gate.release()
+        }
+        while await gate.debugCounts().queued < 2 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        await gate.release()
+        _ = await (background.value, interactive.value)
+        let noted = await order.values
+        XCTAssertEqual(noted.first, "interactive",
+                       "userInitiated 由来の acquire() が utility 由来を追い越すこと")
+        XCTAssertEqual(noted.count, 2)
+    }
 }
 
 private actor OrderRecorder {

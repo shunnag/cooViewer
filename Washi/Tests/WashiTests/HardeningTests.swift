@@ -348,4 +348,25 @@ final class HardeningTests: XCTestCase {
         XCTAssertEqual(package.metadata.uniqueIdentifier, "wrapped-id")
         XCTAssertEqual(package.coverImageItem?.id, "c")
     }
+
+    /// defaultFontFamily の改行/制御文字は CSS 文字列トークンを終端させ後続を
+    /// 新規規則として注入できるため、除去されること(値は UserDefaults 由来だが
+    /// コメントの「注入されないように」を真にする)
+    func testDefaultFontFamilyStripsNewlinesToPreventCSSInjection() {
+        var settings = EPUBReaderSettings()
+        settings.fontScale = 1.0
+        settings.defaultFontFamily = "Foo\n} body{display:none}"
+        let css = settings.composedUserCSS(isDark: false)
+        // 改行を除去すると内容は 1 行の font-family 文字列トークン内に閉じ込められ、
+        // 規則注入は成立しない(残る "}" 等は文字列内では不活性)。危険なのは生の
+        // 改行が文字列トークンを終端させることなので、それが消えていることを検証する
+        XCTAssertFalse(css.contains("\n} body{display:none}"),
+                       "改行で文字列トークンが終端し規則が注入されないこと")
+        XCTAssertTrue(css.contains("font-family: \"Foo} body{display:none}\""),
+                      "内容は 1 行の引用文字列内に収まる(改行除去済み)")
+        // U+2028/2029 も除去される
+        settings.defaultFontFamily = "Bar\u{2028}x"
+        let css2 = settings.composedUserCSS(isDark: false)
+        XCTAssertFalse(css2.unicodeScalars.contains("\u{2028}"))
+    }
 }
