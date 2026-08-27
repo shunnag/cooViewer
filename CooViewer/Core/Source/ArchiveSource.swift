@@ -133,19 +133,56 @@ actor ArchiveSource: BookSource {
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
          persistenceKey: PasswordVault.Key, sensitive: Bool = false) throws {
         self.url = url
-        self.sourceData = nil
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker ?? NestedUnlocker()
         self.persistenceKey = persistenceKey
-        guard let archive = XADArchive(file: url.path) else {
-            throw BookSourceError.unreadable(url)
+        // ローカル固定ボリュームの単一ファイル書庫は mmap 経由で開く(open+全列挙が
+        // 実測 −30%: 中央ディレクトリ走査の syscall・stdio シーク破棄が消える。
+        // cooViewer-01h)。sourceData に載せることで展開プールも同じマップを共有し
+        // 再オープンの I/O も消える。マップ中の切り詰めは SIGBUS になり得る残余
+        // リスク(mappedIfSafe+ローカル限定が緩和策。エントリ数一致検証は従来通り)。
+        // 失敗時(マップ不可・パース不能)は従来のファイル経路へ黙って戻す
+        let openedArchive: XADArchive
+        if Self.shouldMemoryMap(url: url),
+           let mapped = try? Data(contentsOf: url, options: .mappedIfSafe),
+           let mappedArchive = XADArchive(data: mapped) {
+            openedArchive = mappedArchive
+            self.sourceData = mapped
+        } else {
+            guard let fileArchive = XADArchive(file: url.path) else {
+                throw BookSourceError.unreadable(url)
+            }
+            openedArchive = fileArchive
+            self.sourceData = nil
         }
-        self.archive = archive
-        let enumerated = Self.enumerateEntries(archive, nestingDepth: nestingDepth)
+        self.archive = openedArchive
+        let enumerated = Self.enumerateEntries(openedArchive, nestingDepth: nestingDepth)
         self.outerImages = enumerated.images
         self.nestedCandidates = enumerated.candidates
         self.comicInfoEntryIndex = enumerated.comicInfo
+    }
+
+    /// mmap で開いてよい書庫か(cooViewer-01h)。条件は保守的に:
+    /// (1) 拡張子がボリューム跨ぎのない単一ファイル形式(zip 系・7z)のみ。
+    ///     rar は分割書庫(part1/rNN)の兄弟探索がファイル名ベースで data: 経路では
+    ///     働かないため除外。spanned zip(.z01 兄弟)も同じ理由で除外する。
+    /// (2) ローカルかつ非リムーバブルのボリューム(ネットワークは mappedIfSafe が
+    ///     実コピーになり利点消失、リムーバブルは取り外しで SIGBUS)。
+    static func shouldMemoryMap(url: URL) -> Bool {
+        let mappable: Set<String> = ["zip", "cbz", "7z", "cb7"]
+        let ext = url.pathExtension.lowercased()
+        guard mappable.contains(ext) else { return false }
+        if ext == "zip" || ext == "cbz" {
+            let spanned = url.deletingPathExtension().appendingPathExtension("z01")
+            if FileManager.default.fileExists(atPath: spanned.path) { return false }
+        }
+        guard let values = try? url.resourceValues(forKeys: [
+            .volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey,
+        ]) else { return false }
+        return values.volumeIsLocal == true
+            && values.volumeIsRemovable != true
+            && values.volumeIsEjectable != true
     }
 
     /// 暗号化親のネスト子をメモリから開く(復号済みバイトを disk に置かない。
@@ -522,6 +559,9 @@ actor ArchiveSource: BookSource {
 
     /// テスト用: 生成済みの展開係の数
     var extractorCount: Int { extractors.count }
+
+    /// テスト用: mmap(メモリ背景)経由で開いたか(cooViewer-01h)
+    var isMemoryMapped: Bool { sourceData != nil }
 
     /// ルーペ用。ネストした PDF はベクトルから倍率連動で描き直せるよう子へ委譲する
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {

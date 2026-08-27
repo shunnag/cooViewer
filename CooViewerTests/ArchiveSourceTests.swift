@@ -388,4 +388,63 @@ final class NestedArchiveTests: XCTestCase {
         let image = try await source.image(for: entries[1], maxPixelSize: nil)
         XCTAssertEqual(image.width, 10)
     }
+
+    // MARK: - mmap 経由の open(cooViewer-01h)
+
+    func testMemoryMapGateAllowsSingleFileFormatsOnLocalVolume() throws {
+        // temp はローカル固定ボリューム: 単一ファイル形式のみ許可される
+        for name in ["a.zip", "a.cbz", "a.7z", "a.cb7"] {
+            let url = tempDir.appendingPathComponent(name)
+            try Data([0]).write(to: url)
+            XCTAssertTrue(ArchiveSource.shouldMemoryMap(url: url), name)
+        }
+        // rar 系は分割書庫の兄弟探索(ファイル名ベース)が data: 経路で働かないため除外
+        for name in ["a.rar", "a.cbr", "a.lzh", "a.part1.rar"] {
+            let url = tempDir.appendingPathComponent(name)
+            try Data([0]).write(to: url)
+            XCTAssertFalse(ArchiveSource.shouldMemoryMap(url: url), name)
+        }
+    }
+
+    func testMemoryMapGateRejectsSpannedZip() throws {
+        // .z01 兄弟がいる spanned zip はボリューム探索が要るため file 経路に残す
+        let url = tempDir.appendingPathComponent("span.zip")
+        try Data([0]).write(to: url)
+        XCTAssertTrue(ArchiveSource.shouldMemoryMap(url: url))
+        try Data([0]).write(to: tempDir.appendingPathComponent("span.z01"))
+        XCTAssertFalse(ArchiveSource.shouldMemoryMap(url: url))
+    }
+
+    func testMemoryMappedZipExtractsAndSharesPool() async throws {
+        // ローカル temp の zip は mmap で開き、展開結果は従来と同一。
+        // 展開プールも同じマップ済みデータから育つ(disk 再オープンなし)
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let zip = TestFixtures.storedZip(entries: [
+            (Array("p1.png".utf8), png),
+            (Array("p2.png".utf8), png),
+        ])
+        let source = try ArchiveSource(url: writeZip(zip, name: "mapped.cbz"))
+        let mapped = await source.isMemoryMapped
+        XCTAssertTrue(mapped, "ローカルボリュームの cbz は mmap 経由で開く")
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 2)
+        for entry in entries {
+            let image = try await source.image(for: entry, maxPixelSize: nil)
+            XCTAssertEqual(image.width, 4)
+        }
+    }
+
+    func testRarStaysOnFilePath() async throws {
+        // ゲート対象外の拡張子は従来どおり file 経路(sourceData なし)
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let zip = TestFixtures.storedZip(entries: [
+            (Array("p1.png".utf8), png),
+        ])
+        // 中身は zip だが拡張子 cbr → ゲートは拡張子で判定するため file 経路
+        let source = try ArchiveSource(url: writeZip(zip, name: "notzip.cbr"))
+        let mapped = await source.isMemoryMapped
+        XCTAssertFalse(mapped)
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 1)
+    }
 }
