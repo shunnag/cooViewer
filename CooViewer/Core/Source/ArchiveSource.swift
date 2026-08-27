@@ -88,8 +88,61 @@ actor ArchiveSource: BookSource {
     private static let nestedIDStride = 1_000_000
 
     nonisolated var supportsDateSort: Bool { false }
-    /// エントリ独立圧縮の形式(並列展開しても solid ストリームの巻き戻しがない)
+    /// エントリ独立圧縮の形式(構造を調べるまでもなく常にエントリ独立)
     private static let nonSolidExtensions: Set<String> = ["zip", "cbz"]
+
+    /// 並列展開の粒度(init で書庫構造から確定。cooViewer-7ni)。
+    /// zip 系は無条件にエントリ独立。それ以外は XADArchive の solid グループ
+    /// 情報(solidGroupOfEntry)で判定する: 全エントリが独立なら perEntry
+    /// (非 solid の 7z/rar/lha が該当し、zip と同じ並列プールが解禁される)、
+    /// 複数エントリを束ねるグループがあるが分割されていれば byGroup
+    /// (ブロック分割 solid 7z: グループ内直列・グループ間並列で実測 5.3 倍)、
+    /// 実質単一グループ(完全 solid)は従来どおり serial
+    private enum ParallelMode {
+        case serial
+        case perEntry
+        /// エントリ id → グループ序数(複数メンバーのグループのみ登録。
+        /// 載っていないエントリは独立 = 空き係でよい)
+        case byGroup([Int: Int])
+    }
+    private let parallelMode: ParallelMode
+    /// byGroup: グループ序数 → 割り当て済み展開係 index。同じグループの要求を
+    /// 同じ係(actor)へ寄せて solid ストリームを前進で読み続けるための親和性
+    private var groupExtractorAssignment: [Int: Int] = [:]
+
+    /// 書庫構造から並列粒度を決める(init 専用の純関数)
+    private static func computeParallelMode(archive: XADArchive,
+                                            images: [PageEntry],
+                                            fileExtension ext: String) -> ParallelMode {
+        if nonSolidExtensions.contains(ext.lowercased()) { return .perEntry }
+        guard !images.isEmpty else { return .serial }
+        var ordinalOf: [Int: Int] = [:]  // solidGroup 値 → 序数
+        var members: [[Int]] = []        // 序数 → エントリ id 列
+        var independents = 0
+        for entry in images {
+            guard let index = Int32(exactly: entry.id) else { return .serial }
+            let group = Int(archive.solidGroup(ofEntry: index))
+            if group >= 0 {
+                if let ordinal = ordinalOf[group] {
+                    members[ordinal].append(entry.id)
+                } else {
+                    ordinalOf[group] = members.count
+                    members.append([entry.id])
+                }
+            } else {
+                independents += 1
+            }
+        }
+        let multi = members.filter { $0.count > 1 }
+        if multi.isEmpty { return .perEntry }
+        // 並列の受け皿が単一グループしかない(=完全 solid)なら従来どおり直列
+        if multi.count == 1 && independents == 0 && members.count == 1 { return .serial }
+        var map: [Int: Int] = [:]
+        for (ordinal, ids) in multi.enumerated() {
+            for id in ids { map[id] = ordinal }
+        }
+        return .byGroup(map)
+    }
 
     /// 展開プール(エントリ独立圧縮の形式のみ。PDFSource のレンダラープールと
     /// 同型)。XADArchive は非スレッド安全なので actor 毎に独立の書庫を開き、
@@ -117,7 +170,12 @@ actor ArchiveSource: BookSource {
         if !outerImages.isEmpty, spooledIDs.count >= outerImages.count {
             return true
         }
-        return Self.nonSolidExtensions.contains(url.pathExtension.lowercased())
+        // perEntry は自由並列、byGroup はグループ内が係 actor 上で自然に直列化
+        // されるため並列要求を受けてよい。serial(完全 solid)のみ従来どおり
+        switch parallelMode {
+        case .serial: return false
+        case .perEntry, .byGroup: return true
+        }
     }
 
     /// スプールの置き場所。<pid>-<uuid> のサブディレクトリを掘る
@@ -161,6 +219,9 @@ actor ArchiveSource: BookSource {
         self.outerImages = enumerated.images
         self.nestedCandidates = enumerated.candidates
         self.comicInfoEntryIndex = enumerated.comicInfo
+        self.parallelMode = Self.computeParallelMode(
+            archive: openedArchive, images: enumerated.images,
+            fileExtension: url.pathExtension)
     }
 
     /// mmap で開いてよい書庫か(cooViewer-01h)。条件は保守的に:
@@ -204,6 +265,9 @@ actor ArchiveSource: BookSource {
         self.outerImages = enumerated.images
         self.nestedCandidates = enumerated.candidates
         self.comicInfoEntryIndex = enumerated.comicInfo
+        self.parallelMode = Self.computeParallelMode(
+            archive: archive, images: enumerated.images,
+            fileExtension: URL(fileURLWithPath: name).pathExtension)
     }
 
     /// 書庫のエントリを画像/ネスト候補へ振り分ける(両 init 共通)。
@@ -498,7 +562,7 @@ actor ArchiveSource: BookSource {
         guard let index = Int32(exactly: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
-        if let (poolIndex, extractor) = acquireExtractor() {
+        if let (poolIndex, extractor) = acquireExtractor(for: entry.id) {
             return .pooled(poolIndex: poolIndex, extractor: extractor,
                            entryIndex: index)
         }
@@ -512,11 +576,35 @@ actor ArchiveSource: BookSource {
         return .data(extracted)
     }
 
-    /// 展開係の貸し出し(エントリ独立圧縮の形式のみ)。空き優先・
-    /// 全員使用中のときだけ成長・成長不能時はいちばん空いている係に相乗り
-    private func acquireExtractor() -> (Int, ArchiveEntryExtractor)? {
-        guard Self.nonSolidExtensions.contains(url.pathExtension.lowercased())
-        else { return nil }
+    /// 展開係の貸し出し。perEntry は空き優先、byGroup は同一グループを同じ係へ
+    /// 寄せる(グループ内直列・グループ間並列)。serial は貸し出さない
+    private func acquireExtractor(for entryID: Int) -> (Int, ArchiveEntryExtractor)? {
+        switch parallelMode {
+        case .serial:
+            return nil
+        case .perEntry:
+            return acquireIdleOrGrownExtractor()
+        case .byGroup(let groupOf):
+            guard let group = groupOf[entryID] else {
+                // 独立エントリはどの係でもよい
+                return acquireIdleOrGrownExtractor()
+            }
+            if let assigned = groupExtractorAssignment[group],
+               extractorBusyCounts.indices.contains(assigned) {
+                extractorBusyCounts[assigned] += 1
+                return (assigned, extractors[assigned])
+            }
+            // 未割り当てグループに係を紐付ける。プールがグループ数より少ない
+            // ときは相乗りになり、その係上で 2 グループが交互になると block 頭
+            // からの再展開が起き得る(従来の全体巻き戻しより常に軽い)
+            guard let (index, extractor) = acquireIdleOrGrownExtractor() else { return nil }
+            groupExtractorAssignment[group] = index
+            return (index, extractor)
+        }
+    }
+
+    /// 空き優先・全員使用中のときだけ成長・成長不能時はいちばん空いている係に相乗り
+    private func acquireIdleOrGrownExtractor() -> (Int, ArchiveEntryExtractor)? {
         if let idle = extractorBusyCounts.indices.first(
             where: { extractorBusyCounts[$0] == 0 }) {
             extractorBusyCounts[idle] += 1
@@ -562,6 +650,15 @@ actor ArchiveSource: BookSource {
 
     /// テスト用: mmap(メモリ背景)経由で開いたか(cooViewer-01h)
     var isMemoryMapped: Bool { sourceData != nil }
+
+    /// テスト用: 並列粒度の名前(cooViewer-7ni)
+    var parallelGranularityForTesting: String {
+        switch parallelMode {
+        case .serial: "serial"
+        case .perEntry: "perEntry"
+        case .byGroup: "byGroup"
+        }
+    }
 
     /// ルーペ用。ネストした PDF はベクトルから倍率連動で描き直せるよう子へ委譲する
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
@@ -654,7 +751,9 @@ actor ArchiveSource: BookSource {
     func beginSpooling(sizeLimit: Int64) {
         // 高速ローカルボリュームではランダムアクセスが安い形式(zip 系)の
         // スプールを省き、二重書き込みを避ける(設計書 キャッシュ節)
-        guard mediaProfile.shouldSpoolArchive(fileExtension: url.pathExtension) else {
+        let independent = if case .perEntry = parallelMode { true } else { false }
+        guard mediaProfile.shouldSpoolArchive(fileExtension: url.pathExtension,
+                                              independentEntries: independent) else {
             return
         }
         guard spoolTask == nil, !outerImages.isEmpty else { return }

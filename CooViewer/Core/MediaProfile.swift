@@ -46,16 +46,24 @@ struct MediaProfile: Sendable, Equatable {
     /// 高速ローカルではランダムアクセスが安い zip 系のスプールをやめて
     /// 二重書き込みを避ける。solid 圧縮になり得る形式(rar/7z/lha/sit)は
     /// 逐次展開の恩恵が大きいので常にスプールする
-    func shouldSpoolArchive(fileExtension: String) -> Bool {
+    /// independentEntries: 書庫の実構造が「全エントリ独立」(非 solid の 7z/rar 等。
+    /// ArchiveSource が solid グループ情報から判定)なら true。構造は拡張子に勝ち、
+    /// fastLocal では zip 系と同じくスプールを省いて二重書き込みを避ける
+    /// (cooViewer-7ni)。分割ボリュームだけは複数ファイル読みを避けるため常に
+    /// スプールする
+    func shouldSpoolArchive(fileExtension: String,
+                            independentEntries: Bool = false) -> Bool {
         // 高度設定の明示(常に行う/行わない)が最優先
         if let spoolOverride {
             return spoolOverride
         }
         switch mediaClass {
         case .fastLocal:
+            let ext = fileExtension.lowercased()
+            if SupportedTypes.isSplitVolumeExtension(ext) { return true }
+            if independentEntries { return false }
             let solidProne: Set<String> = ["rar", "cbr", "7z", "lha", "lzh", "sit"]
-            return solidProne.contains(fileExtension.lowercased())
-                || SupportedTypes.isSplitVolumeExtension(fileExtension.lowercased())
+            return solidProne.contains(ext)
         case .slowLocal, .network, .unknown:
             return true
         }
