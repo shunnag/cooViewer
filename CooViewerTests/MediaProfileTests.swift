@@ -75,6 +75,14 @@ final class MediaProfileTests: XCTestCase {
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "rar"))
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "7z"))
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "001"))
+        // 構造が拡張子に勝つ: エントリ独立と判明した rar/7z はスプール不要
+        XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "rar",
+                                                  independentEntries: true))
+        XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "7z",
+                                                  independentEntries: true))
+        // 分割ボリュームは独立でも常にスプール
+        XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "001",
+                                                 independentEntries: true))
     }
 
     func testSlowMediaSpoolEverythingAndThrottle() {

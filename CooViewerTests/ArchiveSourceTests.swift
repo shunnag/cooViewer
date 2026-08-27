@@ -434,6 +434,72 @@ final class NestedArchiveTests: XCTestCase {
         }
     }
 
+    // MARK: - 7z の並列粒度(cooViewer-7ni)
+
+    private func fixture(_ name: String) throws -> URL {
+        let bundle = Bundle(for: ArchiveSourceTests.self)
+        return try XCTUnwrap(bundle.url(forResource: name, withExtension: "7z"),
+                             "テストリソース \(name).7z がバンドルにない")
+    }
+
+    func testSevenZipParallelModeFollowsStructure() async throws {
+        // 非 solid → perEntry(zip 同様の自由並列)、完全 solid → serial(従来)、
+        // ブロック分割 solid → byGroup(グループ内直列・グループ間並列)
+        let nonsolid = try ArchiveSource(url: fixture("nonsolid"))
+        let nonsolidMode = await nonsolid.parallelGranularityForTesting
+        XCTAssertEqual(nonsolidMode, "perEntry")
+        let solid = try ArchiveSource(url: fixture("solid"))
+        let solidMode = await solid.parallelGranularityForTesting
+        XCTAssertEqual(solidMode, "serial")
+        let blocks = try ArchiveSource(url: fixture("blocks"))
+        let blocksMode = await blocks.parallelGranularityForTesting
+        XCTAssertEqual(blocksMode, "byGroup")
+        let parallelOK = await blocks.currentlySupportsParallelPageLoads()
+        XCTAssertTrue(parallelOK)
+        let solidParallel = await solid.currentlySupportsParallelPageLoads()
+        XCTAssertFalse(solidParallel, "完全 solid は未スプールの間は直列のまま")
+    }
+
+    func testBlockSolidSevenZipExtractsCorrectlyInParallel() async throws {
+        // byGroup 並列で全ページが正しい内容で届くこと(IEND 後のパディングは
+        // ImageIO が無視するので幅 4 の PNG がそのまま出る)
+        let source = try ArchiveSource(url: fixture("blocks"))
+        let pages = try await source.entries()
+        XCTAssertEqual(pages.count, 4)
+        try await withThrowingTaskGroup(of: Int.self) { group in
+            for entry in pages {
+                group.addTask {
+                    let image = try await source.image(for: entry, maxPixelSize: nil)
+                    return image.width
+                }
+            }
+            for try await width in group {
+                XCTAssertEqual(width, 4)
+            }
+        }
+        let count = await source.extractorCount
+        XCTAssertLessThanOrEqual(count, ArchiveSource.extractorPoolSize)
+    }
+
+    func testFastLocalSkipsSpoolForIndependentSevenZip() async throws {
+        // 非 solid 7z は fastLocal ではスプールしない(zip 同様の扱い)、
+        // 完全 solid は従来どおりスプールする(cooViewer-7ni)
+        let fast = MediaProfile(mediaClass: .fastLocal)
+        let nonsolid = try ArchiveSource(url: fixture("nonsolid"))
+        await nonsolid.applyMediaProfile(fast)
+        await nonsolid.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await nonsolid.waitForSpoolCompletion()
+        let nonsolidSpooled = await nonsolid.spooledEntryCount
+        XCTAssertEqual(nonsolidSpooled, 0)
+
+        let solid = try ArchiveSource(url: fixture("solid"))
+        await solid.applyMediaProfile(fast)
+        await solid.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+        await solid.waitForSpoolCompletion()
+        let solidSpooled = await solid.spooledEntryCount
+        XCTAssertEqual(solidSpooled, 4)
+    }
+
     func testRarStaysOnFilePath() async throws {
         // ゲート対象外の拡張子は従来どおり file 経路(sourceData なし)
         let png = TestFixtures.pngData(width: 4, height: 6)
