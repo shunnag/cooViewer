@@ -10,9 +10,12 @@ import Security
 /// ビルドでビルド毎×書庫毎に許可ダイアログが出て開発が成り立たないため
 /// 不採用(マスターキー方式ならリビルド後の初回 1 回で済む)。
 ///
-/// 規律: 平文は絶対にディスクへ書かない(seal 失敗=保存しない)。復号失敗
-/// (鍵喪失・破損)は空の保管庫として扱う(fail-closed)。パスワード・鍵は
-/// ログに出さない。XCTest ではキーチェーンに一切触れない。
+/// 規律: 平文は絶対にディスクへ書かない(seal 失敗=保存しない)。ファイルが
+/// 無い(または 0 バイト)ときだけ空の保管庫として開始する。在るのに復号/
+/// デコードできない・未知の版は `.unavailable`(照会も保存もせず既存を潰さない)
+/// — 一過性の読み取り失敗で全パスワードを上書き消去しないため(fail-closed=
+/// 平文を書かない + 壊れた庫を上書きしない)。パスワード・鍵はログに出さない。
+/// XCTest ではキーチェーンに一切触れない。
 actor PasswordVault {
     static let shared = PasswordVault()
 
@@ -58,7 +61,8 @@ actor PasswordVault {
 
     private enum Backing {
         case uninitialized
-        /// 鍵が得られない(Keychain 拒否・XCTest)— 保存も照会も静かに諦める
+        /// 鍵が得られない(Keychain 拒否・XCTest)、または在るのに復号/デコード
+        /// できない・未知の版 — 保存も照会も静かに諦める(既存ファイルは潰さない)
         case unavailable
         case ready(key: SymmetricKey, entries: [String: Entry])
     }
@@ -142,6 +146,10 @@ actor PasswordVault {
         }
         // マスターキーは残す(再保存時の Keychain プロンプト再発を防ぐ)
         try? FileManager.default.removeItem(at: vaultURL)
+        // 破損等で unavailable のまま削除した場合、ファイルは absent になったので
+        // backing を戻して次回照会で空 ready を読み直せるようにする(削除したのに
+        // 死んだ unavailable が残る矛盾を塞ぐ)
+        if case .unavailable = backing { backing = .uninitialized }
     }
 
     func count() -> Int {
@@ -179,13 +187,23 @@ actor PasswordVault {
         } else {
             return .unavailable  // 拒否・失敗はセッション内で静かに無効
         }
-        guard let combined = try? Data(contentsOf: vaultURL),
-              let plain = SuperResCacheCrypto.open(combined, using: key),
-              let file = try? JSONDecoder().decode(VaultFile.self, from: plain) else {
-            // ファイル無し・鍵違い・破損はいずれも空の保管庫(fail-closed)
+        switch PersistedFile.readBytes(at: vaultURL) {
+        case .absent:
+            // ファイル無し(または 0 バイト)= 未作成。空の保管庫で開始(保存で作る)
             return .ready(key: key, entries: [:])
+        case .unreadable:
+            // 在るのに読めない(I/O エラー)= 保存を止めて潰さない(次回照会で再読)
+            return .unavailable
+        case .data(let combined):
+            guard let plain = SuperResCacheCrypto.open(combined, using: key),
+                  let file = try? JSONDecoder().decode(VaultFile.self, from: plain),
+                  file.version <= 1 else {
+                // 鍵違い・破損・未知の版は空 ready にしない(次回保存で全消去しない)。
+                // 空 ready にしてよいのは「ファイルが本当に無い」ときだけ(上の absent)
+                return .unavailable
+            }
+            return .ready(key: key, entries: file.entries)
         }
-        return .ready(key: key, entries: file.entries)
     }
 
     /// メモリ内 JSON → seal → tmp → rename の原子的置換。0600・平文を残さない

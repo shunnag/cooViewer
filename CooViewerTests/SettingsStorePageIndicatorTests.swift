@@ -58,6 +58,21 @@ final class SettingsStorePageIndicatorTests: XCTestCase {
         XCTAssertEqual(restored.alphaComponent, 0.3, accuracy: 0.001)
     }
 
+    func testEPUBFolioSuppressedInBottomPositions() {
+        // 上配置(0/1)はノンブル両立、下配置(2/3)は抑止(ホスト N/M ラベルと
+        // 帯が重なるため)。showNumber=false は全位置 false(cooViewer-de6)
+        XCTAssertTrue(ReaderWindowController.epubShowsFolio(
+            showNumber: true, pageNumPosition: 0))
+        XCTAssertTrue(ReaderWindowController.epubShowsFolio(
+            showNumber: true, pageNumPosition: 1))
+        XCTAssertFalse(ReaderWindowController.epubShowsFolio(
+            showNumber: true, pageNumPosition: 2))
+        XCTAssertFalse(ReaderWindowController.epubShowsFolio(
+            showNumber: true, pageNumPosition: 3))
+        XCTAssertFalse(ReaderWindowController.epubShowsFolio(
+            showNumber: false, pageNumPosition: 0))
+    }
+
     func testFontSizeDefaultAndClamp() {
         XCTAssertEqual(store.pageNumFontSize, 11)
         defaults.set(100.0, forKey: "PageNumFontSize")

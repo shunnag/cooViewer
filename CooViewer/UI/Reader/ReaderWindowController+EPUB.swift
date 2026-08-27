@@ -47,7 +47,12 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     func presentReflowableEPUB(_ publication: EPUBPublication, url: URL,
                                atPage: Int? = nil, atLastPage: Bool = false,
                                atLocator: EPUBLocator? = nil,
-                               collectionContext: EPUBCollectionContext? = nil) {
+                               collectionContext: EPUBCollectionContext? = nil,
+                               epoch: Int) {
+        // 入口: この提示が最後に要求されたものでなければ旧本の teardown を始めない
+        // (合本内 EPUB↔EPUB の横断連打で last-request-wins を保証。openGeneration は
+        // 合本内移動で動かないため専用の epubPresentEpoch で照合する)
+        guard epubPresentEpoch == epoch else { return }
         unloadImageBookForEPUB()
         saveEPUBState()  // EPUB → EPUB の切替でも前の本の位置を残す
         epubSaveDebounce?.cancel()
@@ -91,6 +96,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         } else {
             locator = restoredEPUBLocator(for: url, publication: publication)
         }
+        // モーダル後の再照合: restoredEPUBLocator の確認ダイアログ(runModal)が
+        // run loop を回す間に別 EPUB が提示され得る。ここで最新要求か確かめてから
+        // 実際の読み込みへ進む
+        guard epubPresentEpoch == epoch else { return }
         view.load(publication: publication, at: locator)
         // 保存済みの census を注入する。版・spine 数・メトリクスが一致すれば
         // Washi 側が採用し、同一寸法での再オープンで再実測を省く(整合検証は
@@ -143,15 +152,27 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         return alert.runModal() == .alertFirstButtonReturn ? locator : nil
     }
 
+    /// EPUB のノンブル(下部中央の素の番号)を出すか。下配置(2/3)ではホストの
+    /// N/M ラベルと帯が重なるため抑止する(純関数=決定論テスト用)
+    nonisolated static func epubShowsFolio(showNumber: Bool, pageNumPosition: Int) -> Bool {
+        showNumber && pageNumPosition < 2
+    }
+
     /// SettingsStore から Washi 設定を組む(リーダー・一覧展開の画面計画で
-    /// 共通の唯一の構築点。ページ番号表示 ShowNumber はノンブル/柱に読み替え)
+    /// 共通の唯一の構築点。ページ番号表示 ShowNumber は下部中央のノンブルに
+    /// 読み替え、下配置ではラベルとの重なりを避けて抑止する=epubShowsFolio)
     func currentEPUBReaderSettings() -> EPUBReaderSettings {
         var epubSettings = EPUBReaderSettings()
         epubSettings.handlesKeyboardNavigation = false  // キーはアプリのバインドで
         epubSettings.pageTurnStyle = epubPageTurnStyle
         epubSettings.fontScale = settings.epubFontScale
         epubSettings.pinchAdjustsFontScale = settings.epubPinchFontScale
-        epubSettings.showsPageFurniture = settings.showNumber
+        // 下配置(PageNumPosition 2/3)ではホストの N/M(章題)ラベル(不透明帯)が
+        // Washi の下部中央ノンブルを覆うため、下配置時はノンブルを抑止しラベル一本に
+        // する(上配置 0/1 は上隅ラベル + 下中央ノンブルで両立=非衝突)。設計書 §2.4
+        epubSettings.showsPageFurniture =
+            Self.epubShowsFolio(showNumber: settings.showNumber,
+                                pageNumPosition: settings.pageNumPosition)
         epubSettings.insets = Self.epubInsets(forMargins: settings.epubPageMargins)
         epubSettings.defaultFontFamily =
             settings.epubDefaultFont.isEmpty ? nil : settings.epubDefaultFont
@@ -243,34 +264,46 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             singleSetting: book.singleSetting,
             coverSingle: book.coverSingleFirst,
             bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)))
+        // 提示エポックを採番(await より前)。合本内移動は openGeneration を
+        // 動かさないため、last-request-wins は epubPresentEpoch で担保する
+        epubPresentEpoch += 1
+        let presentEpoch = epubPresentEpoch
         let generation = openGeneration
         Task { [weak self] in
-            let publication = await Task.detached(priority: .userInitiated) {
-                try? EPUBPublication(url: url)
-            }.value
+            guard let self else { return }
+            let publication = await self.epubParseCoalescer.publication(at: url)
             // 解析中に別の本が開かれた/代理ページを離れたら何もしない
             // (openBookFlow の世代規則と同じ。book 同一性だけでは、新しい
             // オープンの途中(book 差し替え前)をすり抜ける)。
             // 一覧からの明示ジャンプは着地ページを問わない(現在ページが
-            // 代理ページとは限らないため)
-            guard let self, self.openGeneration == generation,
+            // 代理ページとは限らないため)。提示の連打は presentReflowableEPUB 内の
+            // epubPresentEpoch 照合が守る
+            guard self.openGeneration == generation,
                   self.book === book,
                   explicitLocator != nil || book.currentIndex == entryIndex
             else { return }
             guard let publication, !publication.isFixedLayout,
                   !publication.isDRMProtected else {
-                // 開けない本(DRM 等)は以後「静的な表紙ページ」に降格して
-                // 同じ場所を再表示する(隣へ素通りさせると、全滅フォルダ +
-                // ループ設定で openBook が無限循環する)。初回降格のときだけ、
-                // DRM なら単体で開いた EPUB と同じ説明を出す(合本内で無説明に
-                // 表紙へ化けると『なぜこの巻だけ読めないか』が分からない。監査 #9)
-                let inserted = self.epubFailedPlaceholders.insert(url).inserted
-                if inserted, let publication, publication.isDRMProtected {
-                    let alert = NSAlert()
-                    alert.messageText = String(localized: "This book is protected by DRM.")
-                    alert.informativeText = publication.drmSchemeName ?? ""
-                    alert.runModal()
+                if let publication {
+                    // 確定降格(FXL/DRM): 以後ずっと静的表紙。恒久ブラックリストへ。
+                    // 隣へ素通りさせると全滅フォルダ + ループ設定で openBook が無限
+                    // 循環する。初回降格のときだけ DRM を説明する(合本内で無説明に
+                    // 表紙へ化けると『なぜこの巻だけ読めないか』が分からない。監査 #9)
+                    let inserted = self.epubFailedPlaceholders.insert(url).inserted
+                    if inserted, publication.isDRMProtected {
+                        let alert = NSAlert()
+                        alert.messageText = String(localized: "This book is protected by DRM.")
+                        alert.informativeText = publication.drmSchemeName ?? ""
+                        alert.runModal()
+                    } else {
+                        NSSound.beep()
+                    }
                 } else {
+                    // 一過性の解析失敗(nil = 一時 I/O 失敗・壊れファイル): 恒久
+                    // ブラックリストには入れない。今回の着地だけ代理表紙を出すため
+                    // 消費式マーカーへ(そうしないと openBook→refreshDisplay→再入場 が
+                    // 一時失敗ファイルで無限ループする)。次の意図的再着地では再解析する
+                    self.epubTransientFailedPlaceholders.insert(url)
                     NSSound.beep()
                 }
                 self.openBook(at: context.folderURL, atPage: entryIndex)
@@ -281,12 +314,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 atPage: (explicitLocator == nil && atFirst) ? 0 : nil,
                 atLastPage: explicitLocator == nil && !forward && !atFirst,
                 atLocator: explicitLocator,
-                collectionContext: context)
+                collectionContext: context,
+                epoch: presentEpoch)
         }
     }
 
     /// 一覧からの横断ジャンプ: 合本文脈のまま別の(または同じ)EPUB の
-    /// 指定位置を開く(EPUB モード内から。book は無いので文脈から組む)
+    /// 指定位置を開く(EPUB モード内から。book は無いので文脈から組む)。
+    /// 合本内移動は openGeneration を動かさないため、提示エポックを採番して
+    /// last-request-wins を保証する(連打で最後にクリックした巻だけが確定)
     func openCollectionEPUB(url: URL, entryIndex: Int,
                             locator: EPUBLocator,
                             context: EPUBCollectionContext) {
@@ -300,11 +336,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             singleSetting: context.singleSetting,
             coverSingle: context.coverSingle,
             bookmarkedPages: context.bookmarkedPages)
+        // 提示エポックを採番(await より前。last-request-wins)
+        epubPresentEpoch += 1
+        let presentEpoch = epubPresentEpoch
         Task { [weak self] in
-            let publication = await Task.detached(priority: .userInitiated) {
-                try? EPUBPublication(url: url)
-            }.value
-            guard let self, self.isEPUBMode,
+            guard let self else { return }
+            let publication = await self.epubParseCoalescer.publication(at: url)
+            guard self.isEPUBMode,
                   self.epubCollectionContext?.folderURL == context.folderURL
             else { return }
             guard let publication, !publication.isFixedLayout,
@@ -314,7 +352,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             }
             self.presentReflowableEPUB(publication, url: url,
                                        atLocator: locator,
-                                       collectionContext: newContext)
+                                       collectionContext: newContext,
+                                       epoch: presentEpoch)
         }
     }
 

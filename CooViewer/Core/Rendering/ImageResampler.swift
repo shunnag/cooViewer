@@ -82,13 +82,14 @@ actor ImageResampler {
 
         // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
         // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
-        let source = await reducedSource(of: image, level: noiseReduction,
-                                         cacheKey: cacheKey,
-                                         encrypted: superResEncrypted)
+        let (source, usedMLFallback) = await reducedSource(
+            of: image, level: noiseReduction, cacheKey: cacheKey,
+            encrypted: superResEncrypted)
         // キャンセルされた呼び出しの結果は捨てる: ML がキャンセルで nil を
         // 返すと source は CI フォールバックの絵になっており、これを
         // キャッシュすると ML 用キーに非 ML の結果が残る(先読みの
-        // 表示優先キャンセルで顕在化する汚染の防止)
+        // 表示優先キャンセルで顕在化する汚染の防止)。ML モデル未導入/DL 中の
+        // 一過性フォールバックも同様にキャッシュしない(usedMLFallback。下記)
         if Task.isCancelled { return nil }
         // モデル推論の await 中に同じキーの計算が完了していたら使い回す
         if let hit = cache[key] { return hit }
@@ -109,9 +110,20 @@ actor ImageResampler {
             result = Self.cgResample(source, width: width, height: height)
         }
         if let result {
-            insert(result, for: key)
+            // ML 一過性フォールバック(モデル DL 中等)は ML 用キーに焼き付けない
+            // — モデル完成後に再計算させる。XCTest は ML が恒久不可なので
+            // (MLModelInstaller が isXCTest で即 failed)キャッシュを許可する
+            let cacheable = Self.cachesFallback(
+                usedMLFallback: usedMLFallback, mlRetryPossible: !AutomatedRun.isXCTest)
+            if cacheable { insert(result, for: key) }
         }
         return result
+    }
+
+    /// ML 階層を要求したが一過性に CI へ落ちた結果をキャッシュしてよいか。
+    /// mlRetryPossible な間はキャッシュせず(完成後に再計算)、恒久不可なら許可する
+    static func cachesFallback(usedMLFallback: Bool, mlRetryPossible: Bool) -> Bool {
+        !(usedMLFallback && mlRetryPossible)
     }
 
     /// リサンプル済みキャッシュの照会のみ(計算はしない。命中は MRU 更新)。
@@ -152,32 +164,38 @@ actor ImageResampler {
     /// なし指定・失敗時はそのまま返す。「最高」は縮小表示前の ×4 拡大が
     /// 前提の仕組みのため、等倍系のこの経路では「強」として扱う
     func reduceNoise(_ image: CGImage, level: NoiseReductionLevel) async -> CGImage {
+        // このメソッドは共有キーでキャッシュしないため fallback フラグは無視
         await reducedSource(of: image, level: level.cappedForOriginalSize,
-                            cacheKey: nil)
+                            cacheKey: nil).image
     }
 
     /// ノイズ低減の実処理の振り分け。
     /// 最高 = Real-ESRGAN ×4 超解像(結果は 4 倍サイズ。後段の縮小で画質向上)、
     /// 強 = waifu2x ノイズ除去。ML 系は未導入・失敗・画像過大で 1 段ずつ
-    /// フォールバックする(最高→強→中相当の CI)
+    /// フォールバックする(最高→強→中相当の CI)。
+    /// usedMLFallback = ML 階層(.strong/.maximum)を要求したが ML 経路が nil で
+    /// CI 近似に落ちたか(呼び出し側がキャッシュ可否を判断する。.weak/.medium は
+    /// CI が本来の結果なので false)
     private func reducedSource(of image: CGImage,
                                level: NoiseReductionLevel,
                                cacheKey: String?,
-                               encrypted: Bool = false) async -> CGImage {
-        guard level != .none else { return image }
+                               encrypted: Bool = false)
+        async -> (image: CGImage, usedMLFallback: Bool) {
+        guard level != .none else { return (image, false) }
         if level == .maximum {
             // ディスクキャッシュのキーは元画像サイズまで含めて一意にする
             let srKey = cacheKey.map { "\($0)|\(image.width)x\(image.height)|sr4" }
             if let upscaled = await MLSuperResolver.shared.upscale(
                 image, cacheKey: srKey, encrypted: encrypted) {
-                return upscaled
+                return (upscaled, false)
             }
         }
         if level == .strong || level == .maximum,
            let reduced = await MLNoiseReducer.shared.reduce(image) {
-            return reduced
+            return (reduced, false)
         }
-        return noiseReducer?.reduce(image, level: level) ?? image
+        let requestedML = level == .strong || level == .maximum
+        return (noiseReducer?.reduce(image, level: level) ?? image, requestedML)
     }
 
     // MARK: - バイト基準 LRU(PageCache と同じ方針)

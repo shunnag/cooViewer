@@ -215,6 +215,37 @@ final class EPUBCollectionTests: XCTestCase {
         // 範囲外はクランプ
         XCTAssertEqual(map.target(forGlobalPage: 99),
                        CollectionPageMap.Target.bookPage(index: 3))
+        // drm.epub は census 欠落 → 未完・欠落 index に記録(部分焼き付き防止)
+        XCTAssertFalse(map.isComplete)
+        XCTAssertEqual(map.missingEntries, [3])
+    }
+
+    func testCollectionPageMapAllPresentIsComplete() {
+        func entry(_ id: Int, _ name: String, epub: String? = nil) -> PageEntry {
+            PageEntry(id: id, name: name, pathInBook: name, fileURL: nil,
+                      creationDate: nil, modificationDate: nil,
+                      reflowEPUBURL: epub.map { URL(fileURLWithPath: $0) })
+        }
+        let entries = [entry(0, "a.epub", epub: "/x/a.epub"),
+                       entry(1, "b.epub", epub: "/x/b.epub")]
+        let map = CollectionPageMap.make(
+            folderPath: "/f", metricsKey: "k", entries: entries,
+            counts: [0: [2], 1: [3]])
+        XCTAssertTrue(map.isComplete)
+        XCTAssertTrue(map.missingEntries.isEmpty)
+    }
+
+    func testCollectionPageMapImageEntriesNeverMissing() {
+        func entry(_ id: Int, _ name: String) -> PageEntry {
+            PageEntry(id: id, name: name, pathInBook: name, fileURL: nil,
+                      creationDate: nil, modificationDate: nil)
+        }
+        // 画像のみ(reflowEPUBURL == nil): census 不在でも欠落ではない
+        let entries = [entry(0, "01.png"), entry(1, "02.png")]
+        let map = CollectionPageMap.make(
+            folderPath: "/f", metricsKey: "k", entries: entries, counts: [:])
+        XCTAssertTrue(map.isComplete)
+        XCTAssertTrue(map.missingEntries.isEmpty)
     }
 
     func testEPUBMarginPresetsAreOrdered() {

@@ -92,10 +92,12 @@ actor ThumbnailCache {
 
     /// メモリ → ディスク → 生成の順で取得する。
     /// urgent: 可視セル・ホバープレビューなど「いま画面に見えている」要求。
-    /// 生成ゲートの優先レーンに入り、先読み(±3 画面)の行列を追い越す —
-    /// 自動グリッドでは 1 画面のセル数が大きく、FIFO だけだと可視セルが
-    /// 見えない画面の先読みの後ろに並ばされ、収束まで欠けて見えるため。
-    /// 既存生成への合流はレーンを変えない(作成時のみ有効)
+    /// 生成タスク自体を userInitiated で起動し、1 段目 generationGate の優先
+    /// レーンと 2 段目 FolderSource.readGate(currentPriority 推論)の双方で
+    /// 対話レーンに入る。先読み(±3 画面)の行列を追い越す — 自動グリッドでは
+    /// 1 画面のセル数が大きく、FIFO だけだと可視セルが見えない画面の先読みの
+    /// 後ろに並ばされ、収束まで欠けて見えるため。既存生成への合流はレーンを
+    /// 変えない(作成時のみ有効)
     func thumbnail(for entry: PageEntry, in source: any BookSource,
                    bookKey: String, urgent: Bool = false) async -> CGImage? {
         let key = bookKey + "/" + String(entry.id)
@@ -123,12 +125,18 @@ actor ThumbnailCache {
             let fileURL = diskRoot.appendingPathComponent(bookKey)
                 .appendingPathComponent("\(entry.id).heic")
             // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
-            // 文脈にも縛られない独立タスクとして生成する。優先度は utility に
-            // 落とし、ソースの読み取りゲートで表示中ページの読み込み
-            // (userInitiated)に道を譲る(低速媒体でのページ表示停滞の防止)
+            // 文脈にも縛られない独立タスクとして生成する。先読み(非 urgent)は
+            // utility に落とし、ソースの読み取りゲートで表示中ページの読み込み
+            // (userInitiated)に道を譲る(低速媒体でのページ表示停滞の防止)。
+            // 可視セル(urgent)は生成タスク自体を userInitiated で起動する:
+            // 内側 source.image() が通る 2 段目 = FolderSource.readGate は
+            // currentPriority を推論するため、タスクが utility のままだと
+            // urgent でも背面レーンに落ち Book 先読みの後ろで飢餓する。基底
+            // 優先度は床でエスカレーションは下げないので、対話レーンへ確定する
             let gate = generationGate
             let generationID = UUID()
-            let generation = Task.detached(priority: .utility) {
+            let generation = Task.detached(
+                priority: urgent ? .userInitiated : .utility) {
                 let image = await Self.loadOrGenerate(
                     entry: entry, source: source, fileURL: fileURL, gate: gate,
                     urgent: urgent)
@@ -303,8 +311,10 @@ actor ThumbnailCache {
         // ゲートはキャンセルで抜けられないので、行列に入る前にもう一度
         // キャンセル済みを弾く(キャンセル嵐が生きた生成を待たせないように)
         guard !Task.isCancelled else { return nil }
-        // 可視セル要求は優先レーン(生成タスク自体は utility 固定なので、
-        // 優先度継承ではなく明示レーンで先読みとの順序を制御する)
+        // 可視セル要求は優先レーン。1 段目(このゲート)は明示レーンで指定し、
+        // 2 段目(source 内の FolderSource.readGate、currentPriority 推論)は
+        // 生成タスクを urgent 時 userInitiated で起動することで対話レーンへ寄せる
+        // (:131 参照。ここで明示レーンにするだけでは 2 段目で背面に落ちる)
         await gate.acquire(interactive: urgent)
         let image: CGImage?
         if Task.isCancelled {
@@ -321,13 +331,31 @@ actor ThumbnailCache {
     }
 
     private static func writeToDisk(_ image: CGImage, at fileURL: URL) {
-        try? FileManager.default.createDirectory(
+        let manager = FileManager.default
+        try? manager.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // 一時ファイルへ書いて原子的に差し替える(中断・満杯で切り詰めた HEIC を
+        // 最終パスに残さない。他の永続化 3 箇所と同じ tmp+replace 方針)。UUID
+        // サフィックスで同一 fileURL への並行書込み衝突を避ける
+        let tmpURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).heic.tmp")
         // HEIC(ハードウェアエンコード)。サムネイル画質は 0.75 で十分
         guard let destination = CGImageDestinationCreateWithURL(
-            fileURL as CFURL, UTType.heic.identifier as CFString, 1, nil) else { return }
+            tmpURL as CFURL, UTType.heic.identifier as CFString, 1, nil) else { return }
         let options = [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary
         CGImageDestinationAddImage(destination, image, options)
-        CGImageDestinationFinalize(destination)
+        guard CGImageDestinationFinalize(destination) else {
+            try? manager.removeItem(at: tmpURL)  // 失敗は最終パスを触らない
+            return
+        }
+        do {
+            if manager.fileExists(atPath: fileURL.path) {
+                _ = try manager.replaceItemAt(fileURL, withItemAt: tmpURL)
+            } else {
+                try manager.moveItem(at: tmpURL, to: fileURL)
+            }
+        } catch {
+            try? manager.removeItem(at: tmpURL)
+        }
     }
 }

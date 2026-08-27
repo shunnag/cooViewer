@@ -53,11 +53,26 @@ final class ReaderWindowController: NSWindowController {
     var epubPageLabelText: String?
     /// コレクション(合本)経由で開いた EPUB の文脈(nil = 単体で開いた EPUB)
     var epubCollectionContext: EPUBCollectionContext?
+    /// EPUB 提示の世代。presentReflowableEPUB へ至る全入口(単体オープン・合本
+    /// 自動入場・合本横断)で採番し、提示直前で照合する。合本内の EPUB↔EPUB 移動は
+    /// openBookFlow(openGeneration)を通らないため、提示専用にもう 1 本持つ
+    /// (last-request-wins を保証。ThumbnailOverlayModel.presentationEpoch と同型)
+    var epubPresentEpoch = 0
+    /// 同一 URL の並行 EPUB 解析を 1 本に束ねる(往復連打での無制限並走を防ぐ)
+    let epubParseCoalescer = EPUBParseCoalescer()
     /// 合本復帰時の到達方向(代理ページへの着地時に消費。自動入場の向き)
     var epubCollectionArrivalForward: Bool?
-    /// 開けなかった代理ページ(DRM 等)。自動入場せず静的な表紙として表示する
-    /// (全滅フォルダ + ループ設定での無限循環防止)
+    /// 開けなかった代理ページ(FXL/DRM の確定降格)。自動入場せず静的な表紙として
+    /// 表示する(全滅フォルダ + ループ設定での無限循環防止)。恒久記録
     var epubFailedPlaceholders: Set<URL> = []
+    /// 一過性の解析失敗(nil = 一時 I/O 失敗・壊れファイル)の代理ページ。恒久
+    /// ブラックリストと違い「今回の着地だけ」代理表紙にする消費式マーカー:
+    /// refreshDisplay が読み取り時に remove して消費し、次の意図的な再着地では
+    /// 再解析する。**不変条件: 一括クリアしてはならない** — 挿入→openBook→
+    /// 再着地→消費 の順序に依存しており、開始時クリアは挿入とレースして
+    /// enterCollectionReflowEPUB→openBook の無限ループを再発させる(消費のみが
+    /// 唯一のクリア経路)
+    var epubTransientFailedPlaceholders: Set<URL> = []
     /// 合本への復帰オープンが進行中(EPUB 側の巻端イベントを抑止する。
     /// 巻端でのキーリピートが二重の復帰・単体モード誤爆になるのを防ぐ)
     var epubCollectionReturnPending = false
@@ -75,6 +90,10 @@ final class ReaderWindowController: NSWindowController {
     var collectionPageMapTask: Task<Void, Never>?
     /// 構築中のキー(folder#metrics。同じ対象の二重構築防止)
     var collectionPageMapPendingKey: String?
+    /// published 済みの未完マップの再構築試行回数(pendingKey 別)。DRM/壊れ巻で
+    /// 恒久的に欠ける場合に毎ナビゲーション再解析しない上限(一過性は上限内で埋まる)
+    var collectionPageMapAttempts: [String: Int] = [:]
+    static let collectionPageMapMaxAttempts = 3
     /// 位置保存のデバウンス(ページ送りのたびに書き込まない)
     var epubSaveDebounce: Task<Void, Never>?
     /// EPUB のページカール演出のホストビュー(連打時の掃除用)
@@ -428,8 +447,10 @@ final class ReaderWindowController: NSWindowController {
 
     /// ShowNumber/ShowPageBar と自動隠し状態から表示可否を決める
     /// (ページのない本では常に隠す。EPUB モードからも呼ぶため internal)。
-    /// EPUB モードはページ番号を Washi の柱(ヘッダ)が担うため、
-    /// ページ番号ラベルは出さずページバーだけを設定どおり出す
+    /// EPUB モードのページ番号ラベルは census の全体 N/M(章題)を画像本と同じ
+    /// 位置設定で出す(下記 epubHasNumber)。各ページ下部中央の素のノンブルは
+    /// Washi が担うが、下配置(2/3)では帯が重なるため currentEPUBReaderSettings が
+    /// ノンブル側を抑止する(epubShowsFolio。設計書 §2.4)
     func updateIndicatorVisibility() {
         let hasPages = (book?.pageCount ?? 0) > 0
         // EPUB は census(全文ページ数の実測)完了後に N/M を表示できる
@@ -826,6 +847,11 @@ final class ReaderWindowController: NSWindowController {
         // 連打時は最後に要求された本だけを確定する(古いフローの巻き戻り防止)
         openGeneration += 1
         let generation = openGeneration
+        // EPUB 提示専用のエポックも進める。画像本オープンでも採番するのは、
+        // dismissEPUBMode より前に in-flight の openCollectionEPUB のパースが
+        // 完走して古い EPUB が画像本 commit の前に提示されるのを防ぐため
+        epubPresentEpoch += 1
+        let presentEpoch = epubPresentEpoch
 
         var bookURL = url
         var initialPageURL: URL?
@@ -849,7 +875,8 @@ final class ReaderWindowController: NSWindowController {
         // 固定レイアウト → EPUBSource で通常の画像パイプラインへ
         if !isDirectory.boolValue, SupportedTypes.isEPUB(bookURL),
            await routeEPUBIfNeeded(bookURL, generation: generation,
-                                   atPage: atPage, atLastPage: atLastPage) {
+                                   atPage: atPage, atLastPage: atLastPage,
+                                   epoch: presentEpoch) {
             return
         }
 
@@ -1013,6 +1040,10 @@ final class ReaderWindowController: NSWindowController {
             book.mediaProfile = .unknown
             await source.applyMediaProfile(.unknown)
             applyAdvancedSettings(to: book)
+            // comicInfo/loadComicInfoState/applyMediaProfile の await を跨いだ間に
+            // 新しいオープンが始まっていたら、ここで自己状態を commit しない
+            // (連打で「先に押した遅い本」が最後に押した本を上書きするのを防ぐ)
+            guard generation == openGeneration else { return }
             self.book = book
             loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
@@ -1033,11 +1064,13 @@ final class ReaderWindowController: NSWindowController {
             if !hasProtectedContent {
                 hasProtectedContent = await source.containsProtectedContent()
             }
+            guard generation == openGeneration else { return }
             currentBookIsEncrypted = hasProtectedContent
             readerView.superResDiskCacheEncrypted = hasProtectedContent
 
             let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
             await restoreBookState(for: book, skipPageRestore: skipPageRestore)
+            guard generation == openGeneration else { return }
 
             // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
             // (サブフォルダ読み込みで同名ファイルがあっても正しいページへ)
@@ -1059,11 +1092,15 @@ final class ReaderWindowController: NSWindowController {
                 epubCollectionArrivalForward = false
                 await book.goToLast()
             }
-            window?.title = await book.displayTitle()  // ComicInfo 優先(cooViewer-4fi.3)
+            guard generation == openGeneration else { return }  // goToLast の await をカバー
+            let bookTitle = await book.displayTitle()  // ComicInfo 優先(cooViewer-4fi.3)
+            guard generation == openGeneration else { return }  // displayTitle の await をカバー
+            window?.title = bookTitle
             lockedBookReason = nil
             statusLabel.isHidden = true
             updateIndicatorVisibility()
             await refreshDisplay()
+            guard generation == openGeneration else { return }  // refreshDisplay 後の UI 変異を守る
 
             // [#1] メディア速度プローブが解決したらバックグラウンドで確定プロファイルを
             // 適用する(描画はブロックしない)。確定後にスプール開始(正しいプロファイルで
@@ -1105,10 +1142,9 @@ final class ReaderWindowController: NSWindowController {
     /// ファイル自体は正常で、原因がストア側の保護だと分かるため)
     private func routeEPUBIfNeeded(_ url: URL, generation: Int,
                                    atPage: Int? = nil,
-                                   atLastPage: Bool = false) async -> Bool {
-        let publication = await Task.detached(priority: .userInitiated) {
-            try? EPUBPublication(url: url)
-        }.value
+                                   atLastPage: Bool = false,
+                                   epoch: Int) async -> Bool {
+        let publication = await epubParseCoalescer.publication(at: url)
         // 解析の await 中に新しいオープンが始まっていたら、この古いフローは
         // 何も起こさず終える(連打時の巻き戻り防止。openBookFlow と同じ規則)
         guard generation == openGeneration else {
@@ -1129,7 +1165,7 @@ final class ReaderWindowController: NSWindowController {
         guard !publication.isFixedLayout else { return false }
         endAnyOpeningProgress()
         presentReflowableEPUB(publication, url: url,
-                              atPage: atPage, atLastPage: atLastPage)
+                              atPage: atPage, atLastPage: atLastPage, epoch: epoch)
         return true
     }
 
@@ -1200,6 +1236,7 @@ final class ReaderWindowController: NSWindowController {
         // キャンセルしたタスクは自分では pendingKey を消せない(isCancelled
         // guard で先に抜ける)。残すと同キーの再構築が恒久的に塞がる
         collectionPageMapPendingKey = nil
+        collectionPageMapAttempts.removeAll()
         epubView?.stopMediaOverlay()  // ウインドウを閉じたら音声も止める
         epubView?.cancelPageCensus()
         saveCurrentBookState()
@@ -1480,16 +1517,25 @@ final class ReaderWindowController: NSWindowController {
         // コレクション(合本)内のリフロー EPUB 代理ページ: 表示せず EPUB
         // モードへ切り替える(前進到達は先頭/復元、後退到達は末尾から。
         // 代理ページは常に単独スプレッドなので素通りしない)。
-        // 開けなかった本(DRM 等)は自動入場せず静的な表紙として表示する
+        // 恒久に開けない本(FXL/DRM)は自動入場せず静的な表紙として表示する
+        // (epubFailedPlaceholders)。一過性失敗は「今回だけ」表紙にして次回再入場を
+        // 試みる消費式(epubTransientFailedPlaceholders。下の remove を参照)
         if let (entryIndex, epubURL) = spread.indices.lazy.compactMap({ index in
             book.entries.indices.contains(index)
                 ? book.entries[index].reflowEPUBURL.map { (index, $0) } : nil
         }).first, !epubFailedPlaceholders.contains(epubURL) {
-            setResampleIndicator(false)  // この表示は Web ビューが担う(消し忘れ防止)
-            enterCollectionReflowEPUB(url: epubURL, entryIndex: entryIndex,
-                                      forward: collectionArrival ?? turnForward ?? true,
-                                      atFirst: collectionArrivalAtFirst)
-            return
+            // 一過性失敗直後の再着地は「今回だけ」代理表紙として通常描画へ流す
+            // (消費式)。remove がヒット = 一過性直後 → return せず下の通常描画で
+            // 表紙を出す。恒久ブラックリスト(FXL/DRM)と違い消費後の再着地では
+            // また入場を試みる。消費は必ず「入場判断の直前」で(位置がずれると
+            // ループ再発)
+            if epubTransientFailedPlaceholders.remove(epubURL) == nil {
+                setResampleIndicator(false)  // この表示は Web ビューが担う(消し忘れ防止)
+                enterCollectionReflowEPUB(url: epubURL, entryIndex: entryIndex,
+                                          forward: collectionArrival ?? turnForward ?? true,
+                                          atFirst: collectionArrivalAtFirst)
+                return
+            }
         }
 
         if spread.indices.isEmpty {

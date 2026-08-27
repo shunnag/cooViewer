@@ -184,6 +184,7 @@ extension ReaderWindowController {
             collectionPageMapTask?.cancel()
             collectionPageMapPendingKey = nil
             collectionPageMap = nil
+            collectionPageMapAttempts.removeAll()
             return
         }
         let placeholders = entries.enumerated().compactMap { index, entry in
@@ -193,17 +194,34 @@ extension ReaderWindowController {
             collectionPageMapTask?.cancel()
             collectionPageMapPendingKey = nil
             collectionPageMap = nil
+            collectionPageMapAttempts.removeAll()
             return
         }
         let metrics = EPUBScreenMetrics(
             viewportSize: window?.contentView?.bounds.size ?? .zero,
             settings: plannedEPUBSettings())
         let key = metrics.cacheKey
+        let pendingKey = folderURL.path + "#" + key
         if let map = collectionPageMap, map.folderPath == folderURL.path,
            map.metricsKey == key, map.entries == entries {
-            return
+            // 開いている巻がまさに欠落中で、同一メトリクスのリーダー census が
+            // 出ているなら、上限後でもゼロコスト(atlas 呼び出しなし)で差し込む
+            let canSelfHeal: Bool = {
+                guard let context = epubCollectionContext,
+                      map.missingEntries.contains(context.entryIndex),
+                      let epubView, epubView.pageCensusMetricsKey == key,
+                      epubView.pageCensus != nil else { return false }
+                return true
+            }()
+            // 完成済み or 再試行上限に達した未完マップはそのまま(毎ナビゲーション
+            // 再解析しない)。自己回復できる場合だけ上限を無視して埋め直す
+            if !canSelfHeal,
+               map.isComplete
+                || (collectionPageMapAttempts[pendingKey] ?? 0)
+                    >= Self.collectionPageMapMaxAttempts {
+                return
+            }
         }
-        let pendingKey = folderURL.path + "#" + key
         if collectionPageMapPendingKey == pendingKey { return }
         collectionPageMapTask?.cancel()
         collectionPageMapPendingKey = pendingKey
@@ -214,6 +232,17 @@ extension ReaderWindowController {
            epubView.pageCensusMetricsKey == key,
            let counts = epubView.pageCensus {
             seededCounts[context.entryIndex] = counts
+        }
+        // 直前の未完マップで計測済みの巻(epubURL != nil の segment)はそのまま流用し、
+        // 欠けた巻だけ測り直す(atlas LRU 退避で再測が要るときの二度手間を省く)
+        if let old = collectionPageMap, old.folderPath == folderURL.path,
+           old.metricsKey == key, old.entries == entries {
+            for segment in old.segments {
+                if segment.epubURL != nil, let itemCounts = segment.itemCounts,
+                   seededCounts[segment.entryIndex] == nil {
+                    seededCounts[segment.entryIndex] = itemCounts
+                }
+            }
         }
         collectionPageMapTask = Task { [weak self] in
             var counts = seededCounts
@@ -240,6 +269,11 @@ extension ReaderWindowController {
             self.collectionPageMap = CollectionPageMap.make(
                 folderPath: folderURL.path, metricsKey: key,
                 entries: entries, counts: counts)
+            // published が未完なら試行回数を加算(published のみ数える。
+            // キャンセル/超越では加算しない)。上限で毎回の再解析を止める
+            if let built = self.collectionPageMap, !built.isComplete {
+                self.collectionPageMapAttempts[pendingKey, default: 0] += 1
+            }
             // 表示へ即時反映
             if self.isEPUBMode {
                 self.updateEPUBIndicators()
