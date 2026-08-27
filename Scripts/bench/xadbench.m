@@ -101,6 +101,75 @@ int main(int argc, char **argv) {
             }
             [repMs addObject:@(now_ms() - t0)];
         }
+    } else if ([mode isEqualToString:@"pextract"]) {
+        // group-aware 並列展開: solidGroupOfEntry でエントリをグループに束ね、
+        // グループ単位でワーカー(独立 XADArchive)へ round-robin 配分する。
+        // グループ内はエントリ順に前進ストリーミング(solid の巻き戻しなし)。
+        // ダイジェストはエントリ順の per-entry SHA 連結 = extract モードと同一になる
+        int workers = count > 0 ? count : 6;
+        XADArchive *probe = [[XADArchive alloc] initWithFile:path error:NULL];
+        if (!probe) { fprintf(stderr, "open failed\n"); return 1; }
+        int n = [probe numberOfEntries];
+        entryCount = n;
+        NSMutableArray *files = [NSMutableArray array];
+        for (int i = 0; i < n; i++) {
+            if (![probe entryIsDirectory:i]) [files addObject:@(i)];
+        }
+        // グループ→エントリ列(出現順)
+        NSMutableArray *groupOrder = [NSMutableArray array];
+        NSMutableDictionary *groups = [NSMutableDictionary dictionary];
+        for (NSNumber *idx in files) {
+            NSInteger g = [probe solidGroupOfEntry:idx.intValue];
+            NSNumber *key = g >= 0 ? @(g) : @(-1000000 - idx.intValue);  // 独立エントリは単独グループ
+            NSMutableArray *members = groups[key];
+            if (!members) { members = [NSMutableArray array]; groups[key] = members; [groupOrder addObject:key]; }
+            [members addObject:idx];
+        }
+        NSUInteger fileTotal = files.count;
+        unsigned char (*digests)[CC_SHA256_DIGEST_LENGTH] =
+            calloc(fileTotal, CC_SHA256_DIGEST_LENGTH);
+        // エントリ番号→ダイジェスト格納位置(= extract モードの順序)
+        NSMutableDictionary *slotOf = [NSMutableDictionary dictionary];
+        for (NSUInteger i = 0; i < fileTotal; i++) slotOf[files[i]] = @(i);
+
+        for (int r = 0; r < reps; r++) {
+            __block unsigned long long repBytes = 0;
+            double t0 = now_ms();
+            dispatch_queue_t sync = dispatch_queue_create("bytes", DISPATCH_QUEUE_SERIAL);
+            dispatch_group_t dg = dispatch_group_create();
+            dispatch_queue_t pool = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+            for (int w = 0; w < workers; w++) {
+                dispatch_group_async(dg, pool, ^{
+                    @autoreleasepool {
+                        XADArchive *a = [[XADArchive alloc] initWithFile:path error:NULL];
+                        if (!a) return;
+                        unsigned long long localBytes = 0;
+                        for (NSUInteger gi = w; gi < groupOrder.count; gi += workers) {
+                            for (NSNumber *idx in groups[groupOrder[gi]]) {
+                                @autoreleasepool {
+                                    NSData *d = [a contentsOfEntry:idx.intValue];
+                                    if (!d) continue;
+                                    localBytes += d.length;
+                                    if (r == 0) {
+                                        NSUInteger slot = [slotOf[idx] unsignedIntegerValue];
+                                        CC_SHA256(d.bytes, (CC_LONG)d.length, digests[slot]);
+                                    }
+                                }
+                            }
+                        }
+                        dispatch_sync(sync, ^{ repBytes += localBytes; });
+                    }
+                });
+            }
+            dispatch_group_wait(dg, DISPATCH_TIME_FOREVER);
+            [repMs addObject:@(now_ms() - t0)];
+            totalBytes += repBytes;
+        }
+        for (NSUInteger i = 0; i < fileTotal; i++) {
+            CC_SHA256_Update(&overall, digests[i], CC_SHA256_DIGEST_LENGTH);
+        }
+        hashed = fileTotal > 0;
+        free(digests);
     } else {
         fprintf(stderr, "unknown mode\n");
         return 2;

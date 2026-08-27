@@ -78,3 +78,20 @@ python3 makemutants.py <シード書庫...> $BENCH_WORK/mutants
 監査時の生データ。`clean-ab.tsv` = baseline↔final 交互 2 巡+暗号化/open 追試
 (レポートの累積表の出典)、`experiments.tsv` = フラグ行列と実験系列。
 要約はレポート artifact「XADMaster 性能監査 2026-08」参照。
+
+## pextract(group-aware 並列展開モード)
+
+第 2 ラウンドで追加。`xadbench pextract <archive> <reps> [workers]` は
+`solidGroupOfEntry` でエントリをグループ化し、グループ単位でワーカー
+(独立 XADArchive)へ配分する(グループ内は前進ストリーミング)。
+ダイジェストは extract モードと同一定義なので SHA で相互検証できる。
+実測(M4 Max・6 並列): 非 solid 7z 192→37ms(5.2 倍)、64MB ブロック
+solid 7z 6.41→1.20s(5.3 倍)。
+
+## CooViewerTests/Fixtures/*.7z の出自
+
+nonsolid/solid/blocks.7z は「PNG(4x6)+8KB 乱数パディング」×4 ページを
+7zz で固めたもの(blocks は -ms=20k で 2 ブロック化)。再生成手順:
+ページ生成の python スクリプトはレポート artifact のセッション記録参照、
+または同等の PNG+パディングを用意して
+`7zz a -t7z -m0=lzma2 -ms=off|on|20k fixture.7z *.png`。
