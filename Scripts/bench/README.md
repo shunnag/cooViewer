@@ -132,3 +132,33 @@ xadbench は open/data-open で rusage の物理 read バイト(diskread)とペ�
 
 zip の嘘 centralsize テスト書庫は EOCD の centralsize フィールドを過大/過小に
 patch して作る(makemutants.py と同様の struct.pack_into)。
+
+## ZIP open のローカルヘッダ省略上限(計測専用)
+
+`zip-open-ceiling.patch` は、ZIP open 時の CD 走査からエントリごとの
+ローカルヘッダ seek + read を完全に除いた場合の性能上限(改善幅の上限)を
+測るための使い捨てパッチ。CD 側の名前を使い、data offset はローカル extra
+長を無視して近似する。
+
+**警告: このパッチ適用中の展開結果は INVALID。製品コードへ絶対に merge
+しないこと。** `xadbench open` によるエントリ列挙だけを計測し、`extract` は
+実行しない。
+
+```zsh
+cd /Users/nagash/cooViewer
+export BENCH_WORK=/tmp/cooviewer-bench
+export DEVELOPER_DIR=/Applications/Xcode.app
+
+# コーパスが未生成の場合だけ、既存の生成スクリプトを使う
+[[ -e "$BENCH_WORK/corpus/archives/ascii2000.zip" ]] || ./Scripts/bench/make-archives.sh
+
+git -C XADMaster apply --check ../Scripts/bench/zip-open-ceiling.patch
+git -C XADMaster apply ../Scripts/bench/zip-open-ceiling.patch
+./Scripts/bench/build-variant.sh ceiling GCC_OPTIMIZATION_LEVEL=2 LLVM_LTO=YES_THIN
+$BENCH_WORK/variants/ceiling/MacOS/xadbench open \
+    $BENCH_WORK/corpus/archives/ascii2000.zip 3
+
+# 成否にかかわらず必ず復元する
+git -C XADMaster checkout -- .
+git -C XADMaster status --short
+```
