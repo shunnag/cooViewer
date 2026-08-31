@@ -326,6 +326,15 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertFalse(ArchiveSource.shouldMemoryMap(url: url))
     }
 
+    func testMemoryMapGateRejectsSpannedCBZ() throws {
+        // ローカル判定を通る cbz でも .z01 兄弟があれば mmap しない
+        let url = tempDir.appendingPathComponent("span.cbz")
+        try Data([0]).write(to: url)
+        XCTAssertTrue(ArchiveSource.shouldMemoryMap(url: url))
+        try Data([0]).write(to: tempDir.appendingPathComponent("span.z01"))
+        XCTAssertFalse(ArchiveSource.shouldMemoryMap(url: url))
+    }
+
     func testMemoryMappedZipExtractsAndSharesPool() async throws {
         // ローカル temp の zip は mmap で開き、展開結果は従来と同一。
         // 展開プールも同じマップ済みデータから育つ(disk 再オープンなし)
@@ -539,5 +548,4 @@ final class NestedArchiveTests: XCTestCase {
         let image = try await source.image(for: entries[1], maxPixelSize: nil)
         XCTAssertEqual(image.width, 10)
     }
-
 }
