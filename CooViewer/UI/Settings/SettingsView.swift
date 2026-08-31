@@ -171,6 +171,7 @@ struct SettingsView: View {
 
     // 高度な設定(SettingsStore.AdvancedDefault と同値の既定)
     @AppStorage("AdaptiveMediaTuning") private var adaptiveMediaTuning = true
+    @AppStorage("ZipLazyLocalHeaders") private var zipLazyLocalHeaders = true
     @AppStorage("AdvancedSpoolPolicy") private var advSpoolPolicy = 0
     @AppStorage("AdvancedSettingsEnabled") private var advancedEnabled = false
     @AppStorage("AdvancedMemoryPercent") private var advMemoryPercent =
@@ -399,6 +400,7 @@ struct SettingsView: View {
         ]
         case .advanced: [
             String(localized: "Adapt to media speed (SSD / HDD / network)"),
+            String(localized: "Open ZIP archives faster"),
             String(localized: "Use advanced settings"),
             String(localized: "Memory & Cache"),
             String(localized: "Page cache memory:"),
@@ -860,6 +862,17 @@ struct SettingsView: View {
                        isOn: $adaptiveMediaTuning)
                 Text(String(localized:
                     "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Explicit values below always take precedence. Takes effect when the next book is opened."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle(String(localized: "Open ZIP archives faster"),
+                       isOn: $zipLazyLocalHeaders)
+                    .onChange(of: zipLazyLocalHeaders) { _, newValue in
+                        SettingsStore.shared.zipLazyLocalHeaders = newValue
+                    }
+                Text(String(localized:
+                    "Opens ZIP archives faster, especially over a network. In some non-conforming archives, displayed names may differ. Takes effect when the next archive is opened."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
