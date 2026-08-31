@@ -1,0 +1,150 @@
+diff --git a/XADZipParser.h b/XADZipParser.h
+index 864b492..c3d855d 100644
+--- a/XADZipParser.h
++++ b/XADZipParser.h
+@@ -49,7 +49,8 @@ compressedSizePointer:(off_t *)compsizeptr CRCPointer:(uint32_t *)crcptr;
+ -(NSDictionary *)parseZipExtraWithLength:(int)length nameData:(NSData *)namedata
+ uncompressedSizePointer:(off_t *)uncompsizeptr compressedSizePointer:(off_t *)compsizeptr;
+ -(XADZipParserCentralDirectoryRecord)readCentralDirectoryRecord;
+--(XADZipParserCentralDirectoryRecord)readCentralDirectoryRecordFromHandle:(CSHandle *)fh;
++-(XADZipParserCentralDirectoryRecord)readCentralDirectoryRecordFromHandle:(CSHandle *)fh
++nameData:(NSData **)namedataptr;
+ 
+ -(void)addZipEntryWithSystem:(int)system
+ extractVersion:(int)extractversion
+diff --git a/XADZipParser.m b/XADZipParser.m
+index 5bce0ba..54eb3f3 100644
+--- a/XADZipParser.m
++++ b/XADZipParser.m
+@@ -18,6 +18,16 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+  * MA 02110-1301  USA
+  */
++/*******************************************************************************
++ * !!! MEASUREMENT ONLY - NEVER SHIP THIS PATCHED FILE !!!
++ *
++ * Extraction is INVALID while this patch is applied. This deliberately skips
++ * every per-entry local-header visit and guesses the data offset without the
++ * local extra-field length. Its only purpose is to measure the performance
++ * ceiling of deferring the per-entry local-header seek and read during ZIP open.
++ * Never merge or release this change as product code.
++ ******************************************************************************/
++
+ #import "XADZipParser.h"
+ #import "CSMemoryHandle.h"
+ #import "XADZipImplodeHandle.h"
+@@ -318,7 +328,8 @@ -(void)parseWithCentralDirectoryAtOffset:(off_t)centraloffs zip64Offset:(off_t)z
+ 		NSAutoreleasePool *pool=[NSAutoreleasePool new];
+ 		@try
+ 		{
+-			XADZipParserCentralDirectoryRecord cdr = [self readCentralDirectoryRecordFromHandle:cdhandle];
++			NSData *namedata=nil;
++			XADZipParserCentralDirectoryRecord cdr = [self readCentralDirectoryRecordFromHandle:cdhandle nameData:&namedata];
+ 
+ 			// Parse comment data
+ 			NSData *commentdata=nil;
+@@ -338,63 +349,25 @@ -(void)parseWithCentralDirectoryAtOffset:(off_t)centraloffs zip64Offset:(off_t)z
+ 				if(centraloffset+centralsize-filenext>65536*46) numentries+=65536;
+ 			}
+ 
+-			// Read local header
+-			[fh seekToFileOffset:[self offsetForVolume:cdr.startdisk offset:cdr.locheaderoffset]];
+-
+-			uint32_t localid=[fh readID];
+-			if(localid==0x504b0304||localid==0x504b0506) // kludge for strange archives
+-			{
+-				//int localextractversion=[fh readUInt16LE];
+-				//int localflags=[fh readUInt16LE];
+-				//int localcompressionmethod=[fh readUInt16LE];
+-				[fh skipBytes:6];
+-				uint32_t localdate=[fh readUInt32LE];
+-				//uint32_t localcrc=[fh readUInt32LE];
+-				//uint32_t localcompsize=[fh readUInt32LE];
+-				//uint32_t localuncompsize=[fh readUInt32LE];
+-				[fh skipBytes:12];
+-				int localnamelength=[fh readUInt16LE];
+-				int localextralength=[fh readUInt16LE];
+-
+-				off_t dataoffset=[fh offsetInFile]+localnamelength+localextralength;
+-
+-				NSData *namedata=nil;
+-				if(localnamelength) namedata=[fh readDataOfLength:localnamelength];
+-
+-				NSDictionary *extradict=nil;
+-				if(localextralength)
+-				{
+-					extradict=[self parseZipExtraOrNilWithLength:localextralength
+-														nameData:namedata
+-										 uncompressedSizePointer:&cdr.uncompsize
+-										   compressedSizePointer:&cdr.compsize];
+-				}
++			// MEASUREMENT ONLY: assume the local header has no extra field. This is
++			// intentionally wrong for extraction when a local extra field is present.
++			off_t dataoffset=cdr.locheaderoffset+30+cdr.namelength;
+ 
+-				// TODO: Consider using CDR struct
+-				[self addZipEntryWithSystem:cdr.system
+-							 extractVersion:cdr.extractversion
+-									  flags:cdr.flags
++			// TODO: Consider using CDR struct
++			[self addZipEntryWithSystem:cdr.system
++						 extractVersion:cdr.extractversion
++							  flags:cdr.flags
+ 						  compressionMethod:cdr.compressionmethod
+-									   date:cdr.date crc:cdr.crc
+-								  localDate:localdate
+-							 compressedSize:cdr.compsize
+-						   uncompressedSize:cdr.uncompsize
+-					 extendedFileAttributes:cdr.extfileattrib
+-							extraDictionary:extradict
+-								 dataOffset:dataoffset
+-								   nameData:namedata
+-								commentData:commentdata
+-								isLastEntry:i==numentries-1];
+-			}
+-			else
+-			{
+-				[self setObject:[NSNumber numberWithBool:YES] forPropertyKey:XADIsCorruptedKey];
+-			}
+-
+-			// Only the streaming fallback (cdhandle==fh) needs the seek-back: the
+-			// local-header read moved the shared handle. When the CD is in memory,
+-			// cdhandle is untouched by the local-header read and already sits at `next`.
+-			if(!cdinmemory) [fh seekToFileOffset:next];
++							   date:cdr.date crc:cdr.crc
++							  localDate:cdr.date
++						 compressedSize:cdr.compsize
++					   uncompressedSize:cdr.uncompsize
++				extendedFileAttributes:cdr.extfileattrib
++						extraDictionary:nil
++							 dataOffset:dataoffset
++							   nameData:namedata
++							commentData:commentdata
++							isLastEntry:i==numentries-1];
+ 		}
+ 		@finally
+ 		{
+@@ -408,10 +381,11 @@ -(XADZipParserCentralDirectoryRecord)readCentralDirectoryRecord
+     // [cooViewer] delegate to the handle-parameterised variant so the central directory
+     // can be parsed from an in-memory copy (see parseWithCentralDirectoryAtOffset:) while
+     // the existing unit tests keep calling this file-handle version unchanged.
+-    return [self readCentralDirectoryRecordFromHandle:[self handle]];
++    return [self readCentralDirectoryRecordFromHandle:[self handle] nameData:NULL];
+ }
+ 
+ -(XADZipParserCentralDirectoryRecord)readCentralDirectoryRecordFromHandle:(CSHandle *)fh
++nameData:(NSData **)namedataptr
+ {
+     XADZipParserCentralDirectoryRecord cdr;
+     // Read central directory record.
+@@ -435,7 +409,9 @@ -(XADZipParserCentralDirectoryRecord)readCentralDirectoryRecordFromHandle:(CSHan
+     cdr.extfileattrib=[fh readUInt32LE];
+     cdr.locheaderoffset=[fh readUInt32LE];
+ 
+-    [fh skipBytes:cdr.namelength];
++    NSData *namedata=nil;
++    if(cdr.namelength) namedata=[fh readDataOfLength:cdr.namelength];
++    if(namedataptr) *namedataptr=namedata;
+ 
+     // Read central directory extra fields, just to find the Zip64 field.
+     int length=cdr.extralength;
