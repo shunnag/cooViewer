@@ -1,4 +1,5 @@
 import AppKit
+import XADMaster
 
 /// 型付き設定アクセス。キー名は旧実装(仕様書 §6.1)と同一で、
 /// ドメイン jp.coo.cooViewer を引き継ぐため既存ユーザーの値がそのまま生きる。
@@ -327,6 +328,25 @@ final class SettingsStore {
                 ? true : defaults.bool(forKey: "AdaptiveMediaTuning")
         }
         set { defaults.set(newValue, forKey: "AdaptiveMediaTuning") }
+    }
+
+    /// ZIP のローカルヘッダをデータ取得時まで遅延する(既定 ON)。
+    /// XADArchive は初期化中に解析を終えるため、保存と同時にクラス既定値へ
+    /// 反映し、次に生成されるパーサから切り替える。
+    var zipLazyLocalHeaders: Bool {
+        get {
+            defaults.object(forKey: "ZipLazyLocalHeaders") == nil
+                ? true : defaults.bool(forKey: "ZipLazyLocalHeaders")
+        }
+        set {
+            defaults.set(newValue, forKey: "ZipLazyLocalHeaders")
+            XADArchive.setDefaultZipLazyLocalHeaders(newValue)
+        }
+    }
+
+    /// 起動時、書庫生成より先に保存値(未設定なら ON)を XADMaster へ渡す。
+    func applyArchiveParserSettings() {
+        XADArchive.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
     }
 
     /// 書庫スプールの方針(高度設定の三択)。

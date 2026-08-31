@@ -2698,6 +2698,16 @@
         }
       }
     },
+    "Open ZIP archives faster": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ZIP 書庫を高速に開く"
+          }
+        }
+      }
+    },
     "Open the Last Book": {
       "localizations": {
         "ja": {
@@ -2764,6 +2774,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "“%@” を開いています… 書庫 %lld/%lld"
+          }
+        }
+      }
+    },
+    "Opens ZIP archives faster, especially over a network. In some non-conforming archives, displayed names may differ. Takes effect when the next archive is opened.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ZIP 書庫、特にネットワーク上の書庫を速く開きます。ただし、ZIP 規格に反する一部の書庫では表示名が変わることがあります。次に開く書庫から有効になります。"
           }
         }
       }

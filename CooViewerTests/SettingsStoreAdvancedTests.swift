@@ -1,4 +1,5 @@
 import XCTest
+import XADMaster
 @testable import cooViewer
 
 /// 設定「高度」: マスタースイッチと保存値の解決(SettingsStore)
@@ -6,11 +7,46 @@ import XCTest
 final class SettingsStoreAdvancedTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: SettingsStore!
+    private var originalZipLazyLocalHeaders = true
 
     override func setUp() {
         super.setUp()
+        originalZipLazyLocalHeaders = XADArchive.defaultZipLazyLocalHeaders()
         defaults = UserDefaults(suiteName: "advanced-test-\(UUID().uuidString)")!
         store = SettingsStore(defaults: defaults)
+    }
+
+    override func tearDown() {
+        XADArchive.setDefaultZipLazyLocalHeaders(originalZipLazyLocalHeaders)
+        store = nil
+        defaults = nil
+        super.tearDown()
+    }
+
+    func testZipLazyLocalHeadersDefaultsToOnWhenUnset() {
+        XCTAssertNil(defaults.object(forKey: "ZipLazyLocalHeaders"))
+        XADArchive.setDefaultZipLazyLocalHeaders(false)
+
+        store.applyArchiveParserSettings()
+
+        XCTAssertTrue(store.zipLazyLocalHeaders)
+        XCTAssertTrue(XADArchive.defaultZipLazyLocalHeaders())
+    }
+
+    func testZipLazyLocalHeadersOffReachesParserClassDefault() {
+        store.zipLazyLocalHeaders = false
+
+        XCTAssertFalse(defaults.bool(forKey: "ZipLazyLocalHeaders"))
+        XCTAssertFalse(XADArchive.defaultZipLazyLocalHeaders())
+    }
+
+    func testZipLazyLocalHeadersOnReachesParserClassDefault() {
+        XADArchive.setDefaultZipLazyLocalHeaders(false)
+
+        store.zipLazyLocalHeaders = true
+
+        XCTAssertTrue(defaults.bool(forKey: "ZipLazyLocalHeaders"))
+        XCTAssertTrue(XADArchive.defaultZipLazyLocalHeaders())
     }
 
     /// 表示モード(FitMode)と表紙単ページ(SpreadCoverSingle)の既定と往復
