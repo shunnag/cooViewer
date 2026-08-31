@@ -234,16 +234,18 @@ actor ArchiveSource: BookSource {
         let mappable: Set<String> = ["zip", "cbz", "7z", "cb7"]
         let ext = url.pathExtension.lowercased()
         guard mappable.contains(ext) else { return false }
+        // ネットワークボリュームでは mmap しないため、高コストな分割 zip の兄弟探索より先に除外する。
+        guard let values = try? url.resourceValues(forKeys: [
+            .volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey,
+        ]) else { return false }
+        guard values.volumeIsLocal == true
+                && values.volumeIsRemovable != true
+                && values.volumeIsEjectable != true else { return false }
         if ext == "zip" || ext == "cbz" {
             let spanned = url.deletingPathExtension().appendingPathExtension("z01")
             if FileManager.default.fileExists(atPath: spanned.path) { return false }
         }
-        guard let values = try? url.resourceValues(forKeys: [
-            .volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey,
-        ]) else { return false }
-        return values.volumeIsLocal == true
-            && values.volumeIsRemovable != true
-            && values.volumeIsEjectable != true
+        return true
     }
 
     /// 暗号化親のネスト子をメモリから開く(復号済みバイトを disk に置かない。
