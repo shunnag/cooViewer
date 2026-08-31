@@ -8,6 +8,7 @@
 
 - Xcode(`DEVELOPER_DIR` 既定 `/Applications/Xcode.app`)
 - `brew install sevenzip`(7zz)
+- LHA コーパスを作る場合のみ書庫作成対応の正統 LHa(`LHA=/path/to/lha` で指定可)
 - RAR4/RAR5 コーパスを作る場合のみ rar **6.x**(7.x は `-ma4` 削除済み。
   RARLab の rarmacos-arm-624.tar.gz を展開し quarantine を外して使う)
 - microbench の libdeflate 比較のみ `brew install libdeflate`
@@ -43,6 +44,10 @@ swiftc -O xadbench-swift.swift -o $BENCH_WORK/bin/xadbench-swift \
 # 4) 集計(初回 rep 除外の中央値、baseline 比、SHA-256 相互検証)
 python3 summarize.py $BENCH_WORK/results/all.tsv
 ```
+
+`full` は JPEG/TIFF の lh5・lh6・lh7 も各 3 reps で計測する。LHA や
+RAR の任意ツールが無く対応書庫を作れなかった場合、`run-variant.sh` は
+欠落したケースをログへ出してスキップし、残りのスイートを続行する。
 
 ## 計測の作法(実測で確認済みの罠)
 
@@ -98,10 +103,19 @@ nonsolid/solid/blocks.7z は「PNG(4x6)+8KB 乱数パディング」×4 ペー�
 
 ## LHA(lh4-7)コーパスと fixture
 
-Lhasa(brew の lha)は展開専用なので、作成には正統 LHA が要る:
+`make-archives.sh` は JPEG 200 ページから `book-lh5/6/7.lzh`、圧縮が効く
+TIFF 100 ページから `book-tiff-lh5/6/7.lzh` を作る。入力ディレクトリへ
+移動して basename を決定論的な順序で渡し、`-w` で一時ファイルも
+`$BENCH_WORK/corpus/archives` 内に固定する。書庫は他形式と同じく既存なら
+スキップする。`LHA` 未指定時は `PATH` 上の `lha` を使う。
+
+Lhasa(brew の lha)は展開専用なので、作成には正統 LHa が要る:
 `brew install automake` 後に jca02266/lha をソースから
 `autoreconf -i && ./configure && make`(バイナリは src/lha)。
 `lha a -o5|o6|o7 out.lzh *.jpg` で lh5/6/7 を作成。
+正統 LHa が無い、または `lha` が Lhasa の場合、警告を出して LHA 系だけを
+スキップする。生成物は `lha v book-lh5.lzh` 等でメソッドとファイル一覧を、
+`lha t book-lh5.lzh` 等で CRC を確認できる。
 CooViewerTests/Fixtures/book.lzh は PNG×4 を lha -o5 で固めた lh5 fixture
 (FastLZSS 移植のデコード正当性テスト testLZH5ArchiveExtractsCorrectly 用)。
 
