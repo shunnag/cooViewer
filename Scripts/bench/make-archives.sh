@@ -67,7 +67,12 @@ if command -v rar > /dev/null; then
     [[ -e "$A/book-tiff-rar5.cbr" ]] || rar a -ma5 -m3 -ep -idq "$A/book-tiff-rar5.cbr" *.tiff
 fi
 cd "$C/tiny-jpeg"
-[[ -e "$A/sjis2000.zip" ]]  || python3 "$HERE/makesjiszip.py" "$C/tiny-jpeg" "$A/sjis2000.zip"
+if [[ -e "$A/sjis2000.zip" ]] && python3 -c 'import struct, sys; b = open(sys.argv[1], "rb").read(8); sys.exit(0 if len(b) == 8 and b[:4] == b"PK\x03\x04" and struct.unpack_from("<H", b, 6)[0] & 0x800 else 1)' "$A/sjis2000.zip"; then
+    echo "古い(UTF-8 フラグ付き)sjis2000.zip を検出したので作り直します"
+    python3 "$HERE/makesjiszip.py" "$C/tiny-jpeg" "$A/sjis2000.zip"
+elif [[ ! -e "$A/sjis2000.zip" ]]; then
+    python3 "$HERE/makesjiszip.py" "$C/tiny-jpeg" "$A/sjis2000.zip"
+fi
 [[ -e "$A/ascii2000.zip" ]] || zip -q -6 -X "$A/ascii2000.zip" *.jpg
 
 # 4) マイクロベンチ用の実データ連結
