@@ -92,6 +92,10 @@ static void old_skipbits(OldBuf *s, int n) {
     if(n<=(int)s->numbits) old_skippeeked(s,n);
     else { int sk=n-(s->numbits&7); old_skiptobyte(s); old_skipbytes(s,sk>>3); if(sk&7) old_nextbitstr(s,sk&7); }
 }
+static void old_skipbitsLE(OldBuf *s, int n) {
+    if(n<=(int)s->numbits) old_skippeekedLE(s,n);
+    else { int sk=n-(s->numbits&7); old_skiptobyte(s); old_skipbytes(s,sk>>3); if(sk&7) old_nextbitstrLE(s,sk&7); }
+}
 static uint32_t old_peekbyte_pub(OldBuf *s) { old_checkfillbuf(s); if(old_left(s)<=0) RAISE_EOF(); return old_peekbyte(s,0); }
 static uint32_t old_nextbyte(OldBuf *s) { uint32_t b=old_peekbyte_pub(s); old_skipbytes(s,1); return b; }
 
@@ -115,46 +119,93 @@ static inline uint64_t new_peekbyte(NewBuf *s, int o) { return s->buffer[s->curr
 static inline void new_skipbytes(NewBuf *s, int n) { s->currbyte += n; }
 static inline void new_checkfillbuf(NewBuf *s) { }
 
-// BE: レザバーは MSB 左詰め、最大 64bit。8 バイトある時は非整列ロード+bswap で一括。
-static void new_fillbits(NewBuf *s) {
+// 以下のビット操作は CSInputBuffer.[hm] の本番コードを、self→s と helper 名だけ
+// 機械的に置換した写し。バッファ補充と EOF 例外だけがハーネスのスタブである。
+static void new_fillbits(NewBuf *s)
+{
     new_checkfillbuf(s);
-    int numbytes = (64 - s->numbits) >> 3;
-    int left = new_left(s);
-    if (numbytes > left) numbytes = left;
-    int startoffset = s->numbits >> 3;
-    if (numbytes == 8 && s->numbits == 0) {
-        // 完全空 + 8 バイト: 単一ロード
-        uint64_t v; memcpy(&v, &s->buffer[s->currbyte], 8);
-        s->bits = __builtin_bswap64(v);
-    } else {
-        uint64_t acc = 0;
-        for (int i = 0; i < numbytes; i++) acc = (acc << 8) | new_peekbyte(s, startoffset + i);
-        // acc は numbytes*8 ビット幅。numbits の右隣(64-numbits-numbytes*8 だけ左)へ置く
-        s->bits |= acc << (64 - s->numbits - numbytes * 8);
+
+    int numbytes=(64-s->numbits)>>3;
+    int left=new_left(s);
+    int startoffset=s->numbits>>3;
+    int available=left-startoffset;
+    if(available<0) available=0;
+    if(numbytes>available) numbytes=available;
+
+    if(numbytes==8&&s->numbits==0)
+    {
+        uint64_t value;
+        memcpy(&value,s->buffer+s->currbyte,8);
+        s->bits=__builtin_bswap64(value);
     }
-    s->numbits += numbytes * 8;
+    else if(numbytes>0)
+    {
+        uint64_t accumulated=0;
+        for(int i=0;i<numbytes;i++)
+        {
+            accumulated=(accumulated<<8)|new_peekbyte(s,startoffset+i);
+        }
+        s->bits|=accumulated<<(64-s->numbits-numbytes*8);
+    }
+
+    s->numbits+=numbytes*8;
 }
-static void new_fillbitsLE(NewBuf *s) {
+
+static void new_fillbitsLE(NewBuf *s)
+{
     new_checkfillbuf(s);
-    int numbytes = (64 - s->numbits) >> 3;
-    int left = new_left(s);
-    if (numbytes > left) numbytes = left;
-    int startoffset = s->numbits >> 3;
-    for (int i = 0; i < numbytes; i++) { s->bits |= new_peekbyte(s,i+startoffset)<<s->numbits; s->numbits += 8; }
+
+    int numbytes=(64-s->numbits)>>3;
+    int left=new_left(s);
+    int startoffset=s->numbits>>3;
+    int available=left-startoffset;
+    if(available<0) available=0;
+    if(numbytes>available) numbytes=available;
+
+    for(int i=0;i<numbytes;i++)
+    {
+        s->bits|=(uint64_t)new_peekbyte(s,i+startoffset)<<s->numbits;
+        s->numbits+=8;
+    }
 }
 static inline void new_checkfillbits(NewBuf *s, int n) { if (n > (int)s->numbits) new_fillbits(s); }
 static inline void new_checkfillbitsLE(NewBuf *s, int n) { if (n > (int)s->numbits) new_fillbitsLE(s); }
-static inline unsigned int new_peekbits(NewBuf *s, int n) { if(!n) return 0; new_checkfillbits(s,n); return (unsigned int)(s->bits>>(64-n)); }
-static inline unsigned int new_peekbitsLE(NewBuf *s, int n) { if(!n) return 0; new_checkfillbitsLE(s,n); return (unsigned int)(s->bits&(((uint64_t)1<<n)-1)); }
-static inline void new_skippeeked(NewBuf *s, int n) {
-    int nb = (n-(s->numbits&7)+7)>>3; new_skipbytes(s,nb);
-    if (new_left(s)<0) RAISE_EOF();
-    s->bits<<=n; s->numbits-=n;
+static inline unsigned int new_peekbits(NewBuf *s,int n)
+{
+    if(n==0) return 0;
+    new_checkfillbits(s,n);
+    return (unsigned int)(s->bits>>(64-n));
 }
-static inline void new_skippeekedLE(NewBuf *s, int n) {
-    int nb = (n-(s->numbits&7)+7)>>3; new_skipbytes(s,nb);
-    if (new_left(s)<0) RAISE_EOF();
-    s->bits>>=n; s->numbits-=n;
+
+static inline unsigned int new_peekbitsLE(NewBuf *s,int n)
+{
+    if(n==0) return 0;
+    new_checkfillbitsLE(s,n);
+    return (unsigned int)(s->bits&(((uint64_t)1<<n)-1));
+}
+
+static inline void new_skippeeked(NewBuf *s,int n)
+{
+    int numbytes=(n-(s->numbits&7)+7)>>3;
+    new_skipbytes(s,numbytes);
+
+    if(new_left(s)<0) RAISE_EOF();
+
+    if(n>=64) s->bits=0;
+    else s->bits<<=n;
+    s->numbits-=n;
+}
+
+static inline void new_skippeekedLE(NewBuf *s,int n)
+{
+    int numbytes=(n-(s->numbits&7)+7)>>3;
+    new_skipbytes(s,numbytes);
+
+    if(new_left(s)<0) RAISE_EOF();
+
+    if(n>=64) s->bits=0;
+    else s->bits>>=n;
+    s->numbits-=n;
 }
 static unsigned int new_nextbitstr(NewBuf *s, int n) { if(!n) return 0; unsigned int b=new_peekbits(s,n); new_skippeeked(s,n); return b; }
 static unsigned int new_nextbitstrLE(NewBuf *s, int n) { if(!n) return 0; unsigned int b=new_peekbitsLE(s,n); new_skippeekedLE(s,n); return b; }
@@ -176,6 +227,10 @@ static void new_skipbits(NewBuf *s, int n) {
     if(n<=(int)s->numbits) new_skippeeked(s,n);
     else { int sk=n-(s->numbits&7); new_skiptobyte(s); new_skipbytes(s,sk>>3); if(sk&7) new_nextbitstr(s,sk&7); }
 }
+static void new_skipbitsLE(NewBuf *s, int n) {
+    if(n<=(int)s->numbits) new_skippeekedLE(s,n);
+    else { int sk=n-(s->numbits&7); new_skiptobyte(s); new_skipbytes(s,sk>>3); if(sk&7) new_nextbitstrLE(s,sk&7); }
+}
 static uint32_t new_peekbyte_pub(NewBuf *s) { new_checkfillbuf(s); if(new_left(s)<=0) RAISE_EOF(); return new_peekbyte(s,0); }
 static uint32_t new_nextbyte(NewBuf *s) { uint32_t b=new_peekbyte_pub(s); new_skipbytes(s,1); return b; }
 
@@ -195,7 +250,7 @@ static uint64_t PREFIX##_exec(T *s, Op op, int LE, int *has_ret) { \
         case 2: return LE?PREFIX##_nextlongLE(s,op.nb):PREFIX##_nextlong(s,op.nb); \
         case 3: { unsigned int v=LE?PREFIX##_peekbitsLE(s,op.nb):PREFIX##_peekbits(s,op.nb); \
                   if(op.nb){ if(LE) PREFIX##_skippeekedLE(s,op.nb); else PREFIX##_skippeeked(s,op.nb);} return v; } \
-        case 4: PREFIX##_skipbits(s,op.nb); *has_ret=0; return 0; \
+        case 4: if(LE) PREFIX##_skipbitsLE(s,op.nb); else PREFIX##_skipbits(s,op.nb); *has_ret=0; return 0; \
         case 5: PREFIX##_skiptobyte(s); *has_ret=0; return 0; \
         case 6: PREFIX##_skipto16(s); *has_ret=0; return 0; \
         case 7: PREFIX##_skiptobyte(s); return PREFIX##_nextbyte(s); /* 実使用: byte 読みは必ず境界で */ \
@@ -217,6 +272,16 @@ static int run_seed(uint64_t seed, int nops) {
     OldBuf o; NewBuf n; old_init(&o,data,len); new_init(&n,data,len);
 
     for (int step=0; step<nops; step++) {
+        int old_remaining = len - (int)o.currbyte;
+        int new_remaining = len - (int)n.currbyte;
+        if (old_remaining < 16 || new_remaining < 16) {
+            if (!(old_remaining < 16 && new_remaining < 16)) {
+                printf("DIVERGE seed=%llu step=%d: end guard old=%d new=%d\n",
+                       (unsigned long long)seed, step, old_remaining, new_remaining);
+                free(data); return 1;
+            }
+            free(data); return 0;
+        }
         Op op;
         op.kind = rnd()%9;
         if (op.kind==0 && LE) op.kind=1;  // NextBit は BE のみ(LE は NextBitLE 相当を case1 で代替)

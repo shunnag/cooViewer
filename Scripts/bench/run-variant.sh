@@ -16,15 +16,26 @@ OUT="$R/all.tsv"
 BIN="$V/MacOS"
 
 # ページキャッシュを温める(全バリアント同条件のウォームキャッシュ方針)
-cat "$A"/*.cbz "$A"/*.cbr "$A"/*.7z "$A"/*.zip > /dev/null 2>&1
+warm_archives=(
+    "$A"/*.cbz(N) "$A"/*.cbr(N) "$A"/*.7z(N) "$A"/*.zip(N) "$A"/*.lzh(N)
+)
+(( ${#warm_archives[@]} == 0 )) || cat -- "${warm_archives[@]}" > /dev/null
 
 run() { # run <bin> <mode> <archive> <reps> [count]
     local line
+    if [[ ! -e "$A/$3" ]]; then
+        echo "スキップ: 書庫がありません: $A/$3" >&2
+        return 0
+    fi
     line=$("$BIN/$1" "$2" "$A/$3" "$4" "${5:-}")
     printf '%s\t%s\t%s\n' "$NAME" "$(date +%H:%M:%S)" "$line" >> "$OUT"
 }
 runsw() { # runsw <archive> <reps>
     local line
+    if [[ ! -e "$A/$1" ]]; then
+        echo "スキップ: 書庫がありません: $A/$1" >&2
+        return 0
+    fi
     line=$("$BIN/xadbench-swift" "$A/$1" "$2")
     printf '%s\t%s\t%s\n' "$NAME" "$(date +%H:%M:%S)" "$line" >> "$OUT"
 }
@@ -38,11 +49,17 @@ run xadbench extract book-png.cbz 5
 if [[ "$MODE" == "full" ]]; then
     run xadbench extract book-rar4.cbr 3
     run xadbench extract book-rar5.cbr 3
+    run xadbench extract book-lh5.lzh 3
+    run xadbench extract book-lh6.lzh 3
+    run xadbench extract book-lh7.lzh 3
     run xadbench extract book-solid.7z 3
     run xadbench extract book-tiff.cbz 3
     run xadbench extract book-tiff.7z 3
     run xadbench extract book-tiff-rar4.cbr 3
     run xadbench extract book-tiff-rar5.cbr 3
+    run xadbench extract book-tiff-lh5.lzh 3
+    run xadbench extract book-tiff-lh6.lzh 3
+    run xadbench extract book-tiff-lh7.lzh 3
     run xadbench random book-stored.cbz 3 80
     runsw book-stored.cbz 3
     runsw book-png.cbz 5
