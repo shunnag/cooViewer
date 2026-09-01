@@ -24,6 +24,10 @@ actor ImageResampler {
     /// 検証用: 実計算(computeResample)に入った回数。合流が効けば同一キーの
     /// 並行要求で 1 回になる(stats().computeCount で参照)
     private var computeCount = 0
+    /// 検証用: reducedSource(ノイズ低減の実計算)に入った回数。.strong の中間
+    /// 結果キャッシュが効けば、同一元画像を別 target で複数回リサンプルしても
+    /// 1 回になる(cooViewer-kli)
+    private var reducedSourceCount = 0
     /// 合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
     /// リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため、
     /// 行き来で作り直さずに済むよう広めに確保する(旧: 1/6・最大 4.5GB は
@@ -43,10 +47,11 @@ actor ImageResampler {
         let usedBytes: Int
         let limitBytes: Int
         let computeCount: Int
+        let reducedSourceCount: Int
     }
     func stats() -> Stats {
         Stats(count: cache.count, usedBytes: totalCost, limitBytes: byteLimit,
-              computeCount: computeCount)
+              computeCount: computeCount, reducedSourceCount: reducedSourceCount)
     }
 
     init(byteLimit: Int = min(
@@ -126,11 +131,34 @@ actor ImageResampler {
         noiseReduction: NoiseReductionLevel, superResEncrypted: Bool
     ) async -> CGImage? {
         computeCount += 1
-        // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
-        // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
-        let (source, usedMLFallback) = await reducedSource(
-            of: image, level: noiseReduction, cacheKey: cacheKey,
-            encrypted: superResEncrypted)
+        // .strong のノイズ低減(waifu2x)中間結果は元画像サイズ依存で target 非依存。
+        // 結果キャッシュは target 込みキーなので、ウインドウリサイズ(別 target)ごとに
+        // フル CNN を再実行していた(cooViewer-kli)。中間結果を元サイズキーで
+        // キャッシュし、リサイズ間で再利用する(.maximum は SR ディスク層が担う)
+        let nrKey: String? = noiseReduction == .strong
+            ? "\(cacheKey)|\(image.width)x\(image.height)|nr-strong" : nil
+        let source: CGImage
+        let usedMLFallback: Bool
+        if let nrKey, let cached = cache[nrKey] {
+            source = cached
+            usedMLFallback = false  // キャッシュ済み=下でキャッシュ可否を通した本物
+            touch(nrKey)
+        } else {
+            reducedSourceCount += 1
+            // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
+            // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
+            (source, usedMLFallback) = await reducedSource(
+                of: image, level: noiseReduction, cacheKey: cacheKey,
+                encrypted: superResEncrypted)
+            // 中間結果のキャッシュ可否は最終結果と同じ 7n1.2 規則。恒久失敗機
+            // (.failed/XCTest)は CI 中間も焼いてリサイズ再計算を防ぐ、一過性
+            // フォールバック(未導入/DL 中)はモデル完成後の本物に譲るため焼かない
+            if let nrKey,
+               await resolvedCacheable(usedMLFallback: usedMLFallback,
+                                       image: image, level: noiseReduction) {
+                insert(source, for: nrKey)
+            }
+        }
         // モデル推論の await 中に別経路が同じキーを入れていたら使い回す
         if let hit = cache[key] { return hit }
 
@@ -149,28 +177,35 @@ actor ImageResampler {
         if result == nil {
             result = Self.cgResample(source, width: width, height: height)
         }
-        if let result {
-            // ML 一過性フォールバック(モデル未導入/DL 中)は ML 用キーに焼き付けない
-            // — モデル完成後に再計算させる(cooViewer-2za item5)。ただし ML が恒久失敗
-            // (.failed)した機では毎表示 CI 再計算になるため、恒久失敗なら焼き付けを許可
-            // する(cooViewer-7n1.2)。XCTest は ML 即 failed で決定的に許可
-            // (testResamplerCachesSeparatelyPerReductionLevel の === 判定を保つため)。
-            let retryPossible: Bool
-            if !usedMLFallback {
-                retryPossible = true
-            } else if AutomatedRun.isXCTest {
-                retryPossible = false
-            } else {
-                let srApplicable = max(image.width, image.height)
-                    <= MLSuperResolver.maxSourceEdge
-                retryPossible = await Self.mlRetryPossible(
-                    for: noiseReduction, superResApplicable: srApplicable)
-            }
-            let cacheable = Self.cachesFallback(
-                usedMLFallback: usedMLFallback, mlRetryPossible: retryPossible)
-            if cacheable { insert(result, for: key) }
+        if let result,
+           await resolvedCacheable(usedMLFallback: usedMLFallback,
+                                   image: image, level: noiseReduction) {
+            insert(result, for: key)
         }
         return result
+    }
+
+    /// ML 一過性フォールバック(モデル未導入/DL 中)は ML 用キーに焼き付けない
+    /// — モデル完成後に再計算させる(cooViewer-2za item5)。ただし ML が恒久失敗
+    /// (.failed)した機では毎表示 CI 再計算になるため、恒久失敗なら焼き付けを許可
+    /// する(cooViewer-7n1.2)。XCTest は ML 即 failed で決定的に許可
+    /// (testResamplerCachesSeparatelyPerReductionLevel の === 判定を保つため)。
+    /// 最終結果と .strong 中間結果で共通の判定(cooViewer-kli で切り出し)
+    private func resolvedCacheable(usedMLFallback: Bool, image: CGImage,
+                                   level: NoiseReductionLevel) async -> Bool {
+        let retryPossible: Bool
+        if !usedMLFallback {
+            retryPossible = true
+        } else if AutomatedRun.isXCTest {
+            retryPossible = false
+        } else {
+            let srApplicable = max(image.width, image.height)
+                <= MLSuperResolver.maxSourceEdge
+            retryPossible = await Self.mlRetryPossible(
+                for: level, superResApplicable: srApplicable)
+        }
+        return Self.cachesFallback(
+            usedMLFallback: usedMLFallback, mlRetryPossible: retryPossible)
     }
 
     /// ML 階層を要求したが一過性に CI へ落ちた結果をキャッシュしてよいか。

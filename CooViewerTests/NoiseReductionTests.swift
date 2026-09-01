@@ -207,6 +207,24 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertNotNil(cached, "完走した本物の結果はキャッシュされる(作業を捨てない)")
     }
 
+    /// .strong のノイズ低減中間結果は元サイズキーでキャッシュされ、同一画像を別
+    /// target でリサンプルしても reducedSource(ノイズ低減)は1回で済む(ウインドウ
+    /// リサイズごとの再計算防止。cooViewer-kli)。XCTest では ML 恒久失敗相当のため
+    /// CI 中間も 7n1.2 規則でキャッシュされ、再利用が構造的に検証できる
+    func testStrongNoiseReductionIntermediateReusedAcrossTargetSizes() async {
+        let resampler = ImageResampler(byteLimit: 32 << 20)
+        let source = blockyImage(size: 128)
+        _ = await resampler.resample(
+            source, to: CGSize(width: 96, height: 96), cacheKey: "nr-reuse",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        _ = await resampler.resample(
+            source, to: CGSize(width: 64, height: 64), cacheKey: "nr-reuse",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        let stats = await resampler.stats()
+        XCTAssertEqual(stats.computeCount, 2, "target が違うので最終リサンプルは2回")
+        XCTAssertEqual(stats.reducedSourceCount, 1, "ノイズ低減中間は再利用され1回")
+    }
+
     /// 同一キーの並行 resample は1本の計算へ合流し、ML/CI を二重実行しない
     /// (preresample と表示要求が同じページを同時要求する経路。cooViewer-pag)。
     /// .strong は reducedSource 内の await(ensureModel のアクタ跳躍)で中断し、
