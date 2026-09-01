@@ -181,9 +181,14 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertTrue(reduced === reducedAgain)  // キャッシュ命中
     }
 
-    func testCancelledResampleDoesNotPolluteCache() async {
-        // 表示優先の先読みキャンセル時、ML がフォールバックした結果を
-        // ML 用キーでキャッシュしない(汚染防止)
+    func testCancelledWaiterReturnsNilButComputeCompletes() async {
+        // 合流設計(cooViewer-pag): 計算タスクは待ち手のキャンセルを観測せず
+        // 完走する。キャンセルされた待ち手は結果を捨てて nil を返すが、完走した
+        // 本物の結果は将来要求のためキャッシュされる(先読みの作業を無駄にしない)。
+        // 汚染防止(未完了の CI フォールバックを ML キーに残さない)は、計算が
+        // 常に完走することで構造的に不要になり、代わりに usedMLFallback/
+        // retryPossible の規則(別テストで担保)が一過性フォールバックを弾く。
+        // .strong は XCTest で ML 恒久失敗相当のため 7n1.2 の規則でキャッシュされる
         let resampler = ImageResampler(byteLimit: 8 << 20)
         let source = blockyImage()
         let size = CGSize(width: 32, height: 32)
@@ -195,11 +200,32 @@ final class NoiseReductionTests: XCTestCase {
         }
         task.cancel()
         let result = await task.value
-        XCTAssertNil(result, "キャンセルされた呼び出しは結果を返さない")
+        XCTAssertNil(result, "キャンセルされた待ち手は結果を返さない")
         let cached = await resampler.cached(
             source, to: size, cacheKey: "cancel-t",
             upscaleWithMetalFX: false, noiseReduction: .strong)
-        XCTAssertNil(cached, "キャンセル時はキャッシュに何も残さない")
+        XCTAssertNotNil(cached, "完走した本物の結果はキャッシュされる(作業を捨てない)")
+    }
+
+    /// 同一キーの並行 resample は1本の計算へ合流し、ML/CI を二重実行しない
+    /// (preresample と表示要求が同じページを同時要求する経路。cooViewer-pag)。
+    /// .strong は reducedSource 内の await(ensureModel のアクタ跳躍)で中断し、
+    /// 2本目が line-95 再チェック前に割り込めるので合流が意味を持つ
+    func testConcurrentSameKeyResampleCoalescesToOneCompute() async {
+        let resampler = ImageResampler(byteLimit: 8 << 20)
+        let source = blockyImage()
+        let size = CGSize(width: 32, height: 32)
+        async let first = resampler.resample(
+            source, to: size, cacheKey: "coalesce-t",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        async let second = resampler.resample(
+            source, to: size, cacheKey: "coalesce-t",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        let (a, b) = await (first, second)
+        XCTAssertNotNil(a)
+        XCTAssertTrue(a === b, "合流した両者は同一の計算結果を共有する")
+        let stats = await resampler.stats()
+        XCTAssertEqual(stats.computeCount, 1, "同一キーの並行要求は計算1回に合流する")
     }
 
     @MainActor

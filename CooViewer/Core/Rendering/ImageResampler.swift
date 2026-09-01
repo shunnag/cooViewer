@@ -16,6 +16,14 @@ actor ImageResampler {
     private var order: [String] = []  // 末尾が最新(MRU)
     private var costs: [String: Int] = [:]
     private var totalCost = 0
+    /// 進行中の計算(key → タスク)。同一キーの並行 resample を1本の計算へ
+    /// 合流させ、ML/CI の二重実行を避ける(preresample と表示要求が同じページを
+    /// 同時に要求する経路。cooViewer-pag)。id は完了時の自己退去照合用
+    /// (ThumbnailCache.inFlight と同型)
+    private var inFlight: [String: (task: Task<CGImage?, Never>, id: UUID)] = [:]
+    /// 検証用: 実計算(computeResample)に入った回数。合流が効けば同一キーの
+    /// 並行要求で 1 回になる(stats().computeCount で参照)
+    private var computeCount = 0
     /// 合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
     /// リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため、
     /// 行き来で作り直さずに済むよう広めに確保する(旧: 1/6・最大 4.5GB は
@@ -34,9 +42,11 @@ actor ImageResampler {
         let count: Int
         let usedBytes: Int
         let limitBytes: Int
+        let computeCount: Int
     }
     func stats() -> Stats {
-        Stats(count: cache.count, usedBytes: totalCost, limitBytes: byteLimit)
+        Stats(count: cache.count, usedBytes: totalCost, limitBytes: byteLimit,
+              computeCount: computeCount)
     }
 
     init(byteLimit: Int = min(
@@ -79,19 +89,49 @@ actor ImageResampler {
                                upscaleWithMetalFX: upscaleWithMetalFX,
                                noiseReduction: noiseReduction)
         if let hit = touch(key) { return hit }
+        // 同一キーの計算が進行中なら合流する(ML/CI の二重実行を避ける。
+        // preresample と表示要求が同じページを同時に要求する経路。cooViewer-pag)。
+        // touch ミス・in-flight 照合・タスク生成・登録は最初の中断より前の同期
+        // アクター操作なので、再入で重複タスクが割り込むことはない
+        if let running = inFlight[key] {
+            let joined = await running.task.value
+            // 合流待ち手のキャンセルは結果を捨てるだけ(insert は計算タスクの
+            // 責務)。共有タスクは待ち手のキャンセルを観測しないので結果は本物
+            return Task.isCancelled ? nil : joined
+        }
+        let id = UUID()
+        let task = Task { [weak self] () -> CGImage? in
+            guard let self else { return nil }
+            return await self.computeResample(
+                image: image, width: width, height: height, key: key,
+                cacheKey: cacheKey, upscaleWithMetalFX: upscaleWithMetalFX,
+                noiseReduction: noiseReduction, superResEncrypted: superResEncrypted)
+        }
+        inFlight[key] = (task, id)
+        // Task.value は Never 失敗タスクではキャンセル点にならず、待ち手が
+        // キャンセルされても計算は完走してから戻る(結果は常に本物・キャッシュ可)。
+        // 完了後に自己退去(id 照合で新しい世代を潰さない)
+        let result = await task.value
+        if inFlight[key]?.id == id { inFlight[key] = nil }
+        return Task.isCancelled ? nil : result
+    }
 
+    /// リサンプル本体(ノイズ低減 + リサイズ + キャッシュ)。in-flight の共有
+    /// タスクから同一キーにつき1回だけ呼ばれる。共有タスクは待ち手のキャンセルを
+    /// 観測しないため結果は常に完走した本物で、旧来の「キャンセル結果を ML 用
+    /// キーに焼かない」汚染ガードは合流により構造的に不要になった(cooViewer-pag)
+    private func computeResample(
+        image: CGImage, width: Int, height: Int, key: String,
+        cacheKey: String, upscaleWithMetalFX: Bool,
+        noiseReduction: NoiseReductionLevel, superResEncrypted: Bool
+    ) async -> CGImage? {
+        computeCount += 1
         // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
         // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
         let (source, usedMLFallback) = await reducedSource(
             of: image, level: noiseReduction, cacheKey: cacheKey,
             encrypted: superResEncrypted)
-        // キャンセルされた呼び出しの結果は捨てる: ML がキャンセルで nil を
-        // 返すと source は CI フォールバックの絵になっており、これを
-        // キャッシュすると ML 用キーに非 ML の結果が残る(先読みの
-        // 表示優先キャンセルで顕在化する汚染の防止)。ML モデル未導入/DL 中の
-        // 一過性フォールバックも同様にキャッシュしない(usedMLFallback。下記)
-        if Task.isCancelled { return nil }
-        // モデル推論の await 中に同じキーの計算が完了していたら使い回す
+        // モデル推論の await 中に別経路が同じキーを入れていたら使い回す
         if let hit = cache[key] { return hit }
 
         let isUpscale = width > source.width || height > source.height
