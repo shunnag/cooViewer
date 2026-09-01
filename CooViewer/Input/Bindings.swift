@@ -325,6 +325,11 @@ struct BindingConfiguration: Sendable {
         let home = Character(UnicodeScalar(NSHomeFunctionKey)!)
         let end = Character(UnicodeScalar(NSEndFunctionKey)!)
         let tab = Character("\t")
+        // shift+tab は charactersIgnoringModifiers が back-tab(0x19)を返す
+        // (shift は無視されない)。legacy も NSBackTabCharacter を格納していた
+        // (§5.7.1)。plain tab(\t)だと shift+tab が一致せず back-skip がキーで
+        // 到達不能になる(cooViewer-esi)
+        let backTab = Character(UnicodeScalar(0x19)!)
         let space = Character(" ")
         let returnKey = Character("\r")
         let enterKey = Character(UnicodeScalar(3))  // numpad enter
@@ -345,9 +350,13 @@ struct BindingConfiguration: Sendable {
             key(0, "z", sw: true), key(0, left, sw: true), key(0, space),
             key(1, "x", sw: true), key(1, right, sw: true),
             key(1, space, LegacyModifier.shift),
-            key(2, "z", LegacyModifier.shift, sw: true),
+            // shift+文字は charactersIgnoringModifiers が大文字を返すため
+            // 大文字で格納する(legacy も "Z"/"X" 格納。小文字だと発火しない。
+            // cooViewer-esi)。option/control 修飾は shift と違い大文字化しない
+            // ため、それらの行は小文字のままで正しい
+            key(2, "Z", LegacyModifier.shift, sw: true),
             key(2, left, LegacyModifier.shift, sw: true),
-            key(3, "x", LegacyModifier.shift, sw: true),
+            key(3, "X", LegacyModifier.shift, sw: true),
             key(3, right, LegacyModifier.shift, sw: true),
             key(4, "z", LegacyModifier.option, sw: true),
             key(4, left, LegacyModifier.option, sw: true),
@@ -358,12 +367,12 @@ struct BindingConfiguration: Sendable {
             key(8, "c", LegacyModifier.control), key(8, down, LegacyModifier.control),
             key(9, "d", LegacyModifier.control), key(9, up, LegacyModifier.control),
             key(10, "a"), key(11, "s"), key(12, "p"),
-            key(13, tab, value: 10), key(14, tab, LegacyModifier.shift, value: 10),
+            key(13, tab, value: 10), key(14, backTab, LegacyModifier.shift, value: 10),
             key(15, "w"), key(16, "q"), key(17, "g"), key(18, "t"), key(19, "r"),
             key(20, "o"), key(34, "l"), key(53, "f"),
-            key(35, "c", LegacyModifier.shift + LegacyModifier.control),
+            key(35, "C", LegacyModifier.shift + LegacyModifier.control),
             key(35, down, LegacyModifier.shift + LegacyModifier.control),
-            key(36, "d", LegacyModifier.shift + LegacyModifier.control),
+            key(36, "D", LegacyModifier.shift + LegacyModifier.control),
             key(36, up, LegacyModifier.shift + LegacyModifier.control),
             key(21, enterKey, LegacyModifier.numericPad), key(21, returnKey),
         ]

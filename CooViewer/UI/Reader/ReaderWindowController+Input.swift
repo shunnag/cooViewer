@@ -584,7 +584,11 @@ extension ReaderWindowController {
                 if !readerViewForInput.pageUp() { performPreviousFromEnd() }
             }
         case .positionalRotate:
-            isNextSide ? rotateRight(nil) : rotateLeft(nil)
+            // 仕様書 §5.6 #55: legacy は「調整後の左側クリック→rotateLeft」
+            // (Controller_input.m:1706-1712)。isNextSide は legacy の調整後
+            // leftBool と一致する(例: 動作 42 が両者とも「左側→次ページ」)ため、
+            // 次側=rotateLeft が正。旧実装は左右逆だった(cooViewer-3bz)
+            isNextSide ? rotateLeft(nil) : rotateRight(nil)
 
         case .nextBookmark: goToBookmark(next: true)
         case .previousBookmark: goToBookmark(next: false)
