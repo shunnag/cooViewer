@@ -157,6 +157,15 @@ enum ImageDecoding {
 
     /// NSImage(data:) は拡張子ヒントなしでは SVG を判別できないため、
     /// SVG らしきデータは .svg の一時ファイル経由で読み込む。
+    ///
+    /// 既知の残余(cooViewer-0kn。CWE-312 の受容): decode は保護状態を知らないため、
+    /// 暗号化書庫内の SVG ページを復号したデータもここで平文の一時ファイルへ一瞬
+    /// 書き出す(defer で即削除。プロセスがこの間に死ねば残る)。他の経路(SuperRes
+    /// キャッシュ=暗号化 or 非保存、サムネイル=ディスク層バイパス)と非対称だが、
+    /// 「暗号化書庫内の SVG ページ」自体がほぼ存在しない稀ケースで、正しい修正は
+    /// decode 系 API 全体へ protected を通す配線(nonisolated ホットパスにアクタ跳躍を
+    /// 足す)を要し、トリガの稀さに対して不相応。受容し据え置く(macOS 公開 API に
+    /// 一時ファイルなしの SVG ラスタライズ手段が無いのも理由)。
     private static func loadAppKitImage(_ data: Data) -> NSImage? {
         if let image = NSImage(data: data) { return image }
         let head = String(decoding: data.prefix(512), as: UTF8.self)
