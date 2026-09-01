@@ -71,6 +71,13 @@ actor MLModelInstaller {
         Task { @MainActor in
             status.state = state
         }
+        // モデルが使える状態に(回復)したら、恒久失敗中に ML 系キーへ焼いた CI
+        // フォールバックを ImageResampler から捨て、本物の ML で作り直させる
+        // (cooViewer-emx。オフライン→復帰で soft な CI がセッション中残る問題)。
+        // フォールバックが無ければ no-op。両モデル共通の掃除で足りる
+        if state == .ready {
+            Task { await ImageResampler.shared.removeMLFallbackEntries() }
+        }
     }
 
     /// モデルを使える状態にしてロード済みインスタンスを返す
