@@ -206,6 +206,45 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(loads, 1)
     }
 
+    /// ディスクヒットで本フォルダの mtime が現在へ更新され、保持日数を超えた
+    /// 愛読書が trimDiskCache に消されない(cooViewer-1f0)
+    func testDiskCacheFolderFreshenedOnReadSurvivesTrim() async throws {
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+        _ = await ThumbnailCache(diskRoot: diskRoot)
+            .thumbnail(for: entry, in: source, bookKey: "book1")  // ディスクへ
+        let folder = diskRoot.appendingPathComponent("book1")
+        // 40 日前へ戻す(全ページキャッシュ済みで読み取りだけの状況を再現)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-40 * 86400)],
+            ofItemAtPath: folder.path)
+        // 新セッションで読む → ディスクヒットでフォルダを freshen する
+        let fresh = ThumbnailCache(diskRoot: diskRoot)
+        _ = await fresh.thumbnail(for: entry, in: source, bookKey: "book1")
+        let mtime = try FileManager.default
+            .attributesOfItem(atPath: folder.path)[.modificationDate] as? Date
+        XCTAssertGreaterThan(try XCTUnwrap(mtime), Date().addingTimeInterval(-60))
+        // 30 日でトリムしても freshen 済みなので残る
+        await fresh.trimDiskCache(olderThanDays: 30)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    /// 対照: 読まずに保持日数を超えたフォルダは trim で消える(freshen が効いて
+    /// いる証拠。freshen は thumbnail(for:) 経由でのみ起きる)
+    func testUnreadOldDiskFolderIsTrimmed() async throws {
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+        _ = await ThumbnailCache(diskRoot: diskRoot)
+            .thumbnail(for: entry, in: source, bookKey: "book2")
+        let folder = diskRoot.appendingPathComponent("book2")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-40 * 86400)],
+            ofItemAtPath: folder.path)
+        // 読まずに trim(freshen されない)→ 消える
+        await ThumbnailCache(diskRoot: diskRoot).trimDiskCache(olderThanDays: 30)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+    }
+
     func testConcurrentRequestsShareOneGeneration() async throws {
         // 併走する同一サムネイル要求は 1 回の生成を共有する(in-flight 共有)
         let cache = ThumbnailCache(diskRoot: diskRoot)

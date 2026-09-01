@@ -90,6 +90,14 @@ actor ThumbnailCache {
 
     private var inFlight: [String: InFlight] = [:]
 
+    /// 今セッションでディスクフォルダの更新日時を押し上げ済みの本(bookKey)。
+    /// trimDiskCache は本フォルダの mtime で期限判定するが、読み取り(ディスク
+    /// ヒット)は mtime を更新しないため、全ページがキャッシュ済みの愛読書が
+    /// 保持日数(既定30日)経過で丸ごと削除され全再生成になっていた
+    /// (cooViewer-1f0)。読み始めた本を1回だけ触って保持する。キャッシュ
+    /// フォルダは常にローカル Caches 配下なので setAttributes は安価
+    private var diskFreshenedBooks: Set<String> = []
+
     /// メモリ → ディスク → 生成の順で取得する。
     /// urgent: 可視セル・ホバープレビューなど「いま画面に見えている」要求。
     /// 生成タスク自体を userInitiated で起動し、1 段目 generationGate の優先
@@ -100,6 +108,16 @@ actor ThumbnailCache {
     /// 変えない(作成時のみ有効)
     func thumbnail(for entry: PageEntry, in source: any BookSource,
                    bookKey: String, urgent: Bool = false) async -> CGImage? {
+        // この本を今セッションで初めて触ったら、ディスクの本フォルダの更新日時を
+        // now に押し上げる(読み取りは mtime を更新しないため、trimDiskCache の
+        // 期限判定で愛読書が削除されるのを防ぐ。cooViewer-1f0)。フォルダが無い本
+        // (未生成・保護コンテンツ)は setAttributes が失敗して無害(生成時に
+        // フォルダ mtime が付く)
+        if diskFreshenedBooks.insert(bookKey).inserted {
+            try? FileManager.default.setAttributes(
+                [.modificationDate: Date()],
+                ofItemAtPath: diskRoot.appendingPathComponent(bookKey).path)
+        }
         let key = bookKey + "/" + String(entry.id)
         if let hit = memory[key] {
             touch(key)
