@@ -24,6 +24,14 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private var liveTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
+    /// 直近に Range 要求で展開したリソース(1件)。audio/video のシークは同じ
+    /// ファイルへ Range 要求を繰り返すが、各要求ごとに publication.resource(at:) が
+    /// エントリ全体を再 inflate + CRC していた(cooViewer-ebm)。展開結果を1件だけ
+    /// 保持し、同一パスの後続 Range は再展開せず slice して返す。非 Range
+    /// (XHTML/画像)は再要求されないので載せず、メディアと thrash させない。
+    /// @MainActor なのでロック不要
+    var cachedRangeResource: (path: String, data: Data, mediaType: String)?
+
     public init(publication: EPUBPublication, allowsScripts: Bool = false) {
         self.publication = publication
         self.instanceID = UUID().uuidString.lowercased()
@@ -59,6 +67,14 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range")
         let publication = self.publication
         liveTasks[id] = Task { [weak self] in
+            // 直近 Range リソースの命中(メディアのシーク連打)は再展開せず即応答
+            if let self, let cached = self.cachedRangeResource, cached.path == path {
+                guard self.liveTasks[id] != nil else { return }  // stop 済み
+                self.liveTasks[id] = nil
+                self.reply(to: urlSchemeTask, url: url, data: cached.data,
+                           mediaType: cached.mediaType, rangeHeader: rangeHeader)
+                return
+            }
             // 展開・難読化解除はバックグラウンドで(メインを塞がない)
             let payload = await Task.detached(priority: .userInitiated) {
                 () -> (data: Data, mediaType: String)? in
@@ -69,6 +85,11 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let payload else {
                 urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
                 return
+            }
+            // Range 要求(メディアのシーク)は同一ファイルへ繰り返し来るので、
+            // 展開結果を1件だけ保持する(cooViewer-ebm)。非 Range は載せない
+            if rangeHeader != nil {
+                self.cachedRangeResource = (path, payload.data, payload.mediaType)
             }
             self.reply(to: urlSchemeTask, url: url,
                        data: payload.data, mediaType: payload.mediaType,
