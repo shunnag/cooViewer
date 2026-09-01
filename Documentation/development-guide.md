@@ -69,7 +69,7 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | 引数 | 内容 |
 |---|---|
 | `--open <path>` | 指定の本を開く(`--at-page <1 始まり>` で開始ページ指定。リフロー EPUB では spine 項目の指定になる) |
-| `--snapshot <png>` | 2 秒後に contentView を PNG 出力して終了 |
+| `--snapshot <png>` | `--then` の完了と表示整定を待ち、さらに 2 秒後に contentView を PNG 出力して終了 |
 | `--show-thumbnails` | サムネイルオーバーレイを開いて撮る(EPUB モードでは census 一致の画面単位一覧。生成は逐次なのでセルが埋まるまで `--then-goto-percent` 等でステップを足して撮影を遅らせる)。行列はウインドウサイズとセルサイズから自動算出されるため、`-ThumbnailCellSize <pt>`(80–400)の注入でズーム水準を変えて撮れる |
 | `--show-bookmark-editor` | しおり編集をウインドウ表示(シートは撮れないため) |
 | `--show-file-info` | ファイル情報パネルを開く(`--snapshot` はパネルを撮る) |
@@ -82,7 +82,7 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--then-next-page` | 表示後にページ送りする(めくり効果の完了後状態の確認等)。リフロー EPUB リーダーが開いていればそちらを送る(複数回可) |
 | `--then-goto-percent <n>` | 表示後に比率ジャンプ(数字キー 0-9 の goToPercent 経路の検証。**EPUB モード中のみ**動作) |
 | `--then-show-thumbnails` | サムネイル一覧をトグル(EPUB 入場後に開く順序制御用) |
-| `--then-rapid-thumbnails <N>` | サムネイル一覧を約 70ms 間隔で N 回トグル(t キー連打の再現。奇数なら開いた状態で終わる。`0` はトグルせず整定待ちだけを足す(撮影が計 3 秒遅れる))。撮影は連打の所要時間ぶん自動で遅延する |
+| `--then-rapid-thumbnails <N>` | サムネイル一覧を約 70ms 間隔で N 回トグル(t キー連打の再現。奇数なら開いた状態で終わる。`0` はトグルせず、1 秒の最低間隔と表示整定待ちの後に撮影を 2 秒延ばす)。撮影は連打の所要時間ぶん自動で遅延する |
 | `--dump-thumbnail-stats` | 撮影時に ThumbnailCache の内部状態(メモリ/生成中/失敗記録/生成ゲート)と本の保護コンテンツ判定を stdout へ出力(欠けセルの原因判別用) |
 | `--then-show-bubble <0-1>` | ページバーのホバーバブルを指定比率位置に表示(マウスホバーは CLI から再現できないため。EPUB では census 完了後に出すこと) |
 | `--then-play-narration` | 音声メディアオーバーレイ(SMIL)の再生をトグル(EPUB でオーバーレイを持つ項目のとき。読み上げ中テキストの active-class ハイライトの検証用。2 回で一時停止になる) |
@@ -95,9 +95,11 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--dump-first-responder <txt>` | 3 秒後に first responder の型名を書き出して終了(EPUB⇔画像本のフォーカス復帰検証) |
 | `-キー名 <値>` | 任意の defaults を引数ドメインで上書き(例 `-SpreadCoverSingle 1`) |
 
-`--then-next-book` / `--then-previous-book` / `--then-next-page` / `--then-goto-percent` / `--then-show-thumbnails` / `--then-show-bubble`
-は**コマンドライン順に 1 秒間隔で逐次実行**され、`--snapshot` はステップ数ぶん
-待ってから撮る。組合せ例: コレクション内 EPUB の巻末超え復帰の検証は
+`--then-*` はコマンドライン順に、1 秒の最低間隔を置き、表示整定(オープンフローと
+EPUB 入場の完了)を待ってから逐次実行される。各整定待ちは約 12 秒でタイムアウトする。
+`--snapshot` は全ステップの完了を待ち、キャプチャ前にも表示整定を確認するため、
+`--at-page` で合本内の代理ページへ直接着地する場合も、次のようなチェーンも決定的に
+検証できる。組合せ例: コレクション内 EPUB の巻末超え復帰の検証は
 `--open <フォルダ> --then-next-page --then-next-page --then-goto-percent 100 --then-next-page`
 (送りで代理ページへ→自動入場→EPUB 内 100%→巻末超えで合本の次エントリへ)。
 

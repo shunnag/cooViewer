@@ -178,8 +178,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.debugPreviewWindow = window
             }
         }
-        // 検証用: --then-* のナビゲーション系フラグは**コマンドライン順に
-        // 1 秒間隔で逐次実行**する(組合せ・繰り返しの検証: 例
+        // 検証用: --then-* のナビゲーション系フラグはコマンドライン順に、
+        // 1 秒の最低間隔と表示整定待ちを挟んで逐次実行する(組合せ・繰り返しの検証: 例
         // --then-goto-percent 100 --then-next-page で巻末超えの着地確認)。
         // --then-previous-book / --then-next-book: 前/次の本へ(Ctrl+D 相当)
         // --then-next-page: ページ送り(EPUB はリフローのページ送りに分岐)
@@ -248,10 +248,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             argIndex += 1
         }
+        var navTask: Task<Void, Never>?
         if !navigationSteps.isEmpty {
-            Task { @MainActor in
+            navTask = Task { @MainActor in
                 for step in navigationSteps {
                     try? await Task.sleep(for: .seconds(1))
+                    await self.readerWindowController?.debugAwaitDisplaySettled()
                     step()
                 }
             }
@@ -330,15 +332,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
-            // 多段ナビゲーション指定時は 1 段ごとに 1 秒待ちを足す
-            // (ステップは 1 秒間隔で逐次実行されるため、最後のステップの
-            // 完了+読み込みの余裕を見て撮影する)
-            let navSteps = arguments.filter {
-                ["--then-previous-book", "--then-next-book",
-                 "--then-next-page", "--then-goto-percent",
-                 "--then-show-thumbnails", "--then-show-bubble",
-                 "--then-play-narration", "--then-rapid-thumbnails"].contains($0)
-            }.count
             // 連打ステップは自分の所要時間(N×70ms)+整定のぶん撮影を遅らせる
             var rapidWait = 0.0
             var scanIndex = 0
@@ -350,8 +343,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 scanIndex += 1
             }
+            let snapshotNavigationTask = navTask
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2 + Double(navSteps) + rapidWait))
+                await snapshotNavigationTask?.value
+                await self.readerWindowController?.debugAwaitDisplaySettled()
+                try? await Task.sleep(for: .seconds(2 + rapidWait))
                 // 検証用: サムネイル機構の内部状態を stdout へ出力
                 // (--dump-thumbnail-stats。欠けセルの原因判別用)
                 if arguments.contains("--dump-thumbnail-stats") {
