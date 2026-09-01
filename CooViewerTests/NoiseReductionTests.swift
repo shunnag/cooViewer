@@ -122,6 +122,46 @@ final class NoiseReductionTests: XCTestCase {
             usedMLFallback: false, mlRetryPossible: false))
     }
 
+    @MainActor
+    func testMLRetryPossibleReflectsInstallStates() async {
+        let previousNoiseState = MLModelInstallStatus.noise.state
+        let previousSuperResolutionState = MLModelInstallStatus.superResolution.state
+        defer {
+            MLModelInstallStatus.noise.state = previousNoiseState
+            MLModelInstallStatus.superResolution.state = previousSuperResolutionState
+        }
+
+        let states: [(state: MLModelInstallStatus.State, retryPossible: Bool)] = [
+            (.notInstalled, true),
+            (.downloading, true),
+            (.ready, true),
+            (.failed, false)
+        ]
+        for noise in states {
+            MLModelInstallStatus.noise.state = noise.state
+            for superResolution in states {
+                MLModelInstallStatus.superResolution.state = superResolution.state
+
+                let strong = await ImageResampler.mlRetryPossible(
+                    for: .strong, superResApplicable: true)
+                XCTAssertEqual(strong, noise.retryPossible)
+
+                let maximum = await ImageResampler.mlRetryPossible(
+                    for: .maximum, superResApplicable: true)
+                XCTAssertEqual(
+                    maximum,
+                    superResolution.retryPossible || noise.retryPossible)
+            }
+        }
+
+        // 元画像が大きすぎる場合、超解像が利用可能でも再試行対象に数えない
+        MLModelInstallStatus.superResolution.state = .ready
+        MLModelInstallStatus.noise.state = .failed
+        let oversized = await ImageResampler.mlRetryPossible(
+            for: .maximum, superResApplicable: false)
+        XCTAssertFalse(oversized)
+    }
+
     func testResamplerCachesSeparatelyPerReductionLevel() async {
         // 同サイズでもノイズ低減指定があれば処理され、レベル別にキャッシュされる
         let resampler = ImageResampler(byteLimit: 8 << 20)

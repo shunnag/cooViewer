@@ -110,11 +110,24 @@ actor ImageResampler {
             result = Self.cgResample(source, width: width, height: height)
         }
         if let result {
-            // ML 一過性フォールバック(モデル DL 中等)は ML 用キーに焼き付けない
-            // — モデル完成後に再計算させる。XCTest は ML が恒久不可なので
-            // (MLModelInstaller が isXCTest で即 failed)キャッシュを許可する
+            // ML 一過性フォールバック(モデル未導入/DL 中)は ML 用キーに焼き付けない
+            // — モデル完成後に再計算させる(cooViewer-2za item5)。ただし ML が恒久失敗
+            // (.failed)した機では毎表示 CI 再計算になるため、恒久失敗なら焼き付けを許可
+            // する(cooViewer-7n1.2)。XCTest は ML 即 failed で決定的に許可
+            // (testResamplerCachesSeparatelyPerReductionLevel の === 判定を保つため)。
+            let retryPossible: Bool
+            if !usedMLFallback {
+                retryPossible = true
+            } else if AutomatedRun.isXCTest {
+                retryPossible = false
+            } else {
+                let srApplicable = max(image.width, image.height)
+                    <= MLSuperResolver.maxSourceEdge
+                retryPossible = await Self.mlRetryPossible(
+                    for: noiseReduction, superResApplicable: srApplicable)
+            }
             let cacheable = Self.cachesFallback(
-                usedMLFallback: usedMLFallback, mlRetryPossible: !AutomatedRun.isXCTest)
+                usedMLFallback: usedMLFallback, mlRetryPossible: retryPossible)
             if cacheable { insert(result, for: key) }
         }
         return result
@@ -124,6 +137,26 @@ actor ImageResampler {
     /// mlRetryPossible な間はキャッシュせず(完成後に再計算)、恒久不可なら許可する
     static func cachesFallback(usedMLFallback: Bool, mlRetryPossible: Bool) -> Bool {
         !(usedMLFallback && mlRetryPossible)
+    }
+
+    /// ML 恒久失敗(.failed)なら再試行不可 → キャッシュ許可。未導入/DL 中は再試行の
+    /// 見込みがあるので焼き付けない。@MainActor の導入状態をアクタ境界越しに 1 回だけ
+    /// 読み、比較結果の Bool だけを持ち帰る(State 型をアクタ境界に跨がせない)。
+    /// 最高は超解像・ノイズの双方が「再試行不可」になって初めて false(=キャッシュ許可)。
+    /// ただし超解像は元画像が大きすぎると(maxSourceEdge 超)モデル .ready でも常に nil を
+    /// 返すので、その画像では超解像を「再試行可能」に数えない(毎表示再計算の再発防止)。
+    static func mlRetryPossible(for level: NoiseReductionLevel,
+                                superResApplicable: Bool) async -> Bool {
+        await MainActor.run {
+            switch level {
+            case .maximum:
+                return (superResApplicable
+                        && MLModelInstallStatus.superResolution.state != .failed)
+                    || MLModelInstallStatus.noise.state != .failed
+            default:
+                return MLModelInstallStatus.noise.state != .failed
+            }
+        }
     }
 
     /// リサンプル済みキャッシュの照会のみ(計算はしない。命中は MRU 更新)。
