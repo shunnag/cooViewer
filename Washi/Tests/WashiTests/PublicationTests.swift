@@ -24,6 +24,19 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(publication.coverImagePath, "OEBPS/images/cover.png")
     }
 
+    /// 迷い込んだ指紋ファイル(暗号化を伴わない sinf.xml 等)だけでは DRM 報告
+    /// しない。契約「nil when not DRM-protected」を全分岐で守る(cooViewer-2hp)
+    func testStrayFingerprintDoesNotReportDRM() throws {
+        var entries = EPUBFixtures.verticalNovelEntries()
+        entries.append((name: "META-INF/sinf.xml",
+                        data: Data("<sinf/>".utf8)))
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/novel.epub"))
+        XCTAssertFalse(publication.isDRMProtected)  // 本文は暗号化されていない
+        XCTAssertNil(publication.drmSchemeName)      // 指紋だけでは DRM 扱いしない
+    }
+
     /// 表紙 API: 宣言あり(cover-image)の解決とデコード・縮小
     func testCoverImageDeclaredAndDecoded() throws {
         let publication = try openVerticalNovel()
