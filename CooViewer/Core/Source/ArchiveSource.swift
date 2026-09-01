@@ -283,7 +283,11 @@ actor ArchiveSource: BookSource {
         var comicInfo: Int32?
         for index in 0..<archive.numberOfEntries() {
             guard let name = archive.name(ofEntry: index) else { continue }
-            guard !archive.entryIsDirectory(index), archive.size(ofEntry: index) != 0 else {
+            // 空判定は 64bit の uncompressedSize(ofEntry:)。32bit の size(ofEntry:) は
+            // 真サイズが 4GiB の倍数のとき 0 に桁溢れし、そのページを空扱いで
+            // 落としてしまう(cooViewer-0jt)。ディレクトリは entryIsDirectory が拾う
+            guard !archive.entryIsDirectory(index),
+                  archive.uncompressedSize(ofEntry: index) != 0 else {
                 continue
             }
             let lastComponent = (name as NSString).lastPathComponent
@@ -768,7 +772,10 @@ actor ArchiveSource: BookSource {
         spoolEncrypted = password != nil || contentIsSensitive
         var total: Int64 = 0
         for entry in outerImages {
-            total += Int64(archive.size(ofEntry: Int32(entry.id)))
+            // 64bit の uncompressedSize(ofEntry:) を使う。32bit の size(ofEntry:) は
+            // 2〜4GiB のエントリで負の Int32 を返し、Int64 化で total を減らして
+            // 予算判定をすり抜け、4GiB の天井を超えてスプールし得る(cooViewer-0jt)
+            total += archive.uncompressedSize(ofEntry: Int32(entry.id))
         }
         guard total <= sizeLimit else { return }
 
