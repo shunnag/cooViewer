@@ -1,6 +1,37 @@
 import AppKit
 import WebKit
 
+enum SpineNavigationDisposition: Equatable {
+    case allowExpectedLoad
+    case routeThroughReader
+}
+
+/// 自分で発行した spine ロードだけを一度 allow し、文書が発行した遷移は
+/// reader の状態更新経路へ戻すための期待値管理
+struct SpineNavigationGate {
+    private var expectedPaths: [String] = []
+
+    mutating func expect(_ path: String) {
+        expectedPaths.append(path)
+    }
+
+    mutating func cancelExpectation(for path: String) {
+        guard let index = expectedPaths.lastIndex(of: path) else { return }
+        expectedPaths.remove(at: index)
+    }
+
+    mutating func disposition(for path: String,
+                              navigationType: WKNavigationType)
+        -> SpineNavigationDisposition {
+        guard navigationType == .other,
+              let index = expectedPaths.firstIndex(of: path) else {
+            return .routeThroughReader
+        }
+        expectedPaths.remove(at: index)
+        return .allowExpectedLoad
+    }
+}
+
 /// An EPUB reader view (WKWebView-based).
 /// Reflowable content is drawn via `ReaderScripts` pagination; fixed-layout
 /// content is aspect-fitted into its ICB (pageZoom + frame adjustment).
@@ -81,6 +112,8 @@ public final class EPUBReaderView: NSView {
     /// 現在有効なナビゲーション(didFinish/didFail の遅延配達を、後続の
     /// loadSpineItem 後に古い文書ぶんとして無視するための同一性チェック)
     private var currentNavigation: WKNavigation?
+    /// loadSpineItem 自身の .other と文書内遷移の .other を区別する
+    private var spineNavigationGate = SpineNavigationGate()
     /// ネイティブキー横取りのローカルモニタ(forwardsKeyEventsNatively)
     private var keyEventMonitor: Any?
     /// メディアオーバーレイ(SMIL)再生エンジン(再生時に生成)
@@ -319,6 +352,7 @@ public final class EPUBReaderView: NSView {
     private func rebuildWebView(for publication: EPUBPublication) {
         webView?.removeFromSuperview()
         messageProxy?.owner = nil
+        spineNavigationGate = SpineNavigationGate()
 
         let handler = EPUBSchemeHandler(publication: publication,
                                         allowsScripts: settings.allowsScriptedContent)
@@ -372,10 +406,17 @@ public final class EPUBReaderView: NSView {
     /// 現在の表示モード(単ページ/見開き)に応じた実効余白。見開きは
     /// spreadInsets があればそちら、無ければ insets(EPUBScreenMetrics と同じ規則)
     private var activeInsets: EPUBReaderInsets {
-        let isSpread = shouldUseSpread(forContentWidth:
-            max(1, bounds.width - settings.insets.left - settings.insets.right))
         return isSpread ? (settings.spreadInsets ?? settings.insets)
                         : settings.insets
+    }
+
+    /// 見開き判定はモード別余白を適用する前の基準幅で固定し、ライブ表示と
+    /// census の閾値が spreadInsets の大きさで分岐しないようにする
+    private var isSpread: Bool {
+        let base = settings.insets
+        let baseWidth = max(1, bounds.width - base.left - base.right)
+        return EPUBScreenMetrics.usesSpread(contentWidth: baseWidth,
+                                            columnMode: settings.columnMode)
     }
 
     private func contentFrame() -> NSRect {
@@ -457,11 +498,6 @@ public final class EPUBReaderView: NSView {
         EPUBScreenMetrics.spreadGutter(forContentWidth: width)
     }
 
-    private func shouldUseSpread(forContentWidth width: CGFloat) -> Bool {
-        EPUBScreenMetrics.usesSpread(contentWidth: width,
-                                     columnMode: settings.columnMode)
-    }
-
     /// 現在の表示条件の画面計画(census・サムネイルのオプションもここから)
     private var currentScreenMetrics: EPUBScreenMetrics {
         EPUBScreenMetrics(viewportSize: bounds.size, settings: settings)
@@ -495,7 +531,12 @@ public final class EPUBReaderView: NSView {
             return
         }
         webView.alphaValue = 0
-        currentNavigation = webView.load(URLRequest(url: url))
+        spineNavigationGate.expect(entry.containerPath)
+        let navigation = webView.load(URLRequest(url: url))
+        if navigation == nil {
+            spineNavigationGate.cancelExpectation(for: entry.containerPath)
+        }
+        currentNavigation = navigation
     }
 
     // MARK: - ナビゲーション API
@@ -923,13 +964,13 @@ public final class EPUBReaderView: NSView {
         }
     }
 
-    private func setupOptionsJSON() -> String {
+    func setupOptionsJSON() -> String {
         let frame = contentFrame()
         var options: [String: Any] = [
             "width": Double(frame.width.rounded(.down)),
             "height": Double(frame.height.rounded(.down)),
             "gap": settings.pageGap,
-            "spread": shouldUseSpread(forContentWidth: frame.width),
+            "spread": isSpread,
             "gutter": Double(spreadGutter(forContentWidth: frame.width)),
             "fixedLayout": isFixedLayoutItem,
             "keysEnabled": settings.handlesKeyboardNavigation,
@@ -938,6 +979,13 @@ public final class EPUBReaderView: NSView {
         if isFixedLayoutItem { options["width"] = 0; options["height"] = 0 }
         let data = (try? JSONSerialization.data(withJSONObject: options)) ?? Data("{}".utf8)
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    /// JS へ復元先の適用を依頼した時点では実位置が未確定なので、locator は
+    /// pageChanged が届くまで保持する
+    func applyPendingTargetAfterSetup() {
+        applyTarget(pendingTarget)
+        pendingTarget = .start
     }
 
     /// didFinish 後(または再ページ割り時)のセットアップ実行。
@@ -971,9 +1019,7 @@ public final class EPUBReaderView: NSView {
                 pagesPerScreen = max(1, dict["pagesPerScreen"] as? Int ?? 1)
             }
             if !preserveProgression {
-                applyTarget(pendingTarget)
-                pendingTarget = .start
-                pendingRestoreLocator = nil  // 復元適用完了
+                applyPendingTargetAfterSetup()
             }
             isLoadingSpineItem = false
             updateFurniture()
@@ -1590,18 +1636,21 @@ extension EPUBReaderView: WKNavigationDelegate, WKUIDelegate {
             return (.cancel, preferences)
         }
         if url.scheme?.lowercased() == EPUBSchemeHandler.scheme {
-            // JS の click 捕捉をすり抜けた内部リンクの安全網(将来の未知の
-            // リンク形態も含む): 直接遷移は spine 状態を狂わせるため止め、
-            // loadSpineItem 経由で移動する
-            if navigationAction.navigationType == .linkActivated {
-                if let path = schemeHandler?.containerPath(for: url) {
-                    goToContainerPath(
-                        path, fragment: url.fragment(percentEncoded: false))
-                }
+            guard let path = schemeHandler?.containerPath(for: url) else {
                 return (.cancel, preferences)
             }
-            preferences.allowsContentJavaScript = settings.allowsScriptedContent
-            return (.allow, preferences)
+            switch spineNavigationGate.disposition(
+                for: path, navigationType: navigationAction.navigationType) {
+            case .allowExpectedLoad:
+                preferences.allowsContentJavaScript = settings.allowsScriptedContent
+                return (.allow, preferences)
+            case .routeThroughReader:
+                // 文書が発行した遷移は種類を問わず直接通さず、spine・locator・
+                // ページ割りを同時に更新する共通経路へ戻す
+                goToContainerPath(
+                    path, fragment: url.fragment(percentEncoded: false))
+                return (.cancel, preferences)
+            }
         }
         // JS のクリック捕捉をすり抜けたリンク(area 等)の安全網
         if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? ""),
