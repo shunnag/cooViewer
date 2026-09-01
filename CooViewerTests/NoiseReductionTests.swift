@@ -207,6 +207,38 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertNotNil(cached, "完走した本物の結果はキャッシュされる(作業を捨てない)")
     }
 
+    /// モデル回復時に呼ぶ removeMLFallbackEntries は、ML 恒久失敗中に焼いた CI
+    /// フォールバック(最終+中間)を捨てる(cooViewer-emx)。XCTest は ML 恒久失敗
+    /// 相当なので .strong の結果は 7n1.2 でキャッシュされ、掃除の対象になる
+    func testRemoveMLFallbackEntriesClearsCachedFallbacks() async {
+        let resampler = ImageResampler(byteLimit: 32 << 20)
+        let source = blockyImage()
+        _ = await resampler.resample(
+            source, to: CGSize(width: 40, height: 40), cacheKey: "emx",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        let before = await resampler.stats().count
+        XCTAssertGreaterThan(before, 0, "CI フォールバックがキャッシュされている")
+        await resampler.removeMLFallbackEntries()
+        let after = await resampler.stats().count
+        XCTAssertEqual(after, 0, "モデル回復時に ML フォールバックは捨てられる")
+    }
+
+    /// 本物のキャッシュ(非フォールバック)は removeMLFallbackEntries で消えない
+    /// (過剰削除しない)。.none は ML 非関与なので焼き付けが残る
+    func testRemoveMLFallbackEntriesKeepsNonFallback() async {
+        let resampler = ImageResampler(byteLimit: 32 << 20)
+        let source = blockyImage()
+        // .none + サイズ変更 → ML 非関与の通常リサンプル(フォールバックでない)
+        _ = await resampler.resample(
+            source, to: CGSize(width: 40, height: 40), cacheKey: "plain",
+            upscaleWithMetalFX: false, noiseReduction: .none)
+        let before = await resampler.stats().count
+        XCTAssertGreaterThan(before, 0)
+        await resampler.removeMLFallbackEntries()
+        let after = await resampler.stats().count
+        XCTAssertEqual(after, before, "非フォールバックは保持される")
+    }
+
     /// .strong のノイズ低減中間結果は元サイズキーでキャッシュされ、同一画像を別
     /// target でリサンプルしても reducedSource(ノイズ低減)は1回で済む(ウインドウ
     /// リサイズごとの再計算防止。cooViewer-kli)。XCTest では ML 恒久失敗相当のため

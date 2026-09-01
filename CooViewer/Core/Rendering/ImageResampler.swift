@@ -28,6 +28,10 @@ actor ImageResampler {
     /// 結果キャッシュが効けば、同一元画像を別 target で複数回リサンプルしても
     /// 1 回になる(cooViewer-kli)
     private var reducedSourceCount = 0
+    /// ML 恒久失敗中に ML 系キーへ焼いた CI フォールバックのキー(最終・中間とも)。
+    /// モデルが .ready へ回復したら removeMLFallbackEntries で捨て、本物の ML で
+    /// 作り直させる(cooViewer-emx)。追い出し時は removeEntry が同期して外す
+    private var mlFallbackKeys: Set<String> = []
     /// 合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
     /// リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため、
     /// 行き来で作り直さずに済むよう広めに確保する(旧: 1/6・最大 4.5GB は
@@ -157,6 +161,7 @@ actor ImageResampler {
                await resolvedCacheable(usedMLFallback: usedMLFallback,
                                        image: image, level: noiseReduction) {
                 insert(source, for: nrKey)
+                if usedMLFallback { mlFallbackKeys.insert(nrKey) }  // 回復時に捨てる(emx)
             }
         }
         // モデル推論の await 中に別経路が同じキーを入れていたら使い回す
@@ -181,8 +186,18 @@ actor ImageResampler {
            await resolvedCacheable(usedMLFallback: usedMLFallback,
                                    image: image, level: noiseReduction) {
             insert(result, for: key)
+            if usedMLFallback { mlFallbackKeys.insert(key) }  // 回復時に捨てる(emx)
         }
         return result
+    }
+
+    /// ML モデルが .ready へ回復したときに呼ぶ(MLModelInstaller から)。恒久失敗中に
+    /// ML 系キーへ焼いた CI フォールバックを捨て、次回要求で本物の ML により作り直す
+    /// (cooViewer-emx。7n1.2 のトレードオフの隙間 = 一時失敗→回復で CI が残る問題)
+    func removeMLFallbackEntries() {
+        let keys = mlFallbackKeys
+        mlFallbackKeys.removeAll()
+        for key in keys { removeEntry(key) }
     }
 
     /// ML 一過性フォールバック(モデル未導入/DL 中)は ML 用キーに焼き付けない
@@ -329,6 +344,7 @@ actor ImageResampler {
         if let index = order.firstIndex(of: key) {
             order.remove(at: index)
         }
+        mlFallbackKeys.remove(key)  // 追い出したキーは回復対象から外す(emx)
     }
 
     /// メモリ圧迫時: 使用量を半分まで削る
