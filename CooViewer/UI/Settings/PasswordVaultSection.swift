@@ -4,23 +4,39 @@ import SwiftUI
 /// 自動解錠のトグル・保存件数・全削除。トグル OFF は照会を止めるだけで
 /// 保存データは消さない(削除は「すべて削除…」に分離)
 struct PasswordVaultSection: View {
+    private enum VaultState {
+        case loading
+        case unavailable
+        case available(Int)
+    }
+
     @AppStorage("PasswordVaultEnabled") private var vaultEnabled = true
-    @State private var savedCount: Int?
+    @State private var state: VaultState = .loading
     @State private var confirmsDeleteAll = false
+    @State private var confirmsReset = false
 
     var body: some View {
         Section {
             Toggle(String(localized: "Unlock with saved passwords"), isOn: $vaultEnabled)
             HStack {
-                if let savedCount {
-                    Text(String(localized: "Saved passwords: \(savedCount)"))
-                } else {
+                switch state {
+                case .loading:
+                    Spacer()
+                    Button(String(localized: "Delete All…")) {}
+                        .disabled(true)
+                case .unavailable:
                     Text(String(localized: "Saved passwords: unavailable"))
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(String(localized: "Reset Vault"), role: .destructive) {
+                        confirmsReset = true
+                    }
+                case let .available(savedCount):
+                    Text(String(localized: "Saved passwords: \(savedCount)"))
+                    Spacer()
+                    Button(String(localized: "Delete All…")) { confirmsDeleteAll = true }
+                        .disabled(savedCount == 0)
                 }
-                Spacer()
-                Button(String(localized: "Delete All…")) { confirmsDeleteAll = true }
-                    .disabled((savedCount ?? 0) == 0)
             }
         } header: {
             Text(String(localized: "Passwords"))
@@ -29,23 +45,38 @@ struct PasswordVaultSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .task { await refreshCount() }
+        .task { await refresh() }
         .alert(String(localized: "Delete all saved passwords?"),
                isPresented: $confirmsDeleteAll) {
             Button(String(localized: "Delete All"), role: .destructive) {
                 Task {
                     await PasswordVault.shared.deleteAll()
-                    await refreshCount()
+                    await refresh()
                 }
             }
             Button(String(localized: "Cancel"), role: .cancel) {}
         } message: {
             Text(String(localized: "Encrypted books will ask for their passwords again. This cannot be undone."))
         }
+        .alert(String(localized: "Reset broken vault"),
+               isPresented: $confirmsReset) {
+            Button(String(localized: "Reset Vault"), role: .destructive) {
+                Task {
+                    await PasswordVault.shared.deleteAll()
+                    await refresh()
+                }
+            }
+            Button(String(localized: "Cancel"), role: .cancel) {}
+        } message: {
+            Text(String(localized: "This empties and reinitializes the vault that cannot be decrypted. All saved passwords will be lost and cannot be recovered."))
+        }
     }
 
-    private func refreshCount() async {
-        let available = await PasswordVault.shared.isAvailable()
-        savedCount = available ? await PasswordVault.shared.count() : nil
+    private func refresh() async {
+        if await PasswordVault.shared.isAvailable() {
+            state = .available(await PasswordVault.shared.count())
+        } else {
+            state = .unavailable
+        }
     }
 }

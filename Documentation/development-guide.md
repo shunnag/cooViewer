@@ -105,6 +105,16 @@ EPUB 入場の完了)を待ってから逐次実行される。各整定待ち�
 
 パスワードマネージャーの検証: テスト・`--snapshot` 実行では Keychain に触れない(保管庫は「利用できません」になる)。実際に保存・自動解錠を検証するときは、**Debug ビルド限定**の環境変数 `COOVIEWER_TEST_VAULT_KEY=<hex64桁>` と `COOVIEWER_TEST_VAULT_DIR=<一時ディレクトリ>`(必ず両方セットで指定)により使い捨ての鍵と保存先を注入して起動する(開発機の Keychain とプロンプトを汚さない。Release は環境変数を受け付けない)。
 
+復号できない保管庫の復旧導線は、注入鍵と壊れた `vault.enc` で決定的に検証できる:
+
+```sh
+DIR=$(mktemp -d); printf garbage > "$DIR/vault.enc"
+COOVIEWER_TEST_VAULT_KEY=$(openssl rand -hex 32) COOVIEWER_TEST_VAULT_DIR="$DIR" \
+  build/Debug/cooViewer.app/Contents/MacOS/cooViewer --snapshot-settings /tmp/vault.png -SettingsSelectedTab 5
+```
+
+「保存済みパスワード: 利用できません」と、有効な「リセット」ボタンが表示されることを確認する。
+
 環境変数:
 
 - `COOVIEWER_UI_TEST_CANCEL_PASSWORD=1` — パスワードダイアログを出さず

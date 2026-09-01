@@ -3426,12 +3426,32 @@
         }
       }
     },
+    "Reset Vault": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リセット"
+          }
+        }
+      }
+    },
     "Reset base settings…": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
             "value": "基本設定をデフォルトに戻す…"
+          }
+        }
+      }
+    },
+    "Reset broken vault": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "壊れた保管庫をリセット"
           }
         }
       }
@@ -4444,6 +4464,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "この本は DRM で保護されています。"
+          }
+        }
+      }
+    },
+    "This empties and reinitializes the vault that cannot be decrypted. All saved passwords will be lost and cannot be recovered.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "復号できない保管庫を空にして初期化します。保存済みのパスワードはすべて失われ、元に戻せません。"
           }
         }
       }
