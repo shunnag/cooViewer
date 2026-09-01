@@ -1248,6 +1248,12 @@ final class ReaderWindowController: NSWindowController {
         // guard で先に抜ける)。残すと同キーの再構築が恒久的に塞がる
         collectionPageMapPendingKey = nil
         collectionPageMapAttempts.removeAll()
+        // 隣接スプレッドの ML 先行リサンプルと本の先読みを止める。単一ウインドウ
+        // (isReleasedWhenClosed=false)ではプロセスは生き続け、preresampleTask の
+        // ガード(displayGeneration/preresampleRun/book 同一性)は閉窓では変わらない
+        // ため、止めないと画面が無いまま数分 GPU 推論/デコードを続ける(cooViewer-gdo)
+        preresampleTask?.cancel()
+        book?.cancelPrefetch()
         epubView?.stopMediaOverlay()  // ウインドウを閉じたら音声も止める
         epubView?.cancelPageCensus()
         saveCurrentBookState()
