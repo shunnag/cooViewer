@@ -12,12 +12,26 @@ import UniformTypeIdentifiers
 /// (旧キーのフォルダは起動時の trimDiskCache で回収する)。
 actor ThumbnailCache {
     static let shared = ThumbnailCache()
-    static let maxPixelSize = 200
+    /// 既定の目標解像度(ホバープレビュー等、サイズ非指定の要求)。256 バケットへ
+    static let defaultTargetPixelSize = 200
+    /// 目標解像度をバケットへ量子化する(cooViewer-vbv)。セルサイズ×縦横比×
+    /// backingScale から必要 px を出し、それを覆う最小バケットへ丸める。512 で
+    /// 頭打ち: それ以上の鮮明さは最大ズームでほぼ不可視で、メモリ/ディスクが 4 倍に
+    /// なるだけ。2 バケットに絞ることで、ピンチ拡縮が境界を跨ぐ全再生成を最小化し、
+    /// ディスクの版数も 1 ページ最大 2 に抑える
+    static func resolutionBucket(forTarget target: Int) -> Int {
+        target <= 256 ? 256 : 512
+    }
 
     private var memory: [String: CGImage] = [:]
-    private var order: [String] = []
-    /// 200px サムネイル(1 枚 ≈ 160KB)換算で 64MB 相当
-    private let memoryCountLimit = 400
+    private var order: [String] = []  // 末尾が最新(MRU)
+    private var costs: [String: Int] = [:]
+    private var totalCost = 0
+    /// メモリ上限(バイト予算)。256px≈171KB で ~560 枚、512px≈682KB で ~140 枚
+    /// (どのセルサイズでも 2 画面超)。旧: 固定 400 枚は 200px 前提でしか合わず、
+    /// セル追従で大きいサムネを載せるとメモリが膨れた(cooViewer-vbv。
+    /// ImageResampler と同じバイト予算方式)。テストは init で小さく差し替える
+    private let byteLimit: Int
 
     /// 生成に失敗したページ(壊れ画像・パスワード付きネスト書庫等)の記録。
     /// これがないと画面に入るたびに毎回展開し直してしまい、solid 書庫や
@@ -53,11 +67,13 @@ actor ThumbnailCache {
 
     private let diskRoot: URL
 
-    init(diskRoot: URL? = nil, failureTTL: Duration = .seconds(300)) {
+    init(diskRoot: URL? = nil, failureTTL: Duration = .seconds(300),
+         byteLimit: Int = 96 << 20) {
         self.diskRoot = diskRoot ?? FileManager.default
             .userDomainDirectory(.cachesDirectory)
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails-v2")
         self.failureTTL = failureTTL
+        self.byteLimit = max(1, byteLimit)
     }
 
     /// 生成中の共有タスクと待ち手数(重複要求は同じ生成を待つ)。
@@ -107,7 +123,8 @@ actor ThumbnailCache {
     /// 後ろに並ばされ、収束まで欠けて見えるため。既存生成への合流はレーンを
     /// 変えない(作成時のみ有効)
     func thumbnail(for entry: PageEntry, in source: any BookSource,
-                   bookKey: String, urgent: Bool = false) async -> CGImage? {
+                   bookKey: String, targetPixelSize: Int = defaultTargetPixelSize,
+                   urgent: Bool = false) async -> CGImage? {
         // この本を今セッションで初めて触ったら、ディスクの本フォルダの更新日時を
         // now に押し上げる(読み取りは mtime を更新しないため、trimDiskCache の
         // 期限判定で愛読書が削除されるのを防ぐ。cooViewer-1f0)。フォルダが無い本
@@ -118,17 +135,22 @@ actor ThumbnailCache {
                 [.modificationDate: Date()],
                 ofItemAtPath: diskRoot.appendingPathComponent(bookKey).path)
         }
-        let key = bookKey + "/" + String(entry.id)
+        // 目標解像度をバケットへ。キャッシュ(メモリ/ディスク/inFlight)は解像度別、
+        // 失敗台帳は解像度非依存(failKey)にする — でないとズームで px が変わると
+        // 2-strike 昇格がリセットされ、壊れページを別解像度で再挑戦し続ける(vbv)
+        let px = Self.resolutionBucket(forTarget: targetPixelSize)
+        let key = "\(bookKey)/\(entry.id)@\(px)"
+        let failKey = "\(bookKey)/\(entry.id)"
         if let hit = memory[key] {
             touch(key)
             return hit
         }
         // 恒久記録済みのページは期限内なら再挑戦しない(プレースホルダのまま)。
         // 期限切れは勘定ごと赦して再挑戦させる
-        if let record = failures[key], let at = record.permanentAt {
+        if let record = failures[failKey], let at = record.permanentAt {
             guard ContinuousClock.now - at >= failureTTL else { return nil }
-            failures.removeValue(forKey: key)
-            if let index = failedOrder.firstIndex(of: key) {
+            failures.removeValue(forKey: failKey)
+            if let index = failedOrder.firstIndex(of: failKey) {
                 failedOrder.remove(at: index)
             }
         }
@@ -141,7 +163,7 @@ actor ThumbnailCache {
             inFlight[key]?.waiters += 1
         } else {
             let fileURL = diskRoot.appendingPathComponent(bookKey)
-                .appendingPathComponent("\(entry.id).heic")
+                .appendingPathComponent("\(entry.id)@\(px).heic")
             // detached: セル側(SwiftUI .task)のキャンセルにもこの actor の
             // 文脈にも縛られない独立タスクとして生成する。先読み(非 urgent)は
             // utility に落とし、ソースの読み取りゲートで表示中ページの読み込み
@@ -157,13 +179,14 @@ actor ThumbnailCache {
                 priority: urgent ? .userInitiated : .utility) {
                 let image = await Self.loadOrGenerate(
                     entry: entry, source: source, fileURL: fileURL, gate: gate,
-                    urgent: urgent)
+                    urgent: urgent, maxPixelSize: px)
                 // 失敗の記録は生成タスク自身が行う = 1 生成 1 カウント。
                 // 待ち手側で数えると、同じ失敗生成を待つ待ち手の数だけ
                 // 二重カウントされ、1 回の失敗で恒久記録へ昇格してしまう。
-                // キャンセルされた生成は数えない(次の要求で作り直される)
+                // キャンセルされた生成は数えない(次の要求で作り直される)。
+                // 台帳は解像度非依存キー(failKey)で(vbv)
                 if image == nil, !Task.isCancelled {
-                    await self.markFailed(key)
+                    await self.markFailed(failKey)
                 }
                 // 完了したタスクは合流先から必ず外す(InFlight のコメント参照)
                 await self.generationFinished(key: key, generationID: generationID)
@@ -185,6 +208,9 @@ actor ThumbnailCache {
         // キャンセルの有無に関わらず必ず一度呼ぶ(トークンで冪等)
         waiterDeparted(key: key, task: task, id: waiterID, cancelGeneration: false)
         if let image {
+            // 成功したページの失敗勘定は消す(一時失敗→成功の積み上がりで恒久
+            // 記録に達しないように)。台帳は解像度非依存キー(vbv)
+            failures.removeValue(forKey: failKey)
             store(image, for: key)
         }
         return image
@@ -239,6 +265,9 @@ actor ThumbnailCache {
         }
     }
 
+    /// 検証用: メモリキャッシュの枚数(バイト予算 LRU の追い出し確認。vbv)
+    func debugMemoryCount() -> Int { memory.count }
+
     /// 検証用: 内部状態の要約(--dump-thumbnail-stats。欠けセルの原因判別)
     func debugStats() async -> String {
         let gate = await generationGate.debugCounts()
@@ -285,29 +314,34 @@ actor ThumbnailCache {
         failures[key] = record
     }
 
+    /// バイト予算 LRU への格納(cooViewer-vbv。ImageResampler と同方針)。
+    /// コストは bytesPerRow×height。予算超過分は古い順に破棄し、1 枚で超過しても
+    /// 最後の 1 枚は残す(再生成の繰り返し防止)。失敗勘定の消去は呼び出し側で
+    /// 解像度非依存キーに対して行う(ここでは触らない)
     private func store(_ image: CGImage, for key: String) {
-        // 成功したページの失敗勘定は消す(一時失敗→成功→また一時失敗の
-        // 積み上がりで恒久記録に達しないように。保護コンテンツはディスク
-        // キャッシュを持たず再生成が起こり得るため)。恒久記録済みのまま
-        // 成功が届く経路は通常ないが、あっても failedOrder の残骸は追い出しの
-        // removeValue が no-op で吸収する
-        failures.removeValue(forKey: key)
-        if memory[key] == nil {
-            order.append(key)
-        } else {
-            touch(key)
-        }
+        removeEntry(key)  // 置換時は旧コストを引いて順序も整える
+        let cost = max(1, image.bytesPerRow * image.height)
         memory[key] = image
-        while order.count > memoryCountLimit {
-            memory.removeValue(forKey: order.removeFirst())
+        costs[key] = cost
+        totalCost += cost
+        order.append(key)
+        while totalCost > byteLimit, order.count > 1 {
+            removeEntry(order[0])
         }
+    }
+
+    private func removeEntry(_ key: String) {
+        guard memory[key] != nil else { return }
+        memory.removeValue(forKey: key)
+        totalCost -= costs.removeValue(forKey: key) ?? 0
+        if let index = order.firstIndex(of: key) { order.remove(at: index) }
     }
 
     /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)。
     /// パスワード付き書庫はディスク層を素通りしメモリのみで扱う(下記)。
     private static func loadOrGenerate(entry: PageEntry, source: any BookSource,
                                        fileURL: URL, gate: SourceReadGate,
-                                       urgent: Bool) async -> CGImage? {
+                                       urgent: Bool, maxPixelSize: Int) async -> CGImage? {
         // 実行に入る前にキャンセル済みなら何もしない(遠いページの早期破棄)。
         // ソース呼び出しが始まった後は完走させてキャッシュに残す
         guard !Task.isCancelled else { return nil }

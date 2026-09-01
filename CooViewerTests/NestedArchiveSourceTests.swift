@@ -467,10 +467,12 @@ final class NestedArchiveSourceTests: XCTestCase {
         XCTAssertEqual(outer.width, 40)
         XCTAssertEqual(nested.width, 41)
 
+        // 解像度別キー(既定 200→256 バケット。cooViewer-vbv)。外側/ネストの
+        // id が別ファイルになることの確認が趣旨(衝突しない)
         let fm = FileManager.default
         XCTAssertTrue(fm.fileExists(
-            atPath: cacheRoot.appendingPathComponent("K/0.heic").path))
+            atPath: cacheRoot.appendingPathComponent("K/0@256.heic").path))
         XCTAssertTrue(fm.fileExists(
-            atPath: cacheRoot.appendingPathComponent("K/1000000.heic").path))
+            atPath: cacheRoot.appendingPathComponent("K/1000000@256.heic").path))
     }
 }

@@ -113,6 +113,25 @@ private actor CountingSource: BookSource {
     }
 }
 
+/// 複数エントリの正方形画像を返すスタブ(バイト予算追い出しの検証用。vbv)
+private actor BigMultiSource: BookSource {
+    nonisolated let url = URL(fileURLWithPath: "/stub/big")
+    nonisolated var supportsDateSort: Bool { false }
+    let count: Int
+    let side: Int
+    init(count: Int, side: Int) { self.count = count; self.side = side }
+    func entries() async throws -> [PageEntry] {
+        (0..<count).map {
+            PageEntry(id: $0, name: "\($0).png", pathInBook: "\($0).png",
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        try ImageDecoding.decode(
+            TestFixtures.pngData(width: side, height: side), maxPixelSize: maxPixelSize)
+    }
+}
+
 /// 生成がソースへ届いた時点の優先度を記録するスタブ(urgent レーン検証用)
 private actor PriorityRecordingSource: BookSource {
     nonisolated let url = URL(fileURLWithPath: "/stub/prio")
@@ -187,8 +206,8 @@ final class ThumbnailCacheTests: XCTestCase {
         let loads = await source.loadCount
         XCTAssertEqual(loads, 1)
 
-        // ディスクにも書かれている
-        let file = diskRoot.appendingPathComponent("book1/0.heic")
+        // ディスクにも書かれている(既定 200→256 バケット。解像度別キー。vbv)
+        let file = diskRoot.appendingPathComponent("book1/0@256.heic")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 
@@ -227,6 +246,79 @@ final class ThumbnailCacheTests: XCTestCase {
         // 30 日でトリムしても freshen 済みなので残る
         await fresh.trimDiskCache(olderThanDays: 30)
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    // MARK: - 解像度バケット/バイト予算(cooViewer-vbv)
+
+    /// 目標解像度は 256/512 の 2 バケットへ量子化され、512 で頭打ち
+    func testResolutionBucketQuantizesAndCaps() {
+        XCTAssertEqual(ThumbnailCache.resolutionBucket(forTarget: 200), 256)
+        XCTAssertEqual(ThumbnailCache.resolutionBucket(forTarget: 256), 256)
+        XCTAssertEqual(ThumbnailCache.resolutionBucket(forTarget: 257), 512)
+        XCTAssertEqual(ThumbnailCache.resolutionBucket(forTarget: 464), 512)   // 既定セル相当
+        XCTAssertEqual(ThumbnailCache.resolutionBucket(forTarget: 1160), 512)  // 最大ズームも 512
+    }
+
+    /// 解像度が違えば別キーで別生成=ディスクで共存し衝突しない
+    func testTwoResolutionBucketsCoexistOnDisk() async throws {
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "b",
+                                  targetPixelSize: 200)  // → 256
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "b",
+                                  targetPixelSize: 500)  // → 512
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: diskRoot.appendingPathComponent("b/0@256.heic").path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: diskRoot.appendingPathComponent("b/0@512.heic").path))
+        let loads = await source.loadCount
+        XCTAssertEqual(loads, 2, "解像度違いは別生成(衝突しない)")
+    }
+
+    /// メモリはバイト予算で古い順に追い出す
+    func testMemoryByteBudgetEvictsOldest() async throws {
+        let source = BigMultiSource(count: 5, side: 200)  // 1枚 ≈ 200×4×200 ≈ 160KB
+        let entries = try await source.entries()
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 400_000)  // ~2.5枚
+        for e in entries {
+            _ = await cache.thumbnail(for: e, in: source, bookKey: "big",
+                                      targetPixelSize: 500)
+        }
+        let count = await cache.debugMemoryCount()
+        XCTAssertLessThanOrEqual(count, 3, "予算超過で古い順に追い出す")
+        XCTAssertGreaterThanOrEqual(count, 1)
+    }
+
+    /// 1枚で予算超過でも最後の1枚は残す(再生成の繰り返し防止)
+    func testMemoryByteBudgetKeepsLastEntryWhenOversized() async throws {
+        let source = BigMultiSource(count: 3, side: 300)
+        let entries = try await source.entries()
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 1000)  // 1枚未満
+        for e in entries {
+            _ = await cache.thumbnail(for: e, in: source, bookKey: "big2",
+                                      targetPixelSize: 500)
+        }
+        let count = await cache.debugMemoryCount()
+        XCTAssertEqual(count, 1, "1枚で超過でも最後の1枚は保持")
+    }
+
+    /// 恒久失敗(2回完走失敗)は解像度バケットが変わっても再挑戦しない
+    /// (失敗台帳は解像度非依存キー。vbv)
+    func testPermanentFailureSurvivesBucketChange() async throws {
+        let source = FailingSource()
+        let entry = try await source.entries()[0]
+        let cache = ThumbnailCache(diskRoot: diskRoot)
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "f",
+                                  targetPixelSize: 200)  // 256, 失敗1
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "f",
+                                  targetPixelSize: 200)  // 256, 失敗2 → 恒久記録
+        let promoted = await source.attemptCount
+        XCTAssertEqual(promoted, 2)
+        _ = await cache.thumbnail(for: entry, in: source, bookKey: "f",
+                                  targetPixelSize: 500)  // 512(別バケット)
+        let afterBucketChange = await source.attemptCount
+        XCTAssertEqual(afterBucketChange, 2, "解像度が変わっても恒久失敗は再挑戦しない")
     }
 
     /// 対照: 読まずに保持日数を超えたフォルダは trim で消える(freshen が効いて
