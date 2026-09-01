@@ -214,14 +214,22 @@ extension ReaderWindowController {
     /// なので、基準をコレクションフォルダへ読み替える(設計書 §2.4 EPUB 対応)
     func openAdjacentBook(forward: Bool, openLast: Bool = false) {
         guard let currentURL =
-            epubCollectionContext?.folderURL ?? currentBookFileURL else { return }
+            epubCollectionContext?.folderURL ?? currentBookFileURL else {
+            // 復帰オープンが不成立。この終端は openBook(→openBookFlow の defer)を
+            // 通らないため、ここで復帰フラグを消さないと残って didReachBookEdge の
+            // ガードを恒久的に塞ぐ(cooViewer-s7j)
+            epubCollectionReturnPending = false
+            return
+        }
         let siblings = siblingBooks(of: currentURL)
         guard !siblings.isEmpty,
               let current = siblings.firstIndex(of: currentURL.path) else {
             // 兄弟が無い/現在の本が一覧に見つからない(読書中の外部改名・移動、
             // 親フォルダの列挙失敗、現在の本自身がドットファイル)ときは無反応に
             // せず、失敗ナビの慣習どおり音で「これ以上進めない」を返す
-            // (goToBookmark と同じフィードバック。監査 #6)
+            // (goToBookmark と同じフィードバック。監査 #6)。復帰フラグも消す
+            // (openBookFlow を通らない終端。cooViewer-s7j)
+            epubCollectionReturnPending = false
             NSSound.beep()
             return
         }

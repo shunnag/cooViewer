@@ -321,10 +321,17 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                     self.epubTransientFailedPlaceholders.insert(url)
                     NSSound.beep()
                 }
-                // 表紙降格は同一セッション・同一フォルダの即時再オープン(内容不変)。
-                // 合本ソースを使い回してキャンセル記憶を保つ(cooViewer-57t)
-                self.epubCollectionReturnPending = true
-                self.openBook(at: context.folderURL, atPage: entryIndex)
+                // 表紙降格は同一の合本ブックのまま静的表紙を再描画する。
+                // openBook で作り直すと NestedUnlocker の解錠済み子・パスワード
+                // キャンセル記憶が失われ再プロンプトになる(57t が塞ごうとして
+                // 届かなかった経路 = 画像モードでは self.epubCollectionContext が
+                // nil のため :908 の再利用条件が成立せず作り直していた。cooViewer-ari)。
+                // ブラックリスト登録は上で済んでいるので、その場で再描画すれば
+                // refreshDisplay の代理判定(:reflowEPUBURL & !epubFailedPlaceholders)が
+                // 入場せず表紙を出す。modal 中に状態が変わり得るので世代/本を再照合する
+                guard self.openGeneration == generation, self.book === book else { return }
+                book.goTo(index: entryIndex)
+                await self.refreshDisplay()
                 return
             }
             self.presentReflowableEPUB(
@@ -414,6 +421,16 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubCollectionArrivalAtFirst = atFirst
         epubCollectionReturnPending = true
         openBook(at: context.folderURL, atPage: index)
+    }
+
+    /// 次/前の本ナビ(キー/マウス)で合本ソース再利用の復帰フラグを立てる。
+    /// **合本文脈のときだけ**立てる — 単体 EPUB には再利用先(合本)が無く、
+    /// 立てると開きが失敗(隣が DRM 等)したとき openBookFlow を通らず残り、
+    /// didReachBookEdge のガード(:guard !epubCollectionReturnPending)を恒久的に
+    /// 塞いで巻端ナビが全滅する。フラグの生存は「復帰オープンが in-flight の間だけ」
+    /// が不変条件(openBookFlow 末尾の defer と各終端で確実に消す。cooViewer-s7j)
+    private func markCollectionReturnForAdjacentBook() {
+        if epubCollectionContext != nil { epubCollectionReturnPending = true }
     }
 
     /// キー/マウスの綴じ方向解決に使う実効 readsFromLeft。
@@ -861,10 +878,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         case .nextBook:
             // 単一合本の親でのラップアラウンド復帰でも合本ソースを使い回す
             // (openCollectionEntry の巻端ラップと対称。cooViewer-57t)
-            epubCollectionReturnPending = true
+            markCollectionReturnForAdjacentBook()
             openAdjacentBook(forward: true)
         case .previousBook:
-            epubCollectionReturnPending = true
+            markCollectionReturnForAdjacentBook()
             openAdjacentBook(forward: false)
         case .nextSubFolder:
             // 合本内の構成巻移動。画像巻の goToSubFolder と対称(監査 #7)
@@ -890,6 +907,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             epubGoToAdjacentSpineItem(forward: epubIsNextSide(leftHalf))
         case .positionalNextPrevBook:
             guard let leftHalf else { return false }
+            // .nextBook/.previousBook と対称に合本ソース再利用フラグを立てる
+            // (57t の hole(1) 取りこぼし。cooViewer-ari)
+            markCollectionReturnForAdjacentBook()
             openAdjacentBook(forward: epubIsNextSide(leftHalf))
         case .toggleShowPageBar:
             // 画像本と同じトグル。applySettings 経由の
