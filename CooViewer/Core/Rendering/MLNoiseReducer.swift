@@ -70,6 +70,11 @@ actor MLNoiseReducer {
                                                  width: width, height: height))
                   return context.data?.assumingMemoryBound(to: UInt8.self)
               }() else { return nil }
+        // sourceData は context 所有ビットマップへの生ポインタ。以降 context を
+        // 参照しないため、最適化ビルドでは最後の使用(上の draw)直後に ARC が
+        // context を解放し、以降のタイル読取が use-after-free になりうる。defer で
+        // 関数終端まで生存を延ばす(全 return 経路で有効。cooViewer-0py)
+        defer { withExtendedLifetime(context) {} }
 
         let outBytesPerRow = width * 4
         let outBuffer = UnsafeMutableRawPointer.allocate(

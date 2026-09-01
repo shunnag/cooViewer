@@ -123,6 +123,13 @@ actor MLSuperResolver {
                                                  width: width, height: height))
                   return context.data?.assumingMemoryBound(to: UInt8.self)
               }() else { return nil }
+        // sourceData は context 所有ビットマップへの生ポインタ。以降 context を
+        // 参照しないため、最適化ビルドでは最後の使用(上の draw)直後に ARC が
+        // context を解放し、ループの読取が use-after-free になりうる。特にこの
+        // ループは await Task.yield()/predict で中断するので、生きた局所を跨いで
+        // 保持しない最適化が働きやすい。defer で関数終端まで生存を延ばす(全 return
+        // 経路で有効。cooViewer-0py)
+        defer { withExtendedLifetime(context) {} }
         let sourceBytesPerRow = width * 4
 
         let outWidth = width * Self.scale
