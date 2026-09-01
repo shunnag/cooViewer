@@ -307,6 +307,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                     self.epubTransientFailedPlaceholders.insert(url)
                     NSSound.beep()
                 }
+                // 表紙降格は同一セッション・同一フォルダの即時再オープン(内容不変)。
+                // 合本ソースを使い回してキャンセル記憶を保つ(cooViewer-57t)
+                self.epubCollectionReturnPending = true
                 self.openBook(at: context.folderURL, atPage: entryIndex)
                 return
             }
@@ -780,8 +783,12 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // jumpToPercent と同じく本全体の進行率へ(ページバーと同じ換算)
             epubJump(toBookFraction: (value ?? 0) / 100.0)
         case .nextBook:
+            // 単一合本の親でのラップアラウンド復帰でも合本ソースを使い回す
+            // (openCollectionEntry の巻端ラップと対称。cooViewer-57t)
+            epubCollectionReturnPending = true
             openAdjacentBook(forward: true)
         case .previousBook:
+            epubCollectionReturnPending = true
             openAdjacentBook(forward: false)
         case .nextSubFolder:
             // 合本内の構成巻移動。画像巻の goToSubFolder と対称(監査 #7)
