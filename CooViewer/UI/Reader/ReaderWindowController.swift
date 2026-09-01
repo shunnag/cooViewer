@@ -2251,6 +2251,12 @@ final class ReaderWindowController: NSWindowController {
         switch settings.loopCheck {
         case 0:
             book.goToFirst()
+            // 先頭が合本内リフロー EPUB 代理なら、前方ループは「先頭巻を最初から」
+            // 開く(保存位置の復元・確認ダイアログをバイパス)。EPUB 側の巻末ラップ
+            // openCollectionEntry(at:0, forward:true, atFirst:true)と対称。設定なしだと
+            // 巻中復元や『前回位置から?』ダイアログがループ途中で出る(cooViewer-zfl)
+            epubCollectionArrivalForward = true
+            epubCollectionArrivalAtFirst = true
             Task { await refreshDisplay() }
         case 1, 2:
             // 前方は 1/2 とも「次の本の先頭」(仕様書 §4.3.4)
@@ -2367,6 +2373,12 @@ final class ReaderWindowController: NSWindowController {
         if isEPUBMode { epubGoToLast(); return }
         Task {
             await book?.goToLast()
+            // 最終ページが合本内リフロー EPUB 代理なら、末尾到達として末尾から
+            // 開く(前進到達=先頭ではない)。handleStartOfBook の goToLast 経路や
+            // openBookFlow の atLastPage 経路と対称。設定なしだと先頭/復元位置で
+            // 開いてしまう(cooViewer-zfl)。代理でなければ refreshDisplay が
+            // 消費するだけで無害
+            epubCollectionArrivalForward = false
             await refreshDisplay()
         }
     }
