@@ -13,6 +13,18 @@ final class StubSource: BookSource, @unchecked Sendable {
     var comicInfoStub: ComicInfo?
     func metadata() async -> ComicInfo? { comicInfoStub }
 
+    /// ヘッダ寸法(imageSize)を供給するか。既定 false=従来どおり nil を返し、
+    /// Book はデコード経由の見開き判定(slow path)を使う。true にすると
+    /// サイズ索引(fast path)を通す(cooViewer-utz の検証用)
+    var providesImageSize = false
+
+    /// 実デコード(image(for:))が呼ばれたページ id の記録(並列経路もあるので
+    /// ロックで保護)。同期の見開き決定が余分なデコードをしないか検証する用
+    private let decodeLock = NSLock()
+    private var decodedLog: [Int] = []
+    var decodedIDs: [Int] { decodeLock.withLock { decodedLog } }
+    func resetDecodeLog() { decodeLock.withLock { decodedLog = [] } }
+
     init(sizes: [CGSize]) {
         self.sizes = sizes
     }
@@ -25,7 +37,12 @@ final class StubSource: BookSource, @unchecked Sendable {
         }
     }
 
+    func imageSize(for entry: PageEntry) async -> CGSize? {
+        providesImageSize ? sizes[entry.id] : nil
+    }
+
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        decodeLock.withLock { decodedLog.append(entry.id) }
         let size = sizes[entry.id]
         return try ImageDecoding.decode(
             TestFixtures.pngData(width: Int(size.width), height: Int(size.height)),
@@ -123,6 +140,33 @@ final class BookTests: XCTestCase {
         let book = try await makeBook([portrait, landscape, portrait])
         let spread = await book.currentSpread()
         XCTAssertEqual(spread.indices, [0])
+    }
+
+    /// サイズ索引(fast path)で 2 枚目がワイドと確定するとき、単ページに落としつつ
+    /// ワイドな 2 枚目を同期経路でデコードしない(cooViewer-utz)。prefetch は
+    /// MainActor Task なので currentSpread 直後の同期チェックには載らない
+    func testFastPathSkipsWideSecondPageDecode() async throws {
+        let stub = StubSource(sizes: [portrait, landscape, portrait])
+        stub.providesImageSize = true  // ヘッダ索引を供給して fast path を通す
+        let book = try await Book.open(source: stub)
+        book.readMode = .rightToLeftSpread
+        stub.resetDecodeLog()  // open 時のデコードを除外
+        let spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [0])
+        // 表示用に 1 枚目はデコードするが、ワイドな 2 枚目は同期経路でデコードしない
+        XCTAssertEqual(stub.decodedIDs, [0])
+    }
+
+    /// 両ページが小(ポートレート)なら fast path は並列に両方デコードして見開き
+    func testFastPathPairsTwoPortraitPages() async throws {
+        let stub = StubSource(sizes: [portrait, portrait, portrait])
+        stub.providesImageSize = true
+        let book = try await Book.open(source: stub)
+        book.readMode = .rightToLeftSpread
+        stub.resetDecodeLog()
+        let spread = await book.currentSpread()
+        XCTAssertEqual(spread.indices, [0, 1])
+        XCTAssertEqual(Set(stub.decodedIDs), [0, 1])
     }
 
     func testSingleReadModeNeverPairs() async throws {

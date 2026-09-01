@@ -311,6 +311,16 @@ final class Book {
                 lastDisplayCount = 1
                 schedulePrefetch()
                 return Spread(indices: [currentIndex], images: [first])
+            } else {
+                // ヘッダで 2 枚目が非小(ワイド)と確定 → 単ページ。表示用に必要な
+                // 1 枚目だけをデコードし、ワイドな 2 枚目はデコードしない
+                // (negative なヘッダ判定は movePrevious/goToLast も同様に信頼する。
+                // 従来はここで slow path へ落ちて 2 枚目を直列デコードし表示遅延を
+                // 倍化していた。cooViewer-utz)
+                let first = await image(at: currentIndex)
+                lastDisplayCount = 1
+                schedulePrefetch()
+                return Spread(indices: [currentIndex], images: [first])
             }
         }
 
