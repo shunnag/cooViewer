@@ -171,10 +171,22 @@ actor ArchiveSource: BookSource {
             return true
         }
         // perEntry は自由並列、byGroup はグループ内が係 actor 上で自然に直列化
-        // されるため並列要求を受けてよい。serial(完全 solid)のみ従来どおり
+        // されるため並列要求を受けてよい。
         switch parallelMode {
-        case .serial: return false
         case .perEntry, .byGroup: return true
+        case .serial:
+            // 直接画像を持たず子ソース(ネスト書庫/PDF)だけの書庫は、外側書庫が
+            // .serial(images.isEmpty 由来)でも並列可否を子に委ねる。子データは
+            // 開いた瞬間に全展開済み(nestedChildData の自動展開)で、各子は独自の
+            // 抽出器/レンダラを持つため外側ソリッドストリームを跨がない(cbz 等の
+            // 既圧縮子は外側で格納され直接シークになる=実測: cooViewer-dua)。
+            // 全子が並列可なら並列してよい(NestedFolderSource と同型。cooViewer-k7b)。
+            // 直接画像がある solid はストリーム巻き戻しを避けるため従来どおり不可
+            guard outerImages.isEmpty, !children.isEmpty else { return false }
+            for child in children where await !child.currentlySupportsParallelPageLoads() {
+                return false
+            }
+            return true
         }
     }
 
