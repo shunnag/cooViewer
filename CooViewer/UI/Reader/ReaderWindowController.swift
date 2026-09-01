@@ -48,6 +48,9 @@ final class ReaderWindowController: NSWindowController {
     /// EPUB モード中、readerView が隠れて拾えなくなるハードウェアの
     /// スワイプ/回転ジェスチャをローカルモニタで拾い直す(監査 #10)
     var epubGestureMonitor: Any?
+    /// EPUB モードの 2 本指水平スクロールを必要時だけ横取りするモニタ
+    var epubScrollMonitor: Any?
+    var epubScrollGesture = EPUBScrollGestureRecognizer()
     /// 回転ジェスチャの累積角(.began でリセット・.ended で発火。ReaderView と同型)
     var epubRotationSum: CGFloat = 0
     /// EPUB の「N/M (章題)」ページ番号表示(census 完了時のみ非 nil)
