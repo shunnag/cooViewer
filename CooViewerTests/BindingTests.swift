@@ -34,6 +34,41 @@ final class BindingTests: XCTestCase {
         XCTAssertEqual(binding?.value, 50)
     }
 
+    /// shift+文字は charactersIgnoringModifiers が大文字を返す(shift は無視され
+    /// ない)。既定は大文字で格納しないと実イベントと一致せず beep する。旧実装は
+    /// 小文字格納で発火不能だった(cooViewer-esi の回帰防止。§5.7.1)
+    func testShiftLetterDefaultsUseUppercaseCharacter() {
+        let shift = LegacyModifier.shift
+        let ctrlShift = LegacyModifier.shift + LegacyModifier.control
+        // shift+z(実イベントは "Z")→ action 2 = halfNextPage(RTL、switchAction)
+        XCTAssertEqual(bindings.resolveKey(character: "Z", modifiers: shift,
+            fitMode: 0, readsFromLeft: false)?.action, .halfNextPage)
+        // 旧来の小文字格納では発火しなかった(実イベントは "Z" を送るため)
+        XCTAssertNil(bindings.resolveKey(character: "z", modifiers: shift,
+            fitMode: 0, readsFromLeft: false))
+        // shift+x → action 3 = halfPreviousPage
+        XCTAssertEqual(bindings.resolveKey(character: "X", modifiers: shift,
+            fitMode: 0, readsFromLeft: false)?.action, .halfPreviousPage)
+        // shift+control+c → action 35 = nextSubFolder
+        XCTAssertEqual(bindings.resolveKey(character: "C", modifiers: ctrlShift,
+            fitMode: 0, readsFromLeft: false)?.action, .nextSubFolder)
+        // shift+control+d → action 36 = previousSubFolder
+        XCTAssertEqual(bindings.resolveKey(character: "D", modifiers: ctrlShift,
+            fitMode: 0, readsFromLeft: false)?.action, .previousSubFolder)
+    }
+
+    /// shift+tab は charactersIgnoringModifiers が back-tab(0x19)で届く。plain
+    /// tab 格納だと一致せず back-skip がキーで到達不能だった(cooViewer-esi)
+    func testShiftTabResolvesToBackSkip() {
+        let backTab = Character(UnicodeScalar(0x19)!)
+        XCTAssertEqual(bindings.resolveKey(character: backTab,
+            modifiers: LegacyModifier.shift, fitMode: 0, readsFromLeft: false)?.action,
+            .backSkip)
+        // plain tab + shift では解決しない(旧実装のバグ形)
+        XCTAssertNil(bindings.resolveKey(character: "\t",
+            modifiers: LegacyModifier.shift, fitMode: 0, readsFromLeft: false))
+    }
+
     // MARK: - モード別解決順(仕様書 §5.3)
 
     func testFitWidthModeOverridesSpace() {
