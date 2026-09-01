@@ -234,6 +234,35 @@ final class EPUBReflowPositionTests: XCTestCase {
         XCTAssertNil(reopenStore().savedReflowCensus(forPath: path))
     }
 
+    /// 先頭まで戻って閉じた本は位置が消え census 単独になるので census も落とす
+    /// (cooViewer-cr6。noteClosedReflow の隣接経路)
+    func testReturnToStartDropsOrphanedCensus() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteClosedReflow(path: path, spineIndex: 2, progression: 0.5)  // 中盤
+        store.noteReflowCensus(path: path, metricsKey: "m", counts: [1, 2],
+                               releaseIdentifier: nil)
+        XCTAssertNotNil(store.savedReflowCensus(forPath: path))
+        store.noteClosedReflow(path: path, spineIndex: 0, progression: 0)  // 先頭復帰
+        XCTAssertNil(store.savedReflowPosition(forPath: path))
+        XCTAssertNil(store.savedReflowCensus(forPath: path))
+        XCTAssertNil(reopenStore().savedReflowCensus(forPath: path))
+    }
+
+    /// 他の状態(columnMode)があれば先頭復帰でも census は残す(過剰削除しない)
+    func testReturnToStartKeepsCensusWhenColumnModePresent() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        store.noteClosedReflow(path: path, spineIndex: 2, progression: 0.5)
+        store.noteReflowCensus(path: path, metricsKey: "m", counts: [1, 2],
+                               releaseIdentifier: nil)
+        store.noteClosedReflow(path: path, spineIndex: 0, progression: 0)  // 先頭復帰
+        XCTAssertNotNil(store.savedReflowCensus(forPath: path))
+        XCTAssertEqual(store.savedReflowColumnMode(forPath: path), 2)
+    }
+
     /// 位置がある本では columnMode 解除でも census は残す(過剰削除しない)
     func testClearingColumnModeKeepsCensusWhenPositionPresent() throws {
         let path = try makeBookFile("novel.epub")
