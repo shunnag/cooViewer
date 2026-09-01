@@ -65,9 +65,6 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubFlattenedToc = Self.flattenToc(publication.navigation.toc)
 
         let view = ensureEPUBView()
-        // 退出中に変わった設定(applySettings は EPUB モード中しか流さない)へ
-        // 追い付かせる(余白・フォント・ノンブル等)
-        syncEPUBViewSettings()
         readerViewForInput.isHidden = true
         view.isHidden = false
         let epubTitle = publication.metadata.mainTitle ?? url.lastPathComponent
@@ -101,6 +98,22 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // run loop を回す間に別 EPUB が提示され得る。ここで最新要求か確かめてから
         // 実際の読み込みへ進む
         guard epubPresentEpoch == epoch else { return }
+        // 設定同期と columnMode 復元は modal(restoredEPUBLocator)より後・
+        // load 直前に行う。modal 中に旧本(切替元)のビューへ設定を書くと再ページ
+        // 割りが走り、その pageChanged が既に切替先 URL になった epubBookURL で
+        // 保存して位置が混線するため(Codex レビュー指摘)。まず退出中に変わった
+        // 設定(余白・フォント・ノンブル等)へ追い付かせ、続けて単/見開き固定
+        // (s キー = columnMode)を本ごとの保存から復元する。census の metricsKey は
+        // columnMode(由来の spread)を含むため load / importCensus より前に反映
+        // する(順序が崩れると census 不一致で再実測)。保存が無ければ
+        // plannedEPUBSettings のセッション引き継ぎ値を残す(cooViewer-0dh)
+        syncEPUBViewSettings()
+        if let saved = BookHistoryStore.shared.savedReflowColumnMode(forPath: url.path),
+           let mode = EPUBColumnMode(rawValue: saved) {
+            var restored = view.settings
+            restored.columnMode = mode
+            view.settings = restored
+        }
         view.load(publication: publication, at: locator)
         // 保存済みの census を注入する。版・spine 数・メトリクスが一致すれば
         // Washi 側が採用し、同一寸法での再オープンで再実測を省く(整合検証は
@@ -473,6 +486,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 path: epubBookURL.path, metricsKey: record.metricsKey,
                 counts: record.counts, releaseIdentifier: record.releaseIdentifier)
         }
+        // 単/見開き固定もクローズ時に保存する。s トグル時の即時保存に加え、
+        // RememberBookSettings を OFF にしてから s を押さずに終了した場合でも
+        // 既存値を確実に消すため(画像本の marks/readMode が save() のクローズ時
+        // 書込で OFF なら消えるのと同型。noteReflowColumnMode 側が Remember を
+        // 判定して保存/消去する。cooViewer-0dh, Codex レビュー指摘)
+        BookHistoryStore.shared.noteReflowColumnMode(
+            path: epubBookURL.path, columnMode: epubView.settings.columnMode.rawValue)
     }
 
     // MARK: - ナビゲーション(メニュー・キー・マウスから)
@@ -888,6 +908,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             epubSettings.columnMode = epubView.pagesPerScreen >= 2
                 ? .single : .double
             epubView.settings = epubSettings
+            // 単/見開き固定は本ごとに永続化する(画像本の marks が
+            // saveCurrentBookState で即保存されるのと同型。再起動で auto に
+            // 戻る不具合 = cooViewer-0dh の修正)
+            if let epubBookURL {
+                BookHistoryStore.shared.noteReflowColumnMode(
+                    path: epubBookURL.path,
+                    columnMode: epubSettings.columnMode.rawValue)
+            }
         case .openLastPage:
             openTheLastBook()
         case .showInFinderRight, .showInFinderLeft, .positionalShowInFinder:

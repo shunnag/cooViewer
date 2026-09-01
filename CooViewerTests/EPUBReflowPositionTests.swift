@@ -153,4 +153,100 @@ final class EPUBReflowPositionTests: XCTestCase {
         XCTAssertEqual(store.savedPage(forPath: path)?.page, 7)
         XCTAssertEqual(store.savedReflowPosition(forPath: path)?.spineIndex, 2)
     }
+
+    // MARK: - columnMode(s キーの単/見開き固定。cooViewer-0dh)
+
+    /// 別インスタンスから読み直す(= アプリ再起動)。ディスク永続を実証する
+    private func reopenStore() -> BookHistoryStore {
+        BookHistoryStore(defaults: defaults,
+                         directory: tempDir.appendingPathComponent("BookStates"))
+    }
+
+    /// RememberBookSettings が ON なら columnMode は再起動を跨いで残る
+    func testColumnModeSurvivesRestart() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 2)  // double
+        XCTAssertEqual(store.savedReflowColumnMode(forPath: path), 2)
+        // 別インスタンス(再起動相当)からもディスク経由で読める
+        XCTAssertEqual(reopenStore().savedReflowColumnMode(forPath: path), 2)
+    }
+
+    /// 表示設定なので RememberBookSettings が OFF のときは残さない
+    /// (既存値も消す=save() の readMode/marks と同じ規則)
+    func testColumnModeNotPersistedWhenRememberOff() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 1)
+        XCTAssertEqual(store.savedReflowColumnMode(forPath: path), 1)
+        // OFF にして書くと既存値も消える
+        defaults.set(false, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        XCTAssertNil(store.savedReflowColumnMode(forPath: path))
+        XCTAssertNil(reopenStore().savedReflowColumnMode(forPath: path))
+    }
+
+    /// auto(0)は「固定なし」= 既定なので保存しない(空状態の肥大防止)
+    func testColumnModeAutoNotPersisted() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 0)
+        XCTAssertNil(store.savedReflowColumnMode(forPath: path))
+    }
+
+    /// marks と同じく、recents から外れても復元できる(位置と違い表示設定は
+    /// recents ゲートを持たない)。位置・census とも同居する
+    func testColumnModeHasNoRecentsGateAndCoexists() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        // recents にも AlwaysRememberLastPage にも入れない
+        defaults.set(false, forKey: "AlwaysRememberLastPage")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        store.noteClosedReflow(path: path, spineIndex: 3, progression: 0.5)
+        // 位置は recents ゲートで復元不可でも、columnMode は残る
+        XCTAssertNil(store.savedReflowPosition(forPath: path))
+        XCTAssertEqual(store.savedReflowColumnMode(forPath: path), 2)
+    }
+
+    /// columnMode を持たない旧 JSON はデコード互換(nil で読める)
+    func testColumnModeBackwardCompatibleWithOldState() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteClosedReflow(path: path, spineIndex: 1, progression: 0.4)
+        XCTAssertNil(store.savedReflowColumnMode(forPath: path))
+        XCTAssertNil(reopenStore().savedReflowColumnMode(forPath: path))
+    }
+
+    /// columnMode を消した結果 census だけが残る場合は census も落とす
+    /// (合本の子で s→census→Remember OFF 解除。census 単独ファイルを残さない)
+    func testClearingColumnModeDropsOrphanedCensus() throws {
+        let path = try makeBookFile("child.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 2)  // state を作る
+        store.noteReflowCensus(path: path, metricsKey: "m", counts: [1, 2],
+                               releaseIdentifier: nil)  // 相乗り
+        XCTAssertNotNil(store.savedReflowCensus(forPath: path))
+        // Remember OFF で columnMode を解除 → census だけの状態を残さない
+        defaults.set(false, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        XCTAssertNil(store.savedReflowColumnMode(forPath: path))
+        XCTAssertNil(store.savedReflowCensus(forPath: path))
+        XCTAssertNil(reopenStore().savedReflowCensus(forPath: path))
+    }
+
+    /// 位置がある本では columnMode 解除でも census は残す(過剰削除しない)
+    func testClearingColumnModeKeepsCensusWhenPositionPresent() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        store.noteClosedReflow(path: path, spineIndex: 2, progression: 0.5)
+        store.noteReflowCensus(path: path, metricsKey: "m", counts: [1, 2],
+                               releaseIdentifier: nil)
+        defaults.set(false, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        XCTAssertNil(store.savedReflowColumnMode(forPath: path))
+        XCTAssertNotNil(store.savedReflowCensus(forPath: path))
+        XCTAssertNotNil(store.savedReflowPosition(forPath: path))
+    }
 }
