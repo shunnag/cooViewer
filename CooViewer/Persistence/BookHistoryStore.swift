@@ -244,6 +244,10 @@ final class BookHistoryStore {
             && file.lastPathComponent != "recents.json" {
             guard let data = try? Data(contentsOf: file),
                   var state = try? JSONDecoder().decode(BookState.self, from: data),
+                  // 未知の新版(version>2)は loadStateResult 同様に触らない。
+                  // v2 構造で再エンコードすると v3 専用フィールドを落として書き戻し、
+                  // 旧ビルドが将来版の状態を破壊してしまう(cooViewer-358)
+                  state.version <= 2,
                   (state.path as NSString).lastPathComponent == requestedName,
                   state.path != path,
                   let bookmarkData = state.urlBookmark else { continue }
@@ -388,6 +392,10 @@ final class BookHistoryStore {
         // 先頭位置は「復帰なし」と不可分のため保存しない(savedPage と同じ規則)
         if spineIndex == 0 && progression <= 0 {
             state.lastReflowPosition = nil
+            // 位置を消した結果 census だけが残る状態(先頭まで戻って閉じた本、
+            // 合本の子で起きうる)は census も落とす。census 単独ファイルを残さない
+            // 方針(noteReflowCensus)に従う。cooViewer-cr6(0dh と同型の隣接経路)
+            if state.isEmptyIgnoringCensus { state.lastCensus = nil }
         } else {
             state.lastReflowPosition = ReflowPosition(
                 spineIndex: spineIndex, progression: progression, idref: idref)
