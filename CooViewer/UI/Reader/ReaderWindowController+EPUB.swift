@@ -117,6 +117,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         }
         installEPUBKeyMonitorIfNeeded()
         installEPUBGestureMonitorIfNeeded()
+        installEPUBScrollMonitorIfNeeded()
         // フォーカスも EPUB ビューへ(隠れた ReaderView に残さない)
         window?.makeFirstResponder(view)
         // ページバー(仕様書 §3.4)は EPUB でも設定どおり出す。進捗は
@@ -628,6 +629,61 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                   self.window?.isKeyWindow == true else { return event }
             return self.handleEPUBGestureEvent(event) ? nil : event
         }
+    }
+
+    /// 2 本指スクロールの水平スワイプは Washi がめくりに消費し resolveMouse を
+    /// 通らないため(3 本指と非対称。cooViewer-xsw)、EPUB モードでローカルモニタで
+    /// 捕捉する。横スワイプにカスタム(非ページめくり)割当があるときだけ横取りして
+    /// handleEPUBGesture へ回し、割当が無い水平めくり・縦スクロールは Washi へ
+    /// 素通しする(既定挙動は無変更)。
+    func installEPUBScrollMonitorIfNeeded() {
+        guard epubScrollMonitor == nil else { return }
+        epubScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+            [weak self] event in
+            guard let self, self.isEPUBMode, event.window === self.window,
+                  self.window?.isKeyWindow == true,
+                  let epubView = self.epubView else { return event }
+            // EPUB ビュー上のスクロールのみ対象にし、サムネイル等の上は素通しする
+            let point = epubView.convert(event.locationInWindow, from: nil)
+            guard epubView.bounds.contains(point) else { return event }
+            let decision = self.epubScrollGesture.feed(
+                deltaX: event.scrollingDeltaX,
+                deltaY: event.scrollingDeltaY,
+                precise: event.hasPreciseScrollingDeltas,
+                timestamp: event.timestamp,
+                interceptHorizontalIfNew: self.epubHasCustomSwipeBinding())
+            switch decision {
+            case .passThrough:
+                return event
+            case .consume:
+                return nil
+            case .turn(let positive):
+                // 画像側 scrollWheel と同符号: scrollingDeltaX>0 → swipeRight。
+                // handleEPUBGesture 内で flipSwipeDirection / readsFromLeft を適用する
+                let button = positive ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+                let modifiers = LegacyModifier.encode(flags: event.modifierFlags)
+                let leftHalf = self.epubLeftHalf(
+                    locationInWindow: event.locationInWindow)
+                _ = self.handleEPUBGesture(virtualButton: button,
+                                           modifiers: modifiers,
+                                           leftHalf: leftHalf)
+                return nil
+            }
+        }
+    }
+
+    /// 水平スワイプのいずれかに非ページめくりのカスタム割当があるか。
+    /// あるときだけ scrollWheel を横取りする。
+    private func epubHasCustomSwipeBinding() -> Bool {
+        for button in [VirtualButton.swipeLeft, VirtualButton.swipeRight] {
+            if let action = bindings.resolveMouse(
+                button: button, modifiers: 0,
+                fitMode: 0, readsFromLeft: epubInputReadsFromLeft)?.action,
+                action != .nextPage, action != .previousPage {
+                return true
+            }
+        }
+        return false
     }
 
     /// swipe/rotate NSEvent を仮想ボタンへ写像して EPUB ジェスチャ処理へ。
