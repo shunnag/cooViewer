@@ -41,6 +41,7 @@ final class ReaderWindowController: NSWindowController {
     /// リフロー EPUB の表示ビュー(初回オープン時に生成し readerView と入替表示)
     var epubView: EPUBReaderView?
     var epubPublication: EPUBPublication?
+    var epubContentLoaded = false
     var epubBookURL: URL?
     /// WKWebView がキーイベントを食うため、EPUB モード中はローカルモニタで拾う
     var epubKeyMonitor: Any?
@@ -2122,6 +2123,30 @@ final class ReaderWindowController: NSWindowController {
         openingProgressName = "サンプルシリーズ"
         openingProgressCounts = (done: 12, total: 34)
         revealOpeningProgress()
+    }
+
+    // 検証用: --then 発火前に表示が整定したか(cooViewer-n7k)
+    var debugDisplaySettled: Bool {
+        if isEPUBMode { return epubContentLoaded }
+        guard let book else { return false }
+        let i = book.currentIndex
+        // 代理ページは決してスプレッド化されない(Book.swift の isSmallFromIndex が
+        // 強制 isSmall=false)ため currentIndex 単独判定で refreshDisplay の
+        // spread.indices 走査と等価。
+        if book.entries.indices.contains(i),
+           let url = book.entries[i].reflowEPUBURL,
+           !epubFailedPlaceholders.contains(url) {
+            return false  // 代理ページに着地→自動入場待ち
+        }
+        return true
+    }
+
+    func debugAwaitDisplaySettled(timeout: Duration = .seconds(12)) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !debugDisplaySettled, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     /// ページのない本(空/開けなかった)の理由と操作案内を中央に表示する

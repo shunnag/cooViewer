@@ -60,6 +60,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubCollectionContext = collectionContext
         epubCollectionReturnPending = false
         epubPublication = publication
+        epubContentLoaded = false
         epubBookURL = url
         epubFlattenedToc = Self.flattenToc(publication.navigation.toc)
 
@@ -907,6 +908,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     func readerView(_ view: EPUBReaderView, didMoveTo locator: EPUBLocator,
                     pageInItem: Int, pageCountInItem: Int) {
+        epubContentLoaded = true
         updateEPUBIndicators()
         // 位置は 2 秒デバウンスで保存(ページ送りのたびの書き込みを避ける)
         epubSaveDebounce?.cancel()
