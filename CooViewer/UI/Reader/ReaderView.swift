@@ -463,10 +463,14 @@ final class ReaderView: NSView {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                // オーバーレイが差し替え等で消えていたら巻き戻しをやめる
+                // オーバーレイが差し替え等で消えていたら巻き戻しをやめる。ただし
+                // completion は必ず呼ぶ — モデルは呼び出し側が即時に巻き戻し済みで、
+                // completion は表示更新のみ(冪等)。呼ばないと中断時に再描画が抜け、
+                // 表示が巻き戻し前のまま残りうる(cooViewer-uwq)
                 guard let overlay = self.curlOverlay, overlay.speed == 0 else {
                     self.curlScrubTimer?.invalidate()
                     self.curlScrubTimer = nil
+                    completion()
                     return
                 }
                 let progress = (CACurrentMediaTime() - startTime) / rewindDuration
