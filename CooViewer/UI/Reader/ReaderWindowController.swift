@@ -851,6 +851,12 @@ final class ReaderWindowController: NSWindowController {
         // 連打時は最後に要求された本だけを確定する(古いフローの巻き戻り防止)
         openGeneration += 1
         let generation = openGeneration
+        // 合本復帰フラグの不変条件=「復帰オープンが in-flight の間だけ true」。
+        // このオープン試行が(成功・失敗・早期 return いずれでも)終わったら必ず
+        // 消す唯一の合流点。DRM/壊れ EPUB の routeEPUBIfNeeded 早期 return や
+        // 世代失効 return も含めて残さない。世代ガードは、この古いフローの defer が
+        // より新しいオープンの立てたフラグを潰さないため(cooViewer-s7j/ari)
+        defer { if openGeneration == generation { epubCollectionReturnPending = false } }
         // EPUB 提示専用のエポックも進める。画像本オープンでも採番するのは、
         // dismissEPUBMode より前に in-flight の openCollectionEPUB のパースが
         // 完走して古い EPUB が画像本 commit の前に提示されるのを防ぐため
@@ -914,10 +920,11 @@ final class ReaderWindowController: NSWindowController {
                 // 「キャンセル後は同じ本で再度尋ねない」(設計書 §2.4)に反して
                 // 復帰のたびにダイアログが出てしまう。巨大フォルダの統合再構築の
                 // 待ちも避けられる。provider は最新のものへ付け替える
-                // (setProvider はキャンセル状態を変えない)。復帰フローが途中で
-                // 断念した場合 returnPending は残るが、次に開くのも同一セッションの
-                // 同じ合本なので再利用でよい(意図した決定)。スプールの再開始は
-                // beginSpooling の spoolTask ガードが冪等に吸収する
+                // (setProvider はキャンセル状態を変えない)。スプールの再開始は
+                // beginSpooling の spoolTask ガードが冪等に吸収する。
+                // returnPending はこの試行の defer(:openBookFlow 冒頭)で必ず消える
+                // ため、断念しても残らない(旧コメントは「残ってよい」と誤記していた。
+                // 残ると didReachBookEdge のガードを塞ぐ。cooViewer-s7j/ari)
                 await context.source.attachNestedPasswordProvider(
                     nestedPasswordProvider())
                 source = context.source
