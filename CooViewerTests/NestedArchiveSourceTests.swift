@@ -61,6 +61,36 @@ final class NestedArchiveSourceTests: XCTestCase {
         }
     }
 
+    /// 直接画像を持たず子書庫だけのソリッド 7z は、外側が .serial でも子が
+    /// 並列可なら prefetch を並列化してよい(cooViewer-k7b)。従来は
+    /// images.isEmpty→.serial 固定で常に非並列だった。ソリッド 7z の生成に
+    /// 7zz を使うため、無い環境ではスキップ
+    func testNestedOnlySolidArchiveSupportsParallelViaChildren() async throws {
+        let sevenZip = "/opt/homebrew/bin/7zz"
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: sevenZip), "7zz 不在")
+        // 子 zip 2つ(各画像入り)だけを含む=外側 7z に直接画像なし(nested-only)
+        let a = try writeZip(named: "childA.zip",
+            [("a1.png", png(width: 41)), ("a2.png", png(width: 42))])
+        let b = try writeZip(named: "childB.zip", [("b1.png", png(width: 51))])
+        let out = tempDir.appendingPathComponent("nestedonly.7z")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: sevenZip)
+        proc.arguments = ["a", "-t7z", "-ms=on", "-bso0", "-bsp0",
+                          out.path, a.path, b.path]
+        try proc.run()
+        proc.waitUntilExit()
+        try XCTSkipUnless(proc.terminationStatus == 0, "7zz 生成失敗")
+
+        let source = try ArchiveSource(url: out)
+        let entries = try await source.entries()  // 子の自動展開を確定
+        // 直接画像は無く、子書庫のページだけで構成される
+        XCTAssertEqual(entries.map(\.pathInBook),
+                       ["childA.zip/a1.png", "childA.zip/a2.png", "childB.zip/b1.png"])
+        let parallel = await source.currentlySupportsParallelPageLoads()
+        XCTAssertTrue(parallel, "子書庫だけのソリッド 7z は子が並列可なので並列可")
+    }
+
     /// 同じ書庫を開き直しても id と並びが変わらない(ディスクの
     /// サムネイルキャッシュ <bookKey>/<id>.png の同一性の前提)こと
     func testEntriesAndCacheKeyStableAcrossReopen() async throws {
