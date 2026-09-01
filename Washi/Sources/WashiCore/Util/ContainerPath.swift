@@ -20,8 +20,10 @@ public enum ContainerPath {
             reference = String(reference[..<query])
         }
         guard !reference.isEmpty else { return normalize(base) }
-        // スキーム付き(http: 等)はコンテナ内リソースではない
-        if reference.contains(":") { return nil }
+        // スキームのコロンは最初のセグメントにだけ現れる。後続セグメントの
+        // コロンまで弾くと、正当なファイル名を外部 URL と誤認する
+        let firstSegment = reference.prefix { $0 != "/" }
+        if firstSegment.contains(":") { return nil }
         let decoded = reference.removingPercentEncoding ?? reference
 
         let joined: String

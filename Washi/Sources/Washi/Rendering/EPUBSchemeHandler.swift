@@ -82,6 +82,90 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         liveTasks[id] = nil  // 以後この task へは決して応答しない
     }
 
+    static func contentType(for mediaType: String, data: Data) -> String {
+        guard EPUBMediaType.isTextual(mediaType),
+              let charset = declaredCharset(in: data, mediaType: mediaType)
+        else { return mediaType }
+        return "\(mediaType); charset=\(charset)"
+    }
+
+    /// 文書先頭の ASCII 互換な宣言部分だけを読み、本文そのものを先に
+    /// 誤った文字コードで復号しないようにする
+    private static func declaredCharset(in data: Data, mediaType: String) -> String? {
+        let prefix = data.prefix(8192)
+        guard let source = String(data: prefix, encoding: .isoLatin1) else {
+            return nil
+        }
+        let type = mediaType.split(separator: ";", maxSplits: 1)[0]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let isXML = type == "application/xml" || type.hasSuffix("+xml")
+        if isXML,
+           let charset = firstCapture(
+            #"(?i)<\?xml\s+[^?]*?\bencoding\s*=\s*[\"']\s*([A-Za-z0-9._:-]+)\s*[\"']"#,
+            in: source) {
+            return charset
+        }
+
+        guard type == "text/html" || type == EPUBMediaType.xhtml else {
+            return nil
+        }
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        guard let expression = try? NSRegularExpression(
+            pattern: #"(?is)<meta\b[^>]*>"#) else { return nil }
+        for match in expression.matches(in: source, range: range) {
+            guard let tagRange = Range(match.range, in: source) else { continue }
+            let tag = String(source[tagRange])
+            if let charset = attribute("charset", in: tag),
+               isValidCharsetName(charset) {
+                return charset
+            }
+            guard attribute("http-equiv", in: tag)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Content-Type") == .orderedSame,
+                  let content = attribute("content", in: tag),
+                  let charset = firstCapture(
+                    #"(?i)\bcharset\s*=\s*[\"']?\s*([A-Za-z0-9._:-]+)"#,
+                    in: content)
+            else { continue }
+            return charset
+        }
+        return nil
+    }
+
+    private static func firstCapture(_ pattern: String, in source: String) -> String? {
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: source,
+                range: NSRange(source.startIndex..<source.endIndex, in: source)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: source)
+        else { return nil }
+        return String(source[range])
+    }
+
+    private static func attribute(_ name: String, in tag: String) -> String? {
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+        let pattern = #"(?is)(?:^|\s)"# + escaped
+            + #"\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+))"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: tag,
+                range: NSRange(tag.startIndex..<tag.endIndex, in: tag))
+        else { return nil }
+        for index in 1..<match.numberOfRanges
+        where match.range(at: index).location != NSNotFound {
+            guard let range = Range(match.range(at: index), in: tag) else { continue }
+            return String(tag[range])
+        }
+        return nil
+    }
+
+    private static func isValidCharsetName(_ name: String) -> Bool {
+        name.range(of: #"^[A-Za-z0-9._:-]+$"#,
+                   options: .regularExpression) != nil
+    }
+
     private func reply(to task: any WKURLSchemeTask, url: URL,
                        data: Data, mediaType: String, rangeHeader: String?) {
         let scriptSource = allowsScripts ? "'self' 'unsafe-inline'" : "'none'"
@@ -92,11 +176,7 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
                 + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
                 + "script-src \(scriptSource); connect-src 'none'; frame-src 'none'",
         ]
-        var contentType = mediaType
-        if EPUBMediaType.isTextual(mediaType) {
-            contentType += "; charset=utf-8"
-        }
-        headers["Content-Type"] = contentType
+        headers["Content-Type"] = Self.contentType(for: mediaType, data: data)
 
         // Range 要求(audio/video のシーク)には 206 で応える
         if let rangeHeader, rangeHeader.hasPrefix("bytes="),

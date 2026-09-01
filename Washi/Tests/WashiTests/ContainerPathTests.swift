@@ -35,6 +35,17 @@ final class ContainerPathTests: XCTestCase {
                                            href: "http://example.com/x"))
     }
 
+    /// 後続セグメントのコロンはファイル名として許し、先頭セグメントの
+    /// URL スキームだけを外部参照として拒否する
+    func testColonOnlyIndicatesSchemeInFirstSegment() {
+        XCTAssertEqual(
+            ContainerPath.resolve(base: "OEBPS/package.opf",
+                                  href: "images/12:34.png"),
+            "OEBPS/images/12:34.png")
+        XCTAssertNil(ContainerPath.resolve(base: "OEBPS/package.opf",
+                                           href: "http://example.com/x"))
+    }
+
     func testPercentDecoding() {
         XCTAssertEqual(
             ContainerPath.resolve(base: "OEBPS/package.opf", href: "%E7%9B%AE%E6%AC%A1.xhtml"),
