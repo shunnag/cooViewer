@@ -483,16 +483,22 @@ extension ReaderWindowController {
         if complete {
             readerViewForInput.finishInteractiveCurl()
         } else {
-            readerViewForInput.cancelInteractiveCurl { [weak self] in
+            // モデルの巻き戻しはキャンセル時点で即座に行う(巻き戻しアニメの完了に
+            // 遅延させない)。旧実装はロールバックをアニメ完了 completion に載せて
+            // いたため、50-200ms の巻き戻し中に次ページキー等が setPages で
+            // オーバーレイを消すと completion が呼ばれずロールバックが落ち、
+            // モデルが二重前進してページ飛びになっていた(cooViewer-uwq)。即時
+            // ロールバックは後続キー処理より前に MainActor へ載る。ここでは
+            // refreshDisplay を呼ばない — setPages が巻き戻しオーバーレイを消して
+            // アニメを潰すため。表示更新は下の completion(表示のみ・冪等)に任せる
+            Task { [weak self] in
                 guard let self, let book = self.book else { return }
-                Task {
-                    if forward {
-                        _ = await book.movePrevious()
-                    } else {
-                        _ = book.moveNext()
-                    }
-                    await self.refreshDisplay()
-                }
+                if forward { _ = await book.movePrevious() } else { _ = book.moveNext() }
+            }
+            readerViewForInput.cancelInteractiveCurl { [weak self] in
+                // 表示のみ更新(モデルは上で巻き戻し済み)。オーバーレイが差し替え等で
+                // 消えても安全に呼べる=遅延/重複しても正しいモデルから再描画するだけ
+                Task { await self?.refreshDisplay() }
             }
         }
     }
