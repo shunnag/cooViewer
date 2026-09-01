@@ -70,21 +70,25 @@ extension ReaderWindowController {
         // トグル/反転の影響を受けず常に発火させる(解決結果で判定)。
         // システム設定が「3 本指でスワイプ」の場合も swipe イベントとして
         // この経路に届くため、2 本指(handleSwipeToTurn)と共通でここで見る
-        var button = virtualButton
-        if button == VirtualButton.swipeLeft || button == VirtualButton.swipeRight {
-            let action = bindings.resolveMouse(
-                button: button, modifiers: modifiers,
-                fitMode: fitModeNumber, readsFromLeft: readsFromLeft)?.action
-            if action == .nextPage || action == .previousPage {
-                guard settings.swipeToTurnPage else { return }
-                // スワイプの向き反転(既定オン)。オフで旧来の向きに戻る
-                if settings.flipSwipeDirection {
-                    button = button == VirtualButton.swipeLeft
-                        ? VirtualButton.swipeRight : VirtualButton.swipeLeft
-                }
-            }
+        if virtualButton == VirtualButton.swipeLeft
+            || virtualButton == VirtualButton.swipeRight,
+           let resolved = bindings.resolveMouse(
+               button: virtualButton, modifiers: modifiers,
+               fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
+           let action = resolved.action,
+           action == .nextPage || action == .previousPage {
+            guard settings.swipeToTurnPage else { return }
+            // スワイプの向き反転(既定オン)はページ送りだけに効かせる。ボタンを
+            // 付け替えて再解決すると反対側スワイプのカスタム割当(サムネイル表示等)
+            // へ漏れてしまう(既定オンなので非対称カスタムのユーザに顕在。
+            // cooViewer-jus)。ボタンではなくアクションの向きを入れ替える
+            let effective: ReaderAction = settings.flipSwipeDirection
+                ? (action == .nextPage ? .previousPage : .nextPage)
+                : action
+            perform(effective, value: resolved.value, leftHalf: leftHalf)
+            return
         }
-        handleClick(button: button, modifiers: modifiers, leftHalf: leftHalf)
+        handleClick(button: virtualButton, modifiers: modifiers, leftHalf: leftHalf)
     }
 
     func handleDragGesture(directionModifier: Int, baseModifiers: Int, button: Int,
@@ -389,18 +393,17 @@ extension ReaderWindowController {
 
     /// スワイプの向きに割り当てられたアクションが次/前のページなら進行方向を返す
     private func swipeTurnDirection(deltaX: CGFloat) -> Bool? {
-        var button = deltaX > 0 ? VirtualButton.swipeRight : VirtualButton.swipeLeft
-        if settings.flipSwipeDirection {
-            button = button == VirtualButton.swipeLeft
-                ? VirtualButton.swipeRight : VirtualButton.swipeLeft
-        }
+        let button = deltaX > 0 ? VirtualButton.swipeRight : VirtualButton.swipeLeft
         guard let binding = bindings.resolveMouse(
             button: button, modifiers: 0,
             fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
             let action = binding.action else { return nil }
+        // handleGesture と同様、向き反転はページ送りのアクション自体に効かせる。
+        // ボタンを付け替えて再解決すると反対側スワイプのカスタム割当へ漏れる
+        // (cooViewer-jus)。ページ送り以外(カスタム)はカール非対象=nil
         switch action {
-        case .nextPage: return true
-        case .previousPage: return false
+        case .nextPage: return !settings.flipSwipeDirection
+        case .previousPage: return settings.flipSwipeDirection
         default: return nil
         }
     }
