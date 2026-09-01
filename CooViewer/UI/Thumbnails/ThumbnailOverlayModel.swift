@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// サムネイルオーバーレイの状態(仕様書 §4.8 の近代化版)。
@@ -311,6 +312,15 @@ final class ThumbnailOverlayModel: ObservableObject {
 
     private static let prefetchScreenOffsets = [0, 1, -1, 2, -2, 3, -3]
 
+    /// セルサイズと画面の backingScale から必要なサムネイル px を出す(cooViewer-vbv)。
+    /// ThumbnailCache が 256/512 バケットへ量子化する。先読み(モデル)とセル表示
+    /// (ビュー)で同じ値を使い、同一バケット=キャッシュ共有にするため一箇所で持つ。
+    /// 画面スケールは主画面のもの(2 バケットの粗さが多画面の差を吸収する)
+    var thumbnailTargetPixelSize: Int {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        return Int((cellSize * ThumbnailZoomSetting.cellHeightFactor * scale).rounded())
+    }
+
     /// 現在±3 画面分のサムネイルを近い順に先読みする。
     /// キャッシュ経由なので生成済み分は即座に飛ばされ、画面が移れば
     /// 前回の先読みは打ち切られる(未着手分はキャッシュ側で脱落する)
@@ -341,6 +351,8 @@ final class ThumbnailOverlayModel: ObservableObject {
         // 並列度は本の置き場所の速度プロファイル由来(SSD=6 / HDD・NW=2)。
         // 書庫ソースは actor で直列化されるため過剰要求にはならない
         let concurrency = max(1, snapshot.prefetchConcurrency)
+        // セル追従の目標解像度。先読みとセル表示で同一値=同一バケットにする(vbv)
+        let targetPixel = thumbnailTargetPixelSize
         prefetchTask = Task {
             // 常時 prefetchConcurrency 本を維持しつつ 1 件ずつ流し込む。
             // 生成結果の寸法は見開きモードのペア判定へ反映する(旧 isSmallImage)
@@ -349,7 +361,8 @@ final class ThumbnailOverlayModel: ObservableObject {
                 let fetchOne: @Sendable ((index: Int, entry: PageEntry)) async -> Void = {
                     target in
                     guard let image = await ThumbnailCache.shared.thumbnail(
-                        for: target.entry, in: source, bookKey: bookKey) else { return }
+                        for: target.entry, in: source, bookKey: bookKey,
+                        targetPixelSize: targetPixel) else { return }
                     await self.noteThumbnailSize(
                         bookKey: bookKey, index: target.index, entryID: target.entry.id,
                         size: CGSize(width: image.width, height: image.height))

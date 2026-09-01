@@ -112,6 +112,7 @@ struct ThumbnailOverlayView: View {
                                 ThumbnailCell(
                                     pageIndices: groups[position],
                                     snapshot: model.snapshot,
+                                    targetPixelSize: model.thumbnailTargetPixelSize,
                                     onSelect: { model.onJump?(groups[position][0]) })
                                     .frame(width: cellWidth, height: cellHeight)
                             } else {
@@ -179,6 +180,7 @@ struct ThumbnailOverlayView: View {
 private struct ThumbnailCell: View {
     let pageIndices: [Int]  // 読み順
     let snapshot: ThumbnailOverlayModel.Snapshot
+    let targetPixelSize: Int  // セル追従の目標解像度(cooViewer-vbv)
     let onSelect: @MainActor () -> Void
 
     private var isCurrent: Bool {
@@ -217,6 +219,7 @@ private struct ThumbnailCell: View {
                             entry: snapshot.entries[index],
                             source: snapshot.source,
                             bookKey: snapshot.bookKey,
+                            targetPixelSize: targetPixelSize,
                             isBookmarked: snapshot.bookmarkedPages.contains(index),
                             presentationEpoch: snapshot.presentationEpoch)
                     }
@@ -250,6 +253,7 @@ private struct ThumbnailPageImage: View {
     let entry: PageEntry
     let source: (any BookSource)?
     let bookKey: String
+    let targetPixelSize: Int  // セル追従の目標解像度(cooViewer-vbv)
     let isBookmarked: Bool
     let presentationEpoch: Int
 
@@ -306,7 +310,8 @@ private struct ThumbnailPageImage: View {
             for attempt in 0..<2 {
                 guard !Task.isCancelled else { return }
                 if let image = await ThumbnailCache.shared.thumbnail(
-                    for: entry, in: source, bookKey: bookKey, urgent: true) {
+                    for: entry, in: source, bookKey: bookKey,
+                    targetPixelSize: targetPixelSize, urgent: true) {
                     loaded = (key, image)
                     return
                 }
