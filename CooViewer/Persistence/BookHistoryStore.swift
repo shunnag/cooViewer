@@ -92,12 +92,22 @@ final class BookHistoryStore {
         /// リフロー EPUB の全文ページ実測(census)。再オープン時に注入すると
         /// オフスクリーン再実測を省けて N/M・ページバーが即出る(オプショナル追加)
         var lastCensus: StoredCensus?
+        /// リフロー EPUB の見開き/単ページ固定(s キー = EPUBColumnMode の
+        /// rawValue。1=single / 2=double。nil/0=auto)。画像本の単/見開き固定
+        /// (marks)に相当する表示設定で、RememberBookSettings が ON のときだけ
+        /// 残る。オプショナル追加なので旧 JSON はデコード互換(cooViewer-0dh)
+        var columnMode: Int?
 
-        var isEmpty: Bool {
+        /// census を除いた「残す価値のある内容」が空か。columnMode を消した結果
+        /// census だけが残る状態(合本の子で起きうる)を検出し、census 単独ファイルを
+        /// 残さない方針(noteReflowCensus)を保つために使う
+        var isEmptyIgnoringCensus: Bool {
             readMode == nil && sortMode == nil && marks.isEmpty
                 && bookmarks.isEmpty && (lastPageIndex ?? 0) <= 0
-                && lastReflowPosition == nil && lastCensus == nil
+                && lastReflowPosition == nil && columnMode == nil
         }
+
+        var isEmpty: Bool { isEmptyIgnoringCensus && lastCensus == nil }
     }
 
     /// リフロー EPUB の全文ページ実測(表示メトリクスキー + 項目別ページ数 +
@@ -427,6 +437,43 @@ final class BookHistoryStore {
         guard let state = loadState(forNormalizedPath: path),
               let census = state.lastCensus else { return nil }
         return (census.metricsKey, census.counts, census.releaseIdentifier)
+    }
+
+    /// リフロー EPUB の見開き/単ページ固定(s キー = columnMode)を記録する。
+    /// s キーの明示操作なので画像本の switchSingleSpread(marks を即
+    /// saveCurrentBookState)と同型で即時保存する。表示設定なので
+    /// RememberBookSettings が OFF のときは保存しない(既存値も消す=save() と
+    /// 同じ規則)。auto(0)は「固定なし」= 既定のため保存しない(空状態の
+    /// 肥大を防ぐ)。復元側(savedReflowColumnMode)は marks と同じく recents
+    /// ゲートを持たない(cooViewer-0dh)
+    func noteReflowColumnMode(path rawPath: String, columnMode: Int) {
+        let path = normalize(rawPath)
+        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)
+        guard var state = mutableState(forNormalizedPath: path) else { return }
+        if defaults.bool(forKey: "RememberBookSettings") {
+            state.columnMode = columnMode == 0 ? nil : columnMode
+        } else {
+            state.columnMode = nil
+        }
+        // columnMode を消した結果 census だけが残る状態(合本の子で
+        // s→census 実測→Remember OFF で解除、の順で起きうる)は census も落とす。
+        // census 単独ファイルを残さない方針(noteReflowCensus)に従う
+        if state.columnMode == nil && state.isEmptyIgnoringCensus {
+            state.lastCensus = nil
+        }
+        // 移動追跡用の URL ブックマーク(EPUB は save() を通らないため、状態を
+        // 作る経路では書いておく。noteClosedReflow と同じ理由。c6s.18)
+        if state.columnMode != nil,
+           let data = try? URL(fileURLWithPath: path).bookmarkData() {
+            state.urlBookmark = data
+        }
+        writeState(state, forNormalizedPath: path)
+    }
+
+    /// 保存済みの columnMode(s キーの単/見開き固定)。marks と同様に
+    /// 表示設定なので recents ゲートは掛けない(§7.1 の settings() と同型)
+    func savedReflowColumnMode(forPath rawPath: String) -> Int? {
+        loadState(forNormalizedPath: normalize(rawPath))?.columnMode
     }
 
     /// 保存ページの探索(仕様書 §4.1.2 手順 7)。
