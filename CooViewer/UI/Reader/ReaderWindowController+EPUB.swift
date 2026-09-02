@@ -548,6 +548,56 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                                     progression: scaled - Double(spine)))
     }
 
+    /// goToPage 用の「現在の総ページ数」。表示(updateEPUBIndicators)と
+    /// ジャンプ(epubJump)が使う総数に一致させる — census 未完・page map 未完
+    /// では番号系が本単位近似になるため nil(番号ジャンプ不可)を返す
+    private var epubCurrentTotalPages: Int? {
+        guard isEPUBMode, let epubView else { return nil }
+        // epubJump のコレクション分岐と同じ条件(全体マップ+リーダー census)
+        if epubCollectionContext != nil,
+           epubView.currentGlobalPageRange != nil,
+           let map = activeCollectionPageMap() {
+            return map.total
+        }
+        if let total = epubView.censusTotalPages, total > 0 { return total }
+        return nil
+    }
+
+    /// ページ番号ダイアログ(§5.8 pageMover の EPUB 版。c6s.21 ⑩)。
+    /// 入力した 1 始まりページを比率へ換算して epubJump へ渡す — 単体・
+    /// コレクションのどちらも Int((fraction*(total-1)).rounded()) が
+    /// page-1 に丸め戻るため、goToPercent と同じ経路で正確なページ着地になる。
+    /// census 未完で総ページ不明なら操作不能としてビープ
+    private func promptEPUBGoToPage() {
+        guard let total = epubCurrentTotalPages, total > 0 else {
+            NSSound.beep()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Go to Page")
+        alert.addButton(withTitle: String(localized: "Go"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        field.placeholderString = "1-\(total)"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let page = Int(field.stringValue) else { return }
+        epubGoToPage(page)
+    }
+
+    /// 1 始まりページ番号へジャンプ(promptEPUBGoToPage と検証フラグから使う)。
+    /// 総ページへクランプし比率換算で epubJump へ渡す。census 未完はビープ
+    func epubGoToPage(_ page: Int) {
+        guard let total = epubCurrentTotalPages, total > 0 else {
+            NSSound.beep()
+            return
+        }
+        let clamped = min(max(page, 1), total)
+        let fraction = total > 1 ? Double(clamped - 1) / Double(total - 1) : 0
+        epubJump(toBookFraction: fraction)
+    }
+
     /// ページバーとページ番号表示の更新。census 完了後はページ単位
     /// (「N/M (章題)」+ 既読率 = 表示ページ末尾/全ページ — 画像本の
     /// lastShown/pageCount と同じ意味論)、未完了は spine 単位の近似で
@@ -875,6 +925,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // 数字キー 0-9 の既定割当(value = 0〜90%)。画像本の
             // jumpToPercent と同じく本全体の進行率へ(ページバーと同じ換算)
             epubJump(toBookFraction: (value ?? 0) / 100.0)
+        case .goToPage:
+            // ページ番号ダイアログ(§5.8)。census 完了時のみ番号ジャンプ可能
+            promptEPUBGoToPage()
         case .nextBook:
             // 単一合本の親でのラップアラウンド復帰でも合本ソースを使い回す
             // (openCollectionEntry の巻端ラップと対称。cooViewer-57t)
