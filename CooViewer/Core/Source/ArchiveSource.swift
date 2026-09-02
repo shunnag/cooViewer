@@ -12,9 +12,10 @@ import XADMaster
 /// バックグラウンドで全ページをローカル一時領域へ逐次展開する(スプール。
 /// 設計書「キャッシュ・先読み設計」)。スプール済みページはローカル読みになる。
 ///
-/// 書庫内の書庫/PDF は一時領域へ展開して**子ソース**(ArchiveSource/PDFSource)
-/// を生成し、そのページを同じ本に取り込む(仕様書 §2.4 のネスト COImageLoader
-/// 相当)。ページの相対パスは「書庫内パス/子の相対パス」になる。
+/// 書庫内の書庫/PDF/固定レイアウト EPUB は一時領域へ展開して**子ソース**
+/// (ArchiveSource/PDFSource/EPUBSource)を生成し、そのページを同じ本に取り込む
+/// (仕様書 §2.4 のネスト COImageLoader 相当)。ページの相対パスは
+/// 「書庫内パス/子の相対パス」になる。
 actor ArchiveSource: BookSource {
     nonisolated let url: URL
     private let archive: XADArchive
@@ -324,10 +325,10 @@ actor ArchiveSource: BookSource {
                     modificationDate: nil
                 ))
             } else if nestingDepth < 2,
-                      SupportedTypes.isBookFile(URL(fileURLWithPath: lastComponent)),
-                      !SupportedTypes.isEPUB(URL(fileURLWithPath: lastComponent)) {
-                // 書庫内 EPUB は未対応のまま従来どおり無視する(メモリ展開経路が
-                // PDF/書庫前提のため。フォルダ内 EPUB は NestedFolderSource が扱う)
+                      SupportedTypes.isBookFile(URL(fileURLWithPath: lastComponent)) {
+                // 固定レイアウト EPUB は合本へ取り込む。リフロー EPUB と
+                // 暗号化祖先下の EPUB は cooViewer-c6s.23 で再設計するため、
+                // appendNestedPages で従来どおり黙って除外する(仕様書 §4.17)
                 candidates.append((index: index, path: name))
             }
         }
@@ -384,6 +385,14 @@ actor ArchiveSource: BookSource {
     /// 失敗(壊れた書庫等)はそのエントリを黙って飛ばす(§4.17 の方針)
     private func appendNestedPages(of candidate: (index: Int32, path: String),
                                    ordinal: Int, into result: inout [PageEntry]) async {
+        let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
+        if isEPUB {
+            // EPUBSource は URL 前提なので、暗号化祖先由来の EPUB を平文 temp に
+            // 書くと cooViewer-6ax の不変条件を破る。in-memory OCF とリフローの
+            // 安定キーは cooViewer-c6s.23 で再設計するため、本 MVP では除外する
+            let sensitive = contentIsSensitive || archive.isEncrypted()
+            guard !sensitive else { return }
+        }
         guard let data = nestedChildData(candidate) else { return }
         // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
         // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
@@ -396,7 +405,13 @@ actor ArchiveSource: BookSource {
         let useMemory = sensitive && Int64(data.count) <= Self.nestedInMemoryLimit
         let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
         let child: any BookSource
-        if isPDF {
+        if isEPUB {
+            guard let fileURL = writeNestedTemp(candidate, data: data),
+                  let epub = try? EPUBSource(url: fileURL) else { return }
+            // EPUBSource(url:) は FXL 非 DRM のみ成功する。リフロー/DRM/破損は
+            // 仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
+            child = epub
+        } else if isPDF {
             if useMemory {
                 guard let pdf = try? PDFSource(data: data) else { return }
                 child = pdf
@@ -422,7 +437,7 @@ actor ArchiveSource: BookSource {
         // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
         // 解除できない/キャンセルされた子は本から外す(§4.17 の黙殺方針。
         // 恒久的な空セルとして残すより一覧が正直になる)
-        if await child.isEncrypted() {
+        if !isEPUB, await child.isEncrypted() {
             let name = (candidate.path as NSString).lastPathComponent
             guard await unlocker.unlock(child, name: name,
                                         persistenceKey: childKey) else { return }
