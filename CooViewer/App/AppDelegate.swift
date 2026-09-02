@@ -243,6 +243,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             .goToPercent, value: percent, leftHalf: nil)
                     }
                 }
+            case "--then-goto-page":
+                // ページ番号ジャンプ(§5.8 の EPUB 版。モーダルを介さず
+                // epubGoToPage を直接叩いて着地を確認する)
+                if argIndex + 1 < arguments.count,
+                   let page = Int(arguments[argIndex + 1]) {
+                    argIndex += 1
+                    navigationSteps.append { [weak self] in
+                        self?.readerWindowController?.epubGoToPage(page)
+                    }
+                }
             default:
                 break
             }
