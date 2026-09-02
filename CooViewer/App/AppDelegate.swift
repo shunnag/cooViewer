@@ -295,11 +295,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         var navTask: Task<Void, Never>?
         if !navigationSteps.isEmpty {
+            let shouldDumpSearchLanding = arguments.contains("--then-search")
+                && (arguments.contains("--then-next-hit")
+                    || arguments.contains("--then-previous-hit"))
             navTask = Task { @MainActor in
                 for step in navigationSteps {
                     try? await Task.sleep(for: .seconds(1))
                     await self.readerWindowController?.debugAwaitDisplaySettled()
                     step()
+                }
+                // 最終 hit の非同期着地と didMoveTo まで待ち、実表示の N/M を出す。
+                if shouldDumpSearchLanding {
+                    await self.readerWindowController?.debugAwaitDisplaySettled()
+                    if let output = self.readerWindowController?
+                        .debugEPUBSearchLandingOutput() {
+                        print(output)
+                    }
                 }
             }
         }
