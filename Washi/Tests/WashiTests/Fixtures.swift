@@ -446,6 +446,33 @@ extension EPUBFixtures {
             css: "html { writing-mode: vertical-rl; }"),
     ]
 
+    /// 単一 spine の最小 EPUB(見開きで奇数総ページになる本文。cooViewer-97e 用)
+    static func singleSpineEntries(bodyHTML: String) -> [(name: String, data: Data)] {
+        let opf = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:identifier id="uid">urn:uuid:single-spine</dc:identifier>
+                <dc:title>Single spine</dc:title>
+                <dc:language>ja</dc:language>
+                <meta property="dcterms:modified">2026-09-02T00:00:00Z</meta>
+              </metadata>
+              <manifest><item id="c" href="text/c.xhtml" media-type="application/xhtml+xml"/></manifest>
+              <spine><itemref idref="c"/></spine>
+            </package>
+            """
+        let xhtml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"ja\">"
+            + "<head><meta charset=\"UTF-8\"/><style>body{font-size:20px;line-height:1.8}</style></head>"
+            + "<body>\(bodyHTML)</body></html>"
+        return [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(containerXML.utf8)),
+            ("OEBPS/package.opf", Data(opf.utf8)),
+            ("OEBPS/text/c.xhtml", Data(xhtml.utf8)),
+        ]
+    }
+
     static func textMappingEntries() -> [(name: String, data: Data)] {
         let manifest = textMappingFixtures.indices.map { index in
             "<item id=\"text\(index)\" href=\"text/f\(index).xhtml\" media-type=\"application/xhtml+xml\"/>"
