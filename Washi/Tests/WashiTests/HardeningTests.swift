@@ -66,6 +66,23 @@ final class HardeningTests: XCTestCase {
         XCTAssertTrue(text.contains("名前"))
     }
 
+    /// 外部 DTD 参照付き DOCTYPE(XHTML 1.1)の本文でも、名前付き実体は数値参照へ
+    /// 畳まれて保持される(cooViewer-aj4)。libxml2 は外部実体を読まず未定義実体を
+    /// 空展開するため、前処理 sanitize で救済する
+    func testXHTMLDoctypeNamedEntityPreserved() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" \
+        "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+        <html xmlns="http://www.w3.org/1999/xhtml"><body>\
+        <p>実体&nbsp;検索&hellip;終端</p></body></html>
+        """
+        let document = try WashiXML.document(from: Data(xml.utf8))
+        let text = document.rootElement()?.stringValue ?? ""
+        XCTAssertTrue(text.contains("\u{00A0}"), "NBSP が保持される")
+        XCTAssertTrue(text.contains("\u{2026}"), "hellip(…)が保持される")
+    }
+
     /// Shift_JIS 宣言の XML に名前付き HTML 実体があっても、実際の符号化で
     /// 復号して救済し、UTF-8 で再パースできる(旧来の日本語 EPUB 対応)
     func testShiftJISWithNamedEntityRecovered() throws {
