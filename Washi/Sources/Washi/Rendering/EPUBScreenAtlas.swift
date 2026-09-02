@@ -13,6 +13,17 @@ protocol ScreenPageCensusing {
 
 extension EPUBPaginationCensus: ScreenPageCensusing {}
 
+/// テスト差替用のシーム: 派生後メトリクスがサムネイル描画まで
+/// 渡ることを WebKit なしで検証する
+@MainActor
+protocol ScreenThumbnailRendering {
+    func thumbnail(spineIndex: Int, pageInItem: Int, optionsJSON: String,
+                   contentSize: NSSize, snapshotWidth: CGFloat) async -> CGImage?
+    func invalidate()
+}
+
+extension EPUBScreenThumbnailRenderer: ScreenThumbnailRendering {}
+
 /// Public facade for obtaining an EPUB's screen plan (measured per-item page
 /// counts) and screen thumbnails without opening the reader. Used to fully
 /// expand a reflowable EPUB into all of its pages within a collection (merged
@@ -24,7 +35,7 @@ extension EPUBPaginationCensus: ScreenPageCensusing {}
 public final class EPUBScreenAtlas {
     public let publication: EPUBPublication
     private let census: any ScreenPageCensusing
-    private var renderer: EPUBScreenThumbnailRenderer?
+    private var renderer: (any ScreenThumbnailRendering)?
     /// メトリクスキー → 項目別ページ数
     private var countsCache: [String: [Int]] = [:]
     /// 実測中の合流(同一メトリクスの並行要求で census を二重に走らせない)
@@ -48,9 +59,11 @@ public final class EPUBScreenAtlas {
     }
 
     /// テスト用: fake census を注入するイニシャライザ
-    init(publication: EPUBPublication, census: any ScreenPageCensusing) {
+    init(publication: EPUBPublication, census: any ScreenPageCensusing,
+         renderer: (any ScreenThumbnailRendering)? = nil) {
         self.publication = publication
         self.census = census
+        self.renderer = renderer
     }
 
     /// テスト用: 実測中(合流対象)のメトリクスキー集合。並行要求の登録を
@@ -62,7 +75,7 @@ public final class EPUBScreenAtlas {
     /// releasing the atlas (e.g. on eviction from a cache)** — it stops any
     /// in-progress measurement or render so the processes are not kept alive for
     /// the host's entire lifetime. After this call the atlas refuses further work
-    /// (`screenCounts`/`screenPlan`/`thumbnail` return nil); do not reuse this
+    /// (`screenPlan`/`thumbnail` return nil); do not reuse this
     /// instance.
     public func invalidate() {
         isInvalidated = true
@@ -72,43 +85,6 @@ public final class EPUBScreenAtlas {
         census.invalidate()
         renderer?.invalidate()
         renderer = nil
-    }
-
-    /// Page count of each spine item (measured; cached per metrics).
-    /// Returns nil on failure (timeout or WebContent death) or after `invalidate()`.
-    public func screenCounts(metrics: EPUBScreenMetrics) async -> [Int]? {
-        guard !isInvalidated else { return nil }
-        let key = metrics.censusOptionsJSON
-        if let cached = countsCache[key] { return cached }
-        // 合流の前に newestRequestedKey を更新する。実行待ち(FIFO)の古いキーが
-        // 要求し直されたとき newest を戻さないと、running タスクの guard
-        // (newestRequestedKey==key)が外れて表示中メトリクスなのに nil を返す。
-        // キャッシュ命中(上の分岐)では触らない — 進行中のより新しい計測を
-        // 誤って中断しないため
-        newestRequestedKey = key
-        if let running = measuring[key] { return await running.value }
-        // 優先度は明示 userInitiated(低 QoS 継承だと WebKit への JS 実行が
-        // 応答しない — EPUBScreenThumbnailRenderer で実測した逆転)
-        let previous = lastMeasure
-        let task = Task(priority: .userInitiated) {
-            [census, publication, weak self] () -> [Int]? in
-            _ = await previous?.value  // 先行キーの実測完了を待つ(FIFO)
-            // 待っている間により新しいキーが要求されていたら、この古い
-            // キーの実測は始めない(リサイズ連打での無駄な全項目実測防止)
-            guard self?.newestRequestedKey == key else { return nil }
-            return await census.measure(publication: publication, optionsJSON: key,
-                                        contentSize: metrics.contentSize)
-        }
-        measuring[key] = task
-        lastMeasure = Task(priority: .userInitiated) { _ = await task.value }
-        let counts = await task.value
-        // 完了したのが「今この key に載っているタスク」のときだけ外す(タスク
-        // 同一性)。invalidate 後に別タスクが再登録される経路は isInvalidated で
-        // 構造的に閉じるが、辞書の取り違え(完了済み task が後発の別 task を消す)を
-        // 防ぐ保険として同一性を照合する
-        if measuring[key] == task { measuring[key] = nil }
-        if let counts { countsCache[key] = counts }
-        return counts
     }
 
     /// Returns per-item page counts together with the publication-specific
@@ -153,12 +129,14 @@ public final class EPUBScreenAtlas {
                           metrics: EPUBScreenMetrics, isDark: Bool,
                           width: CGFloat) async -> CGImage? {
         guard !isInvalidated else { return nil }
+        let m = metrics.applyingRenditionSpread(
+            publication.metadata.rendition.spread)
         let renderer = self.renderer
             ?? EPUBScreenThumbnailRenderer(publication: publication)
         self.renderer = renderer
         return await renderer.thumbnail(
             spineIndex: spineIndex, pageInItem: pageInItem,
-            optionsJSON: metrics.themedOptionsJSON(isDark: isDark),
-            contentSize: metrics.contentSize, snapshotWidth: width)
+            optionsJSON: m.themedOptionsJSON(isDark: isDark),
+            contentSize: m.contentSize, snapshotWidth: width)
     }
 }

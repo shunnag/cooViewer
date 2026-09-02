@@ -1956,6 +1956,7 @@ final class ReaderWindowController: NSWindowController {
                     settings: plannedEPUBSettings())
                 let isDark = isDarkWindowAppearance
                 thumbnailRequest = {
+                    // 対象本の spread 派生はアトラス内で行うため基底値を渡す
                     await EPUBAtlasStore.shared.thumbnail(
                         for: url, spineIndex: spineIndex,
                         pageInItem: pageInItem, metrics: metrics,
@@ -2085,6 +2086,7 @@ final class ReaderWindowController: NSWindowController {
                         settings: plannedEPUBSettings())
                     let isDark = isDarkWindowAppearance
                     thumbnailRequest = {
+                        // 対象本の spread 派生はアトラス内で行うため基底値を渡す
                         await EPUBAtlasStore.shared.thumbnail(
                             for: url, spineIndex: spineIndex,
                             pageInItem: pageInItem, metrics: metrics,

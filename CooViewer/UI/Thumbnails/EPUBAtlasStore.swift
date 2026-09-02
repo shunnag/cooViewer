@@ -18,12 +18,14 @@ final class EPUBAtlasStore {
     private var inUse: [String: Int] = [:]
     private let limit = 8
 
-    /// 画面計画(項目別ページ数の実測)。アトラス参照は MainActor の
-    /// このストア内に留める
-    func screenCounts(for url: URL, metrics: EPUBScreenMetrics) async -> [Int]? {
+    /// 項目別ページ数と本固有の画面内ページ数を一括取得する。
+    /// アトラス参照は MainActor のこのストア内に留める
+    func screenPlan(
+        for url: URL, metrics: EPUBScreenMetrics
+    ) async -> (counts: [Int], pagesPerScreen: Int)? {
         guard let (key, atlas) = await atlas(for: url) else { return nil }
         defer { release(key) }
-        return await atlas.screenCounts(metrics: metrics)
+        return await atlas.screenPlan(metrics: metrics)
     }
 
     /// 画面サムネイル(同上。EPUBScreenAtlas は NSWindow/WKWebView を抱える
@@ -91,7 +93,7 @@ final class EPUBAtlasStore {
         while order.count > limit && i < order.count {
             let key = order[i]
             // 使用中のアトラスは退避しない(一時的な上限超過は許容)。await 中の
-            // screenCounts/thumbnail が nil を掴む・オフスクリーンが蘇るのを防ぐ
+            // screenPlan/thumbnail が nil を掴む・オフスクリーンが蘇るのを防ぐ
             if (inUse[key] ?? 0) > 0 { i += 1; continue }
             order.remove(at: i)
             // 進行中の実測・レンダーを止め、オフスクリーンの不可視ウインドウと

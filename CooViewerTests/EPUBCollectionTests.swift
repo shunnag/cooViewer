@@ -149,6 +149,7 @@ final class EPUBCollectionTests: XCTestCase {
         XCTAssertEqual(metrics.pagesPerScreen, 2)
         let plan = CollectionThumbnailPlan.make(
             bookEntries: entries, counts: [1: [1, 3]],
+            perBookPagesPerScreen: [1: 2],
             metrics: metrics, isDark: false)
         // 01.png / (表紙 1 + 2-3 + 4) / z.png = 5 セル
         XCTAssertEqual(plan.entries.map { $0.name },
@@ -169,10 +170,52 @@ final class EPUBCollectionTests: XCTestCase {
                                          spineIndex: 1, pageInItem: 0), 2)
         // census が無い代理ページ(失敗・DRM)は従来どおり 1 セルのまま
         let fallback = CollectionThumbnailPlan.make(
-            bookEntries: entries, counts: [:], metrics: metrics, isDark: false)
+            bookEntries: entries, counts: [:], perBookPagesPerScreen: [:],
+            metrics: metrics, isDark: false)
         XCTAssertEqual(fallback.entries.count, 3)
         XCTAssertEqual(fallback.targets[1],
                        CollectionThumbnailPlan.Target.bookPage(index: 1))
+    }
+
+    func testCollectionPlanUsesPerBookPagesPerScreen() {
+        func entry(_ id: Int, _ path: String) -> PageEntry {
+            PageEntry(
+                id: id, name: path, pathInBook: path, fileURL: nil,
+                creationDate: nil, modificationDate: nil,
+                reflowEPUBURL: URL(fileURLWithPath: path))
+        }
+        let a = URL(fileURLWithPath: "/x/a.epub")
+        let b = URL(fileURLWithPath: "/x/b.epub")
+        let metrics = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 640, height: 900),
+            settings: EPUBReaderSettings())
+
+        let plan = CollectionThumbnailPlan.make(
+            bookEntries: [entry(0, a.path), entry(1, b.path)],
+            counts: [0: [3], 1: [8]],
+            perBookPagesPerScreen: [0: 1, 1: 2],
+            metrics: metrics, isDark: false)
+
+        XCTAssertEqual(plan.entries.count, 7)
+        XCTAssertEqual(plan.perBookPagesPerScreen, [0: 1, 1: 2])
+        XCTAssertEqual(Array(plan.targets.prefix(3)), [
+            .epubScreen(url: a, entryIndex: 0, spineIndex: 0,
+                        pageInItem: 0, countInItem: 3),
+            .epubScreen(url: a, entryIndex: 0, spineIndex: 0,
+                        pageInItem: 1, countInItem: 3),
+            .epubScreen(url: a, entryIndex: 0, spineIndex: 0,
+                        pageInItem: 2, countInItem: 3),
+        ])
+        XCTAssertEqual(Array(plan.targets.suffix(4)), [
+            .epubScreen(url: b, entryIndex: 1, spineIndex: 0,
+                        pageInItem: 0, countInItem: 8),
+            .epubScreen(url: b, entryIndex: 1, spineIndex: 0,
+                        pageInItem: 2, countInItem: 8),
+            .epubScreen(url: b, entryIndex: 1, spineIndex: 0,
+                        pageInItem: 4, countInItem: 8),
+            .epubScreen(url: b, entryIndex: 1, spineIndex: 0,
+                        pageInItem: 6, countInItem: 8),
+        ])
     }
 
     func testCollectionPageMapGlobalNumbering() {
@@ -233,6 +276,89 @@ final class EPUBCollectionTests: XCTestCase {
             counts: [0: [2], 1: [3]])
         XCTAssertTrue(map.isComplete)
         XCTAssertTrue(map.missingEntries.isEmpty)
+    }
+
+    func testCollectionPageMapUsesPerBookMeasuredCounts() {
+        func entry(_ id: Int, _ path: String) -> PageEntry {
+            PageEntry(
+                id: id, name: path, pathInBook: path, fileURL: nil,
+                creationDate: nil, modificationDate: nil,
+                reflowEPUBURL: URL(fileURLWithPath: path))
+        }
+        let a = URL(fileURLWithPath: "/x/a.epub")
+        let b = URL(fileURLWithPath: "/x/b.epub")
+        let map = CollectionPageMap.make(
+            folderPath: "/f", metricsKey: "base",
+            entries: [entry(0, a.path), entry(1, b.path)],
+            counts: [0: [3], 1: [8]])
+
+        XCTAssertEqual(map.total, 11)
+        XCTAssertEqual(map.globalStart(forEntry: 0), 0)
+        XCTAssertEqual(map.globalStart(forEntry: 1), 3)
+        XCTAssertEqual(map.pageCount(forEntry: 0), 3)
+        XCTAssertEqual(map.pageCount(forEntry: 1), 8)
+        XCTAssertEqual(map.target(forGlobalPage: 2), .epubPage(
+            url: a, entryIndex: 0, spineIndex: 0,
+            pageInItem: 2, countInItem: 3))
+        XCTAssertEqual(map.target(forGlobalPage: 3), .epubPage(
+            url: b, entryIndex: 1, spineIndex: 0,
+            pageInItem: 0, countInItem: 8))
+        XCTAssertEqual(map.target(forGlobalPage: 10), .epubPage(
+            url: b, entryIndex: 1, spineIndex: 0,
+            pageInItem: 7, countInItem: 8))
+        XCTAssertTrue(map.isComplete)
+    }
+
+    func testEPUBAtlasStoreScreenPlanReturnsPublicationPagesPerScreen() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atlas-store-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let container = """
+        <?xml version="1.0"?>
+        <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles>
+            <rootfile full-path="OEBPS/package.opf" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """
+        let package = """
+        <?xml version="1.0"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">atlas-store-test</dc:identifier>
+            <dc:title>画面計画</dc:title>
+            <dc:language>ja</dc:language>
+            <meta property="dcterms:modified">2026-09-03T00:00:00Z</meta>
+            <meta property="rendition:spread">both</meta>
+          </metadata>
+          <manifest>
+            <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine><itemref idref="ch1"/></spine>
+        </package>
+        """
+        let chapter = """
+        <?xml version="1.0"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"><head><title>1</title></head>
+        <body><p>\(String(repeating: "本文。", count: 1_000))</p></body></html>
+        """
+        let data = TestFixtures.storedZip(entries: [
+            (Array("mimetype".utf8), Data("application/epub+zip".utf8)),
+            (Array("META-INF/container.xml".utf8), Data(container.utf8)),
+            (Array("OEBPS/package.opf".utf8), Data(package.utf8)),
+            (Array("OEBPS/ch1.xhtml".utf8), Data(chapter.utf8)),
+        ])
+        try data.write(to: url)
+        let metrics = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 640, height: 900),
+            settings: EPUBReaderSettings())
+
+        let plan = await EPUBAtlasStore.shared.screenPlan(
+            for: url, metrics: metrics)
+
+        XCTAssertEqual(plan?.pagesPerScreen, 2)
+        XCTAssertEqual(plan?.counts.count, 1)
+        XCTAssertGreaterThan(plan?.counts.first ?? 0, 0)
     }
 
     func testCollectionPageMapImageEntriesNeverMissing() {
