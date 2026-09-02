@@ -1,16 +1,36 @@
 import SwiftUI
 
 /// リフロー EPUB の検索結果。Washi の型を UI 状態へ持ち込まず、
-/// 近似位置と表示用スニペットだけを保持する。
+/// 厳密位置・フォールバック用の近似位置・表示用スニペットを保持する。
 struct SearchHit: Equatable, Sendable {
     let spineIndex: Int
     let progression: Double
+    let utf16Offset: Int
+    let utf16Length: Int
     let snippet: String
 }
 
 /// EPUB 本文検索の決定論的な計算を UI から分離する。
 enum EPUBSearchLogic {
     static let hitLimit = 500
+
+    /// 抽出本文の書記素単位の範囲を UTF-16 コード単位へ変換する。
+    static func utf16Range(characterOffset: Int, length: Int, in text: String)
+        -> (utf16Offset: Int, utf16Length: Int)? {
+        guard characterOffset >= 0, length >= 0,
+              let start = text.index(
+                  text.startIndex, offsetBy: characterOffset,
+                  limitedBy: text.endIndex),
+              let end = text.index(start, offsetBy: length,
+                                   limitedBy: text.endIndex),
+              let utf16Start = start.samePosition(in: text.utf16),
+              let utf16End = end.samePosition(in: text.utf16)
+        else { return nil }
+        return (
+            utf16Offset: text.utf16.distance(
+                from: text.utf16.startIndex, to: utf16Start),
+            utf16Length: text.utf16.distance(from: utf16Start, to: utf16End))
+    }
 
     /// 抽出テキスト上の文字位置を項目内進行率へ変換する。
     static func progression(characterOffset: Int, itemTextLength: Int) -> Double {

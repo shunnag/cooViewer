@@ -183,6 +183,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // (合本内 EPUB↔EPUB の横断連打で last-request-wins を保証。openGeneration は
         // 合本内移動で動かないため専用の epubPresentEpoch で照合する)
         guard epubPresentEpoch == epoch else { return }
+        clearEPUBSearchHighlight()
         // cooViewer-1p7: EPUB 間の切替は dismissEPUBMode を通らないため、旧本の
         // 検索結果・パネル・実行中 task を publication の差替え前に破棄する。
         if epubPublication != nil {
@@ -829,6 +830,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     private func startEPUBSearch(query: String, debounce: Bool) {
         // CLI の即時検索後に届く同一の SwiftUI 変更通知は二重実行しない。
         if debounce, epubSearchModel?.pendingQuery == query { return }
+        clearEPUBSearchHighlight()
         epubSearchTask?.cancel()
         epubSearchEpoch += 1
         let epoch = epubSearchEpoch
@@ -863,18 +865,26 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 let allHits = publication.search(query)
                 guard !Task.isCancelled else { return nil }
                 let limited = EPUBSearchLogic.limited(allHits)
-                var itemLengths: [Int: Int] = [:]
-                for hit in limited.values where itemLengths[hit.spineIndex] == nil {
+                var itemTexts: [Int: String] = [:]
+                for hit in limited.values where itemTexts[hit.spineIndex] == nil {
                     guard !Task.isCancelled else { return nil }
-                    itemLengths[hit.spineIndex] = (try? publication.extractText(
-                        forSpineIndex: hit.spineIndex).count) ?? 0
+                    itemTexts[hit.spineIndex] = (try? publication.extractText(
+                        forSpineIndex: hit.spineIndex)) ?? ""
                 }
                 let hits = limited.values.map { hit in
-                    SearchHit(
+                    let text = itemTexts[hit.spineIndex] ?? ""
+                    // 想定外の抽出/範囲失敗でも一覧から落とさず、長さ 0 により
+                    // Washi の nil → 従来 locator のフォールバックへ接続する。
+                    let utf16Range = EPUBSearchLogic.utf16Range(
+                        characterOffset: hit.characterOffset,
+                        length: hit.length, in: text) ?? (0, 0)
+                    return SearchHit(
                         spineIndex: hit.spineIndex,
                         progression: EPUBSearchLogic.progression(
                             characterOffset: hit.characterOffset,
-                            itemTextLength: itemLengths[hit.spineIndex] ?? 0),
+                            itemTextLength: text.count),
+                        utf16Offset: utf16Range.utf16Offset,
+                        utf16Length: utf16Range.utf16Length,
                         snippet: hit.snippet)
                 }
                 return EPUBSearchComputation(
@@ -923,8 +933,59 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     private func selectEPUBSearchHit(at index: Int) {
         guard let model = epubSearchModel, model.hits.indices.contains(index),
               let epubView else { return }
+        let hit = model.hits[index]
+        let locator = epubSearchLocator(for: hit)
         model.select(index)
-        epubView.go(to: epubSearchLocator(for: model.hits[index]))
+        clearEPUBSearchHighlight()
+        let token = epubSearchLandingEpoch
+        epubSearchLandingTask = Task { [weak self, weak epubView, weak model] in
+            guard let self, let epubView, let model else { return }
+            defer {
+                if self.epubSearchLandingEpoch == token {
+                    self.epubSearchLandingTask = nil
+                }
+            }
+            guard !Task.isCancelled, self.epubSearchLandingEpoch == token,
+                  self.epubView === epubView, self.epubSearchModel === model
+            else { return }
+            // この直後の locateAndShow が送る didMoveTo だけを識別する。
+            self.pendingSearchLanding = token
+            let landing = await epubView.go(
+                to: locator,
+                textRange: (utf16Offset: hit.utf16Offset,
+                            utf16Length: hit.utf16Length))
+            guard !Task.isCancelled, self.epubSearchLandingEpoch == token,
+                  self.epubView === epubView, self.epubSearchModel === model
+            else { return }
+            guard let landing else {
+                // 地図が解決できない項目だけ、従来の近似位置へフォールバックする。
+                self.pendingSearchLanding = nil
+                epubView.go(to: locator)
+                return
+            }
+            self.lastEPUBSearchLanding = landing
+            self.showEPUBSearchHighlight(rects: landing.rects, in: epubView)
+        }
+    }
+
+    /// 古い矩形と進行中の厳密着地を同時に無効化する。
+    /// リサイズ・設定変更・本切替の後から旧タスクが戻っても再表示させない。
+    func clearEPUBSearchHighlight() {
+        epubSearchLandingEpoch &+= 1
+        pendingSearchLanding = nil
+        epubSearchLandingTask?.cancel()
+        epubSearchLandingTask = nil
+        lastEPUBSearchLanding = nil
+        epubSearchHighlightHost?.removeFromSuperview()
+        epubSearchHighlightHost = nil
+    }
+
+    private func showEPUBSearchHighlight(rects: [CGRect], in view: EPUBReaderView) {
+        epubSearchHighlightHost?.removeFromSuperview()
+        let host = EPUBSearchHighlightHostView(frame: view.bounds)
+        host.show(rects: rects)
+        view.addSubview(host)
+        epubSearchHighlightHost = host
     }
 
     private func goToEPUBSearchHit(forward: Bool) {
@@ -940,6 +1001,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     /// Esc・モード切替・親窓終了の全経路から同じ状態を破棄する。
     func teardownEPUBSearch(closePanel: Bool = true) {
+        clearEPUBSearchHighlight()
         epubSearchEpoch += 1
         epubSearchTask?.cancel()
         epubSearchTask = nil
@@ -961,6 +1023,17 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         showEPUBSearchMenu(nil)
         epubSearchModel?.query = query
         startEPUBSearch(query: query, debounce: false)
+    }
+
+    /// CLI 検証用: 実際の N/M ラベルと厳密着地の結果を一行へ整形する。
+    func debugEPUBSearchLandingOutput() -> String? {
+        guard epubSearchHighlightHost != nil, let landing = lastEPUBSearchLanding
+        else { return nil }
+        let displayedPage = epubPageLabelText?
+            .split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
+            ?? "\(landing.pageInItem + 1)/\(max(1, epubView?.pageCountInItem ?? 1))"
+        return "[search-landing] page=\(displayedPage) "
+            + "rects=\(landing.rects.count) text=\(landing.text)"
     }
 
     // MARK: - ナビゲーション(メニュー・キー・マウスから)
@@ -1707,6 +1780,16 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             image.addRepresentation(rep)
             overlays.append((image: image, frame: host.frame))
         }
+        // 本文ハイライトも WKWebView の外側にあるため、透明ホストを別途焼く。
+        // 子 CALayer は transform を持たないので cacheDisplay へそのまま写る。
+        if let host = epubSearchHighlightHost, !host.isHidden,
+           host.bounds.width > 0,
+           let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: rep)
+            let image = NSImage(size: host.bounds.size)
+            image.addRepresentation(rep)
+            overlays.append((image: image, frame: host.frame))
+        }
         guard !overlays.isEmpty else { return base }
         let size = epubView.bounds.size
         return NSImage(size: size, flipped: false) { _ in
@@ -1722,6 +1805,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     func readerView(_ view: EPUBReaderView, didMoveTo locator: EPUBLocator,
                     pageInItem: Int, pageCountInItem: Int) {
+        if pendingSearchLanding != nil {
+            // locateAndShow が送る pageChanged。戻り値の矩形を載せるため保持する。
+            pendingSearchLanding = nil
+        } else {
+            // ページ送り・目次・しおり等で本文が動けば、旧座標の表示を捨てる。
+            clearEPUBSearchHighlight()
+        }
         epubContentLoaded = true
         updateEPUBIndicators()
         refreshEPUBLoupeSnapshot()

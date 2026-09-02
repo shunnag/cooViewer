@@ -43,6 +43,8 @@ final class ReaderWindowController: NSWindowController {
     /// EPUB の WebKit 内容を拡大するルーペと、その非ヒットテストホスト
     var epubLoupe: LoupeController?
     var epubLoupeHost: EPUBLoupeHostView?
+    /// 厳密検索着地の矩形を WebKit 上へ重ねる非ヒットテストホスト
+    var epubSearchHighlightHost: EPUBSearchHighlightHostView?
     var epubPublication: EPUBPublication?
     var epubContentLoaded = false
     var epubBookURL: URL?
@@ -116,6 +118,12 @@ final class ReaderWindowController: NSWindowController {
     /// 入力連打・本切替で古い検索結果を破棄する世代と実行タスク
     var epubSearchEpoch = 0
     var epubSearchTask: Task<Void, Never>?
+    /// 厳密着地の世代と、直後の didMoveTo だけを識別するトークン
+    var epubSearchLandingEpoch = 0
+    var pendingSearchLanding: Int?
+    var epubSearchLandingTask: Task<Void, Never>?
+    /// CLI 検証でページ・矩形数・正規化本文を出力する直近の成功結果
+    var lastEPUBSearchLanding: EPUBTextRangeLanding?
 
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
@@ -321,6 +329,7 @@ final class ReaderWindowController: NSWindowController {
         // 見えない本の再ページ割り+全文 census が走る。再入場時は
         // presentReflowableEPUB が syncEPUBViewSettings で追い付かせる)
         if isEPUBMode {
+            clearEPUBSearchHighlight()
             syncEPUBViewSettings()
             refreshEPUBLoupeSnapshot()
         }
@@ -1243,6 +1252,7 @@ final class ReaderWindowController: NSWindowController {
         // cooViewer-a5p: 検索パネルも同じ delegate を使うため、親窓以外の
         // リサイズ通知で本文再描画や EPUB ルーペ再取得を走らせない。
         guard (notification.object as? NSWindow) === window else { return }
+        clearEPUBSearchHighlight()
         refreshDisplayIfCapRaised()
         refreshEPUBLoupeSnapshot()
     }
@@ -1250,6 +1260,8 @@ final class ReaderWindowController: NSWindowController {
     func windowDidResize(_ notification: Notification) {
         // cooViewer-a5p: inLiveResize の判定対象と通知元を親窓に揃える。
         guard (notification.object as? NSWindow) === window else { return }
+        // 矩形は旧版面の座標なので、ライブリサイズ中も最初の通知で破棄する。
+        clearEPUBSearchHighlight()
         // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
         guard window?.inLiveResize == false else { return }
         refreshDisplayIfCapRaised()
@@ -2169,7 +2181,10 @@ final class ReaderWindowController: NSWindowController {
 
     // 検証用: --then 発火前に表示が整定したか(cooViewer-n7k)
     var debugDisplaySettled: Bool {
-        if isEPUBMode { return epubContentLoaded && epubSearchTask == nil }
+        if isEPUBMode {
+            return epubContentLoaded && epubSearchTask == nil
+                && epubSearchLandingTask == nil && pendingSearchLanding == nil
+        }
         guard let book else { return false }
         let i = book.currentIndex
         // 代理ページは決してスプレッド化されない(Book.swift の isSmallFromIndex が

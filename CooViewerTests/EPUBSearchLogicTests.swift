@@ -2,9 +2,34 @@ import XCTest
 
 @testable import cooViewer
 
-/// リフロー EPUB 本文検索の近似位置・順序・巡回・件数制限。
+/// リフロー EPUB 本文検索の厳密位置変換・近似位置・順序・巡回・件数制限。
 @MainActor
 final class EPUBSearchLogicTests: XCTestCase {
+    func testUTF16RangeForIVSCharacter() throws {
+        let range = try XCTUnwrap(EPUBSearchLogic.utf16Range(
+            characterOffset: 2, length: 1,
+            in: "A葛\u{E0100}葛\u{E0100}B"))
+
+        XCTAssertEqual(range.utf16Offset, 4)
+        XCTAssertEqual(range.utf16Length, 3)
+    }
+
+    func testUTF16RangeForCombiningCharacter() throws {
+        let range = try XCTUnwrap(EPUBSearchLogic.utf16Range(
+            characterOffset: 2, length: 1, in: "Ae\u{301}e\u{301}B"))
+
+        XCTAssertEqual(range.utf16Offset, 3)
+        XCTAssertEqual(range.utf16Length, 2)
+    }
+
+    func testUTF16RangeForHalfWidthVoicedKana() throws {
+        let range = try XCTUnwrap(EPUBSearchLogic.utf16Range(
+            characterOffset: 2, length: 1, in: "AｶﾞｷﾞB"))
+
+        XCTAssertEqual(range.utf16Offset, 3)
+        XCTAssertEqual(range.utf16Length, 2)
+    }
+
     func testClearResultsSettlesInFlightSearchState() {
         let model = EPUBSearchModel()
         model.beginSearch(query: "needle")
