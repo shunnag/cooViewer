@@ -4,6 +4,22 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.12.0] - 2026-09-03
+
+### 追加
+- リフロー EPUB の `rendition:spread`(auto/none/landscape/both)を尊重する。
+  著者が見開き/単ページを指定した本は、段組設定が auto のときその指定に従う
+  (none=常に単ページ、both=常に見開き、landscape=横長ウインドウでのみ見開き)。
+  段組を single/double に明示した場合はユーザー設定が優先。reader 表示・全文
+  census・合本(コレクション)のページマップ/サムネイルすべてが本ごとの spread で
+  整合する。`EPUBScreenMetrics.applyingRenditionSpread(_:)` と
+  `EPUBScreenAtlas.screenPlan(metrics:)` を追加(旧 `screenCounts(metrics:)` は撤去)。
+
+### 修正
+- 外部 DTD 参照付き DOCTYPE(XHTML 1.1 等)の本文で、`extractText`/`search` が
+  名前付き実体(`&nbsp;` `&hellip;` 等)を落として WebKit の DOM 本文と乖離して
+  いた問題を修正(未定義実体を数値参照へ前処理して展開)。
+
 ## [1.11.0] - 2026-08-25
 
 ### 追加
