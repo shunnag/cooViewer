@@ -110,6 +110,12 @@ final class ReaderWindowController: NSWindowController {
     var epubCurlHosts: [NSView] = []
     /// 章メニュー用に平坦化した目次(representedObject は添字)
     var epubFlattenedToc: [(title: String, indent: Int, item: EPUBNavItem)] = []
+    /// リフロー EPUB の本文検索パネルと表示状態
+    var epubSearchPanel: NSPanel?
+    var epubSearchModel: EPUBSearchModel?
+    /// 入力連打・本切替で古い検索結果を破棄する世代と実行タスク
+    var epubSearchEpoch = 0
+    var epubSearchTask: Task<Void, Never>?
 
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
@@ -1250,6 +1256,12 @@ final class ReaderWindowController: NSWindowController {
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let closingWindow = notification.object as? NSWindow,
+           closingWindow === epubSearchPanel {
+            teardownEPUBSearch(closePanel: false)
+            return
+        }
+        teardownEPUBSearch()
         stopSlideshow()
         collectionOverlayTask?.cancel()  // 全冊 census をウインドウ亡き後に残さない
         collectionPageMapTask?.cancel()
@@ -2152,7 +2164,7 @@ final class ReaderWindowController: NSWindowController {
 
     // 検証用: --then 発火前に表示が整定したか(cooViewer-n7k)
     var debugDisplaySettled: Bool {
-        if isEPUBMode { return epubContentLoaded }
+        if isEPUBMode { return epubContentLoaded && epubSearchTask == nil }
         guard let book else { return false }
         let i = book.currentIndex
         // 代理ページは決してスプレッド化されない(Book.swift の isSmallFromIndex が
@@ -2503,6 +2515,11 @@ final class ReaderWindowController: NSWindowController {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(showEPUBSearchMenu(_:)):
+            return isEPUBMode
+        case #selector(findNextEPUBMenu(_:)), #selector(findPreviousEPUBMenu(_:)):
+            return isEPUBMode && epubSearchPanel != nil
+                && !(epubSearchModel?.hits.isEmpty ?? true)
         // ---- 画像表示専用の設定項目: EPUB モードでは無効(灰色)にする。
         // かつては validate 対象外で「有効表示のまま無効果」だった
         // (cooViewer-c6s.20。回転は非表示の readerView に効いて画像モード

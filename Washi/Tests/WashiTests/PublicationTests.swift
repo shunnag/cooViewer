@@ -208,8 +208,8 @@ final class PublicationTests: XCTestCase {
         XCTAssertTrue(publication.search("   ").isEmpty)
     }
 
-    /// 半角濁点カナ(ｶﾞ)を全角(ガ)クエリで引ける。オフセットも元テキストに一致
-    func testSearchFoldsHalfWidthDakutenKana() throws {
+    /// 半角濁点カナと全角カナを双方向に引け、オフセットも元テキストに一致する
+    func testSearchFoldsHalfWidthDakutenKanaInBothDirections() throws {
         let opf = """
         <?xml version="1.0" encoding="UTF-8"?>
         <package xmlns="http://www.idpf.org/2007/opf" version="3.0" \
@@ -224,29 +224,43 @@ final class PublicationTests: XCTestCase {
           <spine><itemref idref="c"/></spine>
         </package>
         """
-        // 本文は半角濁点カナ「ガギグ」の半角表記
-        let body = "\u{FF76}\u{FF9E}\u{FF77}\u{FF9E}\u{FF78}\u{FF9E}"
-        let xhtml = "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\">"
-            + "<body><p>\(body)</p></body></html>"
-        let entries: [(name: String, data: Data)] = [
-            ("mimetype", Data("application/epub+zip".utf8)),
-            ("META-INF/container.xml", Data(EPUBFixtures.containerXML.utf8)),
-            ("OEBPS/package.opf", Data(opf.utf8)),
-            ("OEBPS/c.xhtml", Data(xhtml.utf8)),
-        ]
-        let publication = try EPUBPublication(
-            data: ZipBuilder.build(entries, method: 8),
-            displayURL: URL(fileURLWithPath: "/tmp/kana.epub"))
+        func publication(body: String, name: String) throws -> EPUBPublication {
+            let xhtml = "<?xml version=\"1.0\"?><html "
+                + "xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>"
+                + body + "</p></body></html>"
+            let entries: [(name: String, data: Data)] = [
+                ("mimetype", Data("application/epub+zip".utf8)),
+                ("META-INF/container.xml", Data(EPUBFixtures.containerXML.utf8)),
+                ("OEBPS/package.opf", Data(opf.utf8)),
+                ("OEBPS/c.xhtml", Data(xhtml.utf8)),
+            ]
+            return try EPUBPublication(
+                data: ZipBuilder.build(entries, method: 8),
+                displayURL: URL(fileURLWithPath: "/tmp/\(name).epub"))
+        }
+
+        // 半角本文を全角クエリで引く
+        let halfWidth = try publication(
+            body: "\u{FF76}\u{FF9E}\u{FF77}\u{FF9E}\u{FF78}\u{FF9E}",
+            name: "half-kana")
         // 全角クエリ「ガ」で半角「ｶﾞ」がヒットする
-        let hits = publication.search("ガ")
+        let hits = halfWidth.search("ガ")
         XCTAssertEqual(hits.count, 1)
         let hit = try XCTUnwrap(hits.first)
         // オフセット・長さは元テキスト(半角 2 文字)を指す
-        let chars = Array(try publication.extractText(forSpineIndex: 0))
+        let chars = Array(try halfWidth.extractText(forSpineIndex: 0))
         let matched = String(chars[hit.characterOffset..<(hit.characterOffset + hit.length)])
         XCTAssertEqual(matched, "\u{FF76}\u{FF9E}")  // ｶﾞ
-        // 半角クエリ「ｷﾞ」で全角同等(ギ)を引ける
-        XCTAssertEqual(publication.search("\u{FF77}\u{FF9E}").count, 1)
+
+        // 全角本文を半角クエリで引く逆方向も固定する
+        let fullWidth = try publication(body: "ガギグ", name: "full-kana")
+        let reverseHits = fullWidth.search("\u{FF76}\u{FF9E}")
+        XCTAssertEqual(reverseHits.count, 1)
+        let reverseHit = try XCTUnwrap(reverseHits.first)
+        let fullChars = Array(try fullWidth.extractText(forSpineIndex: 0))
+        let reverseMatch = String(fullChars[
+            reverseHit.characterOffset..<(reverseHit.characterOffset + reverseHit.length)])
+        XCTAssertEqual(reverseMatch, "ガ")
     }
 
     /// 検索の文字オフセットは抽出テキスト上で一致する(ハイライトの土台)
