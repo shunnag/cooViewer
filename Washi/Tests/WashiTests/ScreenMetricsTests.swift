@@ -4,17 +4,60 @@ import XCTest
 
 /// 見開き判定(usesSpread)の検証
 final class ScreenMetricsTests: XCTestCase {
-    func testColumnModeAndWidth() {
-        // 明示 single/double は幅によらず固定
-        XCTAssertFalse(EPUBScreenMetrics.usesSpread(
-            contentWidth: 2000, columnMode: .single))
-        XCTAssertTrue(EPUBScreenMetrics.usesSpread(
-            contentWidth: 400, columnMode: .double))
-        // auto はウインドウ幅で判定(閾値 700)
-        XCTAssertTrue(EPUBScreenMetrics.usesSpread(
-            contentWidth: 1400, columnMode: .auto))
-        XCTAssertFalse(EPUBScreenMetrics.usesSpread(
-            contentWidth: 400, columnMode: .auto))
+    func testColumnModeRenditionSpreadWidthAndOrientationTruthTable() {
+        let modes: [EPUBColumnMode] = [.single, .double, .auto]
+        let spreads: [RenditionSpread] = [.auto, .none, .landscape, .both]
+        let widths = [CGFloat(699), 700]
+        let orientations = [false, true]
+
+        for mode in modes {
+            for spread in spreads {
+                for width in widths {
+                    for isLandscape in orientations {
+                        let expected: Bool
+                        switch mode {
+                        case .single:
+                            expected = false
+                        case .double:
+                            expected = true
+                        case .auto:
+                            switch spread {
+                            case .auto:
+                                expected = width >= 700
+                            case .none:
+                                expected = false
+                            case .landscape:
+                                expected = isLandscape && width >= 700
+                            case .both:
+                                expected = true
+                            }
+                        }
+                        XCTAssertEqual(
+                            EPUBScreenMetrics.usesSpread(
+                                contentWidth: width, columnMode: mode,
+                                renditionSpread: spread,
+                                isLandscapeViewport: isLandscape),
+                            expected,
+                            "mode=\(mode.rawValue), spread=\(spread.rawValue), width=\(width), landscape=\(isLandscape)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testPlansSpreadUsesBaseInsetsAndViewportOrientation() {
+        var settings = EPUBReaderSettings()
+        settings.insets = EPUBReaderInsets(top: 10, left: 30,
+                                           bottom: 10, right: 30)
+        XCTAssertTrue(EPUBScreenMetrics.plansSpread(
+            viewportSize: CGSize(width: 760, height: 500), settings: settings,
+            renditionSpread: .landscape))
+        XCTAssertFalse(EPUBScreenMetrics.plansSpread(
+            viewportSize: CGSize(width: 760, height: 900), settings: settings,
+            renditionSpread: .landscape))
+        XCTAssertFalse(EPUBScreenMetrics.plansSpread(
+            viewportSize: CGSize(width: 759, height: 500), settings: settings,
+            renditionSpread: .landscape))
     }
 
     /// 見開き専用の余白(spreadInsets)がモードに応じて使い分けられる
@@ -56,5 +99,48 @@ final class ScreenMetricsTests: XCTestCase {
         XCTAssertEqual(wide.pagesPerScreen, 2)
         XCTAssertEqual(narrow.pagesPerScreen, 1)
         XCTAssertNotEqual(wide.cacheKey, narrow.cacheKey)
+    }
+
+    func testApplyingRenditionSpreadPreservesAutoAndDerivesOtherModes() {
+        var settings = EPUBReaderSettings()
+        settings.fontScale = 1.25
+        settings.pageGap = 31
+        settings.insets = EPUBReaderInsets(top: 12, left: 20,
+                                           bottom: 14, right: 20)
+        settings.spreadInsets = EPUBReaderInsets(top: 16, left: 40,
+                                                 bottom: 18, right: 40)
+        settings.defaultFontFamily = "Hiragino Mincho ProN"
+        settings.userCSS = "p { letter-spacing: 0.1em; }"
+
+        let narrowSize = CGSize(width: 650, height: 900)
+        let narrow = EPUBScreenMetrics(
+            viewportSize: narrowSize, settings: settings)
+        let auto = narrow.applyingRenditionSpread(.auto)
+        let both = narrow.applyingRenditionSpread(.both)
+        XCTAssertEqual(auto.cacheKey, narrow.cacheKey)
+        XCTAssertEqual(auto, narrow)
+        XCTAssertEqual(narrow.pagesPerScreen, 1)
+        XCTAssertEqual(both.pagesPerScreen, 2)
+        XCTAssertNotEqual(both.cacheKey, narrow.cacheKey)
+        XCTAssertEqual(
+            both,
+            EPUBScreenMetrics(viewportSize: narrowSize, settings: settings,
+                              renditionSpread: .both))
+
+        let wideSize = CGSize(width: 900, height: 600)
+        let wide = EPUBScreenMetrics(viewportSize: wideSize, settings: settings)
+        let none = wide.applyingRenditionSpread(.none)
+        XCTAssertEqual(wide.pagesPerScreen, 2)
+        XCTAssertEqual(none.pagesPerScreen, 1)
+        XCTAssertNotEqual(none.cacheKey, wide.cacheKey)
+
+        let portrait = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 900, height: 1200), settings: settings)
+            .applyingRenditionSpread(.landscape)
+        let landscape = EPUBScreenMetrics(
+            viewportSize: wideSize, settings: settings)
+            .applyingRenditionSpread(.landscape)
+        XCTAssertEqual(portrait.pagesPerScreen, 1)
+        XCTAssertEqual(landscape.pagesPerScreen, 2)
     }
 }
