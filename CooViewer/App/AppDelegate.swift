@@ -183,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // --then-goto-percent 100 --then-next-page で巻末超えの着地確認)。
         // --then-previous-book / --then-next-book: 前/次の本へ(Ctrl+D 相当)
         // --then-next-page: ページ送り(EPUB はリフローのページ送りに分岐)
+        // --then-toggle-slideshow: スライドショーの開始/停止を直接切り替える
         // --then-goto-percent N: 比率ジャンプ(数字キー 0-9 の goToPercent 経路)
         // --then-search Q / --then-next-hit / --then-previous-hit: EPUB 本文検索
         var navigationSteps: [@MainActor () -> Void] = []
@@ -197,6 +198,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "--then-next-page":
                 navigationSteps.append { [weak self] in
                     self?.readerWindowController?.nextPage(nil)
+                }
+            case "--then-toggle-slideshow":
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.toggleSlideshow()
                 }
             case "--then-show-thumbnails":
                 // サムネイル一覧のトグル(EPUB 入場後に開く検証用)
@@ -404,6 +409,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 await snapshotNavigationTask?.value
                 await self.readerWindowController?.debugAwaitDisplaySettled()
                 try? await Task.sleep(for: .seconds(2 + rapidWait))
+                // 検証用: スライドショーが別の本へ移ったかを stdout で判定する
+                if arguments.contains("--dump-current-book") {
+                    print(self.readerWindowController?.currentBookFileURL?
+                        .lastPathComponent ?? "nil")
+                }
                 // 検証用: サムネイル機構の内部状態を stdout へ出力
                 // (--dump-thumbnail-stats。欠けセルの原因判別用)
                 if arguments.contains("--dump-thumbnail-stats") {

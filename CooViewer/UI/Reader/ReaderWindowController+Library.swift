@@ -223,8 +223,10 @@ extension ReaderWindowController {
 
     /// 次/前の本へ(端でラップアラウンド。§4.3.4)。openLast=前の本を末尾から開く。
     /// コレクション(合本)内から開いた EPUB では「本」はコレクション自体
-    /// なので、基準をコレクションフォルダへ読み替える(設計書 §2.4 EPUB 対応)
-    func openAdjacentBook(forward: Bool, openLast: Bool = false) {
+    /// なので、基準をコレクションフォルダへ読み替える(設計書 §2.4 EPUB 対応)。
+    /// fromSlideshow は openBookFlow まで一時的に伝播し、タイマーを維持する
+    func openAdjacentBook(forward: Bool, openLast: Bool = false,
+                          fromSlideshow: Bool = false) {
         guard let currentURL =
             epubCollectionContext?.folderURL ?? currentBookFileURL else {
             // 復帰オープンが不成立。この終端は openBook(→openBookFlow の defer)を
@@ -250,7 +252,7 @@ extension ReaderWindowController {
         // 着地して階層を保つ(潜ると以後の次/前の本が中の階層の兄弟を走査し、
         // 元の階層へ戻れなくなる)。画像ゼロなら「画像がありません」を表示
         openBook(at: URL(fileURLWithPath: siblings[target]), atLastPage: openLast,
-                 allowCollectionDrill: false)
+                 allowCollectionDrill: false, fromSlideshow: fromSlideshow)
     }
 
     // MARK: - スライドショー(仕様書 §4.9)
@@ -275,11 +277,11 @@ extension ReaderWindowController {
     }
 
     private func slideshowTick() {
+        if isOpeningBook { return }
         // EPUB(リフロー)は book が nil。Washi が自前でめくり演出を張るため
         // pendingTurnForward / refreshAfterJump は通さない。巻末到達での停止は
-        // didReachBookEdge 側で扱う(§4.3.4。ループ設定 0 のときは goToBookStart
-        // で巻頭へ戻り継続)。cooViewer-9ne: 合本内では各エントリ境界の
-        // openBook が停止する。エントリ横断の継続は cooViewer-mji で扱う
+        // didReachBookEdge 側で扱う。仕様書 §4.9 / §4.3.4 に従い、0 は本内
+        // ループ、1/2 は次の本へ継続、3 のみ停止する(cooViewer-7hj/mji)
         if isEPUBMode {
             epubGoForward()
             return
@@ -289,10 +291,17 @@ extension ReaderWindowController {
             return
         }
         if book.moveNext() == .hitEnd {
-            if settings.loopCheck == 0 {
+            switch settings.loopCheck {
+            case 0:
                 book.goToFirst()
-            } else {
-                stopSlideshow()  // スライドショーは端で停止(§4.3.4)
+            case 1, 2:
+                openAdjacentBook(forward: true, fromSlideshow: true)
+                return
+            case 3:
+                stopSlideshow()
+                return
+            default:
+                stopSlideshow()
                 return
             }
         }

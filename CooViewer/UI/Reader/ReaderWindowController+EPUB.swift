@@ -178,7 +178,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                                atPage: Int? = nil, atLastPage: Bool = false,
                                atLocator: EPUBLocator? = nil,
                                collectionContext: EPUBCollectionContext? = nil,
-                               epoch: Int) {
+                               epoch: Int,
+                               fromSlideshow: Bool = false) {
         // 入口: この提示が最後に要求されたものでなければ旧本の teardown を始めない
         // (合本内 EPUB↔EPUB の横断連打で last-request-wins を保証。openGeneration は
         // 合本内移動で動かないため専用の epubPresentEpoch で照合する)
@@ -189,7 +190,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         if epubPublication != nil {
             teardownEPUBSearch()
         }
-        unloadImageBookForEPUB()
+        unloadImageBookForEPUB(fromSlideshow: fromSlideshow)
         saveEPUBState()  // EPUB → EPUB の切替でも前の本の位置を残す
         epubSaveDebounce?.cancel()
 
@@ -506,7 +507,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// 開けない本(DRM 等)は静的な表紙ページに降格する
     func enterCollectionReflowEPUB(url: URL, entryIndex: Int, forward: Bool,
                                    atFirst: Bool = false,
-                                   at explicitLocator: EPUBLocator? = nil) {
+                                   at explicitLocator: EPUBLocator? = nil,
+                                   fromSlideshow: Bool = false) {
         guard let book else { return }
         let context = EPUBCollectionContext(
             folderURL: book.source.url,
@@ -579,7 +581,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 atLastPage: explicitLocator == nil && !forward && !atFirst,
                 atLocator: explicitLocator,
                 collectionContext: context,
-                epoch: presentEpoch)
+                epoch: presentEpoch,
+                fromSlideshow: fromSlideshow)
         }
     }
 
@@ -622,11 +625,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     }
 
     /// 合本の指定エントリへ復帰する(EPUB の巻端・次/前の本から)。
-    /// 範囲外は合本自体の巻端として画像本と同じループ規則に従う(§4.3.4)。
+    /// 範囲外は合本自体の巻端として仕様書 §4.9 / §4.3.4 のループ規則に従う。
     /// 文脈は消さない(オープン完了までの間に巻端イベントが再発しても
-    /// 単体モード意味論へ落とさない — 抑止は epubCollectionReturnPending)
+    /// 単体モード意味論へ落とさない — 抑止は epubCollectionReturnPending)。
+    /// fromSlideshow は再帰・巻端ラップ・openBook へ一時的に伝播する
     func openCollectionEntry(context: EPUBCollectionContext, at index: Int,
-                             forward: Bool, atFirst: Bool = false) {
+                             forward: Bool, atFirst: Bool = false,
+                             fromSlideshow: Bool = false) {
         guard (0..<context.entryCount).contains(index) else {
             if forward {
                 switch settings.loopCheck {
@@ -634,22 +639,28 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                     // 巻末ループは画像本の goToFirst と同じく「先頭から」
                     // (保存位置の復元は通さない)
                     openCollectionEntry(context: context, at: 0,
-                                        forward: true, atFirst: true)
+                                        forward: true, atFirst: true,
+                                        fromSlideshow: fromSlideshow)
                 case 1, 2:
                     epubCollectionReturnPending = true
-                    openAdjacentBook(forward: true)
-                default: break
+                    openAdjacentBook(forward: true, fromSlideshow: fromSlideshow)
+                case 3:
+                    if fromSlideshow { stopSlideshow() }
+                default:
+                    if fromSlideshow { stopSlideshow() }
                 }
             } else {
                 switch settings.loopCheck {
                 case 0: openCollectionEntry(
-                    context: context, at: context.entryCount - 1, forward: false)
+                    context: context, at: context.entryCount - 1, forward: false,
+                    fromSlideshow: fromSlideshow)
                 case 1:
                     epubCollectionReturnPending = true
-                    openAdjacentBook(forward: false)
+                    openAdjacentBook(forward: false, fromSlideshow: fromSlideshow)
                 case 2:
                     epubCollectionReturnPending = true
-                    openAdjacentBook(forward: false, openLast: true)
+                    openAdjacentBook(forward: false, openLast: true,
+                                     fromSlideshow: fromSlideshow)
                 default: break
                 }
             }
@@ -659,7 +670,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubCollectionArrivalForward = forward
         epubCollectionArrivalAtFirst = atFirst
         epubCollectionReturnPending = true
-        openBook(at: context.folderURL, atPage: index)
+        openBook(at: context.folderURL, atPage: index, fromSlideshow: fromSlideshow)
     }
 
     /// 次/前の本ナビ(キー/マウス)で合本ソース再利用の復帰フラグを立てる。
@@ -1850,31 +1861,27 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // (二重復帰や、文脈なし分岐への誤爆=単体モード意味論での兄弟
         // オープン・保存位置の巻末上書きを防ぐ)
         guard !epubCollectionReturnPending else { return }
-        // スライドショー中の巻末到達は §4.3.4 で停止する(画像本の slideshowTick
-        // hitEnd と同型: ループ設定 0 のときだけ下の goToBookStart で巻頭へ戻り
-        // 継続する)。単体 EPUB のみここで扱う。cooViewer-9ne: 合本内は下の
-        // openCollectionEntry → openBook が stopSlideshow するため、合本全体の
-        // 巻端だけでなく各エントリ境界で止まる(横断継続は cooViewer-mji)
-        if forward, slideshowTimer != nil, epubCollectionContext == nil,
-           settings.loopCheck != 0 {
-            stopSlideshow()
-            return
-        }
         // コレクション(合本)内の EPUB は、巻端で合本の隣接エントリへ
         // シームレスに復帰する(合本自体の巻端は openCollectionEntry が
-        // ループ規則 §4.3.4 で処理)
+        // 仕様書 §4.9 / §4.3.4 のループ規則で処理する。1/2 は次の本へ継続し、
+        // 3 のスライドショーだけ停止する(cooViewer-7hj/mji)
         if let context = epubCollectionContext {
             openCollectionEntry(context: context,
                                 at: context.entryIndex + (forward ? 1 : -1),
-                                forward: forward)
+                                forward: forward,
+                                fromSlideshow: slideshowTimer != nil)
             return
         }
         // 巻末/巻頭超えは画像本と同じループ設定に従う(仕様書 §4.3.4)
         if forward {
             switch settings.loopCheck {
             case 0: view.goToBookStart()
-            case 1, 2: openAdjacentBook(forward: true)
-            default: break
+            case 1, 2:
+                openAdjacentBook(forward: true, fromSlideshow: slideshowTimer != nil)
+            case 3:
+                if slideshowTimer != nil { stopSlideshow() }
+            default:
+                if slideshowTimer != nil { stopSlideshow() }
             }
         } else {
             switch settings.loopCheck {
