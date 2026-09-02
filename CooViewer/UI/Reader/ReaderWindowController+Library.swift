@@ -263,6 +263,14 @@ extension ReaderWindowController {
     }
 
     private func slideshowTick() {
+        // EPUB(リフロー)は book が nil。Washi が自前でめくり演出を張るため
+        // pendingTurnForward / refreshAfterJump は通さない。巻末到達での停止は
+        // didReachBookEdge 側で扱う(§4.3.4。ループ設定 0 のときは goToBookStart
+        // で巻頭へ戻り継続。合本の巻端は openBook が stopSlideshow する)
+        if isEPUBMode {
+            epubGoForward()
+            return
+        }
         guard let book else {
             stopSlideshow()
             return

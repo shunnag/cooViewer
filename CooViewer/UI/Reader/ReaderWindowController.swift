@@ -2538,11 +2538,13 @@ final class ReaderWindowController: NSWindowController {
         case #selector(showThumbnailsMenu(_:)):
             // サムネイル一覧は EPUB(画面単位の一覧)でも有効
             return (book?.pageCount ?? 0) > 0 || isEPUBMode
+        case #selector(toggleSlideshowMenu(_:)):
+            // スライドショーは EPUB モードでも有効(§4.9。c6s.21 ⑪)
+            return (book?.pageCount ?? 0) > 0 || isEPUBMode
         case #selector(cycleReadMode(_:)),
              #selector(editBookmarksMenu(_:)),
              #selector(addRemoveBookmarkMenu(_:)),
              #selector(nextBookmarkMenu(_:)), #selector(previousBookmarkMenu(_:)),
-             #selector(toggleSlideshowMenu(_:)),
              #selector(showFileInfoMenu(_:)),
              #selector(showOtherPageInFinderMenu(_:)):
             return (book?.pageCount ?? 0) > 0
