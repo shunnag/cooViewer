@@ -137,6 +137,37 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(fresh.savedPage(forPath: newPath)?.page, 5)
     }
 
+    /// 新規の本(既存状態と同名でない)の初回オープンは、再配置の高コスト全走査を
+    /// 回避する(ファイル名索引で O(1) 判定。cooViewer-3ri)
+    func testNewBookOpenSkipsRelocationScan() throws {
+        for name in ["alpha.zip", "beta.zip", "gamma.zip"] {
+            let p = try makeBookFile(name)
+            store.save(displayName: name, path: p,
+                       settings: .init(readMode: nil, sortMode: nil, marks: PageMarks(),
+                                       bookmarks: [.init(name: "b", pageIndex: 1)]))
+        }
+        let baseline = store.relocateFullScanCount
+        _ = store.settings(displayName: "brandnew.zip",
+                           path: "\(tempDir.path)/brandnew.zip")
+        _ = store.settings(displayName: "another.zip",
+                           path: "\(tempDir.path)/another.zip")
+        XCTAssertEqual(store.relocateFullScanCount, baseline,
+                       "新規ファイル名の本は再配置全走査をしない")
+    }
+
+    /// 既存状態と同名の本(移動の可能性)は再配置の走査を通る(取りこぼさない)
+    func testSameNameBookTriggersRelocationScan() throws {
+        let p = try makeBookFile("dup.zip")
+        store.save(displayName: "dup.zip", path: p,
+                   settings: .init(readMode: nil, sortMode: nil, marks: PageMarks(),
+                                   bookmarks: [.init(name: "b", pageIndex: 1)]))
+        let baseline = store.relocateFullScanCount
+        _ = store.settings(displayName: "dup.zip",
+                           path: "\(tempDir.path)/other/dup.zip")
+        XCTAssertEqual(store.relocateFullScanCount, baseline + 1,
+                       "同名の本は移動候補として走査する(false negative を出さない)")
+    }
+
     func testReconciledIndexFollowsPagePath() {
         func entry(_ path: String) -> PageEntry {
             PageEntry(id: 0, name: (path as NSString).lastPathComponent,

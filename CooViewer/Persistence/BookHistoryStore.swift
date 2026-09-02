@@ -21,6 +21,15 @@ final class BookHistoryStore {
     /// 再配置スキャンしないため。**「在るのに読めなかった」本はここに入れない**
     /// (一過性の失敗で恒久 nil 化しないため。回復すれば読み直せる)
     private var missCache: Set<String> = []
+    /// 再配置候補のファイル名索引(bookmark 付き状態のファイル名集合)。nil=未構築。
+    /// 状態の無い本の初回オープン毎に relocateState が全状態ファイルをデコード走査
+    /// していた(N=2000 で 1 オープン 52ms を実測。cooViewer-3ri)。この集合に無い
+    /// ファイル名(=新規の本)は走査せず即 nil を返す(O(1))。writeState が増分維持
+    /// し、削除では消さない(別状態が同名を持ち得るため。false positive は走査で
+    /// 無害化され、false negative=移動本の取りこぼしだけ避ければよい)
+    private var relocatableNames: Set<String>?
+    /// 検証用: relocateState が高コストな全走査に入った回数(cooViewer-3ri)
+    private(set) var relocateFullScanCount = 0
     /// 当セッションで一度でも「在るのに読めなかった」本。以後その本への書き込みを
     /// 抑止し、一過性の失敗で空状態を読んだ後に回復した中身を空で上書きするのを
     /// 防ぐ(open 時失敗→session 空状態→close 時回復→save が空で上書き、の遮断)
@@ -223,6 +232,11 @@ final class BookHistoryStore {
         }
         stateCache[path] = state
         missCache.remove(path)
+        // 再配置索引を増分維持: bookmark 付き(移動追跡可能)状態のファイル名を
+        // 加える。索引未構築なら次回 ensureRelocationIndex が全体を拾う(3ri)
+        if relocatableNames != nil, state.urlBookmark != nil {
+            relocatableNames?.insert((state.path as NSString).lastPathComponent)
+        }
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(state) else { return false }
@@ -238,6 +252,12 @@ final class BookHistoryStore {
     /// 解決し、要求パスを指していれば新しいキーへ移し替える(参照ミス時のみ)
     private func relocateState(toNormalizedPath path: String) -> BookState? {
         let requestedName = (path as NSString).lastPathComponent
+        // 再配置候補のファイル名索引を一度だけ構築し、索引に無いファイル名
+        // (=どの保存状態とも同名でない新規の本)は全走査せず即 nil を返す
+        // (cooViewer-3ri。以後は writeState が増分維持)
+        ensureRelocationIndex()
+        guard relocatableNames?.contains(requestedName) == true else { return nil }
+        relocateFullScanCount += 1  // 検証用: 高コストな全走査に入った回数(3ri)
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil) else { return nil }
         for file in files where file.pathExtension == "json"
@@ -275,6 +295,26 @@ final class BookHistoryStore {
             return state
         }
         return nil
+    }
+
+    /// 再配置候補のファイル名索引を一度だけ構築する(cooViewer-3ri)。既存の全状態
+    /// ファイルを 1 回だけ走査し、bookmark 付き(=移動追跡できる)状態のファイル名を
+    /// 集める。以後は writeState が増分維持するので、走査はセッション毎 1 回で済む。
+    /// version>2 は relocateState の走査でも触らないので索引にも入れない
+    private func ensureRelocationIndex() {
+        guard relocatableNames == nil else { return }
+        var names: Set<String> = []
+        if let files = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil) {
+            for file in files where file.pathExtension == "json"
+                && file.lastPathComponent != "recents.json" {
+                guard let data = try? Data(contentsOf: file),
+                      let state = try? JSONDecoder().decode(BookState.self, from: data),
+                      state.version <= 2, state.urlBookmark != nil else { continue }
+                names.insert((state.path as NSString).lastPathComponent)
+            }
+        }
+        relocatableNames = names
     }
 
     // MARK: - 最近使った本
