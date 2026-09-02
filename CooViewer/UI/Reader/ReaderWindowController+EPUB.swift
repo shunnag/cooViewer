@@ -936,6 +936,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                     path: epubBookURL.path,
                     columnMode: epubSettings.columnMode.rawValue)
             }
+        case .toggleSlideshow:
+            // スライドショー(§4.9)。タイマーは book に依存しないので
+            // そのまま流用し、tick は EPUB 分岐で epubGoForward する
+            toggleSlideshow()
         case .openLastPage:
             openTheLastBook()
         case .showInFinderRight, .showInFinderLeft, .positionalShowInFinder:
@@ -1035,6 +1039,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // (二重復帰や、文脈なし分岐への誤爆=単体モード意味論での兄弟
         // オープン・保存位置の巻末上書きを防ぐ)
         guard !epubCollectionReturnPending else { return }
+        // スライドショー中の巻末到達は §4.3.4 で停止する(画像本の slideshowTick
+        // hitEnd と同型: ループ設定 0 のときだけ下の goToBookStart で巻頭へ戻り
+        // 継続する)。単体 EPUB のみここで扱う — 合本内は下の openCollectionEntry
+        // →openBook が自前で stopSlideshow するため巻端でも自然に止まる
+        if forward, slideshowTimer != nil, epubCollectionContext == nil,
+           settings.loopCheck != 0 {
+            stopSlideshow()
+            return
+        }
         // コレクション(合本)内の EPUB は、巻端で合本の隣接エントリへ
         // シームレスに復帰する(合本自体の巻端は openCollectionEntry が
         // ループ規則 §4.3.4 で処理)
