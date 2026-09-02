@@ -84,14 +84,6 @@ final class EPUBTextMappingTests: XCTestCase {
                 webView: webView, optionsJSON: setupOptions)
             let swiftText = try publication.extractText(forSpineIndex: index)
             let javaScriptText = try await mappedText(webView: webView)
-            if fixture.name == "名前付き実体" {
-                // 既知の乖離(cooViewer-aj4): WashiCore は外部実体を読まないため
-                // &nbsp;/&hellip; を落とし、WebKit は内蔵実体表で展開する。
-                // 乖離の形を固定し、厳密位置は progression フォールバックに委ねる
-                XCTAssertEqual(swiftText, "実体検索終端", fixture.name)
-                XCTAssertEqual(javaScriptText, "実体 検索…終端", fixture.name)
-                continue
-            }
             XCTAssertEqual(javaScriptText, swiftText,
                            "\(fixture.name): JS 本文と extractText")
             guard javaScriptText == swiftText else { continue }

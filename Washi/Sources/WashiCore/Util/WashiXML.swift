@@ -27,13 +27,20 @@ enum WashiXML {
     ]
 
     static func document(from data: Data) throws -> XMLDocument {
-        try validateProlog(data)
+        try validateProlog(data)   // ← 生データ先行の現順序は維持(変更禁止)
+        // 外部 DTD 参照付き DOCTYPE の XHTML では .nodeLoadExternalEntitiesNever の
+        // 下で名前付き実体(&nbsp; 等)が空展開され、素パースが成功して catch の
+        // 救済に入らない。既知実体を含むなら先に数値参照へ畳んでから解析し、
+        // WebKit の DOM 本文と抽出テキストを一致させる(cooViewer-aj4)。
+        // ※ CDATA/コメント内の見かけ実体も置換されるが、従来の catch 経路と同じ
+        //   既知の制限(実在 EPUB では稀)。
+        let source = containsNamedEntity(data) ? sanitizeEntities(data) : data
         let document: XMLDocument
         do {
-            document = try XMLDocument(data: data, options: options)
+            document = try XMLDocument(data: source, options: options)
         } catch {
-            let sanitized = sanitizeEntities(data)
-            document = try XMLDocument(data: sanitized, options: options)
+            // 前処理で拾えない実体・別の整形不良は従来どおり sanitize で再挑戦
+            document = try XMLDocument(data: sanitizeEntities(data), options: options)
         }
         try validateDepth(document)
         return document
@@ -240,6 +247,26 @@ enum WashiXML {
         return nil
     }
 
+    private static let namedEntityReplacements: [(String, String)] = [
+        ("&nbsp;", "&#160;"), ("&copy;", "&#169;"), ("&reg;", "&#174;"),
+        ("&trade;", "&#8482;"), ("&hellip;", "&#8230;"), ("&mdash;", "&#8212;"),
+        ("&ndash;", "&#8211;"), ("&lsquo;", "&#8216;"), ("&rsquo;", "&#8217;"),
+        ("&ldquo;", "&#8220;"), ("&rdquo;", "&#8221;"), ("&middot;", "&#183;"),
+        ("&times;", "&#215;"), ("&laquo;", "&#171;"), ("&raquo;", "&#187;"),
+    ]
+
+    /// 既知の HTML 名前実体がバイト列に含まれるか。外部 DTD 参照付き DOCTYPE の
+    /// 下では NSXML が未定義実体を空展開して素パースが成功してしまうため、この
+    /// 検出で前処理 sanitize を起動する(cooViewer-aj4)。& (0x26) は Shift_JIS/
+    /// EUC-JP の trail byte 範囲に入らないので UTF-8 正規化後の ASCII 検索で安全
+    private static func containsNamedEntity(_ data: Data) -> Bool {
+        let normalized = normalizedXMLBytes(data)
+        for (entity, _) in namedEntityReplacements {
+            if normalized.firstRange(of: Data(entity.utf8)) != nil { return true }
+        }
+        return false
+    }
+
     /// XML の定義済み 5 実体以外の頻出 HTML 実体を数値文字参照へ置換する。
     /// 非 UTF-8(Shift_JIS/EUC-JP/UTF-16)の文書でも救済できるよう、宣言の
     /// encoding を尊重して復号してから置換し、UTF-8 で再エンコードする
@@ -249,14 +276,7 @@ enum WashiXML {
         // UTF-16 は先に UTF-8 バイトへ畳む
         let data = normalizedXMLBytes(rawData)
         guard var text = decodeXMLText(data) else { return data }
-        let replacements: [(String, String)] = [
-            ("&nbsp;", "&#160;"), ("&copy;", "&#169;"), ("&reg;", "&#174;"),
-            ("&trade;", "&#8482;"), ("&hellip;", "&#8230;"), ("&mdash;", "&#8212;"),
-            ("&ndash;", "&#8211;"), ("&lsquo;", "&#8216;"), ("&rsquo;", "&#8217;"),
-            ("&ldquo;", "&#8220;"), ("&rdquo;", "&#8221;"), ("&middot;", "&#183;"),
-            ("&times;", "&#215;"), ("&laquo;", "&#171;"), ("&raquo;", "&#187;"),
-        ]
-        for (entity, numeric) in replacements {
+        for (entity, numeric) in namedEntityReplacements {
             text = text.replacingOccurrences(of: entity, with: numeric)
         }
         // 出力バイトは UTF-8。宣言の encoding が別物のままだと再パースが
