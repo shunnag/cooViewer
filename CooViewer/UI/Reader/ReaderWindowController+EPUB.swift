@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 import Washi
 
+/// バックグラウンド検索から MainActor へ渡す値だけを束ねる。
+private struct EPUBSearchComputation: Sendable {
+    let hits: [SearchHit]
+    let isTruncated: Bool
+}
+
 /// コレクション(合本)内から開いた EPUB の文脈。
 /// 巻端・次/前の本で合本の隣接エントリへ復帰し、キー/マウスの綴じ方向解決
 /// (readsFromLeft)は本の宣言ではなく**コレクションの readMode** に従う
@@ -403,6 +409,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     }
 
     func dismissEPUBMode() {
+        teardownEPUBSearch()
         guard isEPUBMode else { return }
         disableEPUBLoupe()
         saveEPUBState()
@@ -692,6 +699,193 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 (bookmark.name, bookmark.locator.spineIndex,
                  bookmark.locator.progression, bookmark.locator.idref)
             })
+    }
+
+    // MARK: - 本文検索
+
+    /// リフロー EPUB 専用のフローティング検索パネルを開く。
+    @objc func showEPUBSearchMenu(_ sender: Any?) {
+        guard isEPUBMode, let window else { return }
+        if let panel = epubSearchPanel {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let model = EPUBSearchModel()
+        let searchView = EPUBSearchView(
+            model: model,
+            onQueryChange: { [weak self] query in
+                self?.startEPUBSearch(query: query, debounce: true)
+            },
+            onSearchNow: { [weak self] query in
+                self?.startEPUBSearch(query: query, debounce: false)
+            },
+            onSelect: { [weak self] index in
+                self?.selectEPUBSearchHit(at: index)
+            },
+            onNext: { [weak self] in
+                self?.goToEPUBSearchHit(forward: true)
+            },
+            onPrevious: { [weak self] in
+                self?.goToEPUBSearchHit(forward: false)
+            },
+            onClose: { [weak self] in
+                self?.epubSearchPanel?.performClose(nil)
+            })
+        let panel = NSPanel(contentViewController: NSHostingController(rootView: searchView))
+        panel.styleMask = [.titled, .closable, .resizable, .utilityWindow]
+        panel.title = String(localized: "Search")
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior.insert(.fullScreenAuxiliary)
+        panel.setContentSize(NSSize(width: 480, height: 500))
+        panel.delegate = self
+        // パネルがキーウインドウでも ⌘F/⌘G をリーダーの responder へ渡す。
+        panel.nextResponder = self
+
+        epubSearchModel = model
+        epubSearchPanel = panel
+        let parentFrame = window.frame
+        let x = parentFrame.maxX - panel.frame.width - 24
+        let y = parentFrame.maxY - panel.frame.height - 48
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        window.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// ⌘G と検索パネルのボタンから次のヒットへ移動する。
+    @objc func findNextEPUBMenu(_ sender: Any?) {
+        goToEPUBSearchHit(forward: true)
+    }
+
+    /// ⇧⌘G と検索パネルのボタンから前のヒットへ移動する。
+    @objc func findPreviousEPUBMenu(_ sender: Any?) {
+        goToEPUBSearchHit(forward: false)
+    }
+
+    /// 入力連打をデバウンスし、Washi の同期検索を MainActor の外で実行する。
+    private func startEPUBSearch(query: String, debounce: Bool) {
+        // CLI の即時検索後に届く同一の SwiftUI 変更通知は二重実行しない。
+        if debounce, epubSearchModel?.pendingQuery == query { return }
+        epubSearchTask?.cancel()
+        epubSearchEpoch += 1
+        let epoch = epubSearchEpoch
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            epubSearchModel?.clearResults()
+            epubSearchTask = nil
+            return
+        }
+        guard let publication = epubPublication,
+              let model = epubSearchModel else { return }
+        model.beginSearch(query: query)
+
+        epubSearchTask = Task { [weak self] in
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+            }
+            guard self?.epubSearchEpoch == epoch,
+                  self?.epubPublication === publication,
+                  self?.epubSearchModel === model else { return }
+
+            let worker = Task.detached(priority: .userInitiated) {
+                () -> EPUBSearchComputation? in
+                let allHits = publication.search(query)
+                guard !Task.isCancelled else { return nil }
+                let limited = EPUBSearchLogic.limited(allHits)
+                var itemLengths: [Int: Int] = [:]
+                for hit in limited.values where itemLengths[hit.spineIndex] == nil {
+                    guard !Task.isCancelled else { return nil }
+                    itemLengths[hit.spineIndex] = (try? publication.extractText(
+                        forSpineIndex: hit.spineIndex).count) ?? 0
+                }
+                let hits = limited.values.map { hit in
+                    SearchHit(
+                        spineIndex: hit.spineIndex,
+                        progression: EPUBSearchLogic.progression(
+                            characterOffset: hit.characterOffset,
+                            itemTextLength: itemLengths[hit.spineIndex] ?? 0),
+                        snippet: hit.snippet)
+                }
+                return EPUBSearchComputation(
+                    hits: hits, isTruncated: limited.isTruncated)
+            }
+            let computation = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let computation, let self,
+                  self.epubSearchEpoch == epoch,
+                  self.epubPublication === publication,
+                  self.epubSearchModel === model else { return }
+
+            let pages = computation.hits.map { self.epubSearchPageNumber(for: $0) }
+            model.finishSearch(query: query, hits: computation.hits,
+                               pageNumbers: pages,
+                               isTruncated: computation.isTruncated)
+            self.epubSearchTask = nil
+        }
+    }
+
+    /// ページ番号表示とジャンプ先で共有する唯一の近似 locator 生成経路。
+    private func epubSearchLocator(for hit: SearchHit) -> EPUBLocator {
+        EPUBLocator(spineIndex: hit.spineIndex, progression: hit.progression)
+    }
+
+    private func epubSearchPageNumber(for hit: SearchHit) -> Int? {
+        epubBookmarkPageNumber(for: epubSearchLocator(for: hit))
+    }
+
+    /// census の完了・無効化に合わせて検索一覧のページ番号も更新する。
+    private func refreshEPUBSearchPageNumbers() {
+        guard let model = epubSearchModel else { return }
+        model.updatePageNumbers(model.hits.map { epubSearchPageNumber(for: $0) })
+    }
+
+    private func selectEPUBSearchHit(at index: Int) {
+        guard let model = epubSearchModel, model.hits.indices.contains(index),
+              let epubView else { return }
+        model.select(index)
+        epubView.go(to: epubSearchLocator(for: model.hits[index]))
+    }
+
+    private func goToEPUBSearchHit(forward: Bool) {
+        guard let model = epubSearchModel,
+              let index = EPUBSearchLogic.selectionIndex(
+                current: model.selectedIndex, count: model.hits.count,
+                forward: forward) else {
+            NSSound.beep()
+            return
+        }
+        selectEPUBSearchHit(at: index)
+    }
+
+    /// Esc・モード切替・親窓終了の全経路から同じ状態を破棄する。
+    func teardownEPUBSearch(closePanel: Bool = true) {
+        epubSearchEpoch += 1
+        epubSearchTask?.cancel()
+        epubSearchTask = nil
+        epubSearchModel?.clearResults()
+        epubSearchModel = nil
+        guard let panel = epubSearchPanel else { return }
+        epubSearchPanel = nil
+        panel.delegate = nil
+        panel.nextResponder = nil
+        panel.parent?.removeChildWindow(panel)
+        if closePanel {
+            panel.orderOut(nil)
+            panel.close()
+        }
+    }
+
+    /// スナップショット CLI から検索を開始する。
+    func debugSearchEPUB(_ query: String) {
+        showEPUBSearchMenu(nil)
+        epubSearchModel?.query = query
+        startEPUBSearch(query: query, debounce: false)
     }
 
     // MARK: - ナビゲーション(メニュー・キー・マウスから)
@@ -1485,6 +1679,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // 全文ページ数の実測が完了/無効化された(フォントサイズ・寸法の
         // 変更に追従)。ページ番号とバーをページ単位へ切替え/差し戻す
         updateEPUBIndicators()
+        refreshEPUBSearchPageNumbers()
         // 実測が完了したら永続化する。次回同一メトリクスで開くとき注入して
         // オフスクリーン再実測を省き、N/M・ページバーを即出す
         if let url = epubBookURL, let record = view.exportCensus() {

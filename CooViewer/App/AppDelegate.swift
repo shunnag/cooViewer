@@ -184,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // --then-previous-book / --then-next-book: 前/次の本へ(Ctrl+D 相当)
         // --then-next-page: ページ送り(EPUB はリフローのページ送りに分岐)
         // --then-goto-percent N: 比率ジャンプ(数字キー 0-9 の goToPercent 経路)
+        // --then-search Q / --then-next-hit / --then-previous-hit: EPUB 本文検索
         var navigationSteps: [@MainActor () -> Void] = []
         var argIndex = 0
         while argIndex < arguments.count {
@@ -270,6 +271,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "--then-previous-bookmark":
                 navigationSteps.append { [weak self] in
                     self?.readerWindowController?.goToEPUBBookmark(next: false)
+                }
+            case "--then-search":
+                if argIndex + 1 < arguments.count {
+                    let query = arguments[argIndex + 1]
+                    argIndex += 1
+                    navigationSteps.append { [weak self] in
+                        self?.readerWindowController?.debugSearchEPUB(query)
+                    }
+                }
+            case "--then-next-hit":
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.findNextEPUBMenu(nil)
+                }
+            case "--then-previous-hit":
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.findPreviousEPUBMenu(nil)
                 }
             default:
                 break

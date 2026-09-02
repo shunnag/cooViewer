@@ -37,6 +37,18 @@ enum MainMenuBuilder {
                      action: #selector(NSText.delete(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Select All"),
                      action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: String(localized: "Search…"),
+                     action: #selector(ReaderWindowController.showEPUBSearchMenu(_:)),
+                     keyEquivalent: "f")
+        menu.addItem(withTitle: String(localized: "Find Next"),
+                     action: #selector(ReaderWindowController.findNextEPUBMenu(_:)),
+                     keyEquivalent: "g")
+        let findPrevious = menu.addItem(
+            withTitle: String(localized: "Find Previous"),
+            action: #selector(ReaderWindowController.findPreviousEPUBMenu(_:)),
+            keyEquivalent: "g")
+        findPrevious.keyEquivalentModifierMask = [.command, .shift]
 
         let item = NSMenuItem()
         item.submenu = menu
@@ -230,8 +242,10 @@ enum MainMenuBuilder {
             action: #selector(ReaderWindowController.toggleGestureHUDMenu(_:)),
             keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: String(localized: "Enter Full Screen"),
-                     action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        let fullScreen = menu.addItem(
+            withTitle: String(localized: "Enter Full Screen"),
+            action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        fullScreen.keyEquivalentModifierMask = [.command, .control]
 
         let item = NSMenuItem()
         item.submenu = menu

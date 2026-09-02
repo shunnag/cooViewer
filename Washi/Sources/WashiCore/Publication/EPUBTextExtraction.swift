@@ -75,9 +75,9 @@ extension EPUBPublication {
     /// Each spine item is extracted with ``extractText(forSpineIndex:)`` and
     /// scanned for `query`. Matching is case- and diacritic-insensitive and
     /// width-insensitive (full-width and half-width forms compare equal), which
-    /// suits Japanese text. Returns every occurrence. Note that a few
-    /// decomposed half-width forms (e.g. half-width dakuten kana `ｶﾞ`) are not
-    /// folded to their full-width equivalents and may be missed.
+    /// suits Japanese text. Half-width voiced kana (for example `ｶﾞ`) are
+    /// compatibility-folded so they match full-width text in either direction.
+    /// Returns every occurrence.
     ///
     /// This runs on the calling context and reads/parses every item; for a
     /// large book prefer calling it off the main actor.
