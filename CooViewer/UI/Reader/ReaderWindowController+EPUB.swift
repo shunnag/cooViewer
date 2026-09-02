@@ -948,8 +948,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             guard !Task.isCancelled, self.epubSearchLandingEpoch == token,
                   self.epubView === epubView, self.epubSearchModel === model
             else { return }
-            // この直後の locateAndShow が送る didMoveTo だけを識別する。
+            // 着地由来の移動を待つ印(整定判定用)と、待機中に別の移動が起きたかを
+            // 判定するための通算回数を控える
             self.pendingSearchLanding = token
+            let movesBefore = self.epubMoveCount
             let landing = await epubView.go(
                 to: locator,
                 textRange: (utf16Offset: hit.utf16Offset,
@@ -958,8 +960,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                   self.epubView === epubView, self.epubSearchModel === model
             else { return }
             guard let landing else {
-                // 地図が解決できない項目だけ、従来の近似位置へフォールバックする。
-                self.pendingSearchLanding = nil
+                // 待機中に別の移動(目次・しおり・利用者のページ送り等)が起きて Washi が
+                // nil を返した場合、その移動を近似ジャンプで上書きしない(cooViewer-rso)
+                guard self.epubMoveCount == movesBefore else {
+                    self.pendingSearchLanding = nil
+                    return
+                }
+                // 移動が無ければ地図が解決できない項目なので従来の近似位置へ。
+                // pendingSearchLanding はその移動の didMoveTo まで保持し、検証の
+                // 整定判定が早まらないようにする(cooViewer-lsq)
                 epubView.go(to: locator)
                 return
             }
@@ -984,7 +993,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubSearchHighlightHost?.removeFromSuperview()
         let host = EPUBSearchHighlightHostView(frame: view.bounds)
         host.show(rects: rects)
-        view.addSubview(host)
+        // ルーペ表示中はレンズの下に置く(ハイライトがレンズ枠の上に描かれないように。
+        // cooViewer-532)
+        if let loupeHost = epubLoupeHost, loupeHost.superview === view {
+            view.addSubview(host, positioned: .below, relativeTo: loupeHost)
+        } else {
+            view.addSubview(host)
+        }
         epubSearchHighlightHost = host
     }
 
@@ -1027,12 +1042,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     /// CLI 検証用: 実際の N/M ラベルと厳密着地の結果を一行へ整形する。
     func debugEPUBSearchLandingOutput() -> String? {
-        guard epubSearchHighlightHost != nil, let landing = lastEPUBSearchLanding
-        else { return nil }
         let displayedPage = epubPageLabelText?
             .split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
-            ?? "\(landing.pageInItem + 1)/\(max(1, epubView?.pageCountInItem ?? 1))"
-        return "[search-landing] page=\(displayedPage) "
+            ?? "\(epubView.map { $0.pageInItem + 1 } ?? 0)/\(max(1, epubView?.pageCountInItem ?? 1))"
+        guard epubSearchHighlightHost != nil, let landing = lastEPUBSearchLanding else {
+            // 厳密着地しなかった(近似フォールバックまたは移動なし)場合も実表示を出す
+            return "[search-landing] exact=false page=\(displayedPage) "
+                + "moves=\(epubMoveCount) pending=\(pendingSearchLanding != nil)"
+        }
+        return "[search-landing] exact=true page=\(displayedPage) "
             + "rects=\(landing.rects.count) text=\(landing.text)"
     }
 
@@ -1805,8 +1823,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     func readerView(_ view: EPUBReaderView, didMoveTo locator: EPUBLocator,
                     pageInItem: Int, pageCountInItem: Int) {
-        if pendingSearchLanding != nil {
-            // locateAndShow が送る pageChanged。戻り値の矩形を載せるため保持する。
+        epubMoveCount &+= 1
+        if epubSearchLandingTask != nil {
+            // 着地 Task の実行中に届く pageChanged(着地自身、⌘G 連打で取り残された
+            // 古い locate、利用者操作)ではハイライトを消さない。表示の可否は着地 Task が
+            // 世代と移動回数で判定する(cooViewer-rs2 / rso)。整定判定の印だけ下ろす
             pendingSearchLanding = nil
         } else {
             // ページ送り・目次・しおり等で本文が動けば、旧座標の表示を捨てる。

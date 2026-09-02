@@ -118,9 +118,13 @@ final class ReaderWindowController: NSWindowController {
     /// 入力連打・本切替で古い検索結果を破棄する世代と実行タスク
     var epubSearchEpoch = 0
     var epubSearchTask: Task<Void, Never>?
-    /// 厳密着地の世代と、直後の didMoveTo だけを識別するトークン
+    /// 厳密着地の世代。pendingSearchLanding は「着地由来の移動を待っている」印
+    /// (検証の整定判定用。didMoveTo で消える)
     var epubSearchLandingEpoch = 0
     var pendingSearchLanding: Int?
+    /// didMoveTo の通算回数。着地 Task が「待機中に別の移動が起きたか」を判定する
+    /// (cooViewer-rso: nil フォールバックで利用者の操作を上書きしない)
+    var epubMoveCount = 0
     var epubSearchLandingTask: Task<Void, Never>?
     /// CLI 検証でページ・矩形数・正規化本文を出力する直近の成功結果
     var lastEPUBSearchLanding: EPUBTextRangeLanding?

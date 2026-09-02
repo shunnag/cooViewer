@@ -23,6 +23,13 @@ actor EPUBSource: BookSource {
     /// spine index → 解析済みページ情報のキャッシュ
     private var pageInfoCache: [Int: FixedLayoutPageInfo] = [:]
 
+    deinit {
+        // ラスタライザプールの強参照を切る(cooViewer-o6e)。ObjectIdentifier は
+        // Sendable なのでアクタ外の deinit から MainActor へ渡せる
+        let key = ObjectIdentifier(publication)
+        Task { @MainActor in FXLRasterizerPool.release(key) }
+    }
+
     init(url: URL) throws {
         try self.init(publication: EPUBPublication(url: url), url: url)
     }
@@ -158,6 +165,13 @@ extension ComicInfo {
 @MainActor
 private enum FXLRasterizerPool {
     private static var rasterizers: [ObjectIdentifier: EPUBPageRasterizer] = [:]
+
+    /// ソース破棄時にラスタライザ(publication を強参照)を捨てる。in-memory で
+    /// 開いた復号済み EPUB(暗号化祖先下、最大 256MiB)が書庫の寿命を越えて
+    /// 常駐しないようにする(cooViewer-o6e)
+    static func release(_ key: ObjectIdentifier) {
+        rasterizers[key] = nil
+    }
 
     static func render(publication: EPUBPublication, spineIndex: Int,
                        maxPixelSize: Int?) async throws -> CGImage {
