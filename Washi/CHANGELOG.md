@@ -4,7 +4,7 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
-## [1.12.0] - 2026-09-03
+## [1.14.0] - 2026-09-03
 
 ### 追加
 - リフロー EPUB の `rendition:spread`(auto/none/landscape/both)を尊重する。
@@ -19,6 +19,34 @@
 - 外部 DTD 参照付き DOCTYPE(XHTML 1.1 等)の本文で、`extractText`/`search` が
   名前付き実体(`&nbsp;` `&hellip;` 等)を落として WebKit の DOM 本文と乖離して
   いた問題を修正(未定義実体を数値参照へ前処理して展開)。
+
+## [1.13.0] - 2026-08-27
+
+### 修正
+- めくりカバーのライフサイクルを堅牢化: 所有権を意識した単一の回収経路
+  (`foldTurnCover`)、孤立カバーの回収、遷移中にめくりが奪われないよう
+  タイムアウトを適切にキャンセル(runSetup 完了スナップショットの await 前と
+  効果開始時)、spine 項目のロード中は効果をスキップ。
+- `EPUBScreenAtlas`: `invalidate()` 後は新規作業を拒否(isInvalidated ゲート)、
+  measuring エントリをタスク同一性で自己退避、再要求された実行中キーが nil に
+  飢えないよう `newestRequestedKey` を先に更新。
+- census: 明示 `.userInitiated` 優先度、2-strike + TTL の失敗台帳(一時的な計測
+  失敗を許容)、キャンセル以外の全終了で censusTask を対称的に自己退避。
+- `NavigationWaiter`: キャンセル対応の `wait()`(キャンセル時の 15/30 秒停止を解消)、
+  resolve 時のタイマー回収、install 競合ガード。
+- 入力検証: 非有限/負の SMIL 時刻値を拒否、空/複数トークンの `media:active-class`
+  を未設定扱い、既定フォント名から制御文字・行区切りを除去してから CSS エスケープ。
+
+## [1.12.0] - 2026-08-26
+
+### 変更
+- ページめくり効果(curl/slide/fade)が本文ボックスだけでなく余白・ノンブルを
+  含むページ全体をめくるようにした(実際の紙のように一枚全体が動く)。
+  `snapshot()` の全ページ合成(背景+本文+ノンブル)を `composeFullPage` として
+  切り出し、3経路(章内・FXL・リフロー章末)のめくりカバーと効果矩形で共有。
+  バッキングスケールのビットマップへ直接合成してホストの cgImage 抽出で文字を
+  鮮明に保つ。カバー表示中はライブのノンブルを隠す(焼き込み番号との二重表示と、
+  新章ロード中の「1」のちらつきを解消)。非対称余白の合成テストを追加。
 
 ## [1.11.0] - 2026-08-25
 
