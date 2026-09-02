@@ -98,6 +98,9 @@ final class BookHistoryStore {
         /// リフロー EPUB の最終位置(固定ページ index と排他ではなく併存可。
         /// オプショナル追加のみなので旧ビルドとの相互読み書きは壊れない)
         var lastReflowPosition: ReflowPosition?
+        /// リフロー EPUB のしおり。固定ページ番号ではなく読書位置と同じ
+        /// spine 項目 + 項目内進行率で持つ(仕様書 §4.7、設計書 §2.4)
+        var reflowBookmarks: [StoredReflowBookmark] = []
         /// リフロー EPUB の全文ページ実測(census)。再オープン時に注入すると
         /// オフスクリーン再実測を省けて N/M・ページバーが即出る(オプショナル追加)
         var lastCensus: StoredCensus?
@@ -113,10 +116,45 @@ final class BookHistoryStore {
         var isEmptyIgnoringCensus: Bool {
             readMode == nil && sortMode == nil && marks.isEmpty
                 && bookmarks.isEmpty && (lastPageIndex ?? 0) <= 0
-                && lastReflowPosition == nil && columnMode == nil
+                && lastReflowPosition == nil && reflowBookmarks.isEmpty
+                && columnMode == nil
         }
 
         var isEmpty: Bool { isEmptyIgnoringCensus && lastCensus == nil }
+
+        init(path: String) {
+            self.path = path
+        }
+
+        /// reflowBookmarks 追加前の v2 JSON も空配列として読む。
+        /// 非 Optional 配列の合成 Decodable は欠落キーを許さないため、追加項目
+        /// だけ decodeIfPresent にする(設計書 §13.5 の後方互換方針)
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 2
+            path = try container.decode(String.self, forKey: .path)
+            displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+            urlBookmark = try container.decodeIfPresent(Data.self, forKey: .urlBookmark)
+            readMode = try container.decodeIfPresent(Int.self, forKey: .readMode)
+            sortMode = try container.decodeIfPresent(Int.self, forKey: .sortMode)
+            marks = try container.decodeIfPresent([String].self, forKey: .marks) ?? []
+            bookmarks = try container.decodeIfPresent(
+                [StoredBookmark].self, forKey: .bookmarks) ?? []
+            lastPageIndex = try container.decodeIfPresent(
+                Int.self, forKey: .lastPageIndex)
+            lastPagePath = try container.decodeIfPresent(
+                String.self, forKey: .lastPagePath)
+            rememberBeyondRecents = try container.decodeIfPresent(
+                Bool.self, forKey: .rememberBeyondRecents)
+            lastOpened = try container.decodeIfPresent(Double.self, forKey: .lastOpened)
+            lastReflowPosition = try container.decodeIfPresent(
+                ReflowPosition.self, forKey: .lastReflowPosition)
+            reflowBookmarks = try container.decodeIfPresent(
+                [StoredReflowBookmark].self, forKey: .reflowBookmarks) ?? []
+            lastCensus = try container.decodeIfPresent(
+                StoredCensus.self, forKey: .lastCensus)
+            columnMode = try container.decodeIfPresent(Int.self, forKey: .columnMode)
+        }
     }
 
     /// リフロー EPUB の全文ページ実測(表示メトリクスキー + 項目別ページ数 +
@@ -134,6 +172,15 @@ final class BookHistoryStore {
         var progression: Double
         /// spine itemref の idref(あれば配信本の改版で spine が並べ替わっても
         /// 正しい章へ復元できる。旧 JSON は idref を持たずデコード互換)
+        var idref: String?
+    }
+
+    /// リフロー EPUB のしおり。BookHistoryStore は Washi 非依存を保ち、
+    /// 境界では ReflowPosition と同じタプルで授受する(設計書 §2.4)
+    private struct StoredReflowBookmark: Codable {
+        var name: String
+        var spineIndex: Int
+        var progression: Double
         var idref: String?
     }
 
@@ -461,6 +508,45 @@ final class BookHistoryStore {
         let inRecents = recentBookPaths().contains(path)
         guard inRecents || state.rememberBeyondRecents == true else { return nil }
         return (position.spineIndex, position.progression, position.idref)
+    }
+
+    /// リフロー EPUB のしおりを読む。画像本の settings() と同じく
+    /// recents の復元ゲートは掛けない(仕様書 §4.7、§7.1)
+    func savedReflowBookmarks(forPath rawPath: String)
+        -> [(name: String, spineIndex: Int, progression: Double, idref: String?)] {
+        let path = normalize(rawPath)
+        guard let state = loadState(forNormalizedPath: path) else { return [] }
+        return state.reflowBookmarks.map {
+            ($0.name, $0.spineIndex, $0.progression, $0.idref)
+        }
+    }
+
+    /// リフロー EPUB のしおりを保存する。Washi の型を永続層へ持ち込まず、
+    /// ReflowPosition と同じタプル境界を維持する(設計書 §2.4)
+    func noteReflowBookmarks(
+        path rawPath: String,
+        bookmarks: [(name: String, spineIndex: Int,
+                     progression: Double, idref: String?)]
+    ) {
+        let path = normalize(rawPath)
+        // 在るのに読めなかった本は既存状態を空で上書きしない
+        guard var state = mutableState(forNormalizedPath: path) else { return }
+        state.reflowBookmarks = bookmarks.map {
+            StoredReflowBookmark(name: $0.name, spineIndex: $0.spineIndex,
+                                 progression: $0.progression, idref: $0.idref)
+        }
+        // しおりを全削除して census だけになった場合はファイルごと回収する。
+        // noteReflowCensus の「census 単独ファイルを残さない」方針と同じ
+        if state.reflowBookmarks.isEmpty && state.isEmptyIgnoringCensus {
+            state.lastCensus = nil
+        }
+        // しおりだけを持つ EPUB もファイル移動時に再配置できるようにする。
+        // 空配列では isEmpty 判定が URL bookmark を無視して状態を削除する
+        if !state.reflowBookmarks.isEmpty,
+           let data = try? URL(fileURLWithPath: path).bookmarkData() {
+            state.urlBookmark = data
+        }
+        writeState(state, forNormalizedPath: path)
     }
 
     /// リフロー EPUB の census(全文ページ実測)を保存する。位置と同居させ、

@@ -1156,6 +1156,20 @@ public final class EPUBReaderView: NSView {
             ?? EPUBLocator(spineIndex: counts.count - 1, progression: 1)
     }
 
+    /// Position → whole-book page number (0-based). Nil until the census
+    /// completes or when the locator does not address a measured spine item.
+    public func censusGlobalPage(for locator: EPUBLocator) -> Int? {
+        guard let counts = pageCensus,
+              counts.indices.contains(locator.spineIndex) else { return nil }
+        let count = counts[locator.spineIndex]
+        guard count > 0 else { return nil }
+        let offset = counts.prefix(locator.spineIndex).reduce(0, +)
+        // censusLocator(forGlobalPage:) と同じ 0 始まり・項目内 (count - 1)
+        // 分割へ戻す。rounded() により両方向の量子化を対称にする
+        let inItem = Int((locator.progression * Double(count - 1)).rounded())
+        return offset + min(max(0, inItem), count - 1)
+    }
+
     // MARK: - 画面サムネイル(ホストの一覧 UI 用)
 
     /// Number of pages laid out on one screen at the current metrics (1 = single

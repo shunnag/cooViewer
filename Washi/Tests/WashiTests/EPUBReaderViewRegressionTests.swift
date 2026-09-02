@@ -88,4 +88,24 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
         XCTAssertEqual(view.currentLocator.spineIndex, 1)
         XCTAssertEqual(view.currentLocator.progression, 0.625, accuracy: 0.0001)
     }
+
+    /// 0 始まりの census ページと locator の相互変換は全ページで可逆になる
+    func testCensusGlobalPageRoundTripsEveryPage() throws {
+        let publication = try makePublication()
+        let view = EPUBReaderView(
+            frame: NSRect(x: 0, y: 0, width: 900, height: 900))
+        view.load(publication: publication)
+        let counts = [1, 4, 3]
+        let metricsKey = EPUBScreenMetrics(
+            viewportSize: view.bounds.size, settings: view.settings).censusOptionsJSON
+        XCTAssertTrue(view.importCensus(EPUBCensusRecord(
+            metricsKey: metricsKey, counts: counts,
+            releaseIdentifier: publication.metadata.releaseIdentifier)))
+
+        for page in 0..<counts.reduce(0, +) {
+            let locator = try XCTUnwrap(view.censusLocator(forGlobalPage: page))
+            XCTAssertEqual(view.censusGlobalPage(for: locator), page,
+                           "0 始まり page=\(page)")
+        }
+    }
 }
