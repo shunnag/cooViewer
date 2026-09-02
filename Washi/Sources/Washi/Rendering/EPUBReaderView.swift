@@ -427,13 +427,11 @@ public final class EPUBReaderView: NSView {
                         : settings.insets
     }
 
-    /// 見開き判定はモード別余白を適用する前の基準幅で固定し、ライブ表示と
-    /// census の閾値が spreadInsets の大きさで分岐しないようにする
+    /// 見開き判定は publication の rendition:spread を含む画面計画へ一本化する
     private var isSpread: Bool {
-        let base = settings.insets
-        let baseWidth = max(1, bounds.width - base.left - base.right)
-        return EPUBScreenMetrics.usesSpread(contentWidth: baseWidth,
-                                            columnMode: settings.columnMode)
+        EPUBScreenMetrics.plansSpread(
+            viewportSize: bounds.size, settings: settings,
+            renditionSpread: publication?.metadata.rendition.spread ?? .auto)
     }
 
     private func contentFrame() -> NSRect {
@@ -517,7 +515,9 @@ public final class EPUBReaderView: NSView {
 
     /// 現在の表示条件の画面計画(census・サムネイルのオプションもここから)
     private var currentScreenMetrics: EPUBScreenMetrics {
-        EPUBScreenMetrics(viewportSize: bounds.size, settings: settings)
+        EPUBScreenMetrics(
+            viewportSize: bounds.size, settings: settings,
+            renditionSpread: publication?.metadata.rendition.spread ?? .auto)
     }
 
     private func loadSpineItem(at index: Int, target: PendingTarget,

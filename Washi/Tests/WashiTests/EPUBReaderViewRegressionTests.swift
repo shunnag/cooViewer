@@ -11,6 +11,16 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
             displayURL: URL(fileURLWithPath: "/tmp/washi-reader-regression.epub"))
     }
 
+    private func makePublication(spread: RenditionSpread) throws -> EPUBPublication {
+        try EPUBPublication(
+            data: ZipBuilder.build(
+                EPUBFixtures.reflowSpreadEntries(
+                    renditionSpread: spread,
+                    bodyHTML: "<p>\(String(repeating: "本文。", count: 200))</p>"),
+                method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/washi-reader-\(spread.rawValue).epub"))
+    }
+
     private func setupOptions(of view: EPUBReaderView) throws -> [String: Any] {
         let data = try XCTUnwrap(view.setupOptionsJSON().data(using: .utf8))
         return try XCTUnwrap(
@@ -38,6 +48,18 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
             XCTAssertEqual(liveSpread, metrics.pagesPerScreen == 2,
                            "viewport width: \(width)")
         }
+    }
+
+    func testSetupSpreadHonorsPublicationRenditionSpread() throws {
+        let bothView = EPUBReaderView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 900))
+        bothView.load(publication: try makePublication(spread: .both))
+        XCTAssertEqual(try setupOptions(of: bothView)["spread"] as? Bool, true)
+
+        let noneView = EPUBReaderView(
+            frame: NSRect(x: 0, y: 0, width: 1_200, height: 900))
+        noneView.load(publication: try makePublication(spread: .none))
+        XCTAssertEqual(try setupOptions(of: noneView)["spread"] as? Bool, false)
     }
 
     /// meta refresh などの .other は期待外なら reader 経由へ戻し、直前に
@@ -125,5 +147,21 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
             XCTAssertEqual(view.censusGlobalPage(for: locator), page,
                            "0 始まり page=\(page)")
         }
+    }
+
+    /// importCensus の照合キーが著者指定を反映した画面計画と決定的に一致する
+    func testImportedCensusUsesRenditionSpreadMetricsKey() throws {
+        let publication = try makePublication(spread: .both)
+        let view = EPUBReaderView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 900))
+        view.load(publication: publication)
+        let base = EPUBScreenMetrics(
+            viewportSize: view.bounds.size, settings: view.settings)
+        let openKey = base.applyingRenditionSpread(.both).cacheKey
+        XCTAssertNotEqual(openKey, base.cacheKey)
+        XCTAssertTrue(view.importCensus(EPUBCensusRecord(
+            metricsKey: openKey, counts: [7],
+            releaseIdentifier: publication.metadata.releaseIdentifier)))
+        XCTAssertEqual(view.pageCensusMetricsKey, openKey)
     }
 }

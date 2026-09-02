@@ -62,7 +62,8 @@ public final class EPUBScreenAtlas {
     /// releasing the atlas (e.g. on eviction from a cache)** — it stops any
     /// in-progress measurement or render so the processes are not kept alive for
     /// the host's entire lifetime. After this call the atlas refuses further work
-    /// (`screenCounts`/`thumbnail` return nil); do not reuse this instance.
+    /// (`screenCounts`/`screenPlan`/`thumbnail` return nil); do not reuse this
+    /// instance.
     public func invalidate() {
         isInvalidated = true
         for task in measuring.values { task.cancel() }
@@ -108,6 +109,43 @@ public final class EPUBScreenAtlas {
         if measuring[key] == task { measuring[key] = nil }
         if let counts { countsCache[key] = counts }
         return counts
+    }
+
+    /// Returns per-item page counts together with the publication-specific
+    /// number of pages shown on each screen. The publication-wide
+    /// `rendition:spread` preference is applied atomically to both values.
+    public func screenPlan(
+        metrics: EPUBScreenMetrics
+    ) async -> (counts: [Int], pagesPerScreen: Int)? {
+        guard !isInvalidated else { return nil }
+        let m = metrics.applyingRenditionSpread(
+            publication.metadata.rendition.spread)
+        let key = m.censusOptionsJSON
+        if let cached = countsCache[key] {
+            return (cached, m.pagesPerScreen)
+        }
+        // 合流の前に newestRequestedKey を更新し、待機中の同一キーを
+        // 表示中の最新要求へ戻す
+        newestRequestedKey = key
+        if let running = measuring[key] {
+            guard let counts = await running.value else { return nil }
+            return (counts, m.pagesPerScreen)
+        }
+        let previous = lastMeasure
+        let task = Task(priority: .userInitiated) {
+            [census, publication, weak self] () -> [Int]? in
+            _ = await previous?.value
+            guard self?.newestRequestedKey == key else { return nil }
+            return await census.measure(publication: publication, optionsJSON: key,
+                                        contentSize: m.contentSize)
+        }
+        measuring[key] = task
+        lastMeasure = Task(priority: .userInitiated) { _ = await task.value }
+        let counts = await task.value
+        if measuring[key] == task { measuring[key] = nil }
+        if let counts { countsCache[key] = counts }
+        guard let counts else { return nil }
+        return (counts, m.pagesPerScreen)
     }
 
     /// Thumbnail for the given screen (nil on failure or after `invalidate()`).

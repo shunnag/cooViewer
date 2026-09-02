@@ -10,6 +10,7 @@ private final class FakeCensus: ScreenPageCensusing {
     private(set) var invalidateCount = 0
     private(set) var measuredKeys: [String] = []
     var cannedCounts: [Int] = [3, 4]
+    var cannedCountsByKey: [String: [Int]] = [:]
     /// この集合のキーは measure を継続でブロックする(release で解放)
     var blockedKeys: Set<String> = []
     private var gates: [String: CheckedContinuation<Void, Never>] = [:]
@@ -21,7 +22,7 @@ private final class FakeCensus: ScreenPageCensusing {
         if blockedKeys.contains(optionsJSON) {
             await withCheckedContinuation { gates[optionsJSON] = $0 }
         }
-        return cannedCounts
+        return cannedCountsByKey[optionsJSON] ?? cannedCounts
     }
 
     func invalidate() { invalidateCount += 1 }
@@ -44,6 +45,17 @@ final class EPUBScreenAtlasTests: XCTestCase {
                           settings: EPUBReaderSettings())
     }
 
+    private func makeSpreadPublication(
+        _ spread: RenditionSpread, bodyHTML: String = "<p>本文</p>"
+    ) throws -> EPUBPublication {
+        try EPUBPublication(
+            data: ZipBuilder.build(
+                EPUBFixtures.reflowSpreadEntries(
+                    renditionSpread: spread, bodyHTML: bodyHTML),
+                method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/atlas-\(spread.rawValue).epub"))
+    }
+
     /// 条件が満たされるまで MainActor を回して待つ(最大 ~2 秒)
     private func waitUntil(_ predicate: @escaping () -> Bool) async {
         for _ in 0..<400 where !predicate() {
@@ -57,6 +69,8 @@ final class EPUBScreenAtlasTests: XCTestCase {
         atlas.invalidate()
         let counts = await atlas.screenCounts(metrics: metrics(width: 400))
         XCTAssertNil(counts)  // invalidate 後は nil
+        let plan = await atlas.screenPlan(metrics: metrics(width: 400))
+        XCTAssertNil(plan)
         XCTAssertEqual(fake.invokeCount, 0)  // census は呼ばれない
         let thumb = await atlas.thumbnail(
             spineIndex: 0, pageInItem: 0, metrics: metrics(width: 400),
@@ -109,5 +123,96 @@ final class EPUBScreenAtlasTests: XCTestCase {
         XCTAssertTrue(fake.measuredKeys.contains(k1.censusOptionsJSON),
                       "K1 の measure が実行されること")
         _ = await (t0.value, t2.value)
+    }
+
+    func testNonAutoSpreadFixturesParseDocumentWideDeclaration() throws {
+        for spread in [RenditionSpread.none, .both, .landscape] {
+            let publication = try makeSpreadPublication(spread)
+            XCTAssertEqual(publication.metadata.rendition.spread, spread)
+        }
+    }
+
+    func testScreenPlanMeasuresAndReturnsDerivedSpreadAtomically() async throws {
+        let fake = FakeCensus()
+        let publication = try makeSpreadPublication(.both)
+        let atlas = EPUBScreenAtlas(publication: publication, census: fake)
+        let base = metrics(width: 640)
+        let derived = base.applyingRenditionSpread(.both)
+
+        let measuredPlan = await atlas.screenPlan(metrics: base)
+        let plan = try XCTUnwrap(measuredPlan)
+
+        XCTAssertEqual(plan.counts, [3, 4])
+        XCTAssertEqual(plan.pagesPerScreen, 2)
+        XCTAssertEqual(fake.measuredKeys, [derived.censusOptionsJSON])
+        let data = try XCTUnwrap(fake.measuredKeys.first?.data(using: .utf8))
+        let options = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(options["spread"] as? Bool, true)
+    }
+
+    func testAutoScreenPlanMatchesLegacyCountsAndReusesCache() async throws {
+        let fake = FakeCensus()
+        let publication = try makeSpreadPublication(.auto)
+        let atlas = EPUBScreenAtlas(publication: publication, census: fake)
+        let base = metrics(width: 800)
+
+        let legacy = await atlas.screenCounts(metrics: base)
+        let plan = await atlas.screenPlan(metrics: base)
+
+        XCTAssertEqual(base.applyingRenditionSpread(.auto).cacheKey,
+                       base.cacheKey)
+        XCTAssertEqual(plan?.counts, legacy)
+        XCTAssertEqual(plan?.pagesPerScreen, base.pagesPerScreen)
+        XCTAssertEqual(fake.invokeCount, 1)
+        XCTAssertEqual(fake.measuredKeys, [base.censusOptionsJSON])
+    }
+
+    /// 旧 API は基底キー、新 API は書籍の派生キーを使う差分オラクル
+    func testLegacyCountsAndScreenPlanUseDifferentSpreadPlans() async throws {
+        let fake = FakeCensus()
+        let longBody = "<p>\(String(repeating: "長い本文。", count: 2_000))</p>"
+        let publication = try makeSpreadPublication(.both, bodyHTML: longBody)
+        let atlas = EPUBScreenAtlas(publication: publication, census: fake)
+        let base = metrics(width: 640)
+        let derived = base.applyingRenditionSpread(.both)
+        fake.cannedCountsByKey = [
+            base.censusOptionsJSON: [4],
+            derived.censusOptionsJSON: [8],
+        ]
+
+        let legacy = await atlas.screenCounts(metrics: base)
+        let plan = await atlas.screenPlan(metrics: base)
+
+        XCTAssertEqual(legacy, [4])
+        XCTAssertEqual(plan?.counts, [8])
+        XCTAssertEqual(plan?.pagesPerScreen, 2)
+        XCTAssertEqual(fake.measuredKeys,
+                       [base.censusOptionsJSON, derived.censusOptionsJSON])
+    }
+
+    /// 実 census でも both の論理ページ数が単ページ計画より増えることを比較する
+    func testRealCensusDifferentialOracleForBothFixture() async throws {
+        let longBody = "<p>\(String(repeating: "長い本文。", count: 3_000))</p>"
+        let publication = try makeSpreadPublication(.both, bodyHTML: longBody)
+        let atlas = EPUBScreenAtlas(publication: publication)
+        defer { atlas.invalidate() }
+        var settings = EPUBReaderSettings()
+        settings.insets = .zero
+        let base = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 640, height: 400), settings: settings)
+
+        let measuredLegacy = await atlas.screenCounts(metrics: base)
+        let measuredPlan = await atlas.screenPlan(metrics: base)
+        let legacy = try XCTUnwrap(measuredLegacy)
+        let plan = try XCTUnwrap(measuredPlan)
+        let singleCount = try XCTUnwrap(legacy.first)
+        let spreadCount = try XCTUnwrap(plan.counts.first)
+
+        XCTAssertEqual(plan.pagesPerScreen, 2)
+        XCTAssertGreaterThan(spreadCount, singleCount)
+        let ratio = Double(spreadCount) / Double(singleCount)
+        XCTAssertGreaterThan(ratio, 1.5)
+        XCTAssertLessThan(ratio, 3.0)
     }
 }

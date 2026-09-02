@@ -22,14 +22,37 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
     private let layoutCSS: String
     private let themedCSSLight: String
     private let themedCSSDark: String
+    private let viewportSize: CGSize
+    private let insets: EPUBReaderInsets
+    private let spreadInsets: EPUBReaderInsets?
+    private let columnMode: EPUBColumnMode
 
     public init(viewportSize: CGSize, settings: EPUBReaderSettings) {
+        self.init(viewportSize: viewportSize, settings: settings,
+                  renditionSpread: .auto)
+    }
+
+    /// Creates screen metrics while honoring the publication-wide
+    /// `rendition:spread` preference.
+    public init(viewportSize: CGSize, settings: EPUBReaderSettings,
+                renditionSpread: RenditionSpread) {
+        self.init(
+            viewportSize: viewportSize, settings: settings,
+            renditionSpread: renditionSpread,
+            layoutCSS: settings.layoutAffectingCSS(),
+            themedCSSLight: settings.composedUserCSS(isDark: false),
+            themedCSSDark: settings.composedUserCSS(isDark: true))
+    }
+
+    private init(viewportSize: CGSize, settings: EPUBReaderSettings,
+                 renditionSpread: RenditionSpread, layoutCSS: String,
+                 themedCSSLight: String, themedCSSDark: String) {
         // 見開き判定は基準余白(insets)の内容幅で行う。モード別余白
         // (spreadInsets)を入れても見開き/単ページの切替閾値が揺れないように
         let base = settings.insets
-        let baseWidth = max(1, viewportSize.width - base.left - base.right)
-        let usesSpread = Self.usesSpread(contentWidth: baseWidth,
-                                         columnMode: settings.columnMode)
+        let usesSpread = Self.plansSpread(
+            viewportSize: viewportSize, settings: settings,
+            renditionSpread: renditionSpread)
         // 実際の内容寸法は、そのモードの余白で算出(見開きは spreadInsets が
         // あればそちら、無ければ insets)
         let active = usesSpread ? (settings.spreadInsets ?? base) : base
@@ -41,20 +64,59 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
         gutter = Double(Self.spreadGutter(forContentWidth: size.width))
         gap = settings.pageGap
         pagesPerScreen = spread ? 2 : 1
-        layoutCSS = settings.layoutAffectingCSS()
-        themedCSSLight = settings.composedUserCSS(isDark: false)
-        themedCSSDark = settings.composedUserCSS(isDark: true)
+        self.layoutCSS = layoutCSS
+        self.themedCSSLight = themedCSSLight
+        self.themedCSSDark = themedCSSDark
+        self.viewportSize = viewportSize
+        insets = settings.insets
+        spreadInsets = settings.spreadInsets
+        columnMode = settings.columnMode
     }
 
-    /// この内容幅で見開きにするか(auto はウインドウ幅で自動。
-    /// Apple Books の 1/2 ページ判定と同じ発想)
+    /// 基準余白後の内容幅と viewport の向きから見開きを計画する
+    static func plansSpread(viewportSize: CGSize, settings: EPUBReaderSettings,
+                            renditionSpread: RenditionSpread) -> Bool {
+        let base = settings.insets
+        let contentWidth = max(1, viewportSize.width - base.left - base.right)
+        return usesSpread(
+            contentWidth: contentWidth, columnMode: settings.columnMode,
+            renditionSpread: renditionSpread,
+            isLandscapeViewport: viewportSize.width > viewportSize.height)
+    }
+
+    /// この内容幅で見開きにするか。明示 columnMode を最優先し、auto の
+    /// ときだけ著者の rendition:spread と viewport の向きを採用する
     static func usesSpread(contentWidth: CGFloat,
-                           columnMode: EPUBColumnMode) -> Bool {
+                           columnMode: EPUBColumnMode,
+                           renditionSpread: RenditionSpread,
+                           isLandscapeViewport: Bool) -> Bool {
         switch columnMode {
         case .single: false
         case .double: true
-        case .auto: contentWidth >= 700
+        case .auto:
+            switch renditionSpread {
+            case .none: false
+            case .both: true
+            case .landscape: isLandscapeViewport && contentWidth >= 700
+            case .auto: contentWidth >= 700
+            }
         }
+    }
+
+    /// Returns equivalent metrics with a publication-wide
+    /// `rendition:spread` preference applied.
+    public func applyingRenditionSpread(
+        _ renditionSpread: RenditionSpread
+    ) -> EPUBScreenMetrics {
+        var settings = EPUBReaderSettings()
+        settings.insets = insets
+        settings.spreadInsets = spreadInsets
+        settings.columnMode = columnMode
+        settings.pageGap = gap
+        return EPUBScreenMetrics(
+            viewportSize: viewportSize, settings: settings,
+            renditionSpread: renditionSpread, layoutCSS: layoutCSS,
+            themedCSSLight: themedCSSLight, themedCSSDark: themedCSSDark)
     }
 
     /// 見開き時の中央ノド幅(Apple Books の版面比を目安に内容幅の約 7%)
