@@ -24,7 +24,12 @@ actor EPUBSource: BookSource {
     private var pageInfoCache: [Int: FixedLayoutPageInfo] = [:]
 
     init(url: URL) throws {
-        let publication = try EPUBPublication(url: url)
+        try self.init(publication: EPUBPublication(url: url), url: url)
+    }
+
+    /// メモリ上で開いた OCF を固定レイアウト本として受け取る。
+    /// url はエラー表示・書名表示用で、publication の読み出し先ではない。
+    init(publication: EPUBPublication, url: URL) throws {
         guard !publication.isDRMProtected else {
             throw BookSourceError.unreadable(url)
         }

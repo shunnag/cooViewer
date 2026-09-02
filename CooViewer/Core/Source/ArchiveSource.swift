@@ -76,10 +76,10 @@ actor ArchiveSource: BookSource {
     /// この 2GiB は実効的な閾値として働く(超過は確実に弾かれる)
     private static let nestedEntrySizeLimit: Int64 = 2 << 30
 
-    /// 暗号化祖先由来のネスト子をメモリで開く上限(cooViewer-6ax)。超えると
-    /// 平文 temp にフォールバックし RAM 常駐(展開プールで共有/複製される
-    /// 復号済み NSData)の肥大を防ぐ。実在するネスト書庫/PDF の大半はこの
-    /// 256MiB 以下でメモリ経由=平文を disk に置かずに開ける
+    /// 暗号化祖先由来のネスト子をメモリで開く上限(cooViewer-6ax)。書庫/PDF は
+    /// 超過時に平文 temp へフォールバックするが、EPUB は c6s.23 により平文 temp
+    /// を禁じてスキップする。実在するネスト書庫/PDF/EPUB の大半はこの 256MiB
+    /// 以下でメモリ経由=平文を disk に置かずに開ける
     static let nestedInMemoryLimit: Int64 = 256 << 20
 
     /// ComicInfo.xml の展開後サイズ上限(zip 爆弾対策)。標準のメタデータは
@@ -327,9 +327,9 @@ actor ArchiveSource: BookSource {
                 ))
             } else if nestingDepth < 2,
                       SupportedTypes.isBookFile(URL(fileURLWithPath: lastComponent)) {
-                // 固定レイアウト EPUB は合本へ取り込む。リフロー EPUB と
-                // 暗号化祖先下の EPUB は cooViewer-c6s.23 で再設計するため、
-                // appendNestedPages で従来どおり黙って除外する(仕様書 §4.17)
+                // 固定レイアウト EPUB は合本へ取り込む。リフロー EPUB は
+                // appendNestedPages で従来どおり黙って除外する(仕様書 §4.17)。
+                // 暗号化祖先下の FXL は c6s.23 のメモリ経路だけで取り込む
                 candidates.append((index: index, path: name))
             }
         }
@@ -391,29 +391,29 @@ actor ArchiveSource: BookSource {
         return result
     }
 
-    /// ネスト候補 1 つを一時領域へ展開し、子ソースのページを取り込む。
+    /// ネスト候補 1 つをメモリまたは一時領域へ展開し、子ソースのページを取り込む。
     /// 失敗(壊れた書庫等)はそのエントリを黙って飛ばす(§4.17 の方針)
     @discardableResult
     private func appendNestedPages(of candidate: (index: Int32, path: String),
                                    ordinal: Int,
                                    into result: inout [PageEntry]) async -> Bool {
         let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
-        if isEPUB {
-            // EPUBSource は URL 前提なので、暗号化祖先由来の EPUB を平文 temp に
-            // 書くと cooViewer-6ax の不変条件を破る。in-memory OCF とリフローの
-            // 安定キーは cooViewer-c6s.23 で再設計するため、本 MVP では除外する
-            let sensitive = contentIsSensitive || archive.isEncrypted()
-            guard !sensitive else { return false }
+        let sensitive = contentIsSensitive || archive.isEncrypted()
+        if isEPUB, sensitive, archive.entryHasSize(candidate.index) {
+            // c6s.23: 暗号化祖先下の EPUB は展開前にメモリ上限を確認する。
+            // 6ax により上限超を平文 temp へ逃がせないため、PDF/書庫とは
+            // 意図的に非対称なスキップとする。サイズ不明の形式だけは通す
+            guard archive.uncompressedSize(ofEntry: candidate.index)
+                    <= Self.nestedInMemoryLimit else { return false }
         }
         guard let data = nestedChildData(candidate) else { return false }
         // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
         // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
         let childKey = persistenceKey.nested(entryPath: candidate.path)
         // 暗号化祖先由来の子は復号済み平文を disk に置かずメモリから開く。ただし
-        // RAM 常駐(プールで共有/複製)が重い大きな子は現行の平文 temp へフォール
-        // バック(上限 nestedInMemoryLimit)。非機微(非暗号化親)は従来どおり
-        // temp 経由で挙動・性能を変えない。子の機微性は子孫へ伝播する。cooViewer-6ax
-        let sensitive = contentIsSensitive || archive.isEncrypted()
+        // RAM 常駐(プールで共有/複製)が重い大きな書庫/PDF は現行の平文 temp へ
+        // フォールバックする(EPUB は 6ax/c6s.23 によりスキップ)。非機微な子は
+        // 従来どおり temp 経由で挙動・性能を変えず、機微性は子孫へ伝播する
         let useMemory = sensitive && Int64(data.count) <= Self.nestedInMemoryLimit
         let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
         let child: any BookSource
@@ -424,11 +424,24 @@ actor ArchiveSource: BookSource {
                 data: data,
                 displayURL: URL(fileURLWithPath: candidate.path)),
                 probe.isFixedLayout, !probe.isDRMProtected else { return false }
-            guard let fileURL = writeNestedTemp(candidate, data: data),
-                  let epub = try? EPUBSource(url: fileURL) else { return false }
-            // EPUBSource(url:) は FXL 非 DRM のみ成功する。リフロー/DRM/破損は
-            // 仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
-            child = epub
+            if sensitive {
+                // c6s.23: probe が OCF の Data を保持するため、そのまま子へ渡せば
+                // 6ax の平文 temp 禁止を守れる。実サイズが上限超なら temp へ
+                // フォールバックせずスキップする(PDF/書庫との非対称は意図的)
+                guard useMemory,
+                      let epub = try? EPUBSource(
+                        publication: probe,
+                        url: URL(fileURLWithPath: candidate.path)) else { return false }
+                child = epub
+            } else {
+                // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
+                // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
+                guard let fileURL = writeNestedTemp(candidate, data: data),
+                      let epub = try? EPUBSource(url: fileURL) else { return false }
+                child = epub
+            }
+            // EPUBSource は FXL 非 DRM のみ成功する。リフロー/DRM/破損は
+            // cooViewer-cj2 と仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
         } else if isPDF {
             if useMemory {
                 guard let pdf = try? PDFSource(data: data) else { return false }
@@ -501,9 +514,9 @@ actor ArchiveSource: BookSource {
     }
 
     /// ネスト子を一時領域へ書き出す(<pid>-<uuid>-nested/)。非機微な子、または
-    /// 上限超でメモリ経由を諦めた機微な子に使う。暗号化祖先由来の平文がここに
-    /// 残る場合があるため(XADMaster/PDFKit がパスを直読みするため暗号化不可 —
-    /// 設計書 §2.4 の残余リスク)、ディレクトリ/ファイル権限を所有者限定にする
+    /// 上限超でメモリ経由を諦めた機微な書庫/PDF に使う。暗号化祖先由来の EPUB は
+    /// 6ax/c6s.23 によりここへ渡さない。残る平文 temp は XADMaster/PDFKit がパスを
+    /// 直読みするため暗号化不可(設計書 §2.4 の残余リスク)なので、権限を所有者限定にする
     private func writeNestedTemp(_ candidate: (index: Int32, path: String),
                                  data: Data) -> URL? {
         if nestedRoot == nil {
