@@ -5,7 +5,7 @@ import XCTest
 
 /// 書庫内固定レイアウト EPUB の合本取り込み(cooViewer-c6s.14)を検証する。
 /// 既存の書庫/PDF 回帰は NestedArchiveSourceTests が担当し、ここでは EPUB の
-/// 対象境界(FXL のみ、リフロー/暗号化祖先下は黙殺)を固定する。
+/// 対象境界(FXL のみ、暗号化祖先下はメモリ限定、リフローは黙殺)を固定する。
 final class NestedEPUBArchiveSourceTests: XCTestCase {
     private var tempDir: URL!
 
@@ -206,9 +206,10 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
         XCTAssertEqual(entries.map(\.id), [0, 1_000_000])
     }
 
-    /// 暗号化祖先下では EPUB 全体の平文 temp を作らない(cooViewer-6ax)。
-    /// in-memory OCF 対応は cooViewer-c6s.23 まで保留し、EPUB だけ黙って欠落する。
-    func testEncryptedParentSkipsEPUBWithoutPlaintextTemp() async throws {
+    /// 暗号化祖先下の FXL EPUB をメモリから開き、平文 temp は作らない
+    /// (cooViewer-6ax/c6s.23)。バグ探索由来の旧テストは EPUB の欠落を期待して
+    /// いたが、メモリ経路の実装に伴い「取り込まれる」期待へ正当に変更した。
+    func testEncryptedParentFixedLayoutEPUBOpensFromMemory() async throws {
         let epubData = fixedLayoutEPUBData(widths: [41, 42])
         let uniqueName = "secret-\(UUID().uuidString).epub"
         let stage = tempDir.appendingPathComponent("encrypted")
@@ -233,7 +234,14 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
         let unlocked = await source.checkAndSetPassword("sesame")
         XCTAssertTrue(unlocked)
         let entries = try await source.entries()
-        XCTAssertEqual(entries.map(\.pathInBook), ["visible.avifs"])
+        XCTAssertEqual(entries.map(\.pathInBook), [
+            "visible.avifs", "\(uniqueName)/000000", "\(uniqueName)/000001",
+        ])
+        XCTAssertEqual(entries.map(\.id), [0, 1_000_000, 1_000_001])
+        for (entry, width) in zip(entries, [40, 41, 42]) {
+            let image = try await source.image(for: entry, maxPixelSize: nil)
+            XCTAssertEqual(image.width, width, "\(entry.pathInBook) の画像内容")
+        }
 
         // source を生存させたまま spool を調べ、候補名を持つ平文 temp が無いことを
         // assert する。UUID 名なので同時実行中の別テストとは衝突しない。
@@ -252,5 +260,56 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
         }
         XCTAssertTrue(leakedFiles.isEmpty,
                       "暗号化祖先下の EPUB が平文 temp に書かれている")
+    }
+
+    // c6s.23 の 256MiB 上限は注入できず、同サイズのテスト fixture は過大なので
+    // 上限超テストは置かない。展開前の宣言サイズと展開後の実サイズを実装で守る。
+
+    /// 暗号化祖先下でもリフロー EPUB は FXL 画像パイプラインへ入れず、
+    /// cooViewer-cj2 の probe で黙殺して平文 temp を作らない(6ax/c6s.23)。
+    func testEncryptedParentReflowEPUBStaysAbsentWithoutTemp() async throws {
+        let uniqueName = "novel-\(UUID().uuidString).epub"
+        let stage = tempDir.appendingPathComponent("encrypted-reflow")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        let imageURL = stage.appendingPathComponent("visible.avifs")
+        let epubURL = stage.appendingPathComponent(uniqueName)
+        let archiveURL = stage.appendingPathComponent("outer.zip")
+        try png(width: 40).write(to: imageURL)
+        try reflowEPUBData().write(to: epubURL)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.arguments = ["-j", "-P", "sesame", archiveURL.path,
+                             imageURL.path, epubURL.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+
+        let source = try ArchiveSource(url: archiveURL)
+        let encrypted = await source.isEncrypted()
+        XCTAssertTrue(encrypted)
+        let unlocked = await source.checkAndSetPassword("sesame")
+        XCTAssertTrue(unlocked)
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.map(\.pathInBook), ["visible.avifs"])
+        XCTAssertEqual(entries.map(\.id), [0])
+
+        // source を生存させたまま spool を調べ、リフロー EPUB の候補名を持つ
+        // 平文 temp が無いことを固定する。UUID 名なので別テストとは衝突しない。
+        let root = ArchiveSource.spoolRoot()
+        let pidPrefix = "\(ProcessInfo.processInfo.processIdentifier)-"
+        let directories = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        var leakedFiles: [URL] = []
+        for directory in directories
+            where directory.lastPathComponent.hasPrefix(pidPrefix) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)) ?? []
+            leakedFiles.append(contentsOf: files.filter {
+                $0.lastPathComponent.hasSuffix("-\(uniqueName)")
+            })
+        }
+        XCTAssertTrue(leakedFiles.isEmpty,
+                      "暗号化祖先下のリフロー EPUB が平文 temp に書かれている")
     }
 }
