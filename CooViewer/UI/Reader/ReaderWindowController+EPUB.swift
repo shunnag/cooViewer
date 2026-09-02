@@ -47,6 +47,28 @@ enum EPUBBookmarkLogic {
         globalStart + min(localPage + 1, segmentPageCount)
     }
 
+    static func localPage(forDisplayed page: Int, base: Int) -> Int {
+        page - base - 1
+    }
+
+    static func resolvedLocator(
+        original: EPUBLocator,
+        editedPage: Int?,
+        originalPage: Int?,
+        range: ClosedRange<Int>?,
+        base: Int,
+        locatorForLocalPage: (Int) -> EPUBLocator?
+    ) -> EPUBLocator {
+        // 仕様書 §4.7.2: 未変更の locator は再量子化せず、範囲外や
+        // census 変換失敗も従来の黙殺方針で元の位置を保持する。
+        guard let editedPage, editedPage != originalPage,
+              let range, range.contains(editedPage) else {
+            return original
+        }
+        return locatorForLocalPage(
+            localPage(forDisplayed: editedPage, base: base)) ?? original
+    }
+
     static func matchingIndex(
         in bookmarks: [(name: String, locator: EPUBLocator)],
         current: EPUBLocator,
@@ -1019,28 +1041,76 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         return pageText
     }
 
-    /// リフロー専用編集シート。位置は census 表示のみで、コピー上の
-    /// リネーム・削除・並べ替えを OK 時に確定する(仕様書 §4.7.2、§13.3)
+    /// リフロー専用編集シート。census 完了時はページ番号も
+    /// コピー上で編集し、OK 時にだけ確定する(仕様書 §4.7.2、§13.3)
     func editEPUBBookmarks() {
-        guard isEPUBMode, let targetURL = epubBookURL, let window,
+        guard isEPUBMode, let targetURL = epubBookURL, let epubView, let window,
               bookmarkEditorWindow == nil else { return }
+        let pageBase: Int
+        let pageRange: ClosedRange<Int>?
+        let segmentPageCount: Int?
+        if let total = epubView.censusTotalPages, total > 0 {
+            if let context = epubCollectionContext,
+               let map = activeCollectionPageMap() {
+                let start = map.globalStart(forEntry: context.entryIndex)
+                let count = map.pageCount(forEntry: context.entryIndex)
+                pageBase = start
+                pageRange = (start + 1)...(start + count)
+                segmentPageCount = count
+            } else {
+                pageBase = 0
+                pageRange = 1...total
+                segmentPageCount = nil
+            }
+        } else {
+            pageBase = 0
+            pageRange = nil
+            segmentPageCount = nil
+        }
+        let pageNumber: (EPUBLocator) -> Int? = { locator in
+            guard let localPage = epubView.censusGlobalPage(for: locator) else {
+                return nil
+            }
+            if let segmentPageCount {
+                return EPUBBookmarkLogic.collectionPageNumber(
+                    globalStart: pageBase, localPage: localPage,
+                    segmentPageCount: segmentPageCount)
+            }
+            return localPage + 1
+        }
         let positions = epubBookmarks.map {
             epubBookmarkPositionText(for: $0.locator)
+        }
+        let pageNumbers = epubBookmarks.map {
+            pageNumber($0.locator)
         }
         let editor = NSWindow(contentViewController: NSHostingController(
             rootView: EPUBBookmarkEditorView(
                 bookmarks: epubBookmarks, positions: positions,
+                pageNumbers: pageNumbers, pageRange: pageRange,
                 onSave: { [weak self] bookmarks in
                     guard let self else { return }
+                    let resolved = bookmarks.map { bookmark in
+                        let locator = EPUBBookmarkLogic.resolvedLocator(
+                            original: bookmark.locator,
+                            editedPage: bookmark.pageNumber,
+                            originalPage: pageNumber(bookmark.locator),
+                            range: pageRange,
+                            base: pageBase,
+                            locatorForLocalPage: {
+                                epubView.censusLocator(forGlobalPage: $0)
+                            })
+                        return (name: bookmark.name, locator: locator)
+                    }
                     if self.isEPUBMode, self.epubBookURL == targetURL {
-                        self.epubBookmarks = bookmarks
+                        self.epubBookmarks = resolved
                         self.saveEPUBBookmarks()
                         BookmarkListMenuDelegate.shared.rebuild()
                     } else {
                         // シート中に本が切り替わっても編集対象の EPUB へ保存する
                         BookHistoryStore.shared.noteReflowBookmarks(
                             path: targetURL.path,
-                            bookmarks: bookmarks.map {
+                            bookmarks: resolved.map {
                                 ($0.name, $0.locator.spineIndex,
                                  $0.locator.progression, $0.locator.idref)
                             })
