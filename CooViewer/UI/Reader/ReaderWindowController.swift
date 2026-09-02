@@ -182,6 +182,9 @@ final class ReaderWindowController: NSWindowController {
 
     /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
     var openGeneration = 0  // +EPUB(コレクション自動入場)も競合ガードに読む
+    /// 本の切替中はスライドショーの tick を保留する。世代付きの一時状態であり、
+    /// 表示確定または後発オープンによる世代失効後に openBookFlow が解除する
+    var isOpeningBook = false
     /// 消費したスワイプの慣性イベントを飲み込むあいだ true(+Input.swift)
     var swipeConsumeMomentum = false
 
@@ -860,29 +863,38 @@ final class ReaderWindowController: NSWindowController {
     /// 潜るか(設計書 §2.4)。Finder/ダイアログ等の明示オープンのみ true。
     /// 次/前の本ナビゲーションは false — フォルダ自身に着地して階層を保つ
     /// (潜ると以後の兄弟走査が別の深さで行われ、元の階層に戻れなくなる)
+    /// fromSlideshow は巻末継続時だけ true とし、旧タイマーを本切替後も維持する
     func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false,
-                  allowCollectionDrill: Bool = true) {
+                  allowCollectionDrill: Bool = true, fromSlideshow: Bool = false) {
         Task {
             await openBookFlow(url: url, atPage: page, atLastPage: atLastPage,
-                               allowCollectionDrill: allowCollectionDrill)
+                               allowCollectionDrill: allowCollectionDrill,
+                               fromSlideshow: fromSlideshow)
         }
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
                               allowCollectionDrill: Bool = true,
-                              autoOpenDepth: Int = 0) async {
+                              autoOpenDepth: Int = 0,
+                              fromSlideshow: Bool = false) async {
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
         showWindow(nil)
         // 連打時は最後に要求された本だけを確定する(古いフローの巻き戻り防止)
         openGeneration += 1
         let generation = openGeneration
+        isOpeningBook = true
         // 合本復帰フラグの不変条件=「復帰オープンが in-flight の間だけ true」。
         // このオープン試行が(成功・失敗・早期 return いずれでも)終わったら必ず
         // 消す唯一の合流点。DRM/壊れ EPUB の routeEPUBIfNeeded 早期 return や
         // 世代失効 return も含めて残さない。世代ガードは、この古いフローの defer が
         // より新しいオープンの立てたフラグを潰さないため(cooViewer-s7j/ari)
-        defer { if openGeneration == generation { epubCollectionReturnPending = false } }
+        defer {
+            if openGeneration == generation {
+                epubCollectionReturnPending = false
+                isOpeningBook = false
+            }
+        }
         // EPUB 提示専用のエポックも進める。画像本オープンでも採番するのは、
         // dismissEPUBMode より前に in-flight の openCollectionEPUB のパースが
         // 完走して古い EPUB が画像本 commit の前に提示されるのを防ぐため
@@ -912,7 +924,8 @@ final class ReaderWindowController: NSWindowController {
         if !isDirectory.boolValue, SupportedTypes.isEPUB(bookURL),
            await routeEPUBIfNeeded(bookURL, generation: generation,
                                    atPage: atPage, atLastPage: atLastPage,
-                                   epoch: presentEpoch) {
+                                   epoch: presentEpoch,
+                                   fromSlideshow: fromSlideshow) {
             return
         }
 
@@ -1015,7 +1028,7 @@ final class ReaderWindowController: NSWindowController {
             }
 
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
-            stopSlideshow()
+            if !fromSlideshow { stopSlideshow() }
             self.book?.cancelPrefetch()  // 旧本のバックグラウンド I/O を止める
             saveCurrentBookState()
             dismissEPUBMode()  // EPUB モード中なら位置を保存して画像表示へ戻す
@@ -1054,7 +1067,8 @@ final class ReaderWindowController: NSWindowController {
                     // 新しい世代で引き継ぐ(走査〜内側の本のオープンまで連続表示)
                     await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
                                        allowCollectionDrill: true,
-                                       autoOpenDepth: autoOpenDepth + 1)
+                                       autoOpenDepth: autoOpenDepth + 1,
+                                       fromSlideshow: fromSlideshow)
                     return
                 }
             }
@@ -1180,7 +1194,8 @@ final class ReaderWindowController: NSWindowController {
     private func routeEPUBIfNeeded(_ url: URL, generation: Int,
                                    atPage: Int? = nil,
                                    atLastPage: Bool = false,
-                                   epoch: Int) async -> Bool {
+                                   epoch: Int,
+                                   fromSlideshow: Bool = false) async -> Bool {
         let publication = await epubParseCoalescer.publication(at: url)
         // 解析の await 中に新しいオープンが始まっていたら、この古いフローは
         // 何も起こさず終える(連打時の巻き戻り防止。openBookFlow と同じ規則)
@@ -1202,14 +1217,16 @@ final class ReaderWindowController: NSWindowController {
         guard !publication.isFixedLayout else { return false }
         endAnyOpeningProgress()
         presentReflowableEPUB(publication, url: url,
-                              atPage: atPage, atLastPage: atLastPage, epoch: epoch)
+                              atPage: atPage, atLastPage: atLastPage, epoch: epoch,
+                              fromSlideshow: fromSlideshow)
         return true
     }
 
     /// EPUB モードへ入る前に画像本を落とす(+EPUB.swift から使用。
-    /// openBookFlow の「旧本の後始末」と同じ手順 + 表示のリセット)
-    func unloadImageBookForEPUB() {
-        stopSlideshow()
+    /// openBookFlow の「旧本の後始末」と同じ手順 + 表示のリセット)。
+    /// スライドショー起点の代理 EPUB 入場ではタイマーだけ維持する
+    func unloadImageBookForEPUB(fromSlideshow: Bool = false) {
+        if !fromSlideshow { stopSlideshow() }
         book?.cancelPrefetch()
         saveCurrentBookState()
         book = nil
@@ -1592,7 +1609,8 @@ final class ReaderWindowController: NSWindowController {
                 setResampleIndicator(false)  // この表示は Web ビューが担う(消し忘れ防止)
                 enterCollectionReflowEPUB(url: epubURL, entryIndex: entryIndex,
                                           forward: collectionArrival ?? turnForward ?? true,
-                                          atFirst: collectionArrivalAtFirst)
+                                          atFirst: collectionArrivalAtFirst,
+                                          fromSlideshow: slideshowTimer != nil)
                 return
             }
         }
