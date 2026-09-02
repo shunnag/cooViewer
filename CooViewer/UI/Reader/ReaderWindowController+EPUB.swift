@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Washi
 
 /// コレクション(合本)内から開いた EPUB の文脈。
@@ -24,6 +25,77 @@ struct EPUBCollectionContext {
     let coverSingle: Bool
     /// しおり付きページ(合本の実ページ index)
     let bookmarkedPages: Set<Int>
+}
+
+/// リフローしおりの一致・次前選択を UI から分離した決定論ロジック。
+/// census がある間は 0 始まりページを 1 始まり表示範囲へ変換し、未完時だけ
+/// spine + progression の近似へ落とす(仕様書 §4.7、設計書 §2.4)
+@MainActor
+enum EPUBBookmarkLogic {
+    static let fallbackProgressionEpsilon = 0.02
+
+    static func matchingIndex(
+        in bookmarks: [(name: String, locator: EPUBLocator)],
+        current: EPUBLocator,
+        currentPageRange: ClosedRange<Int>?,
+        globalPage: (EPUBLocator) -> Int?
+    ) -> Int? {
+        if let currentPageRange {
+            return bookmarks.firstIndex { bookmark in
+                guard let page = globalPage(bookmark.locator) else { return false }
+                return currentPageRange.contains(page + 1)
+            }
+        }
+        return bookmarks.firstIndex { bookmark in
+            bookmark.locator.spineIndex == current.spineIndex
+                && abs(bookmark.locator.progression - current.progression)
+                    <= fallbackProgressionEpsilon
+        }
+    }
+
+    static func targetIndex(
+        in bookmarks: [(name: String, locator: EPUBLocator)],
+        current: EPUBLocator,
+        currentPageRange: ClosedRange<Int>?,
+        next: Bool,
+        globalPage: (EPUBLocator) -> Int?
+    ) -> Int? {
+        if let currentPageRange {
+            let candidates = bookmarks.enumerated().compactMap { index, bookmark
+                -> (index: Int, page: Int)? in
+                guard let page = globalPage(bookmark.locator) else { return nil }
+                return (index, page + 1)
+            }
+            if next {
+                return candidates.filter { $0.page > currentPageRange.upperBound }
+                    .min { lhs, rhs in
+                        lhs.page == rhs.page ? lhs.index < rhs.index : lhs.page < rhs.page
+                    }?.index
+            }
+            return candidates.filter { $0.page < currentPageRange.lowerBound }
+                .max { lhs, rhs in
+                    lhs.page == rhs.page ? lhs.index > rhs.index : lhs.page < rhs.page
+                }?.index
+        }
+
+        let candidates = bookmarks.enumerated().filter { _, bookmark in
+            next ? isAfter(bookmark.locator, current) : isAfter(current, bookmark.locator)
+        }
+        if next {
+            return candidates.min { lhs, rhs in
+                isAfter(rhs.element.locator, lhs.element.locator)
+            }?.offset
+        }
+        return candidates.max { lhs, rhs in
+            isAfter(rhs.element.locator, lhs.element.locator)
+        }?.offset
+    }
+
+    private static func isAfter(_ lhs: EPUBLocator, _ rhs: EPUBLocator) -> Bool {
+        lhs.spineIndex != rhs.spineIndex
+            ? lhs.spineIndex > rhs.spineIndex
+            : lhs.progression > rhs.progression
+    }
 }
 
 /// リフロー EPUB の表示モード(設計書 §2.4 EPUB 対応)。
@@ -62,6 +134,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubPublication = publication
         epubContentLoaded = false
         epubBookURL = url
+        // 永続層は Washi 非依存のタプルを返すため、復元位置と同じく境界で
+        // EPUBLocator を直接構築する(matchingLocator 経路は導入しない)
+        epubBookmarks = BookHistoryStore.shared.savedReflowBookmarks(forPath: url.path)
+            .map { bookmark in
+                (bookmark.name, EPUBLocator(
+                    spineIndex: bookmark.spineIndex,
+                    progression: bookmark.progression,
+                    idref: bookmark.idref))
+            }
         epubFlattenedToc = Self.flattenToc(publication.navigation.toc)
 
         let view = ensureEPUBView()
@@ -246,6 +327,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubCurlHosts.removeAll()
         epubPublication = nil
         epubBookURL = nil
+        epubBookmarks = []
         epubFlattenedToc = []
         epubPageLabelText = nil
         epubCollectionContext = nil
@@ -510,6 +592,18 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // 判定して保存/消去する。cooViewer-0dh, Codex レビュー指摘)
         BookHistoryStore.shared.noteReflowColumnMode(
             path: epubBookURL.path, columnMode: epubView.settings.columnMode.rawValue)
+        saveEPUBBookmarks()
+    }
+
+    /// 表示中 EPUB のしおりを Washi 非依存のタプルへ変換して保存する
+    func saveEPUBBookmarks() {
+        guard let epubBookURL else { return }
+        BookHistoryStore.shared.noteReflowBookmarks(
+            path: epubBookURL.path,
+            bookmarks: epubBookmarks.map { bookmark in
+                (bookmark.name, bookmark.locator.spineIndex,
+                 bookmark.locator.progression, bookmark.locator.idref)
+            })
     }
 
     // MARK: - ナビゲーション(メニュー・キー・マウスから)
@@ -518,6 +612,108 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     func epubGoBackward() { epubView?.goBackward() }
     func epubGoToFirst() { epubView?.goToBookStart() }
     func epubGoToLast() { epubView?.goToBookEnd() }
+
+    /// 現在画面のしおりを追加/削除する(仕様書 §4.7.1)。census 完了時は
+    /// ページ空間で同一画面を判定し、未完時だけ progression 近似へ落とす
+    func toggleEPUBBookmark() {
+        guard let epubView, let epubPublication else { return }
+        let current = epubView.currentLocator
+        if let index = EPUBBookmarkLogic.matchingIndex(
+            in: epubBookmarks, current: current,
+            currentPageRange: epubView.currentGlobalPageRange,
+            globalPage: { epubView.censusGlobalPage(for: $0) }) {
+            epubBookmarks.remove(at: index)
+        } else {
+            let name = epubPublication.chapterTitle(forSpineIndex: current.spineIndex)
+                ?? "bookmark\(epubBookmarks.count + 1)"
+            epubBookmarks.append((name, current))
+        }
+        saveEPUBBookmarks()
+        BookmarkListMenuDelegate.shared.rebuild()
+    }
+
+    /// 次/前のしおりへ移動する。現在の見開きより外側だけを候補にし、配列順に
+    /// 依存せず最も近いページを選ぶ(画像本 nextBookmarkIndex と同義 §4.7.1)
+    func goToEPUBBookmark(next: Bool) {
+        guard let epubView else { return }
+        guard let index = EPUBBookmarkLogic.targetIndex(
+            in: epubBookmarks, current: epubView.currentLocator,
+            currentPageRange: epubView.currentGlobalPageRange, next: next,
+            globalPage: { epubView.censusGlobalPage(for: $0) }) else {
+            NSSound.beep()
+            return
+        }
+        epubView.go(to: epubBookmarks[index].locator)
+    }
+
+    /// しおり一覧メニューからのジャンプ(representedObject = 配列 index)
+    @objc func goToEPUBBookmarkListItem(_ sender: NSMenuItem) {
+        guard let epubView, let index = sender.representedObject as? Int,
+              epubBookmarks.indices.contains(index) else { return }
+        epubView.go(to: epubBookmarks[index].locator)
+    }
+
+    /// locator の表示ページ番号。合本文脈で全体マップが有効なら合本全体、
+    /// それ以外は個別 EPUB の 1 始まり番号へ揃える(設計書 §2.4)
+    func epubBookmarkPageNumber(for locator: EPUBLocator) -> Int? {
+        guard let localPage = epubView?.censusGlobalPage(for: locator) else { return nil }
+        if let context = epubCollectionContext,
+           let map = activeCollectionPageMap() {
+            return map.globalStart(forEntry: context.entryIndex) + localPage + 1
+        }
+        return localPage + 1
+    }
+
+    private func epubBookmarkPositionText(for locator: EPUBLocator) -> String {
+        let pageText: String
+        if let page = epubBookmarkPageNumber(for: locator),
+           let total = epubCurrentTotalPages {
+            pageText = "\(page)/\(total)"
+        } else {
+            pageText = "—"
+        }
+        if let title = epubPublication?.chapterTitle(
+            forSpineIndex: locator.spineIndex) {
+            return "\(pageText) (\(title))"
+        }
+        return pageText
+    }
+
+    /// リフロー専用編集シート。位置は census 表示のみで、コピー上の
+    /// リネーム・削除・並べ替えを OK 時に確定する(仕様書 §4.7.2、§13.3)
+    func editEPUBBookmarks() {
+        guard isEPUBMode, let targetURL = epubBookURL, let window,
+              bookmarkEditorWindow == nil else { return }
+        let positions = epubBookmarks.map {
+            epubBookmarkPositionText(for: $0.locator)
+        }
+        let editor = NSWindow(contentViewController: NSHostingController(
+            rootView: EPUBBookmarkEditorView(
+                bookmarks: epubBookmarks, positions: positions,
+                onSave: { [weak self] bookmarks in
+                    guard let self else { return }
+                    if self.isEPUBMode, self.epubBookURL == targetURL {
+                        self.epubBookmarks = bookmarks
+                        self.saveEPUBBookmarks()
+                        BookmarkListMenuDelegate.shared.rebuild()
+                    } else {
+                        // シート中に本が切り替わっても編集対象の EPUB へ保存する
+                        BookHistoryStore.shared.noteReflowBookmarks(
+                            path: targetURL.path,
+                            bookmarks: bookmarks.map {
+                                ($0.name, $0.locator.spineIndex,
+                                 $0.locator.progression, $0.locator.idref)
+                            })
+                    }
+                },
+                onClose: { [weak self] in
+                    guard let self, let sheet = self.bookmarkEditorWindow else { return }
+                    self.window?.endSheet(sheet)
+                    self.bookmarkEditorWindow = nil
+                })))
+        bookmarkEditorWindow = editor
+        window.beginSheet(editor)
+    }
 
     /// ページバーのジャンプ(本全体の進行率 → 位置)。
     /// census(全文ページ数の実測)があれば画像本の jumpToPercent と同じ
@@ -551,7 +747,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// goToPage 用の「現在の総ページ数」。表示(updateEPUBIndicators)と
     /// ジャンプ(epubJump)が使う総数に一致させる — census 未完・page map 未完
     /// では番号系が本単位近似になるため nil(番号ジャンプ不可)を返す
-    private var epubCurrentTotalPages: Int? {
+    var epubCurrentTotalPages: Int? {
         guard isEPUBMode, let epubView else { return nil }
         // epubJump のコレクション分岐と同じ条件(全体マップ+リーダー census)
         if epubCollectionContext != nil,
@@ -928,6 +1124,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         case .goToPage:
             // ページ番号ダイアログ(§5.8)。census 完了時のみ番号ジャンプ可能
             promptEPUBGoToPage()
+        case .addRemoveBookmark:
+            toggleEPUBBookmark()
+        case .nextBookmark:
+            goToEPUBBookmark(next: true)
+        case .previousBookmark:
+            goToEPUBBookmark(next: false)
+        case .positionalNextPrevBookmark:
+            guard let leftHalf else { return false }
+            goToEPUBBookmark(next: epubIsNextSide(leftHalf))
         case .nextBook:
             // 単一合本の親でのラップアラウンド復帰でも合本ソースを使い回す
             // (openCollectionEntry の巻端ラップと対称。cooViewer-57t)

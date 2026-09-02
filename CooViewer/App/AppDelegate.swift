@@ -253,6 +253,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         self?.readerWindowController?.epubGoToPage(page)
                     }
                 }
+            case "--then-toggle-bookmark":
+                // リフローしおりのトグルを直接叩く E2E 検証用(仕様書 §4.7.1)
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.toggleEPUBBookmark()
+                }
+            case "--then-next-bookmark":
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.goToEPUBBookmark(next: true)
+                }
+            case "--then-previous-bookmark":
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.goToEPUBBookmark(next: false)
+                }
             default:
                 break
             }

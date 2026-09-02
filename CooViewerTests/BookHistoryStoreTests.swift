@@ -369,6 +369,66 @@ final class BookHistoryStoreTests: XCTestCase {
             .bookmarks, [.init(name: "x", pageIndex: 1)])
     }
 
+    // MARK: - リフロー EPUB しおり(仕様書 §4.7、設計書 §2.4)
+
+    func testReflowBookmarksRoundTripWithoutRecentsGate() throws {
+        let path = try makeBookFile("novel.epub")
+        store.noteReflowBookmarks(path: path, bookmarks: [
+            ("第一章", 0, 0.25, "ch1"),
+            ("第二章", 2, 0.75, nil),
+        ])
+        XCTAssertTrue(store.recentBookPaths().isEmpty,
+                      "しおり保存だけで recents を更新しない")
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        let restored = fresh.savedReflowBookmarks(forPath: path)
+        XCTAssertEqual(restored.count, 2)
+        XCTAssertEqual(restored[0].name, "第一章")
+        XCTAssertEqual(restored[0].spineIndex, 0)
+        XCTAssertEqual(restored[0].progression, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(restored[0].idref, "ch1")
+        XCTAssertEqual(restored[1].name, "第二章")
+        XCTAssertEqual(restored[1].spineIndex, 2)
+        XCTAssertEqual(restored[1].progression, 0.75, accuracy: 0.0001)
+        XCTAssertNil(restored[1].idref)
+    }
+
+    func testClearingOnlyReflowBookmarksDropsOrphanedCensus() throws {
+        let path = try makeBookFile("novel.epub")
+        store.noteReflowBookmarks(
+            path: path, bookmarks: [("第一章", 0, 0.25, "ch1")])
+        store.noteReflowCensus(path: path, metricsKey: "m", counts: [2, 3],
+                               releaseIdentifier: nil)
+        XCTAssertNotNil(store.savedReflowCensus(forPath: path))
+
+        store.noteReflowBookmarks(path: path, bookmarks: [])
+        XCTAssertTrue(store.savedReflowBookmarks(forPath: path).isEmpty)
+        XCTAssertNil(store.savedReflowCensus(forPath: path))
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertTrue(fresh.savedReflowBookmarks(forPath: path).isEmpty)
+        XCTAssertNil(fresh.savedReflowCensus(forPath: path))
+    }
+
+    func testReflowBookmarksMissingFromOldJSONDecodesAsEmpty() throws {
+        let path = try makeBookFile("novel.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.noteReflowColumnMode(path: path, columnMode: 2)
+        store.noteReflowBookmarks(
+            path: path, bookmarks: [("第一章", 0, 0.25, "ch1")])
+        let url = try stateFileURL()
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url))
+                as? [String: Any])
+        object.removeValue(forKey: "reflowBookmarks")
+        try JSONSerialization.data(withJSONObject: object).write(
+            to: url, options: .atomic)
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertTrue(fresh.savedReflowBookmarks(forPath: path).isEmpty)
+        XCTAssertEqual(fresh.savedReflowColumnMode(forPath: path), 2,
+                       "旧 JSON 全体の decode が成功すること")
+    }
+
     // MARK: - 一過性の読み取り失敗で状態を潰さない(cooViewer-iuj)
 
     /// stateDir 内の非 recents 状態ファイル URL(private stateURL を避ける)

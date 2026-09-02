@@ -85,6 +85,10 @@ extension ReaderWindowController {
     // MARK: - しおり(仕様書 §4.7)
 
     func toggleBookmark() {
+        if isEPUBMode {
+            toggleEPUBBookmark()
+            return
+        }
         guard let book else { return }
         let page = book.currentIndex
         if let index = book.bookmarks.firstIndex(where: { $0.pageIndex == page }) {
@@ -102,6 +106,10 @@ extension ReaderWindowController {
 
     /// しおり編集シート(§4.7.2。コピー編集のため Cancel が有効 §13.3)
     func editBookmarks() {
+        if isEPUBMode {
+            editEPUBBookmarks()
+            return
+        }
         guard let book, book.pageCount > 0, let window,
               bookmarkEditorWindow == nil else { return }
         let editor = NSWindow(contentViewController: NSHostingController(
@@ -154,6 +162,10 @@ extension ReaderWindowController {
     }
 
     func goToBookmark(next: Bool) {
+        if isEPUBMode {
+            goToEPUBBookmark(next: next)
+            return
+        }
         guard let book else { return }
         let target = next ? book.nextBookmarkIndex() : book.previousBookmarkIndex()
         guard let target else {
@@ -603,11 +615,42 @@ extension ReaderWindowController {
 @MainActor
 final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = BookmarkListMenuDelegate()
+    private weak var attachedMenu: NSMenu?
+
+    func attach(_ menu: NSMenu) {
+        attachedMenu = menu
+    }
+
+    /// キー経路でしおりを変更した場合も、次に開く前からサブメニュー内容を
+    /// 現在状態へ揃える(仕様書 §4.7.1)
+    func rebuild() {
+        guard let attachedMenu else { return }
+        menuNeedsUpdate(attachedMenu)
+    }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let controller = NSApp.windows
             .compactMap { $0.windowController as? ReaderWindowController }.first
+        if let controller, controller.isEPUBMode {
+            for (index, bookmark) in controller.epubBookmarks.enumerated() {
+                let page = controller.epubBookmarkPageNumber(for: bookmark.locator)
+                    .map { "  (p.\($0))" } ?? ""
+                let item = menu.addItem(
+                    withTitle: bookmark.name + page,
+                    action: #selector(
+                        ReaderWindowController.goToEPUBBookmarkListItem(_:)),
+                    keyEquivalent: "")
+                item.representedObject = index
+            }
+            if controller.epubBookmarks.isEmpty {
+                let empty = menu.addItem(
+                    withTitle: String(localized: "No Bookmarks"),
+                    action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+            }
+            return
+        }
         let bookmarks = controller?.book?.bookmarks ?? []
         for bookmark in bookmarks {
             let title = "\(bookmark.name)  (p.\(bookmark.pageIndex + 1))"

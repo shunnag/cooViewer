@@ -43,6 +43,9 @@ final class ReaderWindowController: NSWindowController {
     var epubPublication: EPUBPublication?
     var epubContentLoaded = false
     var epubBookURL: URL?
+    /// 表示中の個別 EPUB に属するしおり(仕様書 §4.7、設計書 §2.4)。
+    /// 永続層との境界では Washi 非依存のタプルへ変換する
+    var epubBookmarks: [(name: String, locator: EPUBLocator)] = []
     /// WKWebView がキーイベントを食うため、EPUB モード中はローカルモニタで拾う
     var epubKeyMonitor: Any?
     /// EPUB モード中、readerView が隠れて拾えなくなるハードウェアの
@@ -2541,10 +2544,13 @@ final class ReaderWindowController: NSWindowController {
         case #selector(toggleSlideshowMenu(_:)):
             // スライドショーは EPUB モードでも有効(§4.9。c6s.21 ⑪)
             return (book?.pageCount ?? 0) > 0 || isEPUBMode
-        case #selector(cycleReadMode(_:)),
-             #selector(editBookmarksMenu(_:)),
+        case #selector(editBookmarksMenu(_:)),
              #selector(addRemoveBookmarkMenu(_:)),
-             #selector(nextBookmarkMenu(_:)), #selector(previousBookmarkMenu(_:)),
+             #selector(nextBookmarkMenu(_:)), #selector(previousBookmarkMenu(_:)):
+            // リフロー EPUB も専用ハンドラでしおりを扱う(仕様書 §4.7)。
+            // validate だけ有効で本体が無反応だった c6s.20 の再発を避ける
+            return (book?.pageCount ?? 0) > 0 || isEPUBMode
+        case #selector(cycleReadMode(_:)),
              #selector(showFileInfoMenu(_:)),
              #selector(showOtherPageInFinderMenu(_:)):
             return (book?.pageCount ?? 0) > 0
