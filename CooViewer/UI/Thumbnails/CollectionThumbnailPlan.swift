@@ -20,20 +20,28 @@ struct CollectionThumbnailPlan: Sendable {
     let targets: [Target]
     let metrics: EPUBScreenMetrics
     let isDark: Bool
+    /// 展開できた代理 EPUB ごとの画面内ページ数。展開一覧のキャッシュキーも
+    /// この本別値から組み、単一の基底値へ巻き戻さない
+    let perBookPagesPerScreen: [Int: Int]
 
     /// 展開込みの一覧を組む。counts は「代理ページの合本内 index → その EPUB の
     /// 項目別ページ数」。counts に無い代理ページ(census 失敗・DRM)は
     /// 従来どおり表紙 1 セルのまま合本ページとして残す
     static func make(bookEntries: [PageEntry],
                      counts: [Int: [Int]],
+                     perBookPagesPerScreen: [Int: Int],
                      metrics: EPUBScreenMetrics,
                      isDark: Bool) -> CollectionThumbnailPlan {
         var entries: [PageEntry] = []
         var targets: [Target] = []
+        var resolvedPagesPerScreen: [Int: Int] = [:]
         for (index, entry) in bookEntries.enumerated() {
             if let url = entry.reflowEPUBURL, let itemCounts = counts[index] {
+                let pagesPerScreen = perBookPagesPerScreen[index]
+                    ?? metrics.pagesPerScreen
+                resolvedPagesPerScreen[index] = pagesPerScreen
                 let screens = EPUBScreenThumbnailSource.makeScreens(
-                    counts: itemCounts, pagesPerScreen: metrics.pagesPerScreen)
+                    counts: itemCounts, pagesPerScreen: pagesPerScreen)
                 for screen in screens {
                     let count = itemCounts.indices.contains(screen.spineIndex)
                         ? itemCounts[screen.spineIndex] : 1
@@ -59,7 +67,8 @@ struct CollectionThumbnailPlan: Sendable {
             }
         }
         return CollectionThumbnailPlan(entries: entries, targets: targets,
-                                       metrics: metrics, isDark: isDark)
+                                       metrics: metrics, isDark: isDark,
+                                       perBookPagesPerScreen: resolvedPagesPerScreen)
     }
 
     /// 合本の実ページ index → セル index(展開された EPUB はその先頭セル)

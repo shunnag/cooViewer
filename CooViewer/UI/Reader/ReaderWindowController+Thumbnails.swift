@@ -197,10 +197,14 @@ extension ReaderWindowController {
             collectionPageMapAttempts.removeAll()
             return
         }
-        let metrics = EPUBScreenMetrics(
+        let baseMetrics = EPUBScreenMetrics(
             viewportSize: window?.contentView?.bounds.size ?? .zero,
             settings: plannedEPUBSettings())
-        let key = metrics.cacheKey
+        let key = baseMetrics.cacheKey
+        let openKey = epubPublication.map {
+            baseMetrics.applyingRenditionSpread(
+                $0.metadata.rendition.spread).cacheKey
+        } ?? key
         let pendingKey = folderURL.path + "#" + key
         if let map = collectionPageMap, map.folderPath == folderURL.path,
            map.metricsKey == key, map.entries == entries {
@@ -209,7 +213,7 @@ extension ReaderWindowController {
             let canSelfHeal: Bool = {
                 guard let context = epubCollectionContext,
                       map.missingEntries.contains(context.entryIndex),
-                      let epubView, epubView.pageCensusMetricsKey == key,
+                      let epubView, epubView.pageCensusMetricsKey == openKey,
                       epubView.pageCensus != nil else { return false }
                 return true
             }()
@@ -229,7 +233,7 @@ extension ReaderWindowController {
         // 実測に限る** — 旧寸法の値を新キーのマップへ焼き込まない)
         var seededCounts: [Int: [Int]] = [:]
         if let context = epubCollectionContext, let epubView,
-           epubView.pageCensusMetricsKey == key,
+           epubView.pageCensusMetricsKey == openKey,
            let counts = epubView.pageCensus {
             seededCounts[context.entryIndex] = counts
         }
@@ -248,9 +252,9 @@ extension ReaderWindowController {
             var counts = seededCounts
             for placeholder in placeholders where counts[placeholder.index] == nil {
                 guard !Task.isCancelled else { return }
-                if let itemCounts = await EPUBAtlasStore.shared
-                    .screenCounts(for: placeholder.url, metrics: metrics) {
-                    counts[placeholder.index] = itemCounts
+                if let plan = await EPUBAtlasStore.shared
+                    .screenPlan(for: placeholder.url, metrics: baseMetrics) {
+                    counts[placeholder.index] = plan.counts
                 }
             }
             guard let self, !Task.isCancelled,
@@ -341,17 +345,21 @@ extension ReaderWindowController {
         let isDark = isDarkWindowAppearance
         collectionOverlayTask = Task { [weak self, weak book] in
             var counts: [Int: [Int]] = [:]
+            var perBookPagesPerScreen: [Int: Int] = [:]
             for placeholder in placeholders {
                 guard !Task.isCancelled else { return }
-                guard let itemCounts = await EPUBAtlasStore.shared
-                    .screenCounts(for: placeholder.url, metrics: metrics)
+                guard let screenPlan = await EPUBAtlasStore.shared
+                    .screenPlan(for: placeholder.url, metrics: metrics)
                 else { continue }
-                counts[placeholder.index] = itemCounts
+                counts[placeholder.index] = screenPlan.counts
+                perBookPagesPerScreen[placeholder.index] =
+                    screenPlan.pagesPerScreen
             }
             guard let self, let book, book === self.book, !counts.isEmpty,
                   self.isThumbnailOverlayVisible, !Task.isCancelled else { return }
             let plan = CollectionThumbnailPlan.make(
                 bookEntries: book.entries, counts: counts,
+                perBookPagesPerScreen: perBookPagesPerScreen,
                 metrics: metrics, isDark: isDark)
             self.presentExpandedCollectionOverlay(
                 plan: plan, folderURL: book.source.url,
@@ -425,12 +433,15 @@ extension ReaderWindowController {
         snapshot.source = CollectionThumbnailSource(
             url: folderURL, plan: plan,
             base: baseSource, baseEntries: baseEntries)
-        // キャッシュキーはページ割りが変わる要素込み(旧メトリクスの
-        // サムネイルが同じ番号で出ないように)
+        // キャッシュキーは本別の画面内ページ数も含める。entries.count が
+        // 同じ組合せでも spread の違うセルを再利用しない
+        let pagesPerScreenKey = plan.perBookPagesPerScreen.keys.sorted().map {
+            "\($0):\(plan.perBookPagesPerScreen[$0] ?? 1)"
+        }.joined(separator: ",")
         snapshot.bookKey = "col:\(folderURL.path)#exp\(plan.entries.count)"
-            + "x\(plan.metrics.pagesPerScreen)#\(settings.epubFontScale)"
+            + "#pps:\(pagesPerScreenKey)#\(settings.epubFontScale)"
             + "#\(settings.epubPageMargins)#\(settings.epubDefaultFont)"
-            + "#\(Int(plan.metrics.contentSize.width))x\(Int(plan.metrics.contentSize.height))"
+            + "#\(plan.metrics.cacheKey)"
             + "#\(plan.isDark ? "d" : "l")"
         snapshot.currentIndex = currentCell
         snapshot.displayedIndices = [currentCell]
@@ -498,12 +509,15 @@ extension ReaderWindowController {
         collectionOverlayTask?.cancel()
         collectionOverlayTask = Task { [weak self] in
             var counts: [Int: [Int]] = [:]
+            var perBookPagesPerScreen: [Int: Int] = [:]
             for placeholder in placeholders {
                 guard !Task.isCancelled else { return }
-                guard let itemCounts = await EPUBAtlasStore.shared
-                    .screenCounts(for: placeholder.url, metrics: metrics)
+                guard let screenPlan = await EPUBAtlasStore.shared
+                    .screenPlan(for: placeholder.url, metrics: metrics)
                 else { continue }
-                counts[placeholder.index] = itemCounts
+                counts[placeholder.index] = screenPlan.counts
+                perBookPagesPerScreen[placeholder.index] =
+                    screenPlan.pagesPerScreen
             }
             // 差し替えは「一覧がまだ開いていて、同じ合本の文脈」のときだけ。
             // 現在位置は差し替え時点の実位置から計算し直す(実測待ちの間に
@@ -515,6 +529,7 @@ extension ReaderWindowController {
             else { return }
             let plan = CollectionThumbnailPlan.make(
                 bookEntries: context.entries, counts: counts,
+                perBookPagesPerScreen: perBookPagesPerScreen,
                 metrics: metrics, isDark: isDark)
             let currentCell = plan.overlayIndex(
                 forEPUB: currentURL,
