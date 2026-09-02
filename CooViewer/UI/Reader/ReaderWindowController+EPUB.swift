@@ -69,6 +69,34 @@ enum EPUBBookmarkLogic {
             localPage(forDisplayed: editedPage, base: base)) ?? original
     }
 
+    /// しおり編集シートの保存内容を確定する。編集対象の本を表示中
+    /// (sameBook=true)なら、ページ番号の編集を現在の census で locator へ
+    /// 解決する。シート表示中に別の本へ切り替わっている場合(sameBook=false)は、
+    /// 現在の census が別の本のもので位置を壊すため、名前・並び替え・削除だけ
+    /// 適用し各項目は原 locator を保持する(cooViewer-rxj)。sameBook=false では
+    /// locatorForLocalPage / originalPage を一切評価しない
+    static func resolvedBookmarks(
+        _ edited: [(name: String, locator: EPUBLocator, pageNumber: Int?)],
+        sameBook: Bool,
+        originalPage: (EPUBLocator) -> Int?,
+        range: ClosedRange<Int>?,
+        base: Int,
+        locatorForLocalPage: (Int) -> EPUBLocator?
+    ) -> [(name: String, locator: EPUBLocator)] {
+        edited.map { bookmark in
+            guard sameBook else {
+                return (name: bookmark.name, locator: bookmark.locator)
+            }
+            let locator = resolvedLocator(
+                original: bookmark.locator,
+                editedPage: bookmark.pageNumber,
+                originalPage: originalPage(bookmark.locator),
+                range: range, base: base,
+                locatorForLocalPage: locatorForLocalPage)
+            return (name: bookmark.name, locator: locator)
+        }
+    }
+
     static func matchingIndex(
         in bookmarks: [(name: String, locator: EPUBLocator)],
         current: EPUBLocator,
@@ -1192,24 +1220,20 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 pageNumbers: pageNumbers, pageRange: pageRange,
                 onSave: { [weak self] bookmarks in
                     guard let self else { return }
-                    let resolved = bookmarks.map { bookmark in
-                        let locator = EPUBBookmarkLogic.resolvedLocator(
-                            original: bookmark.locator,
-                            editedPage: bookmark.pageNumber,
-                            originalPage: pageNumber(bookmark.locator),
-                            range: pageRange,
-                            base: pageBase,
-                            locatorForLocalPage: {
-                                epubView.censusLocator(forGlobalPage: $0)
-                            })
-                        return (name: bookmark.name, locator: locator)
-                    }
-                    if self.isEPUBMode, self.epubBookURL == targetURL {
+                    let sameBook = self.isEPUBMode && self.epubBookURL == targetURL
+                    let resolved = EPUBBookmarkLogic.resolvedBookmarks(
+                        bookmarks, sameBook: sameBook,
+                        originalPage: { pageNumber($0) },
+                        range: pageRange, base: pageBase,
+                        locatorForLocalPage: { epubView.censusLocator(forGlobalPage: $0) })
+                    if sameBook {
                         self.epubBookmarks = resolved
                         self.saveEPUBBookmarks()
                         BookmarkListMenuDelegate.shared.rebuild()
                     } else {
-                        // シート中に本が切り替わっても編集対象の EPUB へ保存する
+                        // シート表示中に別の本へ切り替わった場合、編集対象の EPUB へ
+                        // 名前・並び替え・削除のみ適用する(ページ編集は原 locator を
+                        // 保持。cooViewer-rxj)
                         BookHistoryStore.shared.noteReflowBookmarks(
                             path: targetURL.path,
                             bookmarks: resolved.map {

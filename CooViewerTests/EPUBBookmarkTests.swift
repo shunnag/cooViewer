@@ -71,6 +71,42 @@ final class EPUBBookmarkTests: XCTestCase {
         XCTAssertEqual(resolved, original)
     }
 
+    func testResolvedBookmarksResolvesEditedPageWhenSameBook() {
+        let edited: [(name: String, locator: EPUBLocator, pageNumber: Int?)] = [
+            ("a", EPUBLocator(spineIndex: 2, progression: 0.37), 4),
+        ]
+        let converted = EPUBLocator(spineIndex: 4, progression: 0.25)
+        let resolved = EPUBBookmarkLogic.resolvedBookmarks(
+            edited, sameBook: true,
+            originalPage: { _ in 2 },
+            range: 1...5, base: 0,
+            locatorForLocalPage: { _ in converted })
+        XCTAssertEqual(resolved.count, 1)
+        XCTAssertEqual(resolved[0].name, "a")
+        XCTAssertEqual(resolved[0].locator, converted)
+    }
+
+    func testResolvedBookmarksKeepsOriginalLocatorWhenBookSwitched() {
+        let original = EPUBLocator(spineIndex: 2, progression: 0.37)
+        let edited: [(name: String, locator: EPUBLocator, pageNumber: Int?)] = [
+            ("renamed", original, 4),  // ページ編集あり
+        ]
+        var conversionCalled = false
+        var originalPageCalled = false
+        let resolved = EPUBBookmarkLogic.resolvedBookmarks(
+            edited, sameBook: false,
+            originalPage: { _ in originalPageCalled = true; return 2 },
+            range: 1...5, base: 0,
+            locatorForLocalPage: { _ in
+                conversionCalled = true; return EPUBLocator(spineIndex: 9) })
+        // 名前は適用、locator は原本のまま、census 変換・originalPage は未評価
+        XCTAssertEqual(resolved.count, 1)
+        XCTAssertEqual(resolved[0].name, "renamed")
+        XCTAssertEqual(resolved[0].locator, original)
+        XCTAssertFalse(conversionCalled)
+        XCTAssertFalse(originalPageCalled)
+    }
+
     func testCollectionDisplayedPageRoundTripsThroughBaseOffset() {
         let displayed = EPUBBookmarkLogic.collectionPageNumber(
             globalStart: 10, localPage: 2, segmentPageCount: 5)
