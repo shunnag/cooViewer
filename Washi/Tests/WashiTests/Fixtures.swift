@@ -375,6 +375,34 @@ extension EPUBFixtures {
             body: "<p>全角前</p>\u{3000}<p>全角後検索</p>",
             searchQuery: "全角後検索"),
         EPUBTextMappingFixture(
+            // &#13; は NSXML でも U+000D として残る。段落末の CR の直後に要素境界の改行
+            name: "CR 実体+段落末",
+            body: "<p>x&#13;</p><p>y検索</p>",
+            searchQuery: "y検索"),
+        EPUBTextMappingFixture(
+            name: "CR 実体+br",
+            body: "<div>x&#13;<br/>y検索</div>",
+            searchQuery: "y検索"),
+        EPUBTextMappingFixture(
+            // CR LF が 1 書記素になるケース(Character の split/hasSuffix の罠)
+            name: "CRLF 実体",
+            body: "<p>x&#13;&#10;</p><p>y検索</p>",
+            searchQuery: "y検索"),
+        EPUBTextMappingFixture(
+            name: "CDATA 内 CRLF",
+            body: "<p><![CDATA[x\r\n]]></p><p>y検索</p>",
+            searchQuery: "y検索"),
+        EPUBTextMappingFixture(
+            // NSXML は空白 Text と隣接 CDATA を結合して残す → 両側とも "x y検索"
+            name: "CDATA 隣接空白",
+            body: "<p><b>x</b> <![CDATA[y検索]]></p>",
+            searchQuery: "y検索"),
+        EPUBTextMappingFixture(
+            // 抽出本文には含まれるがレイアウト箱が無い → locateAndShow は null
+            name: "非表示テキスト",
+            body: "<p>可視</p><p style=\"display:none\">非表示検索</p>",
+            searchQuery: "非表示検索"),
+        EPUBTextMappingFixture(
             name: "br",
             body: "<p>改行前<br/>改行後検索</p>",
             searchQuery: "改行後検索"),

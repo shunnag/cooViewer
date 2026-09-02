@@ -343,9 +343,20 @@ enum ReaderScripts {
                     // </span> <span> の間の半角スペースも。実測)ため、同じ
                     // ノードを本文に数えない。U+3000 等は XML 空白でないので残る
                     if (child instanceof Text) {
-                        if (!/^[\t\n\r ]*$/.test(child.data || '')) {
-                            appendText(child);
+                        // NSXML は隣接する Text/CDATA を 1 ノードへ結合してから
+                        // 空白判定する(cooViewer-659)。同じ連続を束ねて判定し、
+                        // 非空白なら各ノードの位置を保ったまま本文へ加える
+                        const run = [child];
+                        let next = child.nextSibling;
+                        while (next && next instanceof Text) {
+                            run.push(next);
+                            next = next.nextSibling;
                         }
+                        const combined = run.map(node => node.data || '').join('');
+                        if (!/^[\t\n\r ]*$/.test(combined)) {
+                            run.forEach(appendText);
+                        }
+                        child = run[run.length - 1];
                         continue;
                     }
                     if (child.nodeType !== Node.ELEMENT_NODE) { continue; }
@@ -455,34 +466,44 @@ enum ReaderScripts {
             return textMapCache;
         };
 
+        // 失敗時も null ではなく { found: false } を返す: WebKit の Swift async
+        // callAsyncJavaScript は戻り値が非 Optional で、JS の null/undefined を
+        // 受け取れず継続が破棄される(InvalidTransition。実測)
         washi.locateAndShow = function (utf16Offset, utf16Length) {
             if (!Number.isInteger(utf16Offset) || !Number.isInteger(utf16Length)
-                || utf16Offset < 0 || utf16Length <= 0) { return null; }
+                || utf16Offset < 0 || utf16Length <= 0) { return { found: false }; }
             const textMap = washi.buildTextMap();
             const end = utf16Offset + utf16Length;
-            if (end > textMap.map.length) { return null; }
+            if (end > textMap.map.length) { return { found: false }; }
             const first = textMap.map[utf16Offset];
             const last = textMap.map[end - 1];
             if (!first || !last || !(first.node instanceof Text)
-                || !(last.node instanceof Text)) { return null; }
+                || !(last.node instanceof Text)) { return { found: false }; }
             try {
                 const range = document.createRange();
                 range.setStart(first.node, first.offset);
                 range.setEnd(last.node, last.endOffset);
                 const beforeRects = range.getClientRects();
-                const before = beforeRects.length > 0
-                    ? beforeRects[0] : range.getBoundingClientRect();
-                const page = washi.showPage(pageForRect(before));
+                // レイアウト箱を持たない範囲(display:none 等。抽出本文には含まれる)は
+                // 位置を特定できないので null を返し、呼び出し側の近似へ委ねる
+                // (cooViewer-cvt。零矩形で現在ページへ着地したと偽らない)
+                if (beforeRects.length === 0) { return { found: false }; }
+                // 返す page は「範囲の先頭を含むページ」(doc の契約)。showPage は
+                // 見開きでは先頭ページへ丸めるため、その戻り値は使わない(cooViewer-tlo)
+                const targetPage = pageForRect(beforeRects[0]);
+                washi.showPage(targetPage);
                 const rects = Array.from(range.getClientRects()).map(rect => ({
                     x: rect.x, y: rect.y, w: rect.width, h: rect.height
                 }));
+                if (rects.length === 0) { return { found: false }; }
                 // text は地図上の正規化本文(=検索した文字列)。range.toString() は
                 // 地図が飛ばした空白ノードや rt を含む DOM 生テキストなので別枠で返し、
                 // 端点の UTF-16 単位は Range が正しい DOM 位置を指す証明に使う
                 const mapped = textMap.map.slice(utf16Offset, end)
                     .map(item => item.unit).join('');
                 return {
-                    page: page, text: mapped, domText: range.toString(),
+                    found: true,
+                    page: targetPage, text: mapped, domText: range.toString(),
                     firstUnit: first.node.data.charCodeAt(first.offset),
                     lastUnit: last.node.data.charCodeAt(last.endOffset - 1),
                     rects: rects

@@ -98,7 +98,7 @@ public final class EPUBReaderView: NSView {
         case end
         case progression(Double)
         case fragment(String)
-        case textRange(utf16Offset: Int, utf16Length: Int)
+        case textRange(utf16Offset: Int, utf16Length: Int, fallbackProgression: Double)
     }
     private var pendingTarget: PendingTarget = .start
     private struct PendingTextRangeRequest {
@@ -884,7 +884,8 @@ public final class EPUBReaderView: NSView {
                     id: requestID, continuation: continuation)
                 let target = PendingTarget.textRange(
                     utf16Offset: textRange.utf16Offset,
-                    utf16Length: textRange.utf16Length)
+                    utf16Length: textRange.utf16Length,
+                    fallbackProgression: locator.progression)
                 if locator.spineIndex == currentSpineIndex {
                     if isLoadingSpineItem {
                         pendingTarget = target
@@ -953,8 +954,15 @@ public final class EPUBReaderView: NSView {
             // WebKit に完全エスケープさせる(手動 \\・' では改行・行区切りを取りこぼす)
             callWashiAsync("return __washi.showFragment(id);",
                            arguments: ["id": fragment])
-        case .textRange(let utf16Offset, let utf16Length):
-            guard let requestID = pendingTextRangeRequest?.id else { return }
+        case .textRange(let utf16Offset, let utf16Length, let fallbackProgression):
+            // 要求が既に消えている(先行キャンセル・失敗)のに spine 読込後のターゲット
+            // として消費された場合、何も適用しないと新章がページ 0 のまま
+            // pageChanged も出ない(cooViewer-7cn)。locator の進行率へ落として
+            // 通常のページ表示と didMoveTo を保証する
+            guard let requestID = pendingTextRangeRequest?.id else {
+                evaluate("__washi.showProgression(\(fallbackProgression));")
+                return
+            }
             textRangeTask?.cancel()
             textRangeTask = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -1000,6 +1008,7 @@ public final class EPUBReaderView: NSView {
             arguments: ["o": utf16Offset, "l": utf16Length], in: webView)
         guard webView === self.webView,
               let dictionary = result as? [String: Any],
+              dictionary["found"] as? Bool == true,
               let page = dictionary["page"] as? Int,
               let text = dictionary["text"] as? String,
               let rawRects = dictionary["rects"] as? [[String: Any]]
@@ -1021,7 +1030,8 @@ public final class EPUBReaderView: NSView {
                                width: CGFloat(width), height: CGFloat(height))
             return webView.convert(local, to: self)
         }
-        guard rects.count == rawRects.count else { return nil }
+        // 空矩形は「特定できなかった」扱い(JS 側も null を返すが多重防御。cooViewer-cvt)
+        guard rects.count == rawRects.count, !rects.isEmpty else { return nil }
         return EPUBTextRangeLanding(pageInItem: page, text: text, rects: rects)
     }
 
