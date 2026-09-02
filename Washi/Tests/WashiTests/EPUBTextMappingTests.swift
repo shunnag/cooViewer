@@ -114,6 +114,11 @@ final class EPUBTextMappingTests: XCTestCase {
                 let expected = String(swiftText[lower..<upper])
                 let landing = try await locate(
                     webView: webView, offset: offset, length: length)
+                if fixture.name == "非表示テキスト" {
+                    // レイアウト箱の無い範囲は null(呼び出し側が近似へ落とす。cooViewer-cvt)
+                    XCTAssertNil(landing, "\(fixture.name): locateAndShow は null")
+                    continue
+                }
                 let resolved = try XCTUnwrap(
                     landing, "\(fixture.name): locateAndShow は非 nil")
                 XCTAssertEqual(resolved.text, expected,
@@ -167,6 +172,10 @@ final class EPUBTextMappingTests: XCTestCase {
                 arguments: ["o": offset, "l": length], in: nil,
                 contentWorld: EPUBReaderView.washiWorld)
             guard let result else { return nil }
+            if let dictionary = result as? [String: Any],
+               dictionary["found"] as? Bool == false {
+                return nil  // 位置を特定できない範囲(呼び出し側は近似へ落とす)
+            }
             guard let dictionary = result as? [String: Any],
                   let page = dictionary["page"] as? Int,
                   let text = dictionary["text"] as? String,

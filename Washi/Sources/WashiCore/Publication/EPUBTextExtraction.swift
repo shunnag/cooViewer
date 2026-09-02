@@ -178,11 +178,14 @@ extension EPUBPublication {
                 guard let child = node as? XMLElement,
                       let name = child.localName else { continue }
                 if skip.contains(name) { continue }
-                if breaking.contains(name), !text.hasSuffix("\n") {
+                // 改行の有無は UTF-16/UTF-8 のコード単位で見る(cooViewer-0ig):
+                // Character の hasSuffix("\n") は末尾が "\r\n"(1 書記素)のとき偽になり、
+                // JS 側の UTF-16 単位の地図と改行数がずれる
+                if breaking.contains(name), text.utf8.last != UInt8(ascii: "\n") {
                     text += "\n"
                 }
                 appendPlainText(of: child, into: &text)
-                if breaking.contains(name), !text.hasSuffix("\n") {
+                if breaking.contains(name), text.utf8.last != UInt8(ascii: "\n") {
                     text += "\n"
                 }
             default:
@@ -195,7 +198,8 @@ extension EPUBPublication {
     /// 残すが、3 つ以上連続する改行は 2 つへ丸める)
     private static func collapsingWhitespace(_ text: String) -> String {
         var lines: [String] = []
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // コード単位の "\n" で分割する(Character の split は "\r\n" を割らない。cooViewer-0ig)
+        for rawLine in text.components(separatedBy: "\n") {
             let collapsed = rawLine
                 .components(separatedBy: .whitespaces)
                 .filter { !$0.isEmpty }
