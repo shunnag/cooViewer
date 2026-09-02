@@ -89,6 +89,24 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
         XCTAssertEqual(view.currentLocator.progression, 0.625, accuracy: 0.0001)
     }
 
+    /// cooViewer-t4e: ホストが足したオーバーレイは load による webView
+    /// 再構築後も webView より前面に残る
+    func testHostOverlayRemainsAboveWebViewAcrossReload() throws {
+        let publication = try makePublication()
+        let view = EPUBReaderView(
+            frame: NSRect(x: 0, y: 0, width: 900, height: 900))
+        view.load(publication: publication)
+
+        let overlay = NSView(frame: view.bounds)
+        view.addSubview(overlay)
+        view.load(publication: publication)
+
+        let rebuiltWebView = try XCTUnwrap(
+            view.subviews.firstIndex(where: { $0 is WKWebView }))
+        let overlayIndex = try XCTUnwrap(view.subviews.firstIndex(of: overlay))
+        XCTAssertLessThan(rebuiltWebView, overlayIndex)
+    }
+
     /// 0 始まりの census ページと locator の相互変換は全ページで可逆になる
     func testCensusGlobalPageRoundTripsEveryPage() throws {
         let publication = try makePublication()

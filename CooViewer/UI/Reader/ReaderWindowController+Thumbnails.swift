@@ -277,6 +277,9 @@ extension ReaderWindowController {
             // 表示へ即時反映
             if self.isEPUBMode {
                 self.updateEPUBIndicators()
+                // cooViewer-col: 合本ページマップ完成時は検索一覧の表示番号も
+                // 個別 EPUB 基準から合本全体基準へ即時更新する。
+                self.refreshEPUBSearchPageNumbers()
             } else {
                 self.updatePageIndicators(indices: self.lastSpreadIndices)
             }
