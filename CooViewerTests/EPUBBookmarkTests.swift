@@ -18,6 +18,104 @@ final class EPUBBookmarkTests: XCTestCase {
             globalStart: 10, localPage: 2, segmentPageCount: 5), 13)
     }
 
+    func testResolvedLocatorKeepsOriginalWhenPageIsUnchanged() {
+        let original = EPUBLocator(spineIndex: 2, progression: 0.37)
+        var conversionCalled = false
+
+        let resolved = EPUBBookmarkLogic.resolvedLocator(
+            original: original, editedPage: 13, originalPage: 13,
+            range: 11...15, base: 10,
+            locatorForLocalPage: { _ in
+                conversionCalled = true
+                return EPUBLocator(spineIndex: 9)
+            })
+
+        XCTAssertEqual(resolved, original)
+        XCTAssertFalse(conversionCalled)
+    }
+
+    func testResolvedLocatorUsesConvertedLocatorForEditedPage() {
+        let original = EPUBLocator(spineIndex: 2, progression: 0.37)
+        let converted = EPUBLocator(spineIndex: 4, progression: 0.25)
+
+        let resolved = EPUBBookmarkLogic.resolvedLocator(
+            original: original, editedPage: 4, originalPage: 2,
+            range: 1...5, base: 0,
+            locatorForLocalPage: { page in
+                XCTAssertEqual(page, 3)
+                return converted
+            })
+
+        XCTAssertEqual(resolved, converted)
+    }
+
+    func testResolvedLocatorKeepsOriginalForOutOfRangePage() {
+        let original = EPUBLocator(spineIndex: 2, progression: 0.37)
+
+        let resolved = EPUBBookmarkLogic.resolvedLocator(
+            original: original, editedPage: 16, originalPage: 13,
+            range: 11...15, base: 10,
+            locatorForLocalPage: { _ in EPUBLocator(spineIndex: 9) })
+
+        XCTAssertEqual(resolved, original)
+    }
+
+    func testResolvedLocatorKeepsOriginalWhenConversionFails() {
+        let original = EPUBLocator(spineIndex: 2, progression: 0.37)
+
+        let resolved = EPUBBookmarkLogic.resolvedLocator(
+            original: original, editedPage: 4, originalPage: 2,
+            range: 1...5, base: 0,
+            locatorForLocalPage: { _ in nil })
+
+        XCTAssertEqual(resolved, original)
+    }
+
+    func testCollectionDisplayedPageRoundTripsThroughBaseOffset() {
+        let displayed = EPUBBookmarkLogic.collectionPageNumber(
+            globalStart: 10, localPage: 2, segmentPageCount: 5)
+        XCTAssertEqual(displayed, 13)
+        XCTAssertEqual(EPUBBookmarkLogic.localPage(
+            forDisplayed: displayed, base: 10), 2)
+
+        let converted = EPUBLocator(spineIndex: 7, progression: 0.5)
+        XCTAssertEqual(EPUBBookmarkLogic.resolvedLocator(
+            original: EPUBLocator(spineIndex: 1), editedPage: displayed,
+            originalPage: 12, range: 11...15, base: 10,
+            locatorForLocalPage: { $0 == 2 ? converted : nil }), converted)
+    }
+
+    func testResolvedLocatorKeepsOriginalWithoutCensusRange() {
+        let original = EPUBLocator(spineIndex: 2, progression: 0.37)
+
+        let resolved = EPUBBookmarkLogic.resolvedLocator(
+            original: original, editedPage: 4, originalPage: 2,
+            range: nil, base: 0,
+            locatorForLocalPage: { _ in EPUBLocator(spineIndex: 9) })
+
+        XCTAssertEqual(resolved, original)
+    }
+
+    func testEditorSaveItemsNormalizesNameAndReturnsOnlyEditedPage() {
+        let locator = EPUBLocator(spineIndex: 2, progression: 0.37)
+        let items = [
+            EPUBBookmarkEditorView.Item(
+                name: "", locator: locator, position: "2/5",
+                pageNumber: 2, originalPageNumber: 2),
+            EPUBBookmarkEditorView.Item(
+                name: "moved", locator: locator, position: "2/5",
+                pageNumber: 4, originalPageNumber: 2),
+        ]
+
+        let saved = EPUBBookmarkEditorView.saveItems(items)
+
+        XCTAssertEqual(saved[0].name, "bookmark1")
+        XCTAssertNil(saved[0].pageNumber)
+        XCTAssertEqual(saved[0].locator, locator)
+        XCTAssertEqual(saved[1].name, "moved")
+        XCTAssertEqual(saved[1].pageNumber, 4)
+    }
+
     func testMatchingUsesOneBasedVisibleRangeForZeroBasedCensusPage() {
         let bookmarks = [bookmark(1), bookmark(3)]
         let match = EPUBBookmarkLogic.matchingIndex(
