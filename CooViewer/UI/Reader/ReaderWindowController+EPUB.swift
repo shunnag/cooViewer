@@ -315,8 +315,96 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubView.settings = plannedEPUBSettings()
     }
 
+    /// EPUB ルーペを現在のマウス位置で切り替える。検証時だけ初期位置を固定できる
+    func toggleEPUBLoupe(at initialPoint: CGPoint? = nil) {
+        guard isEPUBMode, let epubView else { return }
+        if epubLoupeHost != nil {
+            disableEPUBLoupe()
+            return
+        }
+
+        let host = EPUBLoupeHostView(frame: epubView.bounds)
+        host.autoresizingMask = [.width, .height]
+        host.wantsLayer = true
+        host.layer?.backgroundColor = CGColor(gray: 0, alpha: 0)
+        epubView.addSubview(host)
+        epubLoupeHost = host
+
+        let loupe = LoupeController()
+        loupe.size = settings.loupeSize
+        loupe.rate = settings.loupeRate
+        epubLoupe = loupe
+        let point = initialPoint ?? window.map {
+            host.convert($0.mouseLocationOutsideOfEventStream, from: nil)
+        } ?? CGPoint(x: host.bounds.midX, y: host.bounds.midY)
+
+        Task { [weak self, weak epubView, weak host, weak loupe] in
+            guard let self, let epubView, let host, let loupe,
+                  self.isEPUBMode, self.epubView === epubView,
+                  self.epubLoupeHost === host, self.epubLoupe === loupe,
+                  let hostLayer = host.layer else { return }
+            guard let content = await self.makeEPUBLoupeContent(for: epubView)
+            else {
+                if self.epubLoupeHost === host, self.epubLoupe === loupe {
+                    self.disableEPUBLoupe()
+                }
+                return
+            }
+            guard self.isEPUBMode, self.epubView === epubView,
+                  self.epubLoupeHost === host, self.epubLoupe === loupe else { return }
+            loupe.enable(in: hostLayer, at: point, content: content)
+        }
+    }
+
+    /// EPUB ルーペを無効化し、WebKit 上の透明ホストも破棄する
+    func disableEPUBLoupe() {
+        epubLoupe?.disable()
+        epubLoupe = nil
+        epubLoupeHost?.removeFromSuperview()
+        epubLoupeHost = nil
+    }
+
+    /// ルーペ有効中だけ現在の WebKit 描画を高解像度で取り直す
+    func refreshEPUBLoupeSnapshot() {
+        guard isEPUBMode, let epubView, let host = epubLoupeHost,
+              let loupe = epubLoupe, loupe.isEnabled else { return }
+        Task { [weak self, weak epubView, weak host, weak loupe] in
+            guard let self, let epubView, let host, let loupe,
+                  let content = await self.makeEPUBLoupeContent(for: epubView),
+                  self.isEPUBMode, self.epubView === epubView,
+                  self.epubLoupeHost === host, self.epubLoupe === loupe,
+                  loupe.isEnabled else { return }
+            loupe.update(content: content)
+        }
+    }
+
+    /// EPUB ルーペ倍率を設定へ保存し、取得解像度も更新する
+    func adjustEPUBLoupeRate(by delta: Double) {
+        let rate = max(1.0, settings.loupeRate + delta)
+        settings.loupeRate = rate
+        epubLoupe?.rate = rate
+        refreshEPUBLoupeSnapshot()
+    }
+
+    /// Washi の raw スナップショットを既存 LoupeController の座標系へ詰める
+    private func makeEPUBLoupeContent(for view: EPUBReaderView) async
+        -> LoupeController.Content? {
+        let width = max(1, view.bounds.width)
+        let scale = min(8192 / width, 2.0 * max(1.0, settings.loupeRate))
+        guard let snapshot = try? await view.contentSnapshot(scale: scale),
+              let image = snapshot.image.cgImage(
+                forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return LoupeController.Content(
+            containerBounds: view.bounds,
+            containerPosition: CGPoint(x: view.bounds.midX, y: view.bounds.midY),
+            containerTransform: .identity,
+            pages: [LoupeController.Page(frame: snapshot.frame, image: image)],
+            backgroundColor: view.layer?.backgroundColor)
+    }
+
     func dismissEPUBMode() {
         guard isEPUBMode else { return }
+        disableEPUBLoupe()
         saveEPUBState()
         epubSaveDebounce?.cancel()
         epubView?.stopMediaOverlay()  // 退出したら音声ナレーションも止める
@@ -857,6 +945,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// EPUB ビュー上のマウス移動(tracking area の owner として受ける):
     /// 自動隠しインジケータの再表示とフルスクリーンのカーソル自動隠し
     override func mouseMoved(with event: NSEvent) {
+        if let host = epubLoupeHost, epubLoupe?.isEnabled == true {
+            epubLoupe?.move(to: host.convert(event.locationInWindow, from: nil))
+        }
         noteMouseMovedForIndicators()
         noteMouseMoved()
     }
@@ -1198,6 +1289,12 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // スライドショー(§4.9)。タイマーは book に依存しないので
             // そのまま流用し、tick は EPUB 分岐で epubGoForward する
             toggleSlideshow()
+        case .toggleLoupe:
+            toggleEPUBLoupe()
+        case .loupePowerUp:
+            adjustEPUBLoupeRate(by: value ?? 0.5)
+        case .loupePowerDown:
+            adjustEPUBLoupeRate(by: -(value ?? 0.5))
         case .openLastPage:
             openTheLastBook()
         case .showInFinderRight, .showInFinderLeft, .positionalShowInFinder:
@@ -1251,6 +1348,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     // MARK: - 検証用
 
+    /// ヘッドレス検証では不定なマウス位置を使わず、画面中央でルーペを切り替える
+    func debugToggleEPUBLoupeAtCenter() {
+        guard let epubView else { return }
+        toggleEPUBLoupe(at: CGPoint(x: epubView.bounds.midX,
+                                   y: epubView.bounds.midY))
+    }
+
     /// スナップショット CLI(--snapshot)から使う合成画像
     /// (ページバー等の contentView オーバーレイも合成する)
     func epubDebugSnapshot() async -> NSImage? {
@@ -1260,6 +1364,21 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // サムネイルオーバーレイ表示中はそれも合成(--show-thumbnails 検証用)
         if let host = thumbnailHostingView, !host.isHidden,
            host.bounds.width > 0,
+           let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: rep)
+            let image = NSImage(size: host.bounds.size)
+            image.addRepresentation(rep)
+            overlays.append((image: image, frame: host.frame))
+        }
+        // WKWebView の subview は base に写らないため、ルーペホストを別途焼く。
+        // 注意(検証の限界): ルーペの拡大は複製レイヤの scale transform で行うが、
+        // cacheDisplay も layer.render(in:) もオフスクリーンでは倍率>1 の
+        // サブレイヤ transform を反映できない(Core Animation の既知制約。画像側
+        // ルーペと共通)。画面上の合成は正しく拡大される。ここでは白枠と配置を
+        // 確認できれば十分なので、向きの狂いが出ない cacheDisplay を使う
+        // (layer.render は本ホストだと上下反転する)。倍率 1 のときは内部内容も写る
+        if let host = epubLoupeHost, epubLoupe?.isEnabled == true,
+           !host.isHidden, host.bounds.width > 0,
            let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
             host.cacheDisplay(in: host.bounds, to: rep)
             let image = NSImage(size: host.bounds.size)
@@ -1283,6 +1402,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                     pageInItem: Int, pageCountInItem: Int) {
         epubContentLoaded = true
         updateEPUBIndicators()
+        refreshEPUBLoupeSnapshot()
         // 位置は 2 秒デバウンスで保存(ページ送りのたびの書き込みを避ける)
         epubSaveDebounce?.cancel()
         epubSaveDebounce = Task { [weak self] in
@@ -1391,6 +1511,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// defaults 変更 → applySettings で同値が書き戻るが equality ガードで無害)
     func readerView(_ view: EPUBReaderView, didChangeFontScale scale: Double) {
         settings.epubFontScale = scale
+        refreshEPUBLoupeSnapshot()
     }
 
     /// ページめくり効果が「ページカール」のとき、画像本と同じ
@@ -1442,4 +1563,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 /// EPUB のカール演出ホスト(PageCurlOverlay の幾何は flipped 前提)
 final class EPUBCurlHostView: NSView {
     override var isFlipped: Bool { true }
+}
+
+/// EPUB ルーペ専用。表示だけを重ね、WebKit のクリックやページ送りを奪わない
+final class EPUBLoupeHostView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

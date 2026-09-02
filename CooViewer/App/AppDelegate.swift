@@ -253,6 +253,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         self?.readerWindowController?.epubGoToPage(page)
                     }
                 }
+            case "--then-toggle-loupe":
+                // ヘッドレスではマウス位置が不定なので EPUB 画面中央へ固定する
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.debugToggleEPUBLoupeAtCenter()
+                }
             case "--then-toggle-bookmark":
                 // リフローしおりのトグルを直接叩く E2E 検証用(仕様書 §4.7.1)
                 navigationSteps.append { [weak self] in

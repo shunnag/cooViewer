@@ -1350,6 +1350,19 @@ public final class EPUBReaderView: NSView {
 
     // MARK: - スナップショット
 
+    /// Returns a high-resolution snapshot of the raw web content and its frame
+    /// in the reader view's coordinate system.
+    public func contentSnapshot(scale: CGFloat) async throws
+        -> (image: NSImage, frame: CGRect) {
+        guard let webView else { throw EPUBError.malformed("本が開かれていない") }
+        let configuration = WKSnapshotConfiguration()
+        configuration.afterScreenUpdates = true
+        configuration.snapshotWidth = NSNumber(
+            value: min(8192, Double(webView.bounds.width * scale)))
+        let image = try await webView.takeSnapshot(configuration: configuration)
+        return (image, webView.frame)
+    }
+
     /// Returns an image compositing the whole view (margins + web content).
     /// WKWebView does not appear in layer-based drawing (cacheDisplay, etc.),
     /// so the result of takeSnapshot is composited over the background (for

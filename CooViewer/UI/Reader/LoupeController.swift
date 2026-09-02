@@ -128,6 +128,10 @@ final class LoupeController {
 extension ReaderWindowController {
     /// ルーペのオン/オフ(仕様書 §4.10)。本が無ければ何もしない。
     func toggleLoupe() {
+        if isEPUBMode {
+            toggleEPUBLoupe()
+            return
+        }
         guard book != nil else { return }
         let view = readerViewForInput
         if view.isLoupeEnabled {
@@ -184,6 +188,10 @@ extension ReaderWindowController {
 
     /// 倍率 ±delta(下限 1.0)。旧実装同様 defaults へ直接保存する(仕様書 §4.10)。
     func adjustLoupeRate(by delta: Double) {
+        if isEPUBMode {
+            adjustEPUBLoupeRate(by: delta)
+            return
+        }
         defer { requestLoupeHighResolution() }
         let rate = max(1.0, settings.loupeRate + delta)
         settings.loupeRate = rate

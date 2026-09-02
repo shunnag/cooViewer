@@ -40,6 +40,9 @@ final class ReaderWindowController: NSWindowController {
     // MARK: リフロー EPUB モード(実装は +EPUB.swift。設計書 §2.4 EPUB 対応)
     /// リフロー EPUB の表示ビュー(初回オープン時に生成し readerView と入替表示)
     var epubView: EPUBReaderView?
+    /// EPUB の WebKit 内容を拡大するルーペと、その非ヒットテストホスト
+    var epubLoupe: LoupeController?
+    var epubLoupeHost: EPUBLoupeHostView?
     var epubPublication: EPUBPublication?
     var epubContentLoaded = false
     var epubBookURL: URL?
@@ -313,6 +316,7 @@ final class ReaderWindowController: NSWindowController {
         // presentReflowableEPUB が syncEPUBViewSettings で追い付かせる)
         if isEPUBMode {
             syncEPUBViewSettings()
+            refreshEPUBLoupeSnapshot()
         }
         let filterChanged = readerView.interpolation != settings.interpolation
             || readerView.noiseReductionLevel != settings.noiseReductionLevel
@@ -1231,12 +1235,14 @@ final class ReaderWindowController: NSWindowController {
 
     func windowDidEndLiveResize(_ notification: Notification) {
         refreshDisplayIfCapRaised()
+        refreshEPUBLoupeSnapshot()
     }
 
     func windowDidResize(_ notification: Notification) {
         // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
         guard window?.inLiveResize == false else { return }
         refreshDisplayIfCapRaised()
+        refreshEPUBLoupeSnapshot()
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {
@@ -2525,8 +2531,10 @@ final class ReaderWindowController: NSWindowController {
                 ? .on : .off
             return true  // めくり効果は EPUB でも有効(カール含む)
         case #selector(toggleLoupeMenu(_:)):
-            menuItem.state = readerView.isLoupeEnabled ? .on : .off
-            return (book?.pageCount ?? 0) > 0
+            menuItem.state = isEPUBMode
+                ? ((epubLoupe?.isEnabled ?? false) ? .on : .off)
+                : (readerView.isLoupeEnabled ? .on : .off)
+            return (book?.pageCount ?? 0) > 0 || isEPUBMode
         case #selector(toggleGestureHUDMenu(_:)):
             menuItem.state = settings.gestureHUDEnabled ? .on : .off
             return !isEPUBMode  // EPUB にドラッグジェスチャ経路がない
