@@ -98,8 +98,15 @@ public final class EPUBReaderView: NSView {
         case end
         case progression(Double)
         case fragment(String)
+        case textRange(utf16Offset: Int, utf16Length: Int)
     }
     private var pendingTarget: PendingTarget = .start
+    private struct PendingTextRangeRequest {
+        let id: UUID
+        let continuation: CheckedContinuation<EPUBTextRangeLanding?, Never>
+    }
+    private var pendingTextRangeRequest: PendingTextRangeRequest?
+    private var textRangeTask: Task<Void, Never>?
     private var isSettingUp = false
     /// spine 項目の読み込み中(旧文書から届く境界イベントを捨てて
     /// 章の飛び越しを防ぐ)
@@ -308,6 +315,7 @@ public final class EPUBReaderView: NSView {
     /// Opens a book. Pass a locator to resume from the previous position.
     /// Host-added overlay subviews keep their z-order across web view rebuilds.
     public func load(publication: EPUBPublication, at locator: EPUBLocator? = nil) {
+        cancelPendingTextRangeRequest()
         // 別の本を開くのでメディアオーバーレイ再生は止める(本に紐づく)
         mediaOverlayController?.stop()
         mediaOverlayController = nil
@@ -514,8 +522,18 @@ public final class EPUBReaderView: NSView {
 
     private func loadSpineItem(at index: Int, target: PendingTarget,
                                preservingTurnCover: Bool = false) {
+        let isTextRangeTarget: Bool
+        if case .textRange = target {
+            isTextRangeTarget = true
+        } else {
+            isTextRangeTarget = false
+            cancelPendingTextRangeRequest()
+        }
         guard let publication, let schemeHandler, let webView,
-              publication.readingOrder.indices.contains(index) else { return }
+              publication.readingOrder.indices.contains(index) else {
+            if isTextRangeTarget { cancelPendingTextRangeRequest() }
+            return
+        }
         currentSpineIndex = index
         pendingTarget = target
         pageInItem = 0
@@ -537,6 +555,7 @@ public final class EPUBReaderView: NSView {
             publication.package.effectiveLayout(for: entry.itemRef) == .prePaginated
         updateFurniture()
         guard let url = schemeHandler.url(forContainerPath: entry.containerPath) else {
+            if isTextRangeTarget { cancelPendingTextRangeRequest() }
             return
         }
         webView.alphaValue = 0
@@ -822,6 +841,7 @@ public final class EPUBReaderView: NSView {
     public func turnPageRight() { isRTL ? goBackward() : goForward() }
 
     public func go(to locator: EPUBLocator) {
+        cancelPendingTextRangeRequest()
         guard let publication,
               publication.readingOrder.indices.contains(locator.spineIndex) else { return }
         if locator.spineIndex == currentSpineIndex {
@@ -829,6 +849,56 @@ public final class EPUBReaderView: NSView {
         } else {
             loadSpineItem(at: locator.spineIndex,
                           target: .progression(locator.progression))
+        }
+    }
+
+    /// Navigates to an exact UTF-16 text range in a reflowable spine item.
+    ///
+    /// The returned rectangles are expressed in this reader view's coordinate
+    /// system. Returns `nil` when the locator or range cannot be resolved, so
+    /// callers can fall back to progression-based navigation.
+    ///
+    /// - Parameters:
+    ///   - locator: The spine item containing the extracted-text range.
+    ///   - textRange: The offset and length in UTF-16 code units of that item's
+    ///     extracted plain text.
+    /// - Returns: The exact DOM landing, or `nil` if exact positioning fails.
+    public func go(
+        to locator: EPUBLocator,
+        textRange: (utf16Offset: Int, utf16Length: Int)
+    ) async -> EPUBTextRangeLanding? {
+        guard let publication,
+              publication.readingOrder.indices.contains(locator.spineIndex),
+              textRange.utf16Offset >= 0, textRange.utf16Length > 0,
+              textRange.utf16Offset <= Int.max - textRange.utf16Length,
+              publication.package.effectiveLayout(
+                for: publication.readingOrder[locator.spineIndex].itemRef)
+                != .prePaginated
+        else { return nil }
+
+        let requestID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                cancelPendingTextRangeRequest()
+                pendingTextRangeRequest = PendingTextRangeRequest(
+                    id: requestID, continuation: continuation)
+                let target = PendingTarget.textRange(
+                    utf16Offset: textRange.utf16Offset,
+                    utf16Length: textRange.utf16Length)
+                if locator.spineIndex == currentSpineIndex {
+                    if isLoadingSpineItem {
+                        pendingTarget = target
+                    } else {
+                        applyTarget(target)
+                    }
+                } else {
+                    loadSpineItem(at: locator.spineIndex, target: target)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelPendingTextRangeRequest(id: requestID)
+            }
         }
     }
 
@@ -869,16 +939,30 @@ public final class EPUBReaderView: NSView {
     private func applyTarget(_ target: PendingTarget) {
         switch target {
         case .start:
+            cancelPendingTextRangeRequest()
             evaluate("__washi.showPage(0);")
         case .end:
+            cancelPendingTextRangeRequest()
             evaluate("__washi.showLastPage();")
         case .progression(let progression):
+            cancelPendingTextRangeRequest()
             evaluate("__washi.showProgression(\(progression));")
         case .fragment(let fragment):
+            cancelPendingTextRangeRequest()
             // 断片 id は EPUB 由来(信頼できない)。文字列連結でなく引数渡しで
             // WebKit に完全エスケープさせる(手動 \\・' では改行・行区切りを取りこぼす)
             callWashiAsync("return __washi.showFragment(id);",
                            arguments: ["id": fragment])
+        case .textRange(let utf16Offset, let utf16Length):
+            guard let requestID = pendingTextRangeRequest?.id else { return }
+            textRangeTask?.cancel()
+            textRangeTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                let landing = await self.locateTextRange(
+                    utf16Offset: utf16Offset, utf16Length: utf16Length)
+                guard !Task.isCancelled else { return }
+                self.finishTextRangeRequest(id: requestID, landing: landing)
+            }
         }
     }
 
@@ -896,9 +980,73 @@ public final class EPUBReaderView: NSView {
     func callWashiAsync(_ body: String, arguments: [String: Any]) {
         guard let webView else { return }
         Task { @MainActor in
-            _ = try? await webView.callAsyncJavaScript(
-                body, arguments: arguments, in: nil, contentWorld: Self.washiWorld)
+            _ = await callWashiAsync(body, arguments: arguments, in: webView)
         }
+    }
+
+    private func callWashiAsync(
+        _ body: String, arguments: [String: Any], in webView: WKWebView
+    ) async -> Any? {
+        try? await webView.callAsyncJavaScript(
+            body, arguments: arguments, in: nil, contentWorld: Self.washiWorld)
+    }
+
+    private func locateTextRange(
+        utf16Offset: Int, utf16Length: Int
+    ) async -> EPUBTextRangeLanding? {
+        guard let webView else { return nil }
+        let result = await callWashiAsync(
+            "return __washi.locateAndShow(o, l);",
+            arguments: ["o": utf16Offset, "l": utf16Length], in: webView)
+        guard webView === self.webView,
+              let dictionary = result as? [String: Any],
+              let page = dictionary["page"] as? Int,
+              let text = dictionary["text"] as? String,
+              let rawRects = dictionary["rects"] as? [[String: Any]]
+        else { return nil }
+
+        let rects = rawRects.compactMap { raw -> CGRect? in
+            guard let x = Self.number(raw["x"]),
+                  let y = Self.number(raw["y"]),
+                  let width = Self.number(raw["w"]),
+                  let height = Self.number(raw["h"]),
+                  x.isFinite, y.isFinite, width.isFinite, height.isFinite
+            else { return nil }
+            // DOMRect は左上原点。WKWebView の実座標系へ合わせてから
+            // AppKit の convert に self 座標への反転・inset 加算を任せる
+            let localY = webView.isFlipped
+                ? CGFloat(y)
+                : webView.bounds.height - CGFloat(y) - CGFloat(height)
+            let local = CGRect(x: CGFloat(x), y: localY,
+                               width: CGFloat(width), height: CGFloat(height))
+            return webView.convert(local, to: self)
+        }
+        guard rects.count == rawRects.count else { return nil }
+        return EPUBTextRangeLanding(pageInItem: page, text: text, rects: rects)
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        return value as? Double
+    }
+
+    private func finishTextRangeRequest(
+        id: UUID, landing: EPUBTextRangeLanding?
+    ) {
+        guard pendingTextRangeRequest?.id == id else { return }
+        let continuation = pendingTextRangeRequest?.continuation
+        pendingTextRangeRequest = nil
+        textRangeTask = nil
+        continuation?.resume(returning: landing)
+    }
+
+    private func cancelPendingTextRangeRequest(id: UUID? = nil) {
+        if let id, pendingTextRangeRequest?.id != id { return }
+        textRangeTask?.cancel()
+        textRangeTask = nil
+        let continuation = pendingTextRangeRequest?.continuation
+        pendingTextRangeRequest = nil
+        continuation?.resume(returning: nil)
     }
 
     // MARK: - レイアウト
@@ -1060,6 +1208,7 @@ public final class EPUBReaderView: NSView {
         } catch {
             // 古い文書の JS 失敗で新しい文書の読み込み状態を壊さない
             guard generation == spineLoadGeneration else { return }
+            cancelPendingTextRangeRequest()
             isLoadingSpineItem = false
             clearPendingSpineTurn()
             webView.alphaValue = 1
@@ -1729,6 +1878,7 @@ extension EPUBReaderView: WKNavigationDelegate, WKUIDelegate {
             // による中断(公開 enum に定数がないためドメイン+コードで判定)
             || (nsError.domain == "WebKitErrorDomain" && nsError.code == 102)
         guard !isCancellation else { return }
+        cancelPendingTextRangeRequest()
         isLoadingSpineItem = false
         clearPendingSpineTurn()
         webView?.alphaValue = 1
