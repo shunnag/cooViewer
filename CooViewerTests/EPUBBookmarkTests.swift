@@ -11,12 +11,20 @@ final class EPUBBookmarkTests: XCTestCase {
         ("p\(page)", EPUBLocator(spineIndex: page, progression: progression))
     }
 
+    func testCollectionPageNumberClampsToSegmentEnd() {
+        XCTAssertEqual(EPUBBookmarkLogic.collectionPageNumber(
+            globalStart: 10, localPage: 99, segmentPageCount: 5), 15)
+        XCTAssertEqual(EPUBBookmarkLogic.collectionPageNumber(
+            globalStart: 10, localPage: 2, segmentPageCount: 5), 13)
+    }
+
     func testMatchingUsesOneBasedVisibleRangeForZeroBasedCensusPage() {
         let bookmarks = [bookmark(1), bookmark(3)]
         let match = EPUBBookmarkLogic.matchingIndex(
             in: bookmarks,
             current: EPUBLocator(spineIndex: 0),
             currentPageRange: 1...2,
+            pageCountInItem: 1,
             globalPage: { $0.spineIndex })
         XCTAssertEqual(match, 0, "0 始まり page 1 は表示上の 2 ページ目")
     }
@@ -30,12 +38,35 @@ final class EPUBBookmarkTests: XCTestCase {
             in: bookmarks,
             current: EPUBLocator(spineIndex: 2, progression: 0.50),
             currentPageRange: nil,
+            pageCountInItem: 1,
             globalPage: { _ in nil }), 0)
         XCTAssertNil(EPUBBookmarkLogic.matchingIndex(
             in: bookmarks,
             current: EPUBLocator(spineIndex: 2, progression: 0.502),
             currentPageRange: nil,
+            pageCountInItem: 1,
             globalPage: { _ in nil }))
+    }
+
+    func testMatchingFallbackDistinguishesAdjacentPagesInLongSpine() {
+        let pageCount = 200
+        let page = 73
+        let current = EPUBLocator(
+            spineIndex: 2,
+            progression: Double(page) / Double(pageCount - 1))
+        let bookmarks = [
+            ("same", current),
+            ("next", EPUBLocator(
+                spineIndex: 2,
+                progression: Double(page + 1) / Double(pageCount - 1))),
+        ]
+
+        XCTAssertEqual(EPUBBookmarkLogic.matchingIndex(
+            in: bookmarks, current: current, currentPageRange: nil,
+            pageCountInItem: pageCount, globalPage: { _ in nil }), 0)
+        XCTAssertNil(EPUBBookmarkLogic.matchingIndex(
+            in: [bookmarks[1]], current: current, currentPageRange: nil,
+            pageCountInItem: pageCount, globalPage: { _ in nil }))
     }
 
     func testNextAndPreviousChooseNearestPageFromUnsortedBookmarks() {
@@ -43,10 +74,12 @@ final class EPUBBookmarkTests: XCTestCase {
         let current = EPUBLocator(spineIndex: 4)
         XCTAssertEqual(EPUBBookmarkLogic.targetIndex(
             in: bookmarks, current: current, currentPageRange: 4...5,
-            next: true, globalPage: { $0.spineIndex }), 2)
+            pageCountInItem: 1, next: true,
+            globalPage: { $0.spineIndex }), 2)
         XCTAssertEqual(EPUBBookmarkLogic.targetIndex(
             in: bookmarks, current: current, currentPageRange: 4...5,
-            next: false, globalPage: { $0.spineIndex }), 1)
+            pageCountInItem: 1, next: false,
+            globalPage: { $0.spineIndex }), 1)
     }
 
     func testNavigationExcludesBookmarksInsideCurrentSpreadAndBookEdges() {
@@ -54,13 +87,15 @@ final class EPUBBookmarkTests: XCTestCase {
         let current = EPUBLocator(spineIndex: 0)
         XCTAssertNil(EPUBBookmarkLogic.targetIndex(
             in: bookmarks, current: current, currentPageRange: 1...2,
-            next: false, globalPage: { $0.spineIndex }))
+            pageCountInItem: 1, next: false,
+            globalPage: { $0.spineIndex }))
         XCTAssertEqual(EPUBBookmarkLogic.targetIndex(
             in: bookmarks, current: current, currentPageRange: 1...2,
-            next: true, globalPage: { $0.spineIndex }), 2)
+            pageCountInItem: 1, next: true,
+            globalPage: { $0.spineIndex }), 2)
         XCTAssertNil(EPUBBookmarkLogic.targetIndex(
             in: bookmarks, current: EPUBLocator(spineIndex: 3),
-            currentPageRange: 4...4, next: true,
+            currentPageRange: 4...4, pageCountInItem: 1, next: true,
             globalPage: { $0.spineIndex }))
     }
 }

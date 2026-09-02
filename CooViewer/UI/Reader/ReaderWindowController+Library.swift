@@ -278,7 +278,8 @@ extension ReaderWindowController {
         // EPUB(リフロー)は book が nil。Washi が自前でめくり演出を張るため
         // pendingTurnForward / refreshAfterJump は通さない。巻末到達での停止は
         // didReachBookEdge 側で扱う(§4.3.4。ループ設定 0 のときは goToBookStart
-        // で巻頭へ戻り継続。合本の巻端は openBook が stopSlideshow する)
+        // で巻頭へ戻り継続)。cooViewer-9ne: 合本内では各エントリ境界の
+        // openBook が停止する。エントリ横断の継続は cooViewer-mji で扱う
         if isEPUBMode {
             epubGoForward()
             return

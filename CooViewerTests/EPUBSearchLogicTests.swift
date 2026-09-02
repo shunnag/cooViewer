@@ -5,6 +5,22 @@ import XCTest
 /// リフロー EPUB 本文検索の近似位置・順序・巡回・件数制限。
 @MainActor
 final class EPUBSearchLogicTests: XCTestCase {
+    func testClearResultsSettlesInFlightSearchState() {
+        let model = EPUBSearchModel()
+        model.beginSearch(query: "needle")
+
+        XCTAssertTrue(model.isSearching)
+        XCTAssertEqual(model.pendingQuery, "needle")
+
+        model.clearResults()
+
+        XCTAssertFalse(model.isSearching)
+        XCTAssertTrue(model.hits.isEmpty)
+        XCTAssertTrue(model.pageNumbers.isEmpty)
+        XCTAssertNil(model.pendingQuery)
+        XCTAssertNil(model.completedQuery)
+    }
+
     func testProgressionUsesCharacterOffsetAndClampsToUnitRange() {
         XCTAssertEqual(EPUBSearchLogic.progression(
             characterOffset: 25, itemTextLength: 100), 0.25)

@@ -40,10 +40,18 @@ struct EPUBCollectionContext {
 enum EPUBBookmarkLogic {
     static let fallbackProgressionEpsilon = 0.02
 
+    static func collectionPageNumber(globalStart: Int, localPage: Int,
+                                     segmentPageCount: Int) -> Int {
+        // cooViewer-h1b: 0 始まりの局所ページを 1 始まりへ変換してから、
+        // 合本マップの当該セグメント終端へクランプする。
+        globalStart + min(localPage + 1, segmentPageCount)
+    }
+
     static func matchingIndex(
         in bookmarks: [(name: String, locator: EPUBLocator)],
         current: EPUBLocator,
         currentPageRange: ClosedRange<Int>?,
+        pageCountInItem: Int,
         globalPage: (EPUBLocator) -> Int?
     ) -> Int? {
         if let currentPageRange {
@@ -53,9 +61,8 @@ enum EPUBBookmarkLogic {
             }
         }
         return bookmarks.firstIndex { bookmark in
-            bookmark.locator.spineIndex == current.spineIndex
-                && abs(bookmark.locator.progression - current.progression)
-                    <= fallbackProgressionEpsilon
+            isSameFallbackPage(bookmark.locator, current,
+                               pageCountInItem: pageCountInItem)
         }
     }
 
@@ -63,6 +70,7 @@ enum EPUBBookmarkLogic {
         in bookmarks: [(name: String, locator: EPUBLocator)],
         current: EPUBLocator,
         currentPageRange: ClosedRange<Int>?,
+        pageCountInItem: Int,
         next: Bool,
         globalPage: (EPUBLocator) -> Int?
     ) -> Int? {
@@ -85,7 +93,12 @@ enum EPUBBookmarkLogic {
         }
 
         let candidates = bookmarks.enumerated().filter { _, bookmark in
-            next ? isAfter(bookmark.locator, current) : isAfter(current, bookmark.locator)
+            guard !isSameFallbackPage(bookmark.locator, current,
+                                      pageCountInItem: pageCountInItem) else {
+                return false
+            }
+            return next ? isAfter(bookmark.locator, current)
+                        : isAfter(current, bookmark.locator)
         }
         if next {
             return candidates.min { lhs, rhs in
@@ -95,6 +108,23 @@ enum EPUBBookmarkLogic {
         return candidates.max { lhs, rhs in
             isAfter(rhs.element.locator, lhs.element.locator)
         }?.offset
+    }
+
+    private static func isSameFallbackPage(
+        _ bookmark: EPUBLocator,
+        _ current: EPUBLocator,
+        pageCountInItem: Int
+    ) -> Bool {
+        guard bookmark.spineIndex == current.spineIndex else { return false }
+        guard pageCountInItem > 1 else {
+            return abs(bookmark.progression - current.progression)
+                <= fallbackProgressionEpsilon
+        }
+        // cooViewer-92n: census 未完でも現在 spine のページ数が分かるため、
+        // progression の固定幅ではなく離散ページへ丸めて同一画面を判定する。
+        let lastPage = Double(pageCountInItem - 1)
+        return round(bookmark.progression * lastPage)
+            == round(current.progression * lastPage)
     }
 
     private static func isAfter(_ lhs: EPUBLocator, _ rhs: EPUBLocator) -> Bool {
@@ -131,6 +161,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // (合本内 EPUB↔EPUB の横断連打で last-request-wins を保証。openGeneration は
         // 合本内移動で動かないため専用の epubPresentEpoch で照合する)
         guard epubPresentEpoch == epoch else { return }
+        // cooViewer-1p7: EPUB 間の切替は dismissEPUBMode を通らないため、旧本の
+        // 検索結果・パネル・実行中 task を publication の差替え前に破棄する。
+        if epubPublication != nil {
+            teardownEPUBSearch()
+        }
         unloadImageBookForEPUB()
         saveEPUBState()  // EPUB → EPUB の切替でも前の本の位置を残す
         epubSaveDebounce?.cancel()
@@ -201,6 +236,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             restored.columnMode = mode
             view.settings = restored
         }
+        // cooViewer-t4e: 再構築される webView の旧スナップショットを保持した
+        // ルーペを、次の publication の load より先に必ず無効化する。
+        disableEPUBLoupe()
         view.load(publication: publication, at: locator)
         // 保存済みの census を注入する。版・spine 数・メトリクスが一致すれば
         // Washi 側が採用し、同一寸法での再オープンで再実測を省く(整合検証は
@@ -370,7 +408,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubLoupeHost = nil
     }
 
-    /// ルーペ有効中だけ現在の WebKit 描画を高解像度で取り直す
+    /// ルーペ有効中だけ現在の WebKit 描画を backing scale で取り直す
     func refreshEPUBLoupeSnapshot() {
         guard isEPUBMode, let epubView, let host = epubLoupeHost,
               let loupe = epubLoupe, loupe.isEnabled else { return }
@@ -384,7 +422,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         }
     }
 
-    /// EPUB ルーペ倍率を設定へ保存し、取得解像度も更新する
+    /// EPUB ルーペ倍率を設定へ保存し、現在内容を取り直す
     func adjustEPUBLoupeRate(by delta: Double) {
         let rate = max(1.0, settings.loupeRate + delta)
         settings.loupeRate = rate
@@ -395,9 +433,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// Washi の raw スナップショットを既存 LoupeController の座標系へ詰める
     private func makeEPUBLoupeContent(for view: EPUBReaderView) async
         -> LoupeController.Content? {
-        let width = max(1, view.bounds.width)
-        let scale = min(8192 / width, 2.0 * max(1.0, settings.loupeRate))
-        guard let snapshot = try? await view.contentSnapshot(scale: scale),
+        // cooViewer-hnt: WKWebView は実表示幅を超える snapshotWidth をクランプ
+        // するため、backing scale の原寸だけを取得する。倍率 > 2 の滲みは
+        // epubDebugSnapshot にも記した Core Animation 拡大の限界と同じ。
+        guard let snapshot = try? await view.contentSnapshot(scale: 1),
               let image = snapshot.image.cgImage(
                 forProposedRect: nil, context: nil, hints: nil) else { return nil }
         return LoupeController.Content(
@@ -788,7 +827,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             }
             guard self?.epubSearchEpoch == epoch,
                   self?.epubPublication === publication,
-                  self?.epubSearchModel === model else { return }
+                  self?.epubSearchModel === model else {
+                // cooViewer-1p7: 現世代の task だけは検索中状態を取り残さない。
+                if let self, self.epubSearchEpoch == epoch {
+                    self.epubSearchTask = nil
+                    model.clearResults()
+                }
+                return
+            }
 
             let worker = Task.detached(priority: .userInitiated) {
                 () -> EPUBSearchComputation? in
@@ -820,7 +866,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             guard !Task.isCancelled, let computation, let self,
                   self.epubSearchEpoch == epoch,
                   self.epubPublication === publication,
-                  self.epubSearchModel === model else { return }
+                  self.epubSearchModel === model else {
+                // cooViewer-1p7: publication/model の不一致でも現世代を確実に収束させる。
+                if let self, self.epubSearchEpoch == epoch {
+                    self.epubSearchTask = nil
+                    model.clearResults()
+                }
+                return
+            }
 
             let pages = computation.hits.map { self.epubSearchPageNumber(for: $0) }
             model.finishSearch(query: query, hits: computation.hits,
@@ -840,7 +893,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     }
 
     /// census の完了・無効化に合わせて検索一覧のページ番号も更新する。
-    private func refreshEPUBSearchPageNumbers() {
+    func refreshEPUBSearchPageNumbers() {
         guard let model = epubSearchModel else { return }
         model.updatePageNumbers(model.hits.map { epubSearchPageNumber(for: $0) })
     }
@@ -903,6 +956,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         if let index = EPUBBookmarkLogic.matchingIndex(
             in: epubBookmarks, current: current,
             currentPageRange: epubView.currentGlobalPageRange,
+            pageCountInItem: epubView.pageCountInItem,
             globalPage: { epubView.censusGlobalPage(for: $0) }) {
             epubBookmarks.remove(at: index)
         } else {
@@ -920,7 +974,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         guard let epubView else { return }
         guard let index = EPUBBookmarkLogic.targetIndex(
             in: epubBookmarks, current: epubView.currentLocator,
-            currentPageRange: epubView.currentGlobalPageRange, next: next,
+            currentPageRange: epubView.currentGlobalPageRange,
+            pageCountInItem: epubView.pageCountInItem, next: next,
             globalPage: { epubView.censusGlobalPage(for: $0) }) else {
             NSSound.beep()
             return
@@ -941,7 +996,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         guard let localPage = epubView?.censusGlobalPage(for: locator) else { return nil }
         if let context = epubCollectionContext,
            let map = activeCollectionPageMap() {
-            return map.globalStart(forEntry: context.entryIndex) + localPage + 1
+            return EPUBBookmarkLogic.collectionPageNumber(
+                globalStart: map.globalStart(forEntry: context.entryIndex),
+                localPage: localPage,
+                segmentPageCount: map.pageCount(forEntry: context.entryIndex))
         }
         return localPage + 1
     }
@@ -1613,8 +1671,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         guard !epubCollectionReturnPending else { return }
         // スライドショー中の巻末到達は §4.3.4 で停止する(画像本の slideshowTick
         // hitEnd と同型: ループ設定 0 のときだけ下の goToBookStart で巻頭へ戻り
-        // 継続する)。単体 EPUB のみここで扱う — 合本内は下の openCollectionEntry
-        // →openBook が自前で stopSlideshow するため巻端でも自然に止まる
+        // 継続する)。単体 EPUB のみここで扱う。cooViewer-9ne: 合本内は下の
+        // openCollectionEntry → openBook が stopSlideshow するため、合本全体の
+        // 巻端だけでなく各エントリ境界で止まる(横断継続は cooViewer-mji)
         if forward, slideshowTimer != nil, epubCollectionContext == nil,
            settings.loopCheck != 0 {
             stopSlideshow()

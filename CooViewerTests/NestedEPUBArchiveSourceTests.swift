@@ -158,15 +158,52 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
     /// リフロー EPUB は固定レイアウト画像パイプラインに入れず、従来どおり
     /// 仕様書 §4.17 の黙殺で他のページだけを残す(cooViewer-c6s.23)。
     func testReflowEPUBIsSkippedSilently() async throws {
+        let uniqueName = "novel-\(UUID().uuidString).epub"
         let url = try writeZip(named: "nested-reflow.zip", [
             ("00.avifs", png(width: 40)),
-            ("novel.epub", reflowEPUBData()),
+            (uniqueName, reflowEPUBData()),
             ("10.avifs", png(width: 43)),
         ])
         let source = try ArchiveSource(url: url)
         let entries = try await source.entries()
 
         XCTAssertEqual(entries.map(\.pathInBook), ["00.avifs", "10.avifs"])
+
+        // cooViewer-cj2: source を生存させたまま spool を調べ、棄却した
+        // リフロー EPUB が nested temp に作られていないことを固定する。
+        let root = ArchiveSource.spoolRoot()
+        let pidPrefix = "\(ProcessInfo.processInfo.processIdentifier)-"
+        let directories = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        var leakedFiles: [URL] = []
+        for directory in directories
+            where directory.lastPathComponent.hasPrefix(pidPrefix) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)) ?? []
+            leakedFiles.append(contentsOf: files.filter {
+                $0.lastPathComponent.hasSuffix("-\(uniqueName)")
+            })
+        }
+        XCTAssertTrue(leakedFiles.isEmpty,
+                      "リフロー EPUB が nested temp に書かれている")
+    }
+
+    /// cooViewer-id8: 棄却 EPUB は id 序数を消費せず、後続の従来型
+    /// ネスト書庫は EPUB 非対応時代と同じ 1_000_000 から始まる。
+    func testRejectedEPUBDoesNotConsumeNestedIDOrdinal() async throws {
+        let inner = zipData([("inside.avifs", png(width: 41))])
+        let url = try writeZip(named: "rejected-epub-before-archive.zip", [
+            ("00.avifs", png(width: 40)),
+            ("novel.epub", reflowEPUBData()),
+            ("inner.zip", inner),
+        ])
+        let source = try ArchiveSource(url: url)
+        let entries = try await source.entries()
+
+        XCTAssertEqual(entries.map(\.pathInBook), [
+            "00.avifs", "inner.zip/inside.avifs",
+        ])
+        XCTAssertEqual(entries.map(\.id), [0, 1_000_000])
     }
 
     /// 暗号化祖先下では EPUB 全体の平文 temp を作らない(cooViewer-6ax)。

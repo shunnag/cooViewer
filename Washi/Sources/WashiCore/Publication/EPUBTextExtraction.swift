@@ -81,6 +81,8 @@ extension EPUBPublication {
     ///
     /// This runs on the calling context and reads/parses every item; for a
     /// large book prefer calling it off the main actor.
+    /// If the current task is cancelled, it stops early and returns the hits
+    /// found so far.
     ///
     /// - Parameters:
     ///   - query: the text to find. Empty or whitespace-only returns no hits.
@@ -96,6 +98,8 @@ extension EPUBPublication {
         let radius = max(0, snippetRadius)
         var hits: [EPUBSearchHit] = []
         for index in readingOrder.indices {
+            // cooViewer-gic: 呼び出し側が世代交代で捨てた検索を全文走査し続けない。
+            if Task.isCancelled { break }
             guard let text = try? extractText(forSpineIndex: index),
                   !text.isEmpty else { continue }
             hits.append(contentsOf: Self.matches(

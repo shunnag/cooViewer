@@ -2,6 +2,7 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 import PDFKit
+import Washi
 import XADMaster
 
 /// 書庫(zip/rar/7z 等)を本として読む(仕様書 §2.4, §4.17)。
@@ -364,7 +365,9 @@ actor ArchiveSource: BookSource {
         var result: [PageEntry] = []
         var imageIterator = outerImages.makeIterator()
         var pendingImage = imageIterator.next()
-        var candidateOrdinal = 0
+        // cooViewer-id8: 候補配列の走査位置と id ストライドの序数は別物。
+        var candidateCursor = 0
+        var idOrdinal = 0
         for index in 0..<archive.numberOfEntries() {
             if let image = pendingImage, image.id == Int(index) {
                 locations[image.id] = .outer(entryIndex: index)
@@ -372,28 +375,37 @@ actor ArchiveSource: BookSource {
                 pendingImage = imageIterator.next()
                 continue
             }
-            guard candidateOrdinal < nestedCandidates.count,
-                  nestedCandidates[candidateOrdinal].index == index else { continue }
-            let candidate = nestedCandidates[candidateOrdinal]
-            candidateOrdinal += 1
-            await appendNestedPages(of: candidate, ordinal: candidateOrdinal, into: &result)
+            guard candidateCursor < nestedCandidates.count,
+                  nestedCandidates[candidateCursor].index == index else { continue }
+            let candidate = nestedCandidates[candidateCursor]
+            candidateCursor += 1
+            let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
+            let appended = await appendNestedPages(
+                of: candidate, ordinal: idOrdinal + 1, into: &result)
+            // 非 EPUB は壊れていても従来どおり序数を消費する。EPUB だけは
+            // 実際に取り込めた場合に限り消費し、旧キャッシュの id を保つ。
+            if !isEPUB || appended {
+                idOrdinal += 1
+            }
         }
         return result
     }
 
     /// ネスト候補 1 つを一時領域へ展開し、子ソースのページを取り込む。
     /// 失敗(壊れた書庫等)はそのエントリを黙って飛ばす(§4.17 の方針)
+    @discardableResult
     private func appendNestedPages(of candidate: (index: Int32, path: String),
-                                   ordinal: Int, into result: inout [PageEntry]) async {
+                                   ordinal: Int,
+                                   into result: inout [PageEntry]) async -> Bool {
         let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
         if isEPUB {
             // EPUBSource は URL 前提なので、暗号化祖先由来の EPUB を平文 temp に
             // 書くと cooViewer-6ax の不変条件を破る。in-memory OCF とリフローの
             // 安定キーは cooViewer-c6s.23 で再設計するため、本 MVP では除外する
             let sensitive = contentIsSensitive || archive.isEncrypted()
-            guard !sensitive else { return }
+            guard !sensitive else { return false }
         }
-        guard let data = nestedChildData(candidate) else { return }
+        guard let data = nestedChildData(candidate) else { return false }
         // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
         // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
         let childKey = persistenceKey.nested(entryPath: candidate.path)
@@ -406,32 +418,38 @@ actor ArchiveSource: BookSource {
         let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
         let child: any BookSource
         if isEPUB {
+            // cooViewer-cj2: リフロー/DRM/破損 EPUB はメモリ上の OCF 解析で
+            // 先に棄却し、採用しない全データを平文 temp へ書き出さない。
+            guard let probe = try? EPUBPublication(
+                data: data,
+                displayURL: URL(fileURLWithPath: candidate.path)),
+                probe.isFixedLayout, !probe.isDRMProtected else { return false }
             guard let fileURL = writeNestedTemp(candidate, data: data),
-                  let epub = try? EPUBSource(url: fileURL) else { return }
+                  let epub = try? EPUBSource(url: fileURL) else { return false }
             // EPUBSource(url:) は FXL 非 DRM のみ成功する。リフロー/DRM/破損は
             // 仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
             child = epub
         } else if isPDF {
             if useMemory {
-                guard let pdf = try? PDFSource(data: data) else { return }
+                guard let pdf = try? PDFSource(data: data) else { return false }
                 child = pdf
             } else {
                 guard let fileURL = writeNestedTemp(candidate, data: data),
-                      let pdf = try? PDFSource(url: fileURL) else { return }
+                      let pdf = try? PDFSource(url: fileURL) else { return false }
                 child = pdf
             }
         } else if useMemory {
             guard let nested = try? ArchiveSource(
                 data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
                 unlocker: unlocker, persistenceKey: childKey, sensitive: true)
-            else { return }
+            else { return false }
             child = nested
         } else {
             guard let fileURL = writeNestedTemp(candidate, data: data),
                   let nested = try? ArchiveSource(
                     url: fileURL, nestingDepth: nestingDepth + 1,
                     unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive)
-            else { return }
+            else { return false }
             child = nested
         }
         // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
@@ -440,10 +458,10 @@ actor ArchiveSource: BookSource {
         if !isEPUB, await child.isEncrypted() {
             let name = (candidate.path as NSString).lastPathComponent
             guard await unlocker.unlock(child, name: name,
-                                        persistenceKey: childKey) else { return }
+                                        persistenceKey: childKey) else { return false }
         }
         guard let childEntries = try? await child.entries(), !childEntries.isEmpty else {
-            return
+            return false
         }
         children.append(child)
         let sourceIndex = children.count - 1
@@ -464,6 +482,7 @@ actor ArchiveSource: BookSource {
                 modificationDate: nil
             ))
         }
+        return true
     }
 
     /// ネスト候補の展開後バイト(zip 爆弾ガード付き、temp には書かない)。

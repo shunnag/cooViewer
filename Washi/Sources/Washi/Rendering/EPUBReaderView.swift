@@ -306,6 +306,7 @@ public final class EPUBReaderView: NSView {
     // MARK: - 本の読み込み
 
     /// Opens a book. Pass a locator to resume from the previous position.
+    /// Host-added overlay subviews keep their z-order across web view rebuilds.
     public func load(publication: EPUBPublication, at locator: EPUBLocator? = nil) {
         // 別の本を開くのでメディアオーバーレイ再生は止める(本に紐づく)
         mediaOverlayController?.stop()
@@ -350,6 +351,9 @@ public final class EPUBReaderView: NSView {
     }
 
     private func rebuildWebView(for publication: EPUBPublication) {
+        // cooViewer-t4e: ホストが追加したオーバーレイを再構築後の webView で
+        // 覆わないよう、旧 webView が占めていた z 位置を保存する。
+        let oldWebViewIndex = webView.flatMap { subviews.firstIndex(of: $0) }
         webView?.removeFromSuperview()
         messageProxy?.owner = nil
         spineNavigationGate = SpineNavigationGate()
@@ -387,7 +391,12 @@ public final class EPUBReaderView: NSView {
         // WKWebView 自身のドロップ処理を外し、コンテナ(自ビュー)の
         // ファイルドロップ委譲を生かす(本は読み取り専用なので失うものはない)
         webView.unregisterDraggedTypes()
-        addSubview(webView)
+        if let oldWebViewIndex, subviews.indices.contains(oldWebViewIndex) {
+            addSubview(webView, positioned: .below,
+                       relativeTo: subviews[oldWebViewIndex])
+        } else {
+            addSubview(webView)
+        }
         // ノンブルは Web ビューより前面に
         for label in pageNumberLabels {
             addSubview(label, positioned: .above, relativeTo: webView)
@@ -1350,15 +1359,20 @@ public final class EPUBReaderView: NSView {
 
     // MARK: - スナップショット
 
-    /// Returns a high-resolution snapshot of the raw web content and its frame
-    /// in the reader view's coordinate system.
+    /// Returns a snapshot of the raw web content and its frame in the reader
+    /// view's coordinate system. The live web view cannot be snapshotted above
+    /// its own size; the result is at backing scale, so `scale` only ever
+    /// reduces the width.
     public func contentSnapshot(scale: CGFloat) async throws
         -> (image: NSImage, frame: CGRect) {
         guard let webView else { throw EPUBError.malformed("本が開かれていない") }
         let configuration = WKSnapshotConfiguration()
         configuration.afterScreenUpdates = true
+        // cooViewer-hnt: snapshotWidth の単位は画素ではなく点。拡大要求は
+        // WebKit にクランプされるため、live view の幅を上限にする。
         configuration.snapshotWidth = NSNumber(
-            value: min(8192, Double(webView.bounds.width * scale)))
+            value: max(1, min(Double(webView.bounds.width),
+                              Double(webView.bounds.width * scale))))
         let image = try await webView.takeSnapshot(configuration: configuration)
         return (image, webView.frame)
     }

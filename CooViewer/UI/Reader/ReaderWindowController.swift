@@ -1240,11 +1240,16 @@ final class ReaderWindowController: NSWindowController {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
+        // cooViewer-a5p: 検索パネルも同じ delegate を使うため、親窓以外の
+        // リサイズ通知で本文再描画や EPUB ルーペ再取得を走らせない。
+        guard (notification.object as? NSWindow) === window else { return }
         refreshDisplayIfCapRaised()
         refreshEPUBLoupeSnapshot()
     }
 
     func windowDidResize(_ notification: Notification) {
+        // cooViewer-a5p: inLiveResize の判定対象と通知元を親窓に揃える。
+        guard (notification.object as? NSWindow) === window else { return }
         // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
         guard window?.inLiveResize == false else { return }
         refreshDisplayIfCapRaised()
