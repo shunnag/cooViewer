@@ -120,6 +120,19 @@ enum ReaderScripts {
             return axisIsX() ? r.scrollWidth : r.scrollHeight;
         }
 
+        // 表示領域(スクロール可能量の分母)。cooViewer-97e:
+        // 末尾の単独ページはスプレッド先頭に揃わずスクロール上限を超えるため、
+        // 目標スクロール量を到達可能な範囲へクランプして決定論にする
+        function clientExtent() {
+            const r = root();
+            return axisIsX() ? r.clientWidth : r.clientHeight;
+        }
+
+        function clampScroll(offset) {
+            const max = Math.max(0, scrollExtent() - clientExtent());
+            return Math.max(0, Math.min(offset, max));
+        }
+
         // スプレッド s(先頭ページ番号)の目標スクロール量。
         // 縦書き見開きはページ 0 の実測開始座標(page0DocStart)基準で、
         // 先のページが小口の逆=右スロットに来るよう合わせる(右綴じの紙の本)。
@@ -241,7 +254,7 @@ enum ReaderScripts {
         }
 
         function scrollToPage(n) {
-            const offset = Math.round(scrollTargetFor(n));
+            const offset = Math.round(clampScroll(scrollTargetFor(n)));
             if (axisIsX()) {
                 window.scrollTo({ left: offset, top: 0, behavior: 'instant' });
             } else {
@@ -255,9 +268,12 @@ enum ReaderScripts {
         }
 
         washi.showPage = function (n) {
-            scrollToPage(spreadStart(n));
-            // クランプ(端の半端スプレッド等)を実スクロールから自己補正
-            currentPage = spreadStart(pageFromScroll());
+            // 要求ページ(スプレッド先頭へ整列済み)を正とする。cooViewer-97e:
+            // 実スクロールからの読み戻し(spreadStart(pageFromScroll()))は、末尾の
+            // 単独ページでブラウザが上限クランプした位置を前スプレッドへ丸め、
+            // 最終ページへ到達できなくしていた
+            currentPage = spreadStart(n);
+            scrollToPage(currentPage);
             report();
             return currentPage;
         };
@@ -810,7 +826,7 @@ enum ReaderScripts {
             scrollGuard = setTimeout(function () {
                 if (!ready) { return; }
                 const off = axisIsX() ? window.scrollX : window.scrollY;
-                const expected = Math.round(scrollTargetFor(currentPage));
+                const expected = Math.round(clampScroll(scrollTargetFor(currentPage)));
                 if (Math.abs(off - expected) > 2) { scrollToPage(currentPage); }
             }, 120);
         }, { passive: true });
