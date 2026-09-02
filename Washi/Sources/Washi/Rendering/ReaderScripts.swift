@@ -274,6 +274,23 @@ enum ReaderScripts {
             return pageCount <= 1 ? 0 : currentPage / (pageCount - 1);
         };
 
+        // viewport 矩形の文書座標から、その位置を含むページを求める。
+        // showFragment と本文 Range の着地で同じ校正式を使う
+        function pageForRect(rect) {
+            if (!axisIsX()) {
+                return Math.floor(Math.max(0, window.scrollY + rect.top) / stride());
+            }
+            if (mode === 'htb') {
+                return Math.floor(Math.max(0, window.scrollX + rect.left) / stride());
+            }
+            // 縦書き見開き: 文書内 x → ページ番号(vrl は左へ進む)
+            const docX = window.scrollX + rect.left;
+            const raw = mode === 'vlr'
+                ? (docX - page0DocStart) / stride()
+                : (page0DocStart - docX) / stride() + 0.999;
+            return Math.max(0, Math.floor(raw));
+        }
+
         washi.showFragment = function (id) {
             let el = null;
             try {
@@ -282,20 +299,197 @@ enum ReaderScripts {
             } catch (e) { el = null; }
             if (!el) { return washi.showPage(0); }
             const rect = el.getBoundingClientRect();
-            let page;
-            if (!axisIsX()) {
-                page = Math.floor(Math.max(0, window.scrollY + rect.top) / stride());
-            } else if (mode === 'htb') {
-                page = Math.floor(Math.max(0, window.scrollX + rect.left) / stride());
-            } else {
-                // 縦書き見開き: 文書内 x → ページ番号(vrl は左へ進む)
-                const docX = window.scrollX + rect.left;
-                const raw = mode === 'vlr'
-                    ? (docX - page0DocStart) / stride()
-                    : (page0DocStart - docX) / stride() + 0.999;
-                page = Math.max(0, Math.floor(raw));
+            return washi.showPage(pageForRect(rect));
+        };
+
+        // WashiCore の appendPlainText / collapsingWhitespace と同じ本文を
+        // 作りながら、正規化後の UTF-16 各単位を元 Text ノードへ対応づける。
+        // キャッシュの無効化は不要: 地図は DOM のみに依存し(レイアウト・
+        // ページ割り・repaginate には依存しない)、DOM は変異させず、spine 項目の
+        // 読み込みで文書ごと差し替わる(= JS コンテキストも新しくなる)
+        let textMapCache = null;
+
+        washi.buildTextMap = function () {
+            if (textMapCache) { return textMapCache; }
+
+            const raw = [];
+            const skipped = new Set(['script', 'style', 'rt', 'rp']);
+            const breaking = new Set([
+                'p', 'div', 'br', 'li', 'tr', 'section', 'article',
+                'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                'figure', 'figcaption', 'table', 'ul', 'ol', 'dl', 'dd',
+                'dt', 'hr', 'pre'
+            ]);
+
+            function appendBreak() {
+                if (raw.length === 0 || raw[raw.length - 1].unit !== '\n') {
+                    raw.push({ unit: '\n', node: null, offset: 0, endOffset: 0 });
+                }
             }
-            return washi.showPage(page);
+
+            function appendText(node) {
+                const value = node.data || '';
+                for (let offset = 0; offset < value.length; offset += 1) {
+                    raw.push({ unit: value.slice(offset, offset + 1), node: node,
+                               offset: offset, endOffset: offset + 1 });
+                }
+            }
+
+            function appendChildren(element) {
+                for (let child = element.firstChild; child; child = child.nextSibling) {
+                    // CDATASection も Text の派生型なのでここで拾う。
+                    // WashiCore(NSXML)は XML 空白(SP/TAB/CR/LF)だけのテキスト
+                    // ノードを DOM から落とす(要素間の整形改行に加え、
+                    // </span> <span> の間の半角スペースも。実測)ため、同じ
+                    // ノードを本文に数えない。U+3000 等は XML 空白でないので残る
+                    if (child instanceof Text) {
+                        if (!/^[\t\n\r ]*$/.test(child.data || '')) {
+                            appendText(child);
+                        }
+                        continue;
+                    }
+                    if (child.nodeType !== Node.ELEMENT_NODE) { continue; }
+                    const name = child.localName || '';
+                    if (skipped.has(name)) { continue; }
+                    if (breaking.has(name)) { appendBreak(); }
+                    appendChildren(child);
+                    if (breaking.has(name)) { appendBreak(); }
+                }
+            }
+
+            const body = document.body || document.documentElement;
+            if (body) { appendChildren(body); }
+
+            // 要素境界から作った改行には Text ノードがない。直前(無ければ
+            // 直後)の Text 境界を与え、正規化本文の全単位を Range 境界へ写す
+            let nextPoint = null;
+            for (let index = raw.length - 1; index >= 0; index -= 1) {
+                const item = raw[index];
+                if (item.node) {
+                    nextPoint = { node: item.node, offset: item.offset };
+                } else if (nextPoint) {
+                    item.node = nextPoint.node;
+                    item.offset = nextPoint.offset;
+                    item.endOffset = nextPoint.offset;
+                }
+            }
+            let previousPoint = null;
+            for (const item of raw) {
+                if (item.node && item.endOffset !== item.offset) {
+                    previousPoint = { node: item.node, offset: item.endOffset };
+                } else if (!item.node && previousPoint) {
+                    item.node = previousPoint.node;
+                    item.offset = previousPoint.offset;
+                    item.endOffset = previousPoint.offset;
+                }
+            }
+
+            // components(separatedBy: .whitespaces) と同じ集合:
+            // Unicode Zs + TAB。改行系はこの段階では畳まない
+            const isWhitespace = unit => /[\p{Zs}\u0009]/u.test(unit);
+            const lines = [{ units: [], separatorBefore: null }];
+            for (const item of raw) {
+                if (item.unit === '\n') {
+                    lines.push({ units: [], separatorBefore: item });
+                } else {
+                    lines[lines.length - 1].units.push(item);
+                }
+            }
+
+            function collapseLine(units) {
+                const result = [];
+                let pendingWhitespace = null;
+                let hasText = false;
+                for (const item of units) {
+                    if (isWhitespace(item.unit)) {
+                        if (hasText && !pendingWhitespace) { pendingWhitespace = item; }
+                        continue;
+                    }
+                    if (pendingWhitespace) {
+                        result.push({ unit: ' ', node: pendingWhitespace.node,
+                                      offset: pendingWhitespace.offset,
+                                      endOffset: pendingWhitespace.endOffset });
+                        pendingWhitespace = null;
+                    }
+                    result.push(item);
+                    hasText = true;
+                }
+                return result;
+            }
+
+            // 空行の連続を 1 本へ丸める
+            const collapsedLines = [];
+            for (const line of lines) {
+                const units = collapseLine(line.units);
+                if (units.length === 0 && collapsedLines.length > 0
+                    && collapsedLines[collapsedLines.length - 1].units.length === 0) {
+                    continue;
+                }
+                collapsedLines.push({ units: units,
+                                      separatorBefore: line.separatorBefore });
+            }
+
+            const normalized = [];
+            for (let index = 0; index < collapsedLines.length; index += 1) {
+                const line = collapsedLines[index];
+                if (index > 0) {
+                    const separator = line.separatorBefore;
+                    if (separator && separator.node) {
+                        normalized.push({ unit: '\n', node: separator.node,
+                                          offset: separator.offset,
+                                          endOffset: separator.endOffset });
+                    }
+                }
+                normalized.push(...line.units);
+            }
+
+            // trimmingCharacters(in: .whitespacesAndNewlines) と同じ集合
+            const isTrim = unit =>
+                /[\p{Zs}\u0009\u000A\u000B\u000C\u000D\u0085\u2028\u2029]/u.test(unit);
+            let lower = 0;
+            let upper = normalized.length;
+            while (lower < upper && isTrim(normalized[lower].unit)) { lower += 1; }
+            while (upper > lower && isTrim(normalized[upper - 1].unit)) { upper -= 1; }
+            const map = normalized.slice(lower, upper);
+            textMapCache = { text: map.map(item => item.unit).join(''), map: map };
+            return textMapCache;
+        };
+
+        washi.locateAndShow = function (utf16Offset, utf16Length) {
+            if (!Number.isInteger(utf16Offset) || !Number.isInteger(utf16Length)
+                || utf16Offset < 0 || utf16Length <= 0) { return null; }
+            const textMap = washi.buildTextMap();
+            const end = utf16Offset + utf16Length;
+            if (end > textMap.map.length) { return null; }
+            const first = textMap.map[utf16Offset];
+            const last = textMap.map[end - 1];
+            if (!first || !last || !(first.node instanceof Text)
+                || !(last.node instanceof Text)) { return null; }
+            try {
+                const range = document.createRange();
+                range.setStart(first.node, first.offset);
+                range.setEnd(last.node, last.endOffset);
+                const beforeRects = range.getClientRects();
+                const before = beforeRects.length > 0
+                    ? beforeRects[0] : range.getBoundingClientRect();
+                const page = washi.showPage(pageForRect(before));
+                const rects = Array.from(range.getClientRects()).map(rect => ({
+                    x: rect.x, y: rect.y, w: rect.width, h: rect.height
+                }));
+                // text は地図上の正規化本文(=検索した文字列)。range.toString() は
+                // 地図が飛ばした空白ノードや rt を含む DOM 生テキストなので別枠で返し、
+                // 端点の UTF-16 単位は Range が正しい DOM 位置を指す証明に使う
+                const mapped = textMap.map.slice(utf16Offset, end)
+                    .map(item => item.unit).join('');
+                return {
+                    page: page, text: mapped, domText: range.toString(),
+                    firstUnit: first.node.data.charCodeAt(first.offset),
+                    lastUnit: last.node.data.charCodeAt(last.endOffset - 1),
+                    rects: rects
+                };
+            } catch (e) {
+                return null;
+            }
         };
 
         /// メディアオーバーレイ再生: 直前の active を外して id 要素へ付け直し、

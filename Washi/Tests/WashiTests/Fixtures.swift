@@ -342,3 +342,118 @@ enum EPUBFixtures {
         ]
     }
 }
+
+/// extractText と WebKit DOM の対応を検証する spine 項目。
+struct EPUBTextMappingFixture {
+    let name: String
+    let body: String
+    let searchQuery: String
+    var css = "html { writing-mode: horizontal-tb; }"
+    var usesXHTMLDoctype = false
+}
+
+extension EPUBFixtures {
+    /// appendPlainText / collapsingWhitespace の境界条件を個別に識別できる
+    /// 忠実性フィクスチャ。各 query は少なくとも 1 個の可視 DOM Range を持つ
+    static let textMappingFixtures: [EPUBTextMappingFixture] = [
+        EPUBTextMappingFixture(
+            name: "U+3000 字下げ",
+            body: "<p>　字下げ検索　本文</p>",
+            searchQuery: "字下げ検索"),
+        EPUBTextMappingFixture(
+            name: "整形空白ノード",
+            body: "<p>整形前検索</p>\n<p>整形後検索</p>",
+            searchQuery: "検索"),
+        EPUBTextMappingFixture(
+            // NSXML は要素間の半角スペースだけのノードを落とす → 両側とも "xy"
+            name: "インライン間空白",
+            body: "<p><span>xy検索</span> <span>語</span></p>",
+            searchQuery: "xy検索語"),
+        EPUBTextMappingFixture(
+            // U+3000 は XML 空白ではないためノードが残り、両側とも空行 1 本になる
+            name: "全角空白ノード",
+            body: "<p>全角前</p>\u{3000}<p>全角後検索</p>",
+            searchQuery: "全角後検索"),
+        EPUBTextMappingFixture(
+            name: "br",
+            body: "<p>改行前<br/>改行後検索</p>",
+            searchQuery: "改行後検索"),
+        EPUBTextMappingFixture(
+            name: "ruby",
+            body: "<p><ruby>葛<rp>（</rp><rt>かつ</rt><rp>）</rp></ruby>ルビ検索</p>",
+            searchQuery: "ルビ検索"),
+        EPUBTextMappingFixture(
+            name: "入れ子インライン",
+            body: "<p><span>入れ子<em>強調<a href=\"#nested\">リンク検索</a></em></span></p>",
+            searchQuery: "強調リンク検索"),
+        EPUBTextMappingFixture(
+            name: "空行連続",
+            body: "<p>空行前</p>\n\n\n<p>空行後検索</p>",
+            searchQuery: "空行後検索"),
+        EPUBTextMappingFixture(
+            name: "IVS",
+            body: "<p>異体字葛󠄀検索と通常字葛</p>",
+            searchQuery: "葛󠄀検索"),
+        EPUBTextMappingFixture(
+            name: "CDATA",
+            body: "<p><![CDATA[CDATA検索<&>]]></p>",
+            searchQuery: "CDATA検索"),
+        EPUBTextMappingFixture(
+            name: "名前付き実体",
+            body: "<p>実体&nbsp;検索&hellip;終端</p>",
+            searchQuery: "検索…終端",
+            usesXHTMLDoctype: true),
+        EPUBTextMappingFixture(
+            name: "pre",
+            body: "<pre>  pre検索\n    二行目  </pre>",
+            searchQuery: "pre検索"),
+        EPUBTextMappingFixture(
+            name: "table/td",
+            body: "<table><tr><td>表セル</td><td>検索セル</td></tr></table>",
+            searchQuery: "表セル検索セル"),
+        EPUBTextMappingFixture(
+            name: "縦書き",
+            body: "<p>\(String(repeating: "縦書き本文。", count: 350))縦書き検索\(String(repeating: "後続本文。", count: 350))</p>",
+            searchQuery: "縦書き検索",
+            css: "html { writing-mode: vertical-rl; }"),
+    ]
+
+    static func textMappingEntries() -> [(name: String, data: Data)] {
+        let manifest = textMappingFixtures.indices.map { index in
+            "<item id=\"text\(index)\" href=\"text/f\(index).xhtml\" media-type=\"application/xhtml+xml\"/>"
+        }.joined()
+        let spine = textMappingFixtures.indices.map { index in
+            "<itemref idref=\"text\(index)\"/>"
+        }.joined()
+        let opf = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:identifier id="uid">urn:uuid:text-map-fixtures</dc:identifier>
+                <dc:title>Text map fixtures</dc:title>
+                <dc:language>ja</dc:language>
+                <meta property="dcterms:modified">2026-09-02T00:00:00Z</meta>
+              </metadata>
+              <manifest>\(manifest)</manifest>
+              <spine>\(spine)</spine>
+            </package>
+            """
+        var entries: [(name: String, data: Data)] = [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(containerXML.utf8)),
+            ("OEBPS/package.opf", Data(opf.utf8)),
+        ]
+        for (index, fixture) in textMappingFixtures.enumerated() {
+            let doctype = fixture.usesXHTMLDoctype
+                ? "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">"
+                : ""
+            let xhtml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + doctype
+                + "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"ja\">"
+                + "<head><title>\(fixture.name)</title><style>\(fixture.css)</style></head>"
+                + "<body>\(fixture.body)</body></html>"
+            entries.append(("OEBPS/text/f\(index).xhtml", Data(xhtml.utf8)))
+        }
+        return entries
+    }
+}

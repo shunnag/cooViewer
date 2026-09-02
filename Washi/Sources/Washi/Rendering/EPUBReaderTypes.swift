@@ -3,6 +3,17 @@ import Foundation
 // EPUBLocator は解析層(WashiCore)へ移動した(EPUBPublication.resolve が使い、
 // 表示層に依存しない値型のため)。@_exported 再輸出で import Washi からも見える
 
+/// The exact landing position of a text range in a reflowable spine item.
+public struct EPUBTextRangeLanding: Sendable {
+    /// Zero-based page containing the beginning of the range.
+    public let pageInItem: Int
+    /// The normalized extracted-text slice the range represents (what the
+    /// caller asked for), not the raw DOM text of the range.
+    public let text: String
+    /// Range fragments converted into the reader view's coordinate system.
+    public let rects: [CGRect]
+}
+
 /// Content insets (a custom type because NSEdgeInsets is neither Equatable
 /// nor Sendable).
 public struct EPUBReaderInsets: Sendable, Equatable {
