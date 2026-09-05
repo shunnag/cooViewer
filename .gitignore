@@ -92,3 +92,7 @@ inbox/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# beads の JSONL エクスポートは追跡しない(ローカルの Dolt が正)
+.beads/issues.jsonl
+.beads/interactions.jsonl
