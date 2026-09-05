@@ -77,7 +77,7 @@ extension EPUBReaderView {
         guard let publication,
               publication.readingOrder.indices.contains(index) else { return }
         goToContainerPath(publication.readingOrder[index].containerPath,
-                          fragment: nil)
+                          fragment: nil, recordsHistory: false)
     }
 
     /// 再生状態の変化を delegate へ通知

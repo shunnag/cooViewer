@@ -29,8 +29,15 @@ final class ContainerPathTests: XCTestCase {
             "OEBPS/nav.xhtml")
     }
 
-    func testResolveRejectsEscapeAndAbsoluteURL() {
-        XCTAssertNil(ContainerPath.resolve(base: "a.opf", href: "../outside.xhtml"))
+    /// cooViewer-oxr.18: root より上の .. は WHATWG URL と同じく
+    /// container root へ clamp し、外部 URL だけを拒否する。
+    func testResolveClampsAboveRootAndRejectsAbsoluteURL() {
+        XCTAssertEqual(
+            ContainerPath.resolve(base: "a.opf", href: "../outside.xhtml"),
+            "outside.xhtml")
+        XCTAssertEqual(
+            ContainerPath.resolve(base: "OEBPS/a.opf", href: "../../outside.xhtml"),
+            "outside.xhtml")
         XCTAssertNil(ContainerPath.resolve(base: "OEBPS/a.opf",
                                            href: "http://example.com/x"))
     }

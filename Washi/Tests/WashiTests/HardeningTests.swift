@@ -1,9 +1,27 @@
+import Darwin
 import XCTest
 @testable import Washi
 @testable import WashiCore
 
 /// 不正入力(攻撃的 EPUB)への耐性の検証
 final class HardeningTests: XCTestCase {
+    private func residentByteCount() -> UInt64? {
+        var info = mach_task_basic_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info_data_t>.size
+                / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(
+                to: integer_t.self, capacity: Int(count)
+            ) {
+                task_info(
+                    mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO),
+                    $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? info.resident_size : nil
+    }
+
     /// 偽装 zip64 の巨大 entryCount はクラッシュせずエラーになる
     func testForgedZip64EntryCountRejected() throws {
         var zip = ZipBuilder.build([("a.txt", Data("x".utf8))], forceZip64: true)
@@ -39,16 +57,45 @@ final class HardeningTests: XCTestCase {
     func testZipBombDeclarationRejected() throws {
         var zip = ZipBuilder.build([("b.bin", Data(repeating: 0, count: 100))],
                                    method: 8)
-        // 中央ディレクトリの uncompressed size(4 バイト)を巨大化
+        // 中央ディレクトリの uncompressed size(4 バイト)を
+        // 1,000,000(0x000F4240)に偽装。512 MB 上限の手前で、小さな
+        // deflate ペイロードに対する 1032:1 比率検査へ確実に到達させる。
         // CD シグネチャを探して +24 を書き換える
         let cdSig: [UInt8] = [0x50, 0x4B, 0x01, 0x02]
         guard let start = zip.firstRange(of: Data(cdSig))?.lowerBound else {
             return XCTFail("CD が見つからない")
         }
-        for i in 0..<4 { zip[start + 24 + i] = 0xFF }
+        let declaredSize: UInt32 = 1_000_000
+        for i in 0..<4 {
+            zip[start + 24 + i] = UInt8((declaredSize >> (i * 8)) & 0xFF)
+        }
         // 併せてローカル側は触らない(CD の値が使われることの確認になる)
         let archive = try ZipArchive(data: zip)
-        XCTAssertThrowsError(try archive.data(forEntry: "b.bin"))
+        XCTAssertThrowsError(try archive.data(forEntry: "b.bin")) { error in
+            guard case ZipError.corruptEntry("b.bin") = error else {
+                return XCTFail("比率検査の corruptEntry ではない: \(error)")
+            }
+        }
+    }
+
+    /// 展開後サイズの絶対上限(512 MB)を超える宣言は展開前に弾く
+    func testZipBombDeclarationOverSizeLimitRejected() throws {
+        var zip = ZipBuilder.build([("b.bin", Data(repeating: 0, count: 100))],
+                                   method: 8)
+        let cdSig: [UInt8] = [0x50, 0x4B, 0x01, 0x02]
+        guard let start = zip.firstRange(of: Data(cdSig))?.lowerBound else {
+            return XCTFail("CD が見つからない")
+        }
+        for i in 0..<4 { zip[start + 24 + i] = 0xFF }
+
+        let archive = try ZipArchive(data: zip)
+        XCTAssertThrowsError(try archive.data(forEntry: "b.bin")) { error in
+            guard case ZipError.entryTooLarge(
+                "b.bin", declaredSize: UInt64(UInt32.max)) = error
+            else {
+                return XCTFail("サイズ上限の entryTooLarge ではない: \(error)")
+            }
+        }
     }
 
     /// UTF-8 の文書に名前付き HTML 実体(&nbsp; 等)があっても従来どおり
@@ -81,6 +128,121 @@ final class HardeningTests: XCTestCase {
         let text = document.rootElement()?.stringValue ?? ""
         XCTAssertTrue(text.contains("\u{00A0}"), "NBSP が保持される")
         XCTAssertTrue(text.contains("\u{2026}"), "hellip(…)が保持される")
+    }
+
+    /// cooViewer-oxr.10/13: WHATWG のセミコロン付き実体表から XML 定義済み
+    /// 5 名だけを除いた全エントリが生成済みであることを検証する。
+    func testWHATWGNamedEntityTableIsComplete() {
+        XCTAssertEqual(HTMLEntities.table.count, 2_120)
+        for name in ["amp", "lt", "gt", "quot", "apos"] {
+            XCTAssertNil(HTMLEntities.table[name])
+        }
+        XCTAssertEqual(HTMLEntities.table["yen"], "&#165;")
+        XCTAssertEqual(HTMLEntities.table["NotEqualTilde"], "&#8770;&#824;")
+    }
+
+    /// cooViewer-oxr.10/13: XHTML 1.1 の外部 DTD が解決されなくても、従来の
+    /// 頻出 15 名以外を含む WHATWG 名前実体を数値参照へ救済する。
+    func testXHTML11WHATWGNamedEntitiesArePreserved() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" \
+        "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+        <html xmlns="http://www.w3.org/1999/xhtml"><body>
+        <p>&yen;&ensp;&emsp;&thinsp;&rarr;</p>
+        </body></html>
+        """
+        let document = try WashiXML.document(from: Data(xml.utf8))
+        let text = try XCTUnwrap(document.rootElement()?.stringValue)
+        XCTAssertTrue(text.contains("¥"))
+        XCTAssertTrue(text.contains("\u{2002}"))
+        XCTAssertTrue(text.contains("\u{2003}"))
+        XCTAssertTrue(text.contains("\u{2009}"))
+        XCTAssertTrue(text.contains("→"))
+    }
+
+    /// cooViewer-oxr.10/13: 表にない実体名は別の文字へ置換せず、従来どおり
+    /// XML の未定義実体エラーとして扱う。
+    func testUnknownNamedEntityRemainsParseError() {
+        XCTAssertThrowsError(try WashiXML.document(from: Data("<r>&foo;</r>".utf8)))
+    }
+
+    /// cooViewer-oxr.12/90: XML 宣言がなくても meta charset を使い、CP932 の
+    /// 拡張文字と名前実体を同時に失わず復号する。
+    func testMetaShiftJISWithoutXMLDeclarationIsDecodedAsCP932() throws {
+        let encoding = try XCTUnwrap(
+            XMLCharsetDetector.encoding(forCharsetName: "Shift_JIS"))
+        let chapter = """
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head><meta charset="Shift_JIS"/></head>
+        <body><p>①髙㈱&nbsp;&hellip;</p></body></html>
+        """
+        let publication = try publicationWithChapter(
+            try XCTUnwrap(chapter.data(using: encoding)), name: "meta-cp932")
+        let text = try publication.extractText(forSpineIndex: 0)
+        XCTAssertTrue(text.contains("①髙㈱"))
+        XCTAssertTrue(text.contains(" "))
+        XCTAssertTrue(text.contains("…"))
+    }
+
+    /// cooViewer-oxr.12: UTF-8 として妥当な本文では古い meta 宣言より
+    /// 実バイトを優先し、名前実体の救済時にも文字化けさせない。
+    func testUTF8TextWinsOverStaleMetaCharsetDuringExtraction() throws {
+        let chapter = Data("""
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head><meta charset="Shift_JIS"/></head>
+        <body><p>日本語&nbsp;本文</p></body></html>
+        """.utf8)
+        let publication = try publicationWithChapter(chapter, name: "stale-meta")
+        XCTAssertEqual(try publication.extractText(forSpineIndex: 0), "日本語 本文")
+    }
+
+    /// cooViewer-oxr.90: Shift_JIS の実在別名はすべて CP932、EUC-JP は
+    /// japaneseEUC へ写される。
+    func testJapaneseCharsetAliasesUseCP932AndEUCJP() throws {
+        let cp932 = try XCTUnwrap(
+            XMLCharsetDetector.encoding(forCharsetName: "CP932"))
+        let aliases = [
+            "Shift_JIS", "shift_jis", "SJIS", "MS_Kanji", "csShiftJIS",
+            "Windows-31J", "MS932", "CP932",
+        ]
+        for alias in aliases {
+            let declaration = Data(
+                "<?xml version=\"1.0\" encoding=\"\(alias)\"?><r/>".utf8)
+            XCTAssertEqual(
+                XMLCharsetDetector.declaredEncoding(in: declaration)?.rawValue,
+                cp932.rawValue,
+                alias)
+        }
+        XCTAssertEqual(
+            XMLCharsetDetector.encoding(forCharsetName: "EUC-JP")?.rawValue,
+            String.Encoding.japaneseEUC.rawValue)
+    }
+
+    private func publicationWithChapter(_ chapter: Data,
+                                        name: String) throws -> EPUBPublication {
+        let package = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">urn:uuid:\(name)</dc:identifier>
+            <dc:title>Charset fixture</dc:title><dc:language>ja</dc:language>
+          </metadata>
+          <manifest><item id="chapter" href="chapter.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="chapter"/></spine>
+        </package>
+        """
+        let entries: [(name: String, data: Data)] = [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(EPUBFixtures.containerXML.utf8)),
+            ("OEBPS/package.opf", Data(package.utf8)),
+            ("OEBPS/chapter.xhtml", chapter),
+        ]
+        return try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/\(name).epub"))
     }
 
     /// Shift_JIS 宣言の XML に名前付き HTML 実体があっても、実際の符号化で
@@ -169,6 +331,64 @@ final class HardeningTests: XCTestCase {
             XCTAssertThrowsError(try WashiXML.document(from: data),
                                  "\(encoding) 実体爆弾が通った")
         }
+    }
+
+    /// cooViewer-oxr.85: UTF-32 の BOM で ASCII の DTD 検査を迂回する
+    /// 実体爆弾は、libxml2 に渡して展開する前に一定時間・小メモリで拒否する。
+    func testUTF32EntityBombRejectedBeforeParsing() {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-32"?>
+        <!DOCTYPE r [
+          <!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
+          <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+          <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+          <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
+          <!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;">
+        ]><r>&e;</r>
+        """
+        let residentBefore = residentByteCount()
+        let started = ContinuousClock.now
+        for (encoding, bom) in [
+            (String.Encoding.utf32LittleEndian, Data([0xFF, 0xFE, 0x00, 0x00])),
+            (.utf32BigEndian, Data([0x00, 0x00, 0xFE, 0xFF])),
+        ] {
+            var data = bom
+            data.append(xml.data(using: encoding)!)
+            XCTAssertThrowsError(try WashiXML.document(from: data)) { error in
+                guard case EPUBError.malformed(let detail) = error else {
+                    return XCTFail("UTF-32 専用の拒否ではない: \(error)")
+                }
+                XCTAssertEqual(detail, "UTF-32 XML is not supported")
+            }
+        }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+
+        // BOM を持たない ASCII バイトでも、宣言が UTF-32 なら同じく拒否する。
+        let declared = Data(
+            "<?xml version=\"1.0\" encoding=\"UTF-32\"?><r/>".utf8)
+        XCTAssertThrowsError(try WashiXML.document(from: declared))
+        if let residentBefore, let residentAfter = residentByteCount() {
+            let growth = residentAfter > residentBefore
+                ? residentAfter - residentBefore : 0
+            XCTAssertLessThan(
+                growth, 128 * 1024 * 1024,
+                "UTF-32 の拒否処理が RSS を過大に増やした: \(growth) bytes")
+        }
+    }
+
+    /// cooViewer-oxr.86: 未終端 DOCTYPE に大量のコメント/ENTITY 開始トークンを
+    /// 連ねても、正規表現へ全入力を渡さず 64 KiB の単一走査で打ち切る。
+    func testUnterminatedDoctypeScanIsBounded() {
+        let xml = "<!DOCTYPE r ["
+            + String(repeating: "<!--<!ENTITY", count: 32_000)
+        let started = ContinuousClock.now
+        XCTAssertThrowsError(try WashiXML.document(from: Data(xml.utf8))) { error in
+            guard case EPUBError.malformed(let detail) = error else {
+                return XCTFail("malformed ではない: \(error)")
+            }
+            XCTAssertTrue(detail.contains("DOCTYPE"), detail)
+        }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
     }
 
     /// DTD 内部サブセットのコメントに入れた `<!ENTITY` は宣言ではないので、
@@ -317,14 +537,15 @@ final class HardeningTests: XCTestCase {
             at: "../" + secret.lastPathComponent))
     }
 
-    /// normalize は脱出パスをそのまま返さない(空 = 存在しないパス扱い)
+    /// cooViewer-oxr.18: URI 解決の .. は root で clamp する。
+    /// FolderContainerReader 自身の未正規化パス拒否は別に維持する。
     func testNormalizeCollapsesEscapes() {
-        XCTAssertEqual(ContainerPath.normalize("../../etc/passwd"), "")
-        XCTAssertEqual(ContainerPath.normalize("a/../../b"), "")
+        XCTAssertEqual(ContainerPath.normalize("../../etc/passwd"), "etc/passwd")
+        XCTAssertEqual(ContainerPath.normalize("a/../../b"), "b")
         XCTAssertEqual(ContainerPath.normalize("a/./b"), "a/b")
         // sanitize はデコードしない(% を名前に含むファイルを壊さない)
         XCTAssertEqual(ContainerPath.sanitize("OEBPS/100%20.png"), "OEBPS/100%20.png")
-        XCTAssertEqual(ContainerPath.sanitize("../x"), "")
+        XCTAssertEqual(ContainerPath.sanitize("../x"), "x")
     }
 
     /// 同一文書内リンク(#id)のフラグメント抽出
@@ -366,14 +587,24 @@ final class HardeningTests: XCTestCase {
         XCTAssertEqual(package.coverImageItem?.id, "c")
     }
 
-    /// defaultFontFamily の改行/制御文字は CSS 文字列トークンを終端させ後続を
+    /// cooViewer-oxr.77: defaultFontFamily の改行/制御文字は CSS 文字列トークンを終端させ後続を
     /// 新規規則として注入できるため、除去されること(値は UserDefaults 由来だが
     /// コメントの「注入されないように」を真にする)
-    func testDefaultFontFamilyStripsNewlinesToPreventCSSInjection() {
+    func testDefaultFontFamilyStripsNewlinesToPreventCSSInjection() throws {
+        func defaultFontCSS(for settings: EPUBReaderSettings) throws -> String {
+            let metrics = EPUBScreenMetrics(
+                viewportSize: CGSize(width: 400, height: 400), settings: settings)
+            let data = try XCTUnwrap(
+                metrics.censusOptionsJSON.data(using: .utf8))
+            let options = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return try XCTUnwrap(options["defaultFontCSS"] as? String)
+        }
+
         var settings = EPUBReaderSettings()
         settings.fontScale = 1.0
         settings.defaultFontFamily = "Foo\n} body{display:none}"
-        let css = settings.composedUserCSS(isDark: false)
+        let css = try defaultFontCSS(for: settings)
         // 改行を除去すると内容は 1 行の font-family 文字列トークン内に閉じ込められ、
         // 規則注入は成立しない(残る "}" 等は文字列内では不活性)。危険なのは生の
         // 改行が文字列トークンを終端させることなので、それが消えていることを検証する
@@ -381,9 +612,11 @@ final class HardeningTests: XCTestCase {
                        "改行で文字列トークンが終端し規則が注入されないこと")
         XCTAssertTrue(css.contains("font-family: \"Foo} body{display:none}\""),
                       "内容は 1 行の引用文字列内に収まる(改行除去済み)")
+        XCTAssertFalse(settings.composedUserCSS(isDark: false).contains("font-family"),
+                       "既定フォントは書籍 CSS より後ろへ重複注入しない")
         // U+2028/2029 も除去される
         settings.defaultFontFamily = "Bar\u{2028}x"
-        let css2 = settings.composedUserCSS(isDark: false)
+        let css2 = try defaultFontCSS(for: settings)
         XCTAssertFalse(css2.unicodeScalars.contains("\u{2028}"))
     }
 }

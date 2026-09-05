@@ -25,15 +25,60 @@ final class EPUBPageRasterizerTests: XCTestCase {
                                        viewport: CGSize(width: 600, height: 800))
     }
 
+    /// cooViewer-oxr.50: device-* viewport は従来の 1200x1600 既定値でなく、
+    /// 呼び出し元が要求した描画先の縦横比へ従う。
+    func testDeviceSizedViewportUsesRequestedRenderSize() async throws {
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(Self.deviceSizedFixedLayoutEntries(), method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/washi-rasterizer-device.epub"))
+        let info = try publication.fixedLayoutInfo(forSpineIndex: 0)
+        XCTAssertTrue(info.viewportIsDeviceSized)
+        XCTAssertNil(info.viewportSize)
+        try await assertRasterizedPage(
+            publication: publication, viewport: CGSize(width: 900, height: 450),
+            deviceViewportSize: CGSize(width: 900, height: 450))
+    }
+
+    /// cooViewer-oxr.53: ナビゲーション開始直後の invalidate は、30 秒の
+    /// NavigationWaiter タイムアウトを待たずレンダー要求を終了させる。
+    func testInvalidateDuringRequestReturnsWithinOneSecond() async throws {
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(Self.complexFixedLayoutEntries(), method: 8),
+            displayURL: URL(
+                fileURLWithPath: "/tmp/washi-rasterizer-invalidate.epub"))
+        let rasterizer = EPUBPageRasterizer(publication: publication)
+        let task = Task { @MainActor in
+            try? await rasterizer.renderPage(
+                atSpineIndex: 0, maxPixelSize: 300)
+        }
+        try? await Task.sleep(for: .milliseconds(5))
+        let invalidatedAt = ContinuousClock.now
+
+        rasterizer.invalidate()
+        let image = await task.value
+
+        XCTAssertNil(image)
+        XCTAssertLessThan(ContinuousClock.now - invalidatedAt, .seconds(1))
+    }
+
     private func assertRasterizedPage(publication: EPUBPublication,
-                                      viewport: CGSize) async throws {
+                                      viewport: CGSize,
+                                      deviceViewportSize: CGSize? = nil) async throws {
         let rasterizer = EPUBPageRasterizer(publication: publication)
         defer { rasterizer.invalidate() }
         let race = RenderRace()
         let renderTask = Task(priority: .userInitiated) { @MainActor in
             do {
-                let image = try await rasterizer.renderPage(
-                    atSpineIndex: 0, maxPixelSize: 300)
+                let image: CGImage
+                if let deviceViewportSize {
+                    image = try await rasterizer.renderPage(
+                        atSpineIndex: 0,
+                        deviceViewportSize: deviceViewportSize,
+                        maxPixelSize: 300)
+                } else {
+                    image = try await rasterizer.renderPage(
+                        atSpineIndex: 0, maxPixelSize: 300)
+                }
                 race.finish(with: .image(image))
             } catch {
                 race.finish(with: .error(error))
@@ -127,6 +172,39 @@ final class EPUBPageRasterizerTests: XCTestCase {
                 </svg>
               </body>
             </html>
+            """
+        return [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(EPUBFixtures.containerXML.utf8)),
+            ("OEBPS/package.opf", Data(opf.utf8)),
+            ("OEBPS/page.xhtml", Data(xhtml.utf8)),
+        ]
+    }
+
+    private static func deviceSizedFixedLayoutEntries()
+        -> [(name: String, data: Data)] {
+        let opf = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                     unique-identifier="uid">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:identifier id="uid">urn:uuid:rasterizer-device</dc:identifier>
+                <dc:title>Device viewport</dc:title><dc:language>en</dc:language>
+                <meta property="rendition:layout">pre-paginated</meta>
+              </metadata>
+              <manifest><item id="page" href="page.xhtml"
+                media-type="application/xhtml+xml"/></manifest>
+              <spine><itemref idref="page"/></spine>
+            </package>
+            """
+        let xhtml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml"><head>
+              <meta name="viewport"
+                    content="width=device-width,height=device-height,initial-scale=1"/>
+              <style>html,body{margin:0;width:100%;height:100%;background:#fff}</style>
+            </head><body><div style="width:100%;height:100%;background:#2878d0"></div>
+            </body></html>
             """
         return [
             ("mimetype", Data("application/epub+zip".utf8)),

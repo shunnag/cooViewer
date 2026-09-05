@@ -15,6 +15,7 @@ import WebKit
 @MainActor
 public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
     public static let scheme = "washi-epub"
+    private static let imageWrapperQueryName = "washi-wrap"
 
     let publication: EPUBPublication
     /// この Web ビューインスタンスのホスト名(本ごとに一意 = オリジン分離)
@@ -47,6 +48,23 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         return components.url
     }
 
+    /// URL for loading a reading-order entry in WebKit. Raster image spine
+    /// items are represented by a generated XHTML document so the reflowable
+    /// reader can apply its normal single-image-page layout.
+    func url(forReadingOrderItem entry: ReadingOrderItem) -> URL? {
+        guard var components = url(forContainerPath: entry.resolvedContainerPath)
+            .flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) })
+        else { return nil }
+        guard Self.isImageMediaType(entry.resolvedItem.mediaType) else {
+            return components.url
+        }
+        // cooViewer-oxr.15: 生画像を main resource として読む代わりに、
+        // ReaderScripts の既存 image-page CSS 経路へ載せる予約 URL を発行する。
+        components.queryItems = [URLQueryItem(
+            name: Self.imageWrapperQueryName, value: "1")]
+        return components.url
+    }
+
     /// URL → container path (nil if it does not belong to this book).
     public func containerPath(for url: URL) -> String? {
         guard url.scheme?.lowercased() == Self.scheme,
@@ -67,6 +85,21 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range")
         let publication = self.publication
         liveTasks[id] = Task { [weak self] in
+            if Self.isImageWrapperURL(url),
+               let entry = publication.readingOrder.first(where: {
+                   $0.resolvedContainerPath == path
+                       && Self.isImageMediaType($0.resolvedItem.mediaType)
+               }),
+               let resourceURL = self?.url(forContainerPath: path),
+               let wrapper = Self.imageWrapperData(
+                   imageURL: resourceURL, title: entry.resolvedItem.id)
+            {
+                guard let self, self.liveTasks[id] != nil else { return }
+                self.liveTasks[id] = nil
+                self.reply(to: urlSchemeTask, url: url, data: wrapper,
+                           mediaType: EPUBMediaType.xhtml, rangeHeader: nil)
+                return
+            }
             // 直近 Range リソースの命中(メディアのシーク連打)は再展開せず即応答
             if let self, let cached = self.cachedRangeResource, cached.path == path {
                 guard self.liveTasks[id] != nil else { return }  // stop 済み
@@ -104,87 +137,59 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     static func contentType(for mediaType: String, data: Data) -> String {
-        guard EPUBMediaType.isTextual(mediaType),
-              let charset = declaredCharset(in: data, mediaType: mediaType)
-        else { return mediaType }
-        return "\(mediaType); charset=\(charset)"
-    }
-
-    /// 文書先頭の ASCII 互換な宣言部分だけを読み、本文そのものを先に
-    /// 誤った文字コードで復号しないようにする
-    private static func declaredCharset(in data: Data, mediaType: String) -> String? {
-        let prefix = data.prefix(8192)
-        guard let source = String(data: prefix, encoding: .isoLatin1) else {
-            return nil
-        }
+        guard EPUBMediaType.isTextual(mediaType) else { return mediaType }
         let type = mediaType.split(separator: ";", maxSplits: 1)[0]
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let isXML = type == "application/xml" || type.hasSuffix("+xml")
-        if isXML,
-           let charset = firstCapture(
-            #"(?i)<\?xml\s+[^?]*?\bencoding\s*=\s*[\"']\s*([A-Za-z0-9._:-]+)\s*[\"']"#,
-            in: source) {
-            return charset
+        if isXML, let charset = XMLCharsetDetector.declaredCharsetName(
+            in: data, includesHTMLMeta: false)
+        {
+            return "\(mediaType); charset=\(charset)"
         }
 
-        guard type == "text/html" || type == EPUBMediaType.xhtml else {
-            return nil
+        guard type == "text/html" || type == EPUBMediaType.xhtml,
+              let charset = XMLCharsetDetector.declaredCharsetName(in: data)
+        else { return mediaType }
+        // cooViewer-oxr.12: UTF-8 として正しい本文では古い meta 宣言を採用せず、
+        // WebKit が誤った Shift_JIS 等で再解釈しないよう明示的に UTF-8 を返す。
+        if String(data: data, encoding: .utf8) != nil {
+            return "\(mediaType); charset=utf-8"
         }
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        guard let expression = try? NSRegularExpression(
-            pattern: #"(?is)<meta\b[^>]*>"#) else { return nil }
-        for match in expression.matches(in: source, range: range) {
-            guard let tagRange = Range(match.range, in: source) else { continue }
-            let tag = String(source[tagRange])
-            if let charset = attribute("charset", in: tag),
-               isValidCharsetName(charset) {
-                return charset
-            }
-            guard attribute("http-equiv", in: tag)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .caseInsensitiveCompare("Content-Type") == .orderedSame,
-                  let content = attribute("content", in: tag),
-                  let charset = firstCapture(
-                    #"(?i)\bcharset\s*=\s*[\"']?\s*([A-Za-z0-9._:-]+)"#,
-                    in: content)
-            else { continue }
-            return charset
-        }
-        return nil
+        return "\(mediaType); charset=\(charset)"
     }
 
-    private static func firstCapture(_ pattern: String, in source: String) -> String? {
-        guard let expression = try? NSRegularExpression(pattern: pattern),
-              let match = expression.firstMatch(
-                in: source,
-                range: NSRange(source.startIndex..<source.endIndex, in: source)),
-              match.numberOfRanges > 1,
-              let range = Range(match.range(at: 1), in: source)
-        else { return nil }
-        return String(source[range])
+    static func isImageWrapperURL(_ url: URL) -> Bool {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .contains { $0.name == imageWrapperQueryName && $0.value == "1" }
+            ?? false
     }
 
-    private static func attribute(_ name: String, in tag: String) -> String? {
-        let escaped = NSRegularExpression.escapedPattern(for: name)
-        let pattern = #"(?is)(?:^|\s)"# + escaped
-            + #"\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+))"#
-        guard let expression = try? NSRegularExpression(pattern: pattern),
-              let match = expression.firstMatch(
-                in: tag,
-                range: NSRange(tag.startIndex..<tag.endIndex, in: tag))
-        else { return nil }
-        for index in 1..<match.numberOfRanges
-        where match.range(at: index).location != NSNotFound {
-            guard let range = Range(match.range(at: index), in: tag) else { continue }
-            return String(tag[range])
+    private static func isImageMediaType(_ value: String) -> Bool {
+        value.split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().hasPrefix("image/") == true
+    }
+
+    static func imageWrapperData(imageURL: URL, title: String) -> Data? {
+        func escaped(_ source: String) -> String {
+            source
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "\"", with: "&quot;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
         }
-        return nil
-    }
-
-    private static func isValidCharsetName(_ name: String) -> Bool {
-        name.range(of: #"^[A-Za-z0-9._:-]+$"#,
-                   options: .regularExpression) != nil
+        // cooViewer-oxr.15: body を画像 1 枚だけに保ち、既存の image-page
+        // 判定と中央寄せ CSS をそのまま再利用する。
+        let document = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE html>
+            <html xmlns="http://www.w3.org/1999/xhtml">
+              <head><title>\(escaped(title))</title></head>
+              <body><img src="\(escaped(imageURL.absoluteString))" alt=""/></body>
+            </html>
+            """
+        return document.data(using: .utf8)
     }
 
     private func reply(to task: any WKURLSchemeTask, url: URL,
@@ -247,7 +252,15 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
             return start..<total
         }
         guard let start = Int(parts[0]), start >= 0, start < total else { return nil }
-        let end = parts[1].isEmpty ? (total - 1) : min(Int(parts[1]) ?? 0, total - 1)
+        let end: Int
+        if parts[1].isEmpty {
+            end = total - 1
+        } else {
+            // RFC 7233 の byte-range-spec は数値の終端を必須とする。
+            // 不正値を 0 とみなさず Range 自体を無視する。
+            guard let parsedEnd = Int(parts[1]), parsedEnd >= 0 else { return nil }
+            end = min(parsedEnd, total - 1)
+        }
         guard end >= start else { return nil }
         return start..<(end + 1)
     }

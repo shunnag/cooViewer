@@ -104,8 +104,20 @@ public final class EPUBScreenAtlas {
         // 表示中の最新要求へ戻す
         newestRequestedKey = key
         if let running = measuring[key] {
-            guard let counts = await running.value else { return nil }
-            return (counts, m.pagesPerScreen)
+            if let counts = await running.value {
+                return (counts, m.pagesPerScreen)
+            }
+            // cooViewer-oxr.55: 完了済み nil/cancelled タスクへ合流した最新要求は、
+            // 死んだタスクを返さず、この要求自身で新しい実測を開始する。
+            if measuring[key] == running {
+                measuring[key] = nil
+            } else if let replacement = measuring[key] {
+                // cooViewer-oxr.55: 別要求が既に始めた生きた再計測へ合流する。
+                // その再計測自体の失敗は無限再試行を避けて呼び出し元へ返す。
+                guard let counts = await replacement.value else { return nil }
+                return (counts, m.pagesPerScreen)
+            }
+            guard !isInvalidated, newestRequestedKey == key else { return nil }
         }
         let previous = lastMeasure
         let task = Task(priority: .userInitiated) {

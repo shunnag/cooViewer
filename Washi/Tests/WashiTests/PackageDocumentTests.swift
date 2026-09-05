@@ -29,6 +29,62 @@ final class PackageDocumentTests: XCTestCase {
         XCTAssertEqual(package.metadata.collections.first?.groupPosition, "1")
     }
 
+    /// cooViewer-oxr.7: OPF メタデータでも XML 空白だけを畳み、全角空白を保つ。
+    func testMetadataNormalizationPreservesIdeographicSpace() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title> 第一章　草枕 </dc:title><dc:language>ja</dc:language>
+          </metadata>
+          <manifest><item id="c" href="c.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="c"/></spine>
+        </package>
+        """
+        XCTAssertEqual(try parse(opf).metadata.mainTitle, "第一章　草枕")
+    }
+
+    /// cooViewer-oxr.37: EPUB Accessibility 1.0 形式の metadata/link を
+    /// meta 形式の値と一緒に公開する。
+    func testAccessibilityMetadataLinksAreParsed() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title>Accessible book</dc:title><dc:language>en</dc:language>
+            <meta property="dcterms:conformsTo">https://example.com/meta-standard</meta>
+            <link rel="dcterms:conformsTo"
+                  href=" https://example.com/link-standard "/>
+            <link rel="a11y:certifierCredential"
+                  href="https://example.com/credential"/>
+          </metadata>
+          <manifest><item id="c" href="c.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="c"/></spine>
+        </package>
+        """
+
+        let accessibility = try parse(opf).metadata.accessibility
+        XCTAssertEqual(accessibility.conformsTo, [
+            "https://example.com/meta-standard",
+            "https://example.com/link-standard",
+        ])
+        XCTAssertEqual(accessibility.certifierCredentials, [
+            "https://example.com/credential",
+        ])
+        XCTAssertFalse(accessibility.isEmpty)
+    }
+
+    /// cooViewer-oxr.37: 宣言のない既存 EPUB では追加配列も空になる。
+    func testAccessibilityCertifierCredentialsDefaultToEmpty() throws {
+        let accessibility = try parse(EPUBFixtures.verticalNovelOPF)
+            .metadata.accessibility
+        XCTAssertTrue(accessibility.certifierCredentials.isEmpty)
+    }
+
     func testSpineAndProgression() throws {
         let package = try parse(EPUBFixtures.verticalNovelOPF)
         XCTAssertEqual(package.spine.pageProgressionDirection, .rtl)
@@ -112,6 +168,101 @@ final class PackageDocumentTests: XCTestCase {
                        .prePaginated)
     }
 
+    /// cooViewer-oxr.14: EPUB 3.3 D.3 の rendition meta は同一 property の
+    /// 先頭値が有効になる(W3C lay-pp/fxl-layout-duplication 型)。
+    func testDocumentRenditionMetadataUsesFirstDeclaration() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title>t</dc:title><dc:language>en</dc:language>
+            <meta property="rendition:layout">pre-paginated</meta>
+            <meta property="rendition:layout">reflowable</meta>
+            <meta property="rendition:orientation">portrait</meta>
+            <meta property="rendition:orientation">landscape</meta>
+            <meta property="rendition:spread">landscape</meta>
+            <meta property="rendition:spread">none</meta>
+            <meta property="rendition:flow">scrolled-doc</meta>
+            <meta property="rendition:flow">paginated</meta>
+          </metadata>
+          <manifest><item id="a" href="a.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="a"/></spine>
+        </package>
+        """
+
+        let rendition = try parse(opf).metadata.rendition
+        XCTAssertEqual(rendition.layout, .prePaginated)
+        XCTAssertEqual(rendition.orientation, .portrait)
+        XCTAssertEqual(rendition.spread, .landscape)
+        XCTAssertEqual(rendition.flow, .scrolledDoc)
+    }
+
+    /// cooViewer-oxr.14: itemref の重複 layout は Set の順ではなく
+    /// properties 属性の先頭オーバーライドを使う。
+    func testItemRefLayoutOverrideUsesFirstPropertyInDocumentOrder() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title>t</dc:title><dc:language>en</dc:language>
+          </metadata>
+          <manifest>
+            <item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>
+            <item id="b" href="b.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine>
+            <itemref idref="a" properties="rendition:layout-reflowable rendition:layout-pre-paginated"/>
+            <itemref idref="b" properties="rendition:layout-pre-paginated rendition:layout-reflowable"/>
+          </spine>
+        </package>
+        """
+
+        let package = try parse(opf)
+        XCTAssertEqual(package.spine.itemRefs[0].propertyList, [
+            "rendition:layout-reflowable", "rendition:layout-pre-paginated",
+        ])
+        XCTAssertEqual(package.effectiveLayout(for: package.spine.itemRefs[0]),
+                       .reflowable)
+        XCTAssertEqual(package.effectiveLayout(for: package.spine.itemRefs[1]),
+                       .prePaginated)
+    }
+
+    /// cooViewer-oxr.51: 旧来の接頭辞なし表記を含む itemref spread override は
+    /// 文書既定より優先される。
+    func testEffectiveSpreadUsesFirstItemOverrideThenDocumentDefault() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title>t</dc:title><dc:language>en</dc:language>
+            <meta property="rendition:spread">both</meta>
+          </metadata>
+          <manifest>
+            <item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>
+            <item id="b" href="b.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c" href="c.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine>
+            <itemref idref="a" properties="rendition:spread-none rendition:spread-landscape"/>
+            <itemref idref="b" properties="spread-landscape"/>
+            <itemref idref="c"/>
+          </spine>
+        </package>
+        """
+
+        let package = try parse(opf)
+        XCTAssertEqual(package.effectiveSpread(for: package.spine.itemRefs[0]),
+                       .none)
+        XCTAssertEqual(package.effectiveSpread(for: package.spine.itemRefs[1]),
+                       .landscape)
+        XCTAssertEqual(package.effectiveSpread(for: package.spine.itemRefs[2]),
+                       .both)
+    }
+
     func testDisplaySeqOrdersTitles() throws {
         let opf = """
         <?xml version="1.0"?>
@@ -130,6 +281,78 @@ final class PackageDocumentTests: XCTestCase {
         """
         let package = try parse(opf)
         XCTAssertEqual(package.metadata.titles.map(\.value), ["主題", "副題"])
+    }
+
+    /// cooViewer-oxr.49: display-seq が一部にしかない title は
+    /// 番号付きを優先せず文書順を保つ。
+    func testPartialDisplaySeqPreservesTitleDocumentOrder() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title id="main">Main Title</dc:title>
+            <dc:title id="subtitle">Subtitle</dc:title>
+            <meta refines="#subtitle" property="display-seq">1</meta>
+            <dc:language>en</dc:language>
+          </metadata>
+          <manifest><item id="a" href="a.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="a"/></spine>
+        </package>
+        """
+
+        let metadata = try parse(opf).metadata
+        XCTAssertEqual(metadata.titles.map(\.value), ["Main Title", "Subtitle"])
+        XCTAssertEqual(metadata.mainTitle, "Main Title")
+    }
+
+    /// cooViewer-oxr.49: creator/author も display-seq が全員分揃わなければ
+    /// EPUB 3.3 D.3.5 どおり文書順で公開する。
+    func testPartialDisplaySeqPreservesCreatorAndAuthorDocumentOrder() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier><dc:title>t</dc:title>
+            <dc:creator id="first">First Author</dc:creator>
+            <dc:creator id="second">Second Author</dc:creator>
+            <meta refines="#first" property="role">aut</meta>
+            <meta refines="#second" property="role">aut</meta>
+            <meta refines="#second" property="display-seq">1</meta>
+            <dc:language>en</dc:language>
+          </metadata>
+          <manifest><item id="a" href="a.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="a"/></spine>
+        </package>
+        """
+
+        let metadata = try parse(opf).metadata
+        XCTAssertEqual(metadata.creators.map(\.value),
+                       ["First Author", "Second Author"])
+        XCTAssertEqual(metadata.authors, ["First Author", "Second Author"])
+    }
+
+    /// cooViewer-oxr.18: refines は URI 参照として percent-decode し、
+    /// %23 で符号化された fragment マーカも解決する。
+    func testPercentEncodedRefinesTargetIsResolved() throws {
+        let opf = """
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                 unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">x</dc:identifier>
+            <dc:title id="title-1">Encoded Refines</dc:title>
+            <meta refines="%23title%2D1" property="title-type">main</meta>
+            <dc:language>en</dc:language>
+          </metadata>
+          <manifest><item id="a" href="a.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="a"/></spine>
+        </package>
+        """
+
+        XCTAssertEqual(try parse(opf).metadata.titles.first?.type, "main")
     }
 
     func testFallbackChain() throws {

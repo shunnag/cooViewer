@@ -2,6 +2,80 @@ import CoreGraphics
 import Foundation
 import ImageIO
 
+// cooViewer-oxr.67 / cooViewer-oxr.71: 本文抽出結果を spine 単位で再利用する。
+// EPUBPublication は Sendable のため、可変状態は NSLock の内側だけで扱う。
+private final class ExtractedTextCache: @unchecked Sendable {
+    private struct Entry {
+        let text: String
+        let characterCount: Int
+    }
+
+    private let lock = NSLock()
+    private let characterLimit: Int
+    private var entries: [Int: Entry] = [:]
+    private var insertionOrder: [Int] = []
+    private var totalCharacterCount = 0
+
+    init(characterLimit: Int) {
+        self.characterLimit = characterLimit
+    }
+
+    func value(for spineIndex: Int) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[spineIndex]?.text
+    }
+
+    func insert(_ text: String, for spineIndex: Int) {
+        let characterCount = text.count
+        guard characterCount <= characterLimit else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard entries[spineIndex] == nil else { return }
+        while totalCharacterCount + characterCount > characterLimit,
+              let oldest = insertionOrder.first {
+            insertionOrder.removeFirst()
+            if let removed = entries.removeValue(forKey: oldest) {
+                totalCharacterCount -= removed.characterCount
+            }
+        }
+        entries[spineIndex] = Entry(text: text, characterCount: characterCount)
+        insertionOrder.append(spineIndex)
+        totalCharacterCount += characterCount
+    }
+}
+
+private struct EffectiveReadingDirectionResolution: Sendable {
+    let direction: EPUBReadingDirection
+    let source: EPUBReadingDirectionSource
+}
+
+// cooViewer-oxr.36: EPUBPublication の Sendable 契約を保ったまま、CSS を含む
+// 方向判定を最初の参照時に一度だけ実行する。
+private final class EffectiveReadingDirectionCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolution: EffectiveReadingDirectionResolution?
+
+    func value(
+        computing loader: () -> EffectiveReadingDirectionResolution
+    ) -> EffectiveReadingDirectionResolution {
+        lock.lock()
+        defer { lock.unlock() }
+        if let resolution { return resolution }
+        let loaded = loader()
+        resolution = loaded
+        return loaded
+    }
+}
+
+// cooViewer-oxr.8: 目次は文書順を保ったまま一度だけ spine 位置へ写像する。
+private struct IndexedTOCEntry: Sendable {
+    let spineIndex: Int
+    let depth: Int
+    let title: String
+}
+
 /// A reading-order entry for one spine item (manifest- and path-resolved).
 public struct ReadingOrderItem: Sendable {
     /// Index within the readingOrder array (what Washi calls the "spine index"; includes linear="no" items).
@@ -10,6 +84,14 @@ public struct ReadingOrderItem: Sendable {
     public let item: ManifestItem
     /// Canonical path within the container.
     public let containerPath: String
+    /// The first renderable, existing manifest item reached through the
+    /// fallback chain. This equals ``item`` when no usable fallback is needed
+    /// or available.
+    public let resolvedItem: ManifestItem
+    /// Canonical path of ``resolvedItem``. Rendering and content extraction
+    /// should use this path while preserving ``containerPath`` as the declared
+    /// spine identity.
+    public let resolvedContainerPath: String
 }
 
 /// Left/right spread placement (from FXL itemref properties).
@@ -22,6 +104,9 @@ public struct FixedLayoutPageInfo: Sendable {
     public let spineIndex: Int
     /// Page dimensions (CSS px) from the viewport meta tag (or SVG viewBox).
     public let viewportSize: CGSize?
+    /// Whether the viewport uses `device-width` or `device-height` and should
+    /// therefore be sized from the current rendering target.
+    public let viewportIsDeviceSized: Bool
     /// The container path of the image when the page merely lays out a single
     /// image; in that case the image can be decoded directly without WebKit
     /// (the vast majority of Japanese manga EPUBs are shaped this way).
@@ -31,8 +116,8 @@ public struct FixedLayoutPageInfo: Sendable {
 
 /// A facade for a single EPUB book.
 /// On open it parses OCF → package document → navigation → encryption.xml,
-/// then stays immutable (`Sendable`). Resource reads are pure functions and
-/// thread-safe.
+/// then exposes immutable publication metadata (`Sendable`). Resource reads
+/// and the synchronized extracted-text cache are thread-safe.
 public final class EPUBPublication: Sendable {
     public let url: URL
     let container: OCFContainer
@@ -42,6 +127,14 @@ public final class EPUBPublication: Sendable {
     public let readingOrder: [ReadingOrderItem]
     /// コンテナ内パス → マニフェスト項目(メディアタイプ解決用)
     private let manifestByPath: [String: ManifestItem]
+    /// cooViewer-oxr.8: 目次解決を呼び出しごとの spine 線形走査にしない。
+    private let spineIndexByContainerPath: [String: Int]
+    /// cooViewer-oxr.8: NCX 補完時は toc と nav 補助一覧の基準文書が異なる。
+    private let tocBasePath: String
+    private let indexedTOC: [IndexedTOCEntry]
+    /// cooViewer-oxr.67 / cooViewer-oxr.71: 約 800 万文字を上限に FIFO で保持する。
+    private let extractedTextCache: ExtractedTextCache
+    private let effectiveReadingDirectionCache = EffectiveReadingDirectionCache()
 
     /// Opens an EPUB off the calling thread and returns the parsed publication.
     ///
@@ -80,7 +173,8 @@ public final class EPUBPublication: Sendable {
             do {
                 archive = try ZipArchive(url: url, readStrategy: readStrategy)
             } catch {
-                throw EPUBError.notAnEPUB("ZIP として読めない: \(error)")
+                throw EPUBError.notAnEPUB(
+                    "Unable to read ZIP: \(error.localizedDescription)")
             }
             try self.init(url: url, reader: ZipContainerReader(archive: archive))
         }
@@ -92,7 +186,8 @@ public final class EPUBPublication: Sendable {
         do {
             archive = try ZipArchive(data: data)
         } catch {
-            throw EPUBError.notAnEPUB("ZIP として読めない: \(error)")
+            throw EPUBError.notAnEPUB(
+                "Unable to read ZIP: \(error.localizedDescription)")
         }
         try self.init(url: displayURL, reader: ZipContainerReader(archive: archive))
     }
@@ -105,7 +200,7 @@ public final class EPUBPublication: Sendable {
         // 複数 rootfile は先頭(デフォルトレンディション)を採用(OCF §3.5.2.1)
         guard let packagePath = container.packageDocumentPaths.first,
               reader.exists(packagePath) else {
-            throw EPUBError.malformed("パッケージ文書が見つからない")
+            throw EPUBError.malformed("Package document not found")
         }
         let package = try PackageDocumentParser.parse(
             data: reader.read(packagePath), at: packagePath)
@@ -132,17 +227,33 @@ public final class EPUBPublication: Sendable {
             guard let item = package.manifestByID[itemRef.idref],
                   let path = ContainerPath.resolve(base: packagePath, href: item.href)
             else { continue }
+            // cooViewer-oxr.16: 宣言項目が非描画形式または欠落なら、fallback
+            // 連鎖のうち描画可能かつ実在する最初の項目を表示用に採用する。
+            let resolved = Self.resolvedSpineResource(
+                for: item, package: package, packagePath: packagePath,
+                reader: reader) ?? (item: item, path: path)
             readingOrder.append(ReadingOrderItem(
                 spineIndex: readingOrder.count,
-                itemRef: itemRef, item: item, containerPath: path))
+                itemRef: itemRef, item: item, containerPath: path,
+                resolvedItem: resolved.item,
+                resolvedContainerPath: resolved.path))
         }
         guard !readingOrder.isEmpty else {
-            throw EPUBError.malformed("spine が空")
+            throw EPUBError.malformed("Spine is empty")
         }
         self.readingOrder = readingOrder
         self.manifestByPath = manifestByPath
 
-        // ナビゲーション: EPUB 3 nav → NCX の順で試し、両方なければ空
+        var spineIndexByContainerPath: [String: Int] = [:]
+        for entry in readingOrder {
+            for path in [entry.containerPath, entry.resolvedContainerPath]
+            where spineIndexByContainerPath[path] == nil {
+                spineIndexByContainerPath[path] = entry.spineIndex
+            }
+        }
+        self.spineIndexByContainerPath = spineIndexByContainerPath
+
+        // cooViewer-oxr.9: EPUB 3 nav を優先し、toc が空なら NCX で補完する。
         var navigation = EPUBNavigation()
         if let navItem = package.navItem,
            let navPath = ContainerPath.resolve(base: packagePath, href: navItem.href),
@@ -150,16 +261,42 @@ public final class EPUBPublication: Sendable {
            let parsed = try? NavigationDocumentParser.parse(
                data: reader.read(navPath), at: navPath) {
             navigation = parsed
-        } else if let tocID = package.spine.tocItemID,
-                  let ncxItem = package.manifestByID[tocID],
-                  let ncxPath = ContainerPath.resolve(base: packagePath,
-                                                      href: ncxItem.href),
-                  reader.exists(ncxPath),
-                  let parsed = try? NCXParser.parse(
-                      data: reader.read(ncxPath), at: ncxPath) {
-            navigation = parsed
+        }
+        var tocBasePath = navigation.basePath
+        if navigation.toc.isEmpty {
+            let declaredNCX = package.spine.tocItemID
+                .flatMap { package.manifestByID[$0] }
+            let ncxItem = declaredNCX ?? package.manifest.first {
+                $0.mediaType.lowercased() == "application/x-dtbncx+xml"
+            }
+            if let ncxItem,
+               let ncxPath = ContainerPath.resolve(base: packagePath,
+                                                   href: ncxItem.href),
+               reader.exists(ncxPath),
+               let ncx = try? NCXParser.parse(
+                   data: reader.read(ncxPath), at: ncxPath) {
+                tocBasePath = ncx.basePath
+                if navigation.basePath.isEmpty {
+                    navigation = ncx
+                } else {
+                    // cooViewer-oxr.9: nav と NCX の配置先が異なっても、単一の
+                    // navigation.basePath から両方を正しく解決できる形へ直す。
+                    navigation.toc = Self.rootRelativeNavigationItems(
+                        ncx.toc, sourceBasePath: ncx.basePath)
+                    if navigation.pageList.isEmpty {
+                        navigation.pageList = Self.rootRelativeNavigationItems(
+                            ncx.pageList, sourceBasePath: ncx.basePath)
+                    }
+                    tocBasePath = navigation.basePath
+                }
+            }
         }
         self.navigation = navigation
+        self.tocBasePath = tocBasePath
+        self.indexedTOC = Self.indexTOC(
+            navigation.toc, basePath: tocBasePath,
+            spineIndexByContainerPath: spineIndexByContainerPath)
+        self.extractedTextCache = ExtractedTextCache(characterLimit: 8_000_000)
     }
 
     // MARK: - 基本情報
@@ -173,6 +310,140 @@ public final class EPUBPublication: Sendable {
     public var resourcePaths: [String] { container.reader.allPaths }
     public var readingDirection: PageProgressionDirection {
         package.readingDirection
+    }
+
+    /// The resolved reading direction after applying package, CSS, and language signals.
+    ///
+    /// Unlike ``readingDirection``, this value is always ``PageProgressionDirection/ltr``
+    /// or ``PageProgressionDirection/rtl`` and never `default`.
+    public var effectiveReadingDirection: EPUBReadingDirection {
+        effectiveReadingDirectionResolution.direction
+    }
+
+    /// The publication signal that selected ``effectiveReadingDirection``.
+    public var effectiveReadingDirectionSource: EPUBReadingDirectionSource {
+        effectiveReadingDirectionResolution.source
+    }
+
+    private var effectiveReadingDirectionResolution: EffectiveReadingDirectionResolution {
+        effectiveReadingDirectionCache.value {
+            computeEffectiveReadingDirection()
+        }
+    }
+
+    /// cooViewer-oxr.36: 宣言値、Kindle メタ、冒頭 CSS、RTL 言語の順で
+    /// 省略されたページ進行方向を決定する。
+    private func computeEffectiveReadingDirection() -> EffectiveReadingDirectionResolution {
+        switch readingDirection {
+        case .ltr, .rtl:
+            return EffectiveReadingDirectionResolution(
+                direction: readingDirection,
+                source: .declared)
+        case .byDefault:
+            break
+        }
+
+        if let writingMode = metadata.metaItems.first(where: {
+            $0.refines == nil
+                && $0.property.lowercased() == "primary-writing-mode"
+        })?.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            switch writingMode {
+            case "vertical-rl", "horizontal-rl":
+                return EffectiveReadingDirectionResolution(
+                    direction: .rtl,
+                    source: .primaryWritingModeMeta)
+            case "vertical-lr", "horizontal-lr":
+                return EffectiveReadingDirectionResolution(
+                    direction: .ltr,
+                    source: .primaryWritingModeMeta)
+            default:
+                break
+            }
+        }
+
+        if firstReadingOrderStylesUseVerticalRTL() {
+            return EffectiveReadingDirectionResolution(
+                direction: .rtl,
+                source: .verticalWritingCSS)
+        }
+
+        if let primaryLanguage = metadata.languages.first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .split(separator: "-", maxSplits: 1)
+            .first.map(String.init),
+           Self.rtlLanguageCodes.contains(primaryLanguage) {
+            return EffectiveReadingDirectionResolution(
+                direction: .rtl,
+                source: .rtlLanguage)
+        }
+
+        return EffectiveReadingDirectionResolution(
+            direction: .ltr,
+            source: .fallback)
+    }
+
+    private static let rtlLanguageCodes: Set<String> = [
+        "ar", "he", "fa", "ur", "yi", "ps", "sd", "ug", "dv",
+    ]
+
+    /// cooViewer-oxr.36: 冒頭の XHTML 最大 3 項目が実際に読み込む style/link
+    /// だけを見る。CSS セレクタの完全評価はせず、使用中シート内の宣言を方向の
+    /// ヒューリスティックとして扱う。
+    private func firstReadingOrderStylesUseVerticalRTL() -> Bool {
+        let documents = readingOrder.lazy.filter {
+            Self.normalizedMediaType($0.resolvedItem.mediaType) == EPUBMediaType.xhtml
+        }.prefix(3)
+
+        for item in documents {
+            guard let data = try? resource(at: item.resolvedContainerPath).data,
+                  let document = try? WashiXML.document(from: data),
+                  let root = document.rootElement()
+            else { continue }
+
+            let html = root.localName?.lowercased() == "html"
+                ? root : Self.firstDescendant("html", in: root)
+            let body = html.flatMap { Self.firstDescendant("body", in: $0) }
+            if [html?.attr("style"), body?.attr("style")]
+                .compactMap({ $0 })
+                .contains(where: Self.cssUsesVerticalRTL) {
+                return true
+            }
+
+            let styles = Self.descendants("style", in: root)
+                .compactMap(\.stringValue)
+            if styles.contains(where: Self.cssUsesVerticalRTL) {
+                return true
+            }
+
+            for link in Self.descendants("link", in: root) {
+                let relationships = (link.attr("rel") ?? "")
+                    .lowercased()
+                    .split(whereSeparator: { $0.isWhitespace })
+                guard relationships.contains("stylesheet"),
+                      let href = link.attr("href"),
+                      let path = ContainerPath.resolve(
+                        base: item.resolvedContainerPath,
+                        href: href),
+                      let cssData = try? resource(at: path).data,
+                      let css = Self.cssString(cssData),
+                      Self.cssUsesVerticalRTL(css)
+                else { continue }
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func cssString(_ data: Data) -> String? {
+        String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+    }
+
+    private static func cssUsesVerticalRTL(_ css: String) -> Bool {
+        css.range(
+            of: #"(?i)(?:^|[;{\s])(?:-(?:webkit|epub)-)?writing-mode\s*:\s*(?:vertical-rl|tb-rl)(?:\s|[;!}]|$)"#,
+            options: .regularExpression) != nil
     }
 
     /// True when a spine content document is encrypted with an unknown
@@ -198,7 +469,7 @@ public final class EPUBPublication: Sendable {
         if reader.exists("META-INF/license.lcpl") { return "Readium LCP" }
         if reader.exists("META-INF/sinf.xml") { return "Apple FairPlay" }
         if reader.exists("META-INF/rights.xml") { return "Adobe ADEPT" }
-        return "不明な DRM"
+        return "Unknown DRM"
     }
 
     // MARK: - 読書位置の突き合わせ
@@ -246,6 +517,39 @@ public final class EPUBPublication: Sendable {
             current = next
         }
         return chain
+    }
+
+    /// cooViewer-oxr.16: spine 表示に使える Core Media Type と XHTML だけを
+    /// fallback 解決の終端候補にする。未知形式は連鎖をさらに辿る。
+    private static func isRenderableSpineItem(_ item: ManifestItem) -> Bool {
+        let mediaType = normalizedMediaType(item.mediaType)
+        return mediaType == EPUBMediaType.xhtml
+            || EPUBMediaType.coreImageTypes.contains(mediaType)
+    }
+
+    /// cooViewer-oxr.16: 循環を打ち切りつつ、実在性も含めて fallback を解決する。
+    private static func resolvedSpineResource(
+        for item: ManifestItem, package: EPUBPackage, packagePath: String,
+        reader: any ContainerReader
+    ) -> (item: ManifestItem, path: String)? {
+        var current: ManifestItem? = item
+        var seen: Set<String> = []
+        while let candidate = current, seen.insert(candidate.id).inserted {
+            if let path = ContainerPath.resolve(
+                base: packagePath, href: candidate.href),
+               isRenderableSpineItem(candidate), reader.exists(path) {
+                return (candidate, path)
+            }
+            current = candidate.fallback.flatMap { package.manifestByID[$0] }
+        }
+        return nil
+    }
+
+    private static func normalizedMediaType(_ mediaType: String) -> String {
+        mediaType.split(separator: ";", maxSplits: 1).first.map {
+            String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        } ?? ""
     }
 
     /// Container path of the cover image.
@@ -338,7 +642,8 @@ public final class EPUBPublication: Sendable {
 
     /// The resolved cover image's raw bytes and media type, without decoding —
     /// useful to store or serve the original file as-is (e.g. a library cache
-    /// or a web response). Uses the same fallback chain as ``coverImage``.
+    /// or a web response). Uses the same fallback chain as
+    /// ``coverImage(maxPixelSize:)``.
     /// Nil if no cover resolves or it cannot be read (e.g. DRM).
     public func coverImageData() -> (data: Data, mediaType: String)? {
         guard let path = resolvedCoverImagePath else { return nil }
@@ -414,10 +719,18 @@ public final class EPUBPublication: Sendable {
     public func spineIndex(forHref href: String) -> Int? {
         let withoutFragment = href.split(separator: "#", maxSplits: 1,
                                          omittingEmptySubsequences: false)[0]
-        guard let path = ContainerPath.resolve(base: navigation.basePath,
-                                               href: String(withoutFragment))
-        else { return nil }
-        return readingOrder.firstIndex { $0.containerPath == path }
+        let bases = tocBasePath == navigation.basePath
+            ? [tocBasePath] : [tocBasePath, navigation.basePath]
+        // cooViewer-oxr.9: NCX の toc と nav の補助一覧を併用する場合は、
+        // それぞれの基準パスを定数個だけ試す。
+        for basePath in bases {
+            if let path = ContainerPath.resolve(
+                base: basePath, href: String(withoutFragment)),
+               let index = spineIndexByContainerPath[path] {
+                return index
+            }
+        }
+        return nil
     }
 
     /// Whether any spine item declares a media overlay (SMIL narration). Use
@@ -426,24 +739,72 @@ public final class EPUBPublication: Sendable {
         readingOrder.contains { $0.item.mediaOverlay != nil }
     }
 
-    /// The chapter title a spine index belongs to (the TOC is flattened and the
-    /// last item at or before that position is taken as the current chapter).
-    /// For running-head display; nil when there is no match.
+    /// The chapter title a spine index belongs to.
+    ///
+    /// The first table-of-contents entry in document order wins when multiple
+    /// entries target the same spine item. Fragment positions inside an item
+    /// are not considered. For running-head display; nil when there is no match.
     public func chapterTitle(forSpineIndex index: Int) -> String? {
-        var best: (index: Int, title: String)?
-        func walk(_ items: [EPUBNavItem]) {
-            for item in items {
-                if let itemIndex = spineIndex(forNavItem: item),
-                   itemIndex <= index,
-                   best.map({ itemIndex >= $0.index }) ?? true,
-                   !item.title.isEmpty {
-                    best = (itemIndex, item.title)
-                }
-                walk(item.children)
+        var bestSpineIndex = -1
+        var title: String?
+        for entry in indexedTOC
+        where entry.spineIndex <= index && !entry.title.isEmpty {
+            // cooViewer-oxr.8: 同じ spine の後続項目では上書きせず文書順先頭を保つ。
+            if entry.spineIndex > bestSpineIndex {
+                bestSpineIndex = entry.spineIndex
+                title = entry.title
             }
         }
-        walk(navigation.toc)
-        return best?.title
+        return title
+    }
+
+    /// cooViewer-oxr.67 / cooViewer-oxr.71: 本文抽出・検索・概算ページ数の共有経路。
+    func cachedExtractedText(forSpineIndex index: Int,
+                             loader: () throws -> String) rethrows -> String {
+        if let cached = extractedTextCache.value(for: index) { return cached }
+        let text = try loader()
+        extractedTextCache.insert(text, for: index)
+        return text
+    }
+
+    /// cooViewer-oxr.8: 深さ優先の文書順を崩さず、href を O(1) の索引で写像する。
+    private static func indexTOC(
+        _ items: [EPUBNavItem], basePath: String,
+        spineIndexByContainerPath: [String: Int], depth: Int = 0
+    ) -> [IndexedTOCEntry] {
+        var result: [IndexedTOCEntry] = []
+        for item in items {
+            if let href = item.href,
+               let path = ContainerPath.resolve(base: basePath, href: href),
+               let spineIndex = spineIndexByContainerPath[path] {
+                result.append(IndexedTOCEntry(
+                    spineIndex: spineIndex, depth: depth, title: item.title))
+            }
+            result.append(contentsOf: indexTOC(
+                item.children, basePath: basePath,
+                spineIndexByContainerPath: spineIndexByContainerPath,
+                depth: depth + 1))
+        }
+        return result
+    }
+
+    /// cooViewer-oxr.9: 別文書から併合する href をコンテナルート相対へ写す。
+    private static func rootRelativeNavigationItems(
+        _ items: [EPUBNavItem], sourceBasePath: String
+    ) -> [EPUBNavItem] {
+        items.map { item in
+            let href = item.href.map { rawHref -> String in
+                guard let path = ContainerPath.resolve(
+                    base: sourceBasePath, href: rawHref) else { return rawHref }
+                let suffixIndex = rawHref.firstIndex { $0 == "?" || $0 == "#" }
+                let suffix = suffixIndex.map { String(rawHref[$0...]) } ?? ""
+                return "/" + path + suffix
+            }
+            return EPUBNavItem(
+                title: item.title, href: href, epubType: item.epubType,
+                children: rootRelativeNavigationItems(
+                    item.children, sourceBasePath: sourceBasePath))
+        }
     }
 
     /// Checks whether a container path exists.
@@ -479,54 +840,109 @@ public final class EPUBPublication: Sendable {
             spread = nil
         }
 
-        let (data, mediaType) = try resource(at: entry.containerPath)
-        // SVG 単体 spine 項目
+        let resolvedPath = entry.resolvedContainerPath
+        let data = try resource(at: resolvedPath).data
+        let mediaType = Self.normalizedMediaType(entry.resolvedItem.mediaType)
+        // cooViewer-oxr.15: Core 画像が spine 自身なら ImageIO のヘッダー情報
+        // だけで自然寸法を得て、WebKit を通さず画像そのものを表示できる。
+        if mediaType.hasPrefix("image/"), mediaType != EPUBMediaType.svg {
+            return FixedLayoutPageInfo(
+                spineIndex: index, viewportSize: Self.imagePixelSize(data),
+                viewportIsDeviceSized: false, simpleImagePath: resolvedPath,
+                pageSpread: spread)
+        }
+        // cooViewer-oxr.91: SVG 単体 spine 項目も単一 image ラッパーなら
+        // 参照画像を直接デコードできる。
         if mediaType == EPUBMediaType.svg {
             let document = try? WashiXML.document(from: data)
-            let size = (document?.rootElement()).flatMap(Self.svgSize)
-            return FixedLayoutPageInfo(spineIndex: index, viewportSize: size,
-                                       simpleImagePath: nil, pageSpread: spread)
+            let root = document?.rootElement()
+            let size = root.flatMap(Self.svgSize)
+            let imagePath = root.flatMap(Self.simpleSVGImageHref).flatMap {
+                ContainerPath.resolve(base: resolvedPath, href: $0)
+            }
+            return FixedLayoutPageInfo(
+                spineIndex: index, viewportSize: size,
+                viewportIsDeviceSized: false, simpleImagePath: imagePath,
+                pageSpread: spread)
         }
         guard let document = try? WashiXML.document(from: data),
               let root = document.rootElement() else {
-            return FixedLayoutPageInfo(spineIndex: index, viewportSize: nil,
-                                       simpleImagePath: nil, pageSpread: spread)
+            return FixedLayoutPageInfo(
+                spineIndex: index, viewportSize: nil,
+                viewportIsDeviceSized: false, simpleImagePath: nil,
+                pageSpread: spread)
         }
-        let viewport = Self.viewportSize(in: root)
-            ?? package.metadata.rendition.viewport.flatMap(Self.parseViewportContent)
+        let viewport = Self.viewportDescription(in: root)
+            ?? package.metadata.rendition.viewport.flatMap(Self.parseViewportDescription)
         let imageHref = Self.simpleImageHref(in: root)
         let imagePath = imageHref.flatMap {
-            ContainerPath.resolve(base: entry.containerPath, href: $0)
+            ContainerPath.resolve(base: resolvedPath, href: $0)
         }
-        return FixedLayoutPageInfo(spineIndex: index, viewportSize: viewport,
-                                   simpleImagePath: imagePath, pageSpread: spread)
+        return FixedLayoutPageInfo(
+            spineIndex: index, viewportSize: viewport?.size,
+            viewportIsDeviceSized: viewport?.isDeviceSized ?? false,
+            simpleImagePath: imagePath, pageSpread: spread)
     }
 
     /// <meta name="viewport" content="width=1200, height=1920"> の解析
-    private static func viewportSize(in root: XMLElement) -> CGSize? {
+    private static func viewportDescription(in root: XMLElement) -> ParsedViewport? {
         guard let head = firstDescendant("head", in: root) else { return nil }
         for meta in descendants("meta", in: head) {
             guard meta.attr("name") == "viewport",
                   let content = meta.attr("content") else { continue }
-            if let size = parseViewportContent(content) { return size }
+            if let viewport = parseViewportDescription(content) { return viewport }
         }
         return nil
     }
 
     static func parseViewportContent(_ content: String) -> CGSize? {
+        parseViewportDescription(content)?.size
+    }
+
+    private struct ParsedViewport {
+        let size: CGSize?
+        let isDeviceSized: Bool
+    }
+
+    /// cooViewer-oxr.50: device-width/device-height は数値欠落ではなく、表示先
+    /// 寸法へ追従する明示指定として保持する。
+    private static func parseViewportDescription(_ content: String) -> ParsedViewport? {
         var width: Double?
         var height: Double?
+        var sawWidth = false
+        var sawHeight = false
+        var isDeviceSized = false
         for pair in content.split(whereSeparator: { $0 == "," || $0 == ";" }) {
             let parts = pair.split(separator: "=", maxSplits: 1)
             guard parts.count == 2 else { continue }
-            let key = parts[0].trimmingCharacters(in: .whitespaces)
-            let value = leadingNumber(parts[1].trimmingCharacters(in: .whitespaces))
+            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let rawValue = parts[1]
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             // 最初の width/height 宣言だけを使う(EPUB RS 3.3 §8.1.2)
-            if key == "width", width == nil { width = value }
-            if key == "height", height == nil { height = value }
+            if key == "width", !sawWidth {
+                sawWidth = true
+                if rawValue == "device-width" {
+                    isDeviceSized = true
+                } else {
+                    width = leadingNumber(rawValue)
+                }
+            }
+            if key == "height", !sawHeight {
+                sawHeight = true
+                if rawValue == "device-height" {
+                    isDeviceSized = true
+                } else {
+                    height = leadingNumber(rawValue)
+                }
+            }
+        }
+        if isDeviceSized {
+            return ParsedViewport(size: nil, isDeviceSized: true)
         }
         guard let width, let height, width > 0, height > 0 else { return nil }
-        return CGSize(width: width, height: height)
+        return ParsedViewport(size: CGSize(width: width, height: height),
+                              isDeviceSized: false)
     }
 
     /// "500px" → 500 の数値サルベージ(EPUB RS 3.3 §8.1.2 の寛容処理)
@@ -562,6 +978,64 @@ public final class EPUBPublication: Sendable {
     private static func parseCSSLength(_ value: String) -> Double? {
         Double(value.trimmingCharacters(
             in: CharacterSet(charactersIn: "pxt ")))
+    }
+
+    /// cooViewer-oxr.15: 完全デコードせず ImageIO のプロパティから画素寸法を得る。
+    private static func imagePixelSize(_ data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(
+                source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+        else { return nil }
+        let size = CGSize(width: width.doubleValue, height: height.doubleValue)
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return nil }
+        return size
+    }
+
+    /// cooViewer-oxr.91: 非描画メタデータを除き、唯一の描画内容が image の
+    /// SVG だけを直接画像ページとして扱う。
+    private static func simpleSVGImageHref(in root: XMLElement) -> String? {
+        guard root.localName?.lowercased() == "svg" else { return nil }
+        let ignored: Set<String> = ["title", "desc", "defs", "metadata"]
+        let structural: Set<String> = ["svg", "g", "a"]
+        var hrefs: [String?] = []
+        var hasUnsupportedContent = false
+
+        func inspect(_ element: XMLElement) {
+            for node in element.children ?? [] {
+                if node.kind == .text {
+                    if !(node.stringValue ?? "").trimmingCharacters(
+                        in: .whitespacesAndNewlines).isEmpty {
+                        hasUnsupportedContent = true
+                    }
+                    continue
+                }
+                guard node.kind == .element,
+                      let child = node as? XMLElement,
+                      let localName = child.localName?.lowercased()
+                else { continue }
+                if ignored.contains(localName) { continue }
+                if localName == "text" {
+                    hasUnsupportedContent = true
+                } else if localName == "image" {
+                    hrefs.append(child.attribute(
+                        forLocalName: "href", uri: XMLNamespace.xlink)?.stringValue
+                        ?? child.attr("xlink:href") ?? child.attr("href"))
+                } else if structural.contains(localName) {
+                    inspect(child)
+                } else {
+                    hasUnsupportedContent = true
+                }
+            }
+        }
+
+        inspect(root)
+        guard !hasUnsupportedContent, hrefs.count == 1,
+              let href = hrefs[0]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !href.isEmpty else { return nil }
+        return href
     }
 
     // cooViewer-oxr.6: 可視本文がなく、img / svg image の参照先が

@@ -11,6 +11,7 @@ private final class FakeCensus: ScreenPageCensusing {
     private(set) var measuredKeys: [String] = []
     var cannedCounts: [Int] = [3, 4]
     var cannedCountsByKey: [String: [Int]] = [:]
+    var cannedResults: [[Int]?] = []
     /// この集合のキーは measure を継続でブロックする(release で解放)
     var blockedKeys: Set<String> = []
     private var gates: [String: CheckedContinuation<Void, Never>] = [:]
@@ -21,6 +22,9 @@ private final class FakeCensus: ScreenPageCensusing {
         measuredKeys.append(optionsJSON)
         if blockedKeys.contains(optionsJSON) {
             await withCheckedContinuation { gates[optionsJSON] = $0 }
+        }
+        if !cannedResults.isEmpty {
+            return cannedResults.removeFirst()
         }
         return cannedCountsByKey[optionsJSON] ?? cannedCounts
     }
@@ -73,6 +77,28 @@ final class EPUBScreenAtlasTests: XCTestCase {
             displayURL: URL(fileURLWithPath: "/tmp/atlas-\(spread.rawValue).epub"))
     }
 
+    private func makePerItemSpreadPublication(bodyHTML: String) throws
+        -> EPUBPublication {
+        var entries = EPUBFixtures.reflowSpreadEntries(
+            renditionSpread: .both, bodyHTML: bodyHTML)
+        let packageIndex = try XCTUnwrap(
+            entries.firstIndex { $0.name == "OEBPS/package.opf" })
+        let package = String(decoding: entries[packageIndex].data, as: UTF8.self)
+            .replacingOccurrences(
+                of: #"<manifest><item id="c" href="text/c.xhtml" media-type="application/xhtml+xml"/></manifest>"#,
+                with: #"<manifest><item id="c" href="text/c.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="text/c2.xhtml" media-type="application/xhtml+xml"/></manifest>"#)
+            .replacingOccurrences(
+                of: #"<spine><itemref idref="c"/></spine>"#,
+                with: #"<spine><itemref idref="c"/><itemref idref="c2" properties="rendition:spread-none"/></spine>"#)
+        entries[packageIndex].data = Data(package.utf8)
+        let firstDocument = try XCTUnwrap(
+            entries.first { $0.name == "OEBPS/text/c.xhtml" })
+        entries.append(("OEBPS/text/c2.xhtml", firstDocument.data))
+        return try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/atlas-item-spread.epub"))
+    }
+
     /// 条件が満たされるまで MainActor を回して待つ(最大 ~2 秒)
     private func waitUntil(_ predicate: @escaping () -> Bool) async {
         for _ in 0..<400 where !predicate() {
@@ -108,6 +134,30 @@ final class EPUBScreenAtlasTests: XCTestCase {
         XCTAssertEqual(ra?.counts, [3, 4])
         XCTAssertEqual(rb?.counts, [3, 4])
         XCTAssertEqual(fake.invokeCount, 1)  // measure は 1 回だけ
+    }
+
+    /// cooViewer-oxr.55: nil で完了した実測へ合流した最新要求は、同じ
+    /// 完了済み Task を返さず新しい census を開始する。
+    func testJoinedNilMeasureIsRetriedForNewestRequest() async throws {
+        let fake = FakeCensus()
+        let m = metrics(width: 400)
+        let key = m.censusOptionsJSON
+        fake.blockedKeys = [key]
+        fake.cannedResults = [nil, [9, 10]]
+        let atlas = EPUBScreenAtlas(
+            publication: try makePublication(), census: fake)
+
+        let first = Task { await atlas.screenPlan(metrics: m) }
+        await waitUntil { fake.invokeCount == 1 }
+        let newest = Task { await atlas.screenPlan(metrics: m) }
+        await waitUntil { atlas.inFlightMeasureKeys().contains(key) }
+        fake.blockedKeys.remove(key)
+        fake.release(key)
+
+        let newestPlan = await newest.value
+        XCTAssertEqual(newestPlan?.counts, [9, 10])
+        XCTAssertEqual(fake.invokeCount, 2)
+        _ = await first.value
     }
 
     /// 実行待ちの K1 を K2 が追い越したあと K1 が再要求されると、newest を K1 に
@@ -261,6 +311,29 @@ final class EPUBScreenAtlasTests: XCTestCase {
 
         XCTAssertEqual(autoPlan.pagesPerScreen, 1)
         XCTAssertEqual(bothPlan.pagesPerScreen, 2)
+        XCTAssertGreaterThan(spreadCount, singleCount)
+        let ratio = Double(spreadCount) / Double(singleCount)
+        XCTAssertGreaterThan(ratio, 1.5)
+        XCTAssertLessThan(ratio, 3.0)
+    }
+
+    /// cooViewer-oxr.51: 同じ本文でも itemref の spread-none は、見開き対応幅の
+    /// Atlas census でその項目だけ単ページ幅へ戻す。
+    func testRealCensusHonorsPerItemSpreadOverride() async throws {
+        let body = "<p>\(String(repeating: "長い本文。", count: 3_000))</p>"
+        let atlas = EPUBScreenAtlas(
+            publication: try makePerItemSpreadPublication(bodyHTML: body))
+        defer { atlas.invalidate() }
+        var settings = EPUBReaderSettings()
+        settings.insets = .zero
+        let metrics = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 1_200, height: 500), settings: settings)
+
+        let measured = await atlas.screenPlan(metrics: metrics)
+        let plan = try XCTUnwrap(measured)
+        XCTAssertEqual(plan.counts.count, 2)
+        let spreadCount = plan.counts[0]
+        let singleCount = plan.counts[1]
         XCTAssertGreaterThan(spreadCount, singleCount)
         let ratio = Double(spreadCount) / Double(singleCount)
         XCTAssertGreaterThan(ratio, 1.5)

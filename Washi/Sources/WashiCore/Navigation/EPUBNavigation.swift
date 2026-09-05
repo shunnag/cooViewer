@@ -3,8 +3,11 @@ import Foundation
 /// A single entry in the table of contents, page list, or landmarks (a tree structure).
 public struct EPUBNavItem: Sendable, Hashable {
     public let title: String
-    /// The href relative to the navigation document (including any fragment, exactly as written).
-    /// nil for heading-only entries (a linkless span).
+    /// The href to resolve against ``EPUBNavigation/basePath``, including any
+    /// fragment. It is normally preserved as written; NCX entries merged into
+    /// an empty HTML navigation table may be made container-root-relative so
+    /// both documents' links retain the same targets. Nil for heading-only
+    /// entries (a linkless span).
     public let href: String?
     /// The landmark's epub:type ("cover" / "bodymatter" / "toc", etc.).
     public let epubType: String?
@@ -78,31 +81,42 @@ enum NavigationDocumentParser {
         var items: [EPUBNavItem] = []
         for node in list.children ?? [] {
             guard let li = node as? XMLElement, li.localName == "li" else { continue }
-            var title = ""
-            var href: String?
-            var epubType: String?
             var children: [EPUBNavItem] = []
             for childNode in li.children ?? [] {
                 guard let child = childNode as? XMLElement else { continue }
-                switch child.localName {
-                case "a":
-                    title = child.normalizedText
-                    href = child.attr("href")
-                    epubType = child.attr("type", ns: XMLNamespace.epubOps,
-                                          prefix: "epub")
-                case "span":
-                    title = child.normalizedText
-                case "ol":
+                if child.localName == "ol" {
                     children = parseListItems(child)
-                default:
-                    break
                 }
             }
+
+            // cooViewer-oxr.7: 不正な wrapper を許容しつつ、子 ol 内のリンクを
+            // 見出しとして拾わない。span より a を常に優先する。
+            let anchor = firstLabelDescendant("a", in: li)
+            let span = anchor == nil ? firstLabelDescendant("span", in: li) : nil
+            let label = anchor ?? span
+            let title = label?.readableText ?? ""
+            let href = anchor?.attr("href")
+            let epubType = anchor?.attr("type", ns: XMLNamespace.epubOps,
+                                        prefix: "epub")
             guard !title.isEmpty || href != nil || !children.isEmpty else { continue }
             items.append(EPUBNavItem(title: title, href: href,
                                      epubType: epubType, children: children))
         }
         return items
+    }
+
+    /// cooViewer-oxr.7: li のラベル領域を探索し、入れ子の ol は除外する
+    private static func firstLabelDescendant(_ localName: String,
+                                             in element: XMLElement) -> XMLElement? {
+        for node in element.children ?? [] {
+            guard let child = node as? XMLElement else { continue }
+            if child.localName == localName { return child }
+            if child.localName == "ol" { continue }
+            if let found = firstLabelDescendant(localName, in: child) {
+                return found
+            }
+        }
+        return nil
     }
 
     private static func firstDescendant(_ localName: String,
@@ -148,7 +162,7 @@ enum NCXParser {
 
     private static func parsePoint(_ point: XMLElement) -> EPUBNavItem? {
         let label = point.wsFirst("navLabel", ns: XMLNamespace.ncx)?
-            .wsFirst("text", ns: XMLNamespace.ncx)?.normalizedText ?? ""
+            .wsFirst("text", ns: XMLNamespace.ncx)?.readableText ?? ""
         let src = point.wsFirst("content", ns: XMLNamespace.ncx)?.attr("src")
         guard !label.isEmpty || src != nil else { return nil }
         return EPUBNavItem(title: label, href: src)

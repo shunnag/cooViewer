@@ -55,11 +55,15 @@ struct PropertyResolver: Sendable {
     }
 
     /// 空白区切りの property リスト(manifest/itemref の properties 属性)
-    func canonicalizeList(_ list: String?) -> Set<String> {
+    func canonicalizeOrderedList(_ list: String?) -> [String] {
         guard let list else { return [] }
-        return Set(list.components(separatedBy: .whitespacesAndNewlines)
+        return list.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
-            .map(canonicalize))
+            .map(canonicalize)
+    }
+
+    func canonicalizeList(_ list: String?) -> Set<String> {
+        Set(canonicalizeOrderedList(list))
     }
 }
 
@@ -72,11 +76,17 @@ enum PackageDocumentParser {
         }
         let version = root.attr("version") ?? "3.0"
         let resolver = PropertyResolver(prefixAttribute: root.attr("prefix"))
+        let packageDirection = textDirection(root.attr("dir"))
+        let packageLanguage = xmlLanguage(root)
 
         guard let metadataElement = root.wsFirst("metadata", ns: XMLNamespace.opf) else {
             throw EPUBError.malformed("metadata 要素がない: \(containerPath)")
         }
-        var metadata = parseMetadata(metadataElement, resolver: resolver)
+        var metadata = parseMetadata(
+            metadataElement,
+            resolver: resolver,
+            packageDirection: packageDirection,
+            packageLanguage: packageLanguage)
         if let uniqueIDRef = root.attr("unique-identifier") {
             metadata.uniqueIdentifier = metadata.identifiers
                 .first { $0.id == uniqueIDRef }?.value
@@ -117,10 +127,15 @@ enum PackageDocumentParser {
         var itemRefs: [SpineItemRef] = []
         for element in spineElement.wsChildren("itemref", ns: XMLNamespace.opf) {
             guard let idref = element.attr("idref") else { continue }
+            // cooViewer-oxr.14: Set にする前の順序を保ち、重複する
+            // rendition オーバーライドの先頭を判定できるようにする。
+            let propertyList = resolver.canonicalizeOrderedList(
+                element.attr("properties"))
             itemRefs.append(SpineItemRef(
                 idref: idref,
                 linear: element.attr("linear")?.lowercased() != "no",
-                properties: resolver.canonicalizeList(element.attr("properties"))
+                properties: Set(propertyList),
+                propertyList: propertyList
             ))
         }
         let spine = EPUBSpine(
@@ -158,8 +173,19 @@ enum PackageDocumentParser {
     }
 
     private static func parseMetadata(
-        _ element: XMLElement, resolver: PropertyResolver) -> EPUBMetadata {
-        var metadata = EPUBMetadata()
+        _ element: XMLElement,
+        resolver: PropertyResolver,
+        packageDirection: EPUBTextDirection?,
+        packageLanguage: String?
+    ) -> EPUBMetadata {
+        // cooViewer-oxr.52: package から metadata へ継承した基底方向と言語を
+        // dc:title / dc:creator の要素固有属性より低い優先度で保持する。
+        let metadataDirection = textDirection(element.attr("dir"))
+            ?? packageDirection
+        let metadataLanguage = xmlLanguage(element) ?? packageLanguage
+        var metadata = EPUBMetadata(
+            direction: metadataDirection,
+            language: metadataLanguage)
         let children = flattenedChildren(element)
 
         // meta を先に集め、refines="#id" → id ごとの refine 辞書を作る
@@ -168,7 +194,11 @@ enum PackageDocumentParser {
             if let property = meta.attr("property") {
                 // EPUB 3 形式
                 let refines = meta.attr("refines").map { ref -> String in
-                    ref.hasPrefix("#") ? String(ref.dropFirst()) : ref
+                    // cooViewer-oxr.18: URI 参照は percent-decode してから
+                    // fragment マーカを除く(%23id / #id%31 の両方を許容)。
+                    let decoded = ref.removingPercentEncoding ?? ref
+                    return decoded.hasPrefix("#")
+                        ? String(decoded.dropFirst()) : decoded
                 }
                 metaItems.append(EPUBMetaItem(
                     property: resolver.canonicalize(property),
@@ -180,6 +210,21 @@ enum PackageDocumentParser {
                 // EPUB 2 形式(cover 等)
                 metaItems.append(EPUBMetaItem(
                     property: name, value: content, refines: nil, scheme: nil))
+            }
+        }
+
+        // cooViewer-oxr.37: EPUB Accessibility 1.0 では conformance と
+        // certifier credential を metadata/link の rel + href で表す。
+        for link in children where link.localName == "link" {
+            guard let rawHref = link.attr("href") else { continue }
+            let href = rawHref.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !href.isEmpty else { continue }
+            let relations = Set(resolver.canonicalizeOrderedList(link.attr("rel")))
+            if relations.contains("dcterms:conformsTo") {
+                metadata.accessibilityConformanceLinks.append(href)
+            }
+            if relations.contains("a11y:certifierCredential") {
+                metadata.accessibilityCertifierCredentialLinks.append(href)
             }
         }
         var refinesByID: [String: [EPUBMetaItem]] = [:]
@@ -207,7 +252,10 @@ enum PackageDocumentParser {
                     type: refine(id, "title-type"),
                     fileAs: refine(id, "file-as")
                         ?? child.attr("file-as", ns: XMLNamespace.opf, prefix: "opf"),
-                    displaySeq: refine(id, "display-seq").flatMap(Int.init)
+                    displaySeq: refine(id, "display-seq").flatMap(Int.init),
+                    direction: textDirection(child.attr("dir"))
+                        ?? metadata.direction,
+                    language: xmlLanguage(child) ?? metadata.language
                 ))
             case "creator", "contributor":
                 let person = EPUBCreator(
@@ -216,7 +264,10 @@ enum PackageDocumentParser {
                         ?? child.attr("role", ns: XMLNamespace.opf, prefix: "opf"),
                     fileAs: refine(id, "file-as")
                         ?? child.attr("file-as", ns: XMLNamespace.opf, prefix: "opf"),
-                    displaySeq: refine(id, "display-seq").flatMap(Int.init)
+                    displaySeq: refine(id, "display-seq").flatMap(Int.init),
+                    direction: textDirection(child.attr("dir"))
+                        ?? metadata.direction,
+                    language: xmlLanguage(child) ?? metadata.language
                 )
                 if localName == "creator" {
                     metadata.creators.append(person)
@@ -247,26 +298,38 @@ enum PackageDocumentParser {
             }
         }
 
-        // display-seq に従って安定ソート(未指定は末尾・元順維持)
+        // cooViewer-oxr.49: display-seq は全要素に指定があるときだけ
+        // 安定ソートし、一部指定なら文書順を保つ(EPUB 3.3 D.3.5)。
         metadata.titles = stableOrdered(metadata.titles, seq: \.displaySeq)
         metadata.creators = stableOrdered(metadata.creators, seq: \.displaySeq)
 
         // 文書全体 meta(refines なし)の解釈
+        var seenRenditionProperties: Set<String> = []
         for item in metaItems where item.refines == nil {
             switch item.property {
             case "dcterms:modified":
                 if metadata.modified == nil { metadata.modified = item.value }
             case "rendition:layout":
+                // cooViewer-oxr.14: 文書全体の rendition meta は最初の
+                // 出現が優先される(EPUB 3.3 D.3)。
+                guard seenRenditionProperties.insert(item.property).inserted
+                else { continue }
                 metadata.rendition.layout =
                     RenditionLayout(rawValue: item.value) ?? .reflowable
             case "rendition:orientation":
+                guard seenRenditionProperties.insert(item.property).inserted
+                else { continue }
                 metadata.rendition.orientation =
                     RenditionOrientation(rawValue: item.value) ?? .auto
             case "rendition:spread":
+                guard seenRenditionProperties.insert(item.property).inserted
+                else { continue }
                 // 廃止値 portrait は both と等価に扱う(EPUB 3.3 §D.3.4)
                 metadata.rendition.spread = item.value == "portrait"
                     ? .both : (RenditionSpread(rawValue: item.value) ?? .auto)
             case "rendition:flow":
+                guard seenRenditionProperties.insert(item.property).inserted
+                else { continue }
                 metadata.rendition.flow =
                     RenditionFlow(rawValue: item.value) ?? .auto
             case "rendition:viewport":
@@ -283,6 +346,23 @@ enum PackageDocumentParser {
                                                   refinesByID: refinesByID) ?? []
         metadata.metaItems = metaItems
         return metadata
+    }
+
+    /// cooViewer-oxr.52: dir は列挙値として正規化し、不正値は親要素からの
+    /// 継承を妨げない。
+    private static func textDirection(_ rawValue: String?) -> EPUBTextDirection? {
+        rawValue.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }.flatMap(EPUBTextDirection.init(rawValue:))
+    }
+
+    /// cooViewer-oxr.52: FoundationXML の名前空間解決と、宣言漏れ EPUB の
+    /// 接頭辞付き属性フォールバックの双方で xml:lang を読む。
+    private static func xmlLanguage(_ element: XMLElement) -> String? {
+        element.attr(
+            "lang",
+            ns: "http://www.w3.org/XML/1998/namespace",
+            prefix: "xml")
     }
 
     /// belongs-to-collection の完全解決(meta 要素の id 属性が必要なため
@@ -308,17 +388,14 @@ enum PackageDocumentParser {
         return sawAny ? result : nil
     }
 
-    /// display-seq 指定付き要素を前に、指定順で並べる(未指定は元順のまま後ろ)
+    /// 全要素に display-seq がある場合だけ、指定順で並べる。
     private static func stableOrdered<T>(
         _ items: [T], seq: KeyPath<T, Int?>) -> [T] {
-        let withSeq = items.enumerated().filter { $0.element[keyPath: seq] != nil }
-        guard !withSeq.isEmpty else { return items }
-        let ordered = withSeq.sorted {
+        guard !items.isEmpty,
+              items.allSatisfy({ $0[keyPath: seq] != nil }) else { return items }
+        return items.enumerated().sorted {
             ($0.element[keyPath: seq] ?? 0, $0.offset)
                 < ($1.element[keyPath: seq] ?? 0, $1.offset)
         }.map(\.element)
-        let without = items.enumerated()
-            .filter { $0.element[keyPath: seq] == nil }.map(\.element)
-        return ordered + without
     }
 }

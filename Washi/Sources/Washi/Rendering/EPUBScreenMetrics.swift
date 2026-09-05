@@ -9,6 +9,10 @@ import Foundation
 /// settings, it uniquely derives the content dimensions, the spread flag,
 /// the gutter, and the options passed to `__washi.setup()`.
 public struct EPUBScreenMetrics: Sendable, Equatable {
+    /// Version of the pagination algorithm encoded in cache and census keys.
+    /// A change invalidates persisted measurements made by older engines.
+    public static let paginationVersion = 3
+
     /// Content dimensions after subtracting the margins (insets) — the
     /// actual WKWebView size.
     public let contentSize: CGSize
@@ -26,14 +30,17 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
     private let insets: EPUBReaderInsets
     private let spreadInsets: EPUBReaderInsets?
     private let columnMode: EPUBColumnMode
+    private let allowsScriptedContent: Bool
+    private let fontScale: Double
+    private let defaultFontCSS: String
 
     public init(viewportSize: CGSize, settings: EPUBReaderSettings) {
         self.init(viewportSize: viewportSize, settings: settings,
                   renditionSpread: .auto)
     }
 
-    /// Creates screen metrics while honoring the publication-wide
-    /// `rendition:spread` preference.
+    /// Creates screen metrics while honoring an effective `rendition:spread`
+    /// preference (publication-wide or item-specific).
     public init(viewportSize: CGSize, settings: EPUBReaderSettings,
                 renditionSpread: RenditionSpread) {
         self.init(
@@ -41,12 +48,15 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
             renditionSpread: renditionSpread,
             layoutCSS: settings.layoutAffectingCSS(),
             themedCSSLight: settings.composedUserCSS(isDark: false),
-            themedCSSDark: settings.composedUserCSS(isDark: true))
+            themedCSSDark: settings.composedUserCSS(isDark: true),
+            fontScale: settings.fontScale,
+            defaultFontCSS: settings.defaultFontCSS())
     }
 
     private init(viewportSize: CGSize, settings: EPUBReaderSettings,
                  renditionSpread: RenditionSpread, layoutCSS: String,
-                 themedCSSLight: String, themedCSSDark: String) {
+                 themedCSSLight: String, themedCSSDark: String,
+                 fontScale: Double, defaultFontCSS: String) {
         // 見開き判定は基準余白(insets)の内容幅で行う。モード別余白
         // (spreadInsets)を入れても見開き/単ページの切替閾値が揺れないように
         let base = settings.insets
@@ -71,6 +81,9 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
         insets = settings.insets
         spreadInsets = settings.spreadInsets
         columnMode = settings.columnMode
+        allowsScriptedContent = settings.allowsScriptedContent
+        self.fontScale = fontScale
+        self.defaultFontCSS = defaultFontCSS
     }
 
     /// 基準余白後の内容幅と viewport の向きから見開きを計画する
@@ -103,8 +116,8 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
         }
     }
 
-    /// Returns equivalent metrics with a publication-wide
-    /// `rendition:spread` preference applied.
+    /// Returns equivalent metrics with an effective `rendition:spread`
+    /// preference applied.
     public func applyingRenditionSpread(
         _ renditionSpread: RenditionSpread
     ) -> EPUBScreenMetrics {
@@ -113,10 +126,12 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
         settings.spreadInsets = spreadInsets
         settings.columnMode = columnMode
         settings.pageGap = gap
+        settings.allowsScriptedContent = allowsScriptedContent
         return EPUBScreenMetrics(
             viewportSize: viewportSize, settings: settings,
             renditionSpread: renditionSpread, layoutCSS: layoutCSS,
-            themedCSSLight: themedCSSLight, themedCSSDark: themedCSSDark)
+            themedCSSLight: themedCSSLight, themedCSSDark: themedCSSDark,
+            fontScale: fontScale, defaultFontCSS: defaultFontCSS)
     }
 
     /// 見開き時の中央ノド幅(Apple Books の版面比を目安に内容幅の約 7%)
@@ -140,6 +155,9 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
 
     private func optionsJSON(userCSS: String) -> String {
         let options: [String: Any] = [
+            // cooViewer-oxr.25: ページ割り規則が変わったリリースでは、旧 census
+            // を一度だけ無効化して同じ寸法でも再計測する。
+            "engine": Self.paginationVersion,
             "width": Double(contentSize.width.rounded(.down)),
             "height": Double(contentSize.height.rounded(.down)),
             "gap": gap,
@@ -147,10 +165,106 @@ public struct EPUBScreenMetrics: Sendable, Equatable {
             "gutter": gutter,
             "fixedLayout": false,
             "keysEnabled": false,
+            // cooViewer-oxr.60 / cooViewer-oxr.76 / cooViewer-oxr.77:
+            // runtime 計測値と著者 CSS より前の既定フォントを全描画経路で共有する。
+            "fontScale": fontScale,
+            "defaultFontCSS": defaultFontCSS,
+            // cooViewer-oxr.75: 著者スクリプトの有無で DOM・ページ数が変わるため、
+            // オフスクリーン構成と census キーの両方へ含める。
+            "allowsScriptedContent": allowsScriptedContent,
             "userCSS": userCSS,
+            // cooViewer-oxr.51: census はこの不透明な文脈から項目ごとの
+            // spread と実効余白を再計算する。JS は未知キーを安全に無視する。
+            "_washiMetrics": [
+                "viewportWidth": Double(viewportSize.width),
+                "viewportHeight": Double(viewportSize.height),
+                "singleTop": insets.top,
+                "singleLeft": insets.left,
+                "singleBottom": insets.bottom,
+                "singleRight": insets.right,
+                "spreadTop": (spreadInsets ?? insets).top,
+                "spreadLeft": (spreadInsets ?? insets).left,
+                "spreadBottom": (spreadInsets ?? insets).bottom,
+                "spreadRight": (spreadInsets ?? insets).right,
+                "columnMode": columnMode.rawValue,
+            ],
         ]
         let data = (try? JSONSerialization.data(
             withJSONObject: options, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    /// cooViewer-oxr.25: 永続化された census キーが現在のページ割り
+    /// エンジン用かを検証する。
+    static func usesCurrentPaginationVersion(_ metricsKey: String) -> Bool {
+        struct VersionEnvelope: Decodable { let engine: Int }
+        guard let data = metricsKey.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(
+                VersionEnvelope.self, from: data)
+        else { return false }
+        return envelope.engine == paginationVersion
+    }
+
+    /// cooViewer-oxr.75: setup JSON から著者スクリプト許可を復元する。
+    static func allowsScriptedContent(in optionsJSON: String) -> Bool {
+        guard let data = optionsJSON.data(using: .utf8),
+              let options = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        else { return false }
+        return options["allowsScriptedContent"] as? Bool ?? false
+    }
+
+    /// cooViewer-oxr.51: atlas/reader が共有する基底 JSON から、特定
+    /// itemref の spread を反映した setup と WebView 寸法を導出する。
+    static func setupPlan(
+        optionsJSON: String,
+        applying renditionSpread: RenditionSpread
+    ) -> (optionsJSON: String, contentSize: CGSize) {
+        guard let data = optionsJSON.data(using: .utf8),
+              var options = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        else { return (optionsJSON, .zero) }
+
+        func number(_ value: Any?) -> Double? {
+            (value as? NSNumber)?.doubleValue
+        }
+        let fallbackSize = CGSize(
+            width: number(options["width"]) ?? 0,
+            height: number(options["height"]) ?? 0)
+        guard let context = options["_washiMetrics"] as? [String: Any],
+              let viewportWidth = number(context["viewportWidth"]),
+              let viewportHeight = number(context["viewportHeight"]),
+              let singleTop = number(context["singleTop"]),
+              let singleLeft = number(context["singleLeft"]),
+              let singleBottom = number(context["singleBottom"]),
+              let singleRight = number(context["singleRight"]),
+              let spreadTop = number(context["spreadTop"]),
+              let spreadLeft = number(context["spreadLeft"]),
+              let spreadBottom = number(context["spreadBottom"]),
+              let spreadRight = number(context["spreadRight"]),
+              let rawColumnMode = number(context["columnMode"]),
+              let columnMode = EPUBColumnMode(rawValue: Int(rawColumnMode))
+        else { return (optionsJSON, fallbackSize) }
+
+        let baseContentWidth = max(1, viewportWidth - singleLeft - singleRight)
+        let usesSpread = usesSpread(
+            contentWidth: baseContentWidth,
+            columnMode: columnMode,
+            renditionSpread: renditionSpread,
+            isLandscapeViewport: viewportWidth > viewportHeight)
+        let horizontalInsets = usesSpread
+            ? spreadLeft + spreadRight : singleLeft + singleRight
+        let verticalInsets = usesSpread
+            ? spreadTop + spreadBottom : singleTop + singleBottom
+        let size = CGSize(width: max(1, viewportWidth - horizontalInsets),
+                          height: max(1, viewportHeight - verticalInsets))
+        options["width"] = Double(size.width.rounded(.down))
+        options["height"] = Double(size.height.rounded(.down))
+        options["spread"] = usesSpread
+        options["gutter"] = Double(spreadGutter(forContentWidth: size.width))
+        guard let derived = try? JSONSerialization.data(
+            withJSONObject: options, options: [.sortedKeys])
+        else { return (optionsJSON, fallbackSize) }
+        return (String(data: derived, encoding: .utf8) ?? optionsJSON, size)
     }
 }

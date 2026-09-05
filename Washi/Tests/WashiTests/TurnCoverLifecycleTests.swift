@@ -43,7 +43,10 @@ final class TurnCoverLifecycleTests: XCTestCase {
         let a = makeCover()
         view.installTurnCover(a, pending: false)  // 孤児(pending でない)
         view.scheduleSpineTurnTimeout(for: a, after: .milliseconds(30))
-        try? await Task.sleep(for: .milliseconds(90))
+        guard let timeout = view.spineTurnTimeouts[ObjectIdentifier(a)] else {
+            return XCTFail("時間切れタスクが登録されていない")
+        }
+        await timeout.value
         XCTAssertNil(a.superview, "所有権を失った孤児も時間切れで回収される")
         XCTAssertFalse(view.turnOverlays.contains { $0 === a })
     }
@@ -54,9 +57,12 @@ final class TurnCoverLifecycleTests: XCTestCase {
         view.installTurnCover(a, pending: false)
         view.scheduleSpineTurnTimeout(for: a, after: .milliseconds(30))
         // runTurnEffect 冒頭のキャンセルを模擬(演出中に引き剥がされないこと)
-        view.spineTurnTimeouts[ObjectIdentifier(a)]?.cancel()
+        guard let timeout = view.spineTurnTimeouts[ObjectIdentifier(a)] else {
+            return XCTFail("時間切れタスクが登録されていない")
+        }
+        timeout.cancel()
         view.spineTurnTimeouts[ObjectIdentifier(a)] = nil
-        try? await Task.sleep(for: .milliseconds(90))
+        await timeout.value
         XCTAssertTrue(view.turnOverlays.contains { $0 === a }, "演出中はカバーが残る")
     }
 

@@ -29,6 +29,10 @@ public enum EPUBError: Error, Sendable, Equatable, LocalizedError {
     case malformed(String)
     /// The named resource does not exist in the container.
     case resourceNotFound(String)
+    /// The named resource exists, but the container could not read it.
+    /// `reason` is an English, human-readable explanation from the container
+    /// backend.
+    case containerReadFailed(path: String, reason: String)
     /// The content is DRM-protected with a scheme Washi cannot decrypt.
     /// `scheme` names the detected DRM (e.g. "Readium LCP").
     case drmProtected(scheme: String)
@@ -41,6 +45,8 @@ public enum EPUBError: Error, Sendable, Equatable, LocalizedError {
             return "Malformed EPUB: \(detail)"
         case .resourceNotFound(let path):
             return "Resource not found in the EPUB: \(path)"
+        case .containerReadFailed(let path, let reason):
+            return "Could not read EPUB container resource \(path): \(reason)"
         case .drmProtected(let scheme):
             return "This book is DRM-protected (\(scheme)) and cannot be opened."
         }
@@ -72,6 +78,12 @@ struct ZipContainerReader: ContainerReader {
             return try archive.data(forEntry: path)
         } catch ZipError.entryNotFound {
             throw EPUBError.resourceNotFound(path)
+        } catch let error as ZipError {
+            // cooViewer-oxr.17: ZIP 実装の詳細型を ContainerReader 境界から
+            // 漏らさず、呼び出し側がパスと英語の理由を一緒に報告できる形へ写す。
+            throw EPUBError.containerReadFailed(
+                path: path,
+                reason: error.errorDescription ?? "Unknown ZIP read failure")
         }
     }
 }

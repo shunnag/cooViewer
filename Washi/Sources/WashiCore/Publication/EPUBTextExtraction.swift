@@ -1,5 +1,21 @@
 import Foundation
 
+/// Options that control EPUB full-text search comparison.
+public struct EPUBSearchOptions: OptionSet, Sendable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    /// Require matching letter case.
+    public static let caseSensitive = EPUBSearchOptions(rawValue: 1 << 0)
+    /// Require matching diacritics.
+    public static let diacriticSensitive = EPUBSearchOptions(rawValue: 1 << 1)
+    /// Require character widths to match exactly.
+    public static let widthSensitive = EPUBSearchOptions(rawValue: 1 << 2)
+}
+
 /// A full-text search hit within a publication.
 public struct EPUBSearchHit: Sendable, Equatable {
     /// Index of the spine item (reading-order position) containing the match.
@@ -9,14 +25,33 @@ public struct EPUBSearchHit: Sendable, Equatable {
     public let characterOffset: Int
     /// Length of the matched text, in characters.
     public let length: Int
+    /// Match range in the extracted text, measured in UTF-16 code units.
+    public let utf16Range: Range<Int>
     /// A short excerpt of surrounding text, with the match in the middle.
     public let snippet: String
 
+    /// Creates a hit using character-based offsets.
+    ///
+    /// The UTF-16 range is derived from the supplied offset and length. Use
+    /// ``init(spineIndex:characterOffset:length:utf16Range:snippet:)`` when the
+    /// source text contains characters represented by multiple UTF-16 units.
     public init(spineIndex: Int, characterOffset: Int,
                 length: Int, snippet: String) {
+        let (sum, overflow) = characterOffset.addingReportingOverflow(length)
+        let upperBound = length <= 0 ? characterOffset : (overflow ? Int.max : sum)
+        self.init(spineIndex: spineIndex, characterOffset: characterOffset,
+                  length: length,
+                  utf16Range: characterOffset..<upperBound,
+                  snippet: snippet)
+    }
+
+    /// Creates a hit with both character-based and UTF-16 offsets.
+    public init(spineIndex: Int, characterOffset: Int, length: Int,
+                utf16Range: Range<Int>, snippet: String) {
         self.spineIndex = spineIndex
         self.characterOffset = characterOffset
         self.length = length
+        self.utf16Range = utf16Range
         self.snippet = snippet
     }
 }
@@ -38,13 +73,27 @@ extension EPUBPublication {
         guard readingOrder.indices.contains(index) else {
             throw EPUBError.resourceNotFound("spine index \(index)")
         }
-        let (data, _) = try resource(at: readingOrder[index].containerPath)
-        guard let document = try? WashiXML.document(from: data),
-              let root = document.rootElement() else { return "" }
-        let body = Self.firstDescendant("body", in: root) ?? root
-        var text = ""
-        Self.appendPlainText(of: body, into: &text)
-        return Self.collapsingWhitespace(text)
+        return try cachedExtractedText(forSpineIndex: index) {
+            let entry = readingOrder[index]
+            let mediaType = entry.resolvedItem.mediaType
+                .split(separator: ";", maxSplits: 1)
+                .first.map {
+                    String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+                        .lowercased()
+                } ?? ""
+            // cooViewer-oxr.10: 非 XML spine は解析せず空本文として扱う。
+            guard Self.textExtractableMediaTypes.contains(mediaType) else {
+                return ""
+            }
+            // cooViewer-oxr.16: 本文も spine 宣言元ではなく描画用 fallback から得る。
+            let (data, _) = try resource(at: entry.resolvedContainerPath)
+            guard let document = try? WashiXML.document(from: data),
+                  let root = document.rootElement() else { return "" }
+            let body = Self.firstDescendant("body", in: root) ?? root
+            var text = ""
+            Self.appendPlainText(of: body, into: &text)
+            return Self.collapsingWhitespace(text)
+        }
     }
 
     /// A fast, WebKit-free estimate of each spine item's page count, based on
@@ -73,14 +122,11 @@ extension EPUBPublication {
     /// Searches the whole publication for a substring, in reading order.
     ///
     /// Each spine item is extracted with ``extractText(forSpineIndex:)`` and
-    /// scanned for `query`. Matching is case- and diacritic-insensitive and
-    /// width-insensitive (full-width and half-width forms compare equal), which
-    /// suits Japanese text. Half-width voiced kana (for example `ｶﾞ`) are
-    /// compatibility-folded so they match full-width text in either direction.
-    /// Returns every occurrence.
+    /// scanned for `query`. The default comparison is case-, diacritic-, and
+    /// width-insensitive. Returns every occurrence.
     ///
-    /// This runs on the calling context and reads/parses every item; for a
-    /// large book prefer calling it off the main actor.
+    /// This runs on the calling context; uncached content items are parsed on
+    /// first use, so for a large book prefer calling it off the main actor.
     /// If the current task is cancelled, it stops early and returns the hits
     /// found so far.
     ///
@@ -91,10 +137,29 @@ extension EPUBPublication {
     /// - Returns: hits ordered by spine index, then by offset.
     public func search(_ query: String,
                        snippetRadius: Int = 24) -> [EPUBSearchHit] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        search(query, options: [], snippetRadius: snippetRadius)
+    }
+
+    /// Searches the whole publication using configurable comparison options.
+    ///
+    /// Half-width voiced kana (for example `ｶﾞ`) are compatibility-folded when
+    /// width-sensitive comparison is not requested. Search whitespace is
+    /// normalized in the same way as extracted inline text, so ideographic and
+    /// nonbreaking spaces match ordinary spaces.
+    ///
+    /// - Parameters:
+    ///   - query: the text to find. Empty or whitespace-only returns no hits.
+    ///   - options: comparison sensitivities. An empty set preserves the
+    ///     default case-, diacritic-, and width-insensitive behavior.
+    ///   - snippetRadius: how many characters of context to include on each
+    ///     side of a match in ``EPUBSearchHit/snippet``.
+    /// - Returns: hits ordered by spine index, then by offset.
+    public func search(_ query: String, options: EPUBSearchOptions,
+                       snippetRadius: Int = 24) -> [EPUBSearchHit] {
+        // cooViewer-oxr.11: 本文と同じ正規化を使い、段落改行も同じ形で保つ。
+        let needle = Self.collapsingWhitespace(query)
         guard !needle.isEmpty else { return [] }
-        // 負の radius はスニペットの範囲(lower..<upper)を反転させてトラップ
-        // するため、公開入口で非負にクランプする(0 = ヒット語のみ)
+        // cooViewer-oxr.11: 負の radius は範囲を反転させるため非負へ丸める。
         let radius = max(0, snippetRadius)
         var hits: [EPUBSearchHit] = []
         for index in readingOrder.indices {
@@ -104,14 +169,14 @@ extension EPUBPublication {
                   !text.isEmpty else { continue }
             hits.append(contentsOf: Self.matches(
                 of: needle, in: text, spineIndex: index,
-                snippetRadius: radius))
+                options: options, snippetRadius: radius))
         }
         return hits
     }
 
     // MARK: - 実装(内部コメントは日本語)
 
-    /// 検索用の 1 文字畳み込み。半角濁点カナ(ｶﾞ 等)は 1 書記素で、
+    /// cooViewer-oxr.11: 検索用の 1 文字畳み込み。半角濁点カナ(ｶﾞ 等)は 1 書記素で、
     /// widthInsensitive では全角(ガ)に畳まれず取りこぼす。全角/半角形ブロック
     /// (U+FF00–FFEF)を含む文字だけ NFKC で畳んで全角化する(1 文字に畳める
     /// ものだけ。稀な合字は 1:1 を保つためそのまま)。他の文字は素通しなので、
@@ -123,24 +188,44 @@ extension EPUBPublication {
         return n.count == 1 ? n.first! : c
     }
 
-    /// query の出現位置を全て返す。比較は大小・濁点・全半角・半角濁点カナを
+    /// cooViewer-oxr.11: query の出現位置を全て返す。比較指定に応じて大小・
+    /// 濁点・全半角・半角濁点カナを
     /// 無視する。畳み込みは 1 文字→1 文字なので、畳み文字列上のオフセットは
     /// 元テキストのオフセットにそのまま一致する(写像不要)
     private static func matches(of needle: String, in text: String,
                                 spineIndex: Int,
+                                options searchOptions: EPUBSearchOptions,
                                 snippetRadius: Int) -> [EPUBSearchHit] {
         let chars = Array(text)
-        let foldedText = String(chars.map(Self.foldForSearch))
-        let foldedNeedle = String(Array(needle).map(Self.foldForSearch))
+        let widthSensitive = searchOptions.contains(.widthSensitive)
+        let foldedText = widthSensitive
+            ? text : String(chars.map(Self.foldForSearch))
+        let foldedNeedle = widthSensitive
+            ? needle : String(Array(needle).map(Self.foldForSearch))
         guard !foldedNeedle.isEmpty else { return [] }
-        let options: String.CompareOptions =
-            [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+        var comparisonOptions: String.CompareOptions = []
+        if !searchOptions.contains(.caseSensitive) {
+            comparisonOptions.insert(.caseInsensitive)
+        }
+        if !searchOptions.contains(.diacriticSensitive) {
+            comparisonOptions.insert(.diacriticInsensitive)
+        }
+        if !widthSensitive {
+            comparisonOptions.insert(.widthInsensitive)
+        }
+        // cooViewer-oxr.11: 文字位置と UTF-16 位置を同時に返すため前方和を作る。
+        var utf16Offsets: [Int] = [0]
+        utf16Offsets.reserveCapacity(chars.count + 1)
+        for character in chars {
+            utf16Offsets.append(utf16Offsets.last! + String(character).utf16.count)
+        }
         var hits: [EPUBSearchHit] = []
         var searchStart = foldedText.startIndex
         // オフセットは前回マッチ末尾からの距離だけ足して増分計算(毎回
         // startIndex から数え直すと高頻度クエリ×長い項目で O(M·n) になる)
         var baseOffset = 0
-        while let range = foldedText.range(of: foldedNeedle, options: options,
+        while let range = foldedText.range(of: foldedNeedle,
+                                           options: comparisonOptions,
                                            range: searchStart..<foldedText.endIndex) {
             let offset = baseOffset
                 + foldedText.distance(from: searchStart, to: range.lowerBound)
@@ -150,9 +235,12 @@ extension EPUBPublication {
             let lower = max(0, offset - snippetRadius)
             let upper = min(chars.count, offset + length + snippetRadius)
             let snippet = String(chars[lower..<upper])
+            let utf16Range = utf16Offsets[offset]..<utf16Offsets[offset + length]
             hits.append(EPUBSearchHit(spineIndex: spineIndex,
                                       characterOffset: offset,
-                                      length: length, snippet: snippet))
+                                      length: length,
+                                      utf16Range: utf16Range,
+                                      snippet: snippet))
             // 次の探索は今回のマッチ末尾から(ゼロ幅は起きない=needle 非空)
             searchStart = range.upperBound
             baseOffset = offset + length
@@ -160,16 +248,10 @@ extension EPUBPublication {
         return hits
     }
 
-    /// 要素配下のテキストを、改行を挿む要素境界を尊重しつつ連結する。
-    /// script/style は捨て、ルビの読み(rt/rp)は本文から除く
+    /// cooViewer-oxr.89/92: 要素配下のテキストを不可視要素と改行境界を
+    /// 尊重しつつ連結する。
     private static func appendPlainText(of element: XMLElement,
                                         into text: inout String) {
-        let skip: Set<String> = ["script", "style", "rt", "rp"]
-        let breaking: Set<String> = [
-            "p", "div", "br", "li", "tr", "section", "article", "blockquote",
-            "h1", "h2", "h3", "h4", "h5", "h6", "figure", "figcaption",
-            "table", "ul", "ol", "dl", "dd", "dt", "hr", "pre",
-        ]
         for node in element.children ?? [] {
             switch node.kind {
             case .text:
@@ -177,15 +259,18 @@ extension EPUBPublication {
             case .element:
                 guard let child = node as? XMLElement,
                       let name = child.localName else { continue }
-                if skip.contains(name) { continue }
+                if XMLElement.shouldSkipReadableTextElement(child) { continue }
                 // 改行の有無は UTF-16/UTF-8 のコード単位で見る(cooViewer-0ig):
                 // Character の hasSuffix("\n") は末尾が "\r\n"(1 書記素)のとき偽になり、
                 // JS 側の UTF-16 単位の地図と改行数がずれる
-                if breaking.contains(name), text.utf8.last != UInt8(ascii: "\n") {
+                let normalizedName = name.lowercased()
+                if plainTextBreakingElementNames.contains(normalizedName),
+                   text.utf8.last != UInt8(ascii: "\n") {
                     text += "\n"
                 }
                 appendPlainText(of: child, into: &text)
-                if breaking.contains(name), text.utf8.last != UInt8(ascii: "\n") {
+                if plainTextBreakingElementNames.contains(normalizedName),
+                   text.utf8.last != UInt8(ascii: "\n") {
                     text += "\n"
                 }
             default:
@@ -215,4 +300,18 @@ extension EPUBPublication {
         return result.joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    // cooViewer-oxr.10: 再帰ごとの Set 再構築を避ける。
+    private static let plainTextBreakingElementNames: Set<String> = [
+        "p", "div", "br", "li", "tr", "td", "th", "caption", "section",
+        "article", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
+        "figure", "figcaption", "table", "ul", "ol", "dl", "dd", "dt",
+        "hr", "pre",
+    ]
+
+    // cooViewer-oxr.10: spine の本文解析対象を EPUB 内容文書へ限定する。
+    private static let textExtractableMediaTypes: Set<String> = [
+        "application/xhtml+xml", "text/html", "image/svg+xml",
+    ]
+
 }

@@ -73,8 +73,7 @@ final class NavigationTests: XCTestCase {
     }
 
     /// HTML 実体(&nbsp;)混じりでも救済パースできる。
-    /// NBSP は normalizedText の空白正規化で通常スペースになる(RS の
-    /// メタデータ空白正規化と同じ扱い)
+    /// cooViewer-oxr.7: NBSP は可読テキストの空白正規化で通常スペースになる
     func testEntitySanitization() throws {
         let xhtml = """
         <?xml version="1.0"?>
@@ -88,5 +87,87 @@ final class NavigationTests: XCTestCase {
         let navigation = try NavigationDocumentParser.parse(
             data: Data(xhtml.utf8), at: "nav.xhtml")
         XCTAssertEqual(navigation.toc[0].title, "第一章 晩年")
+    }
+
+    /// cooViewer-oxr.7: ruby の読みと括弧は目次タイトルへ混入させない
+    func testNavTitleDropsRubyReading() throws {
+        let xhtml = """
+        <?xml version="1.0"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"
+              xmlns:epub="http://www.idpf.org/2007/ops"><body>
+          <nav epub:type="toc"><ol>
+            <li><a href="c1.xhtml">第一章<ruby>草枕<rp>（</rp><rt>くさまくら</rt><rp>）</rp></ruby></a></li>
+          </ol></nav>
+        </body></html>
+        """
+        let navigation = try NavigationDocumentParser.parse(
+            data: Data(xhtml.utf8), at: "nav.xhtml")
+        XCTAssertEqual(navigation.toc[0].title, "第一章草枕")
+    }
+
+    /// cooViewer-oxr.7: NCX のラベルも nav と同じ可読テキスト規則で読む
+    func testNCXTitleUsesReadableText() throws {
+        let ncx = """
+        <?xml version="1.0"?>
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+          <navMap><navPoint id="chapter-1">
+            <navLabel><text>第一章　<ruby>草枕<rt>くさまくら</rt></ruby></text></navLabel>
+            <content src="c1.xhtml"/>
+          </navPoint></navMap>
+        </ncx>
+        """
+        let navigation = try NCXParser.parse(
+            data: Data(ncx.utf8), at: "toc.ncx")
+        XCTAssertEqual(navigation.toc[0].title, "第一章　草枕")
+    }
+
+    /// cooViewer-oxr.7: XML 空白ではない全角空白は目次タイトルに保持する
+    func testNavTitlePreservesIdeographicSpace() throws {
+        let xhtml = """
+        <?xml version="1.0"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"
+              xmlns:epub="http://www.idpf.org/2007/ops"><body>
+          <nav epub:type="toc"><ol>
+            <li><a href="c1.xhtml">第一章　草枕</a></li>
+          </ol></nav>
+        </body></html>
+        """
+        let navigation = try NavigationDocumentParser.parse(
+            data: Data(xhtml.utf8), at: "nav.xhtml")
+        XCTAssertEqual(navigation.toc[0].title, "第一章　草枕")
+    }
+
+    /// cooViewer-oxr.7: 非テキスト目次は最初の画像の alt をタイトルに使う
+    func testNavTitleFallsBackToImageAlt() throws {
+        let xhtml = """
+        <?xml version="1.0"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"
+              xmlns:epub="http://www.idpf.org/2007/ops"><body>
+          <nav epub:type="toc"><ol>
+            <li><a href="c1.xhtml" aria-label="リンク名"><img src="chapter.png" alt="第一章" title="画像名"/></a></li>
+          </ol></nav>
+        </body></html>
+        """
+        let navigation = try NavigationDocumentParser.parse(
+            data: Data(xhtml.utf8), at: "nav.xhtml")
+        XCTAssertEqual(navigation.toc[0].title, "第一章")
+    }
+
+    /// cooViewer-oxr.7: span の順序や wrapper にかかわらず a を優先する
+    func testNavPrefersAnchorOverSpanAndFindsWrappedAnchor() throws {
+        let xhtml = """
+        <?xml version="1.0"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"
+              xmlns:epub="http://www.idpf.org/2007/ops"><body>
+          <nav epub:type="toc"><ol>
+            <li><a href="direct.xhtml">正しい見出し</a><span>誤った見出し</span></li>
+            <li><span>誤った wrapper 見出し</span><div><a href="wrapped.xhtml">wrapper 内の見出し</a></div></li>
+          </ol></nav>
+        </body></html>
+        """
+        let navigation = try NavigationDocumentParser.parse(
+            data: Data(xhtml.utf8), at: "nav.xhtml")
+        XCTAssertEqual(navigation.toc.map(\.title), ["正しい見出し", "wrapper 内の見出し"])
+        XCTAssertEqual(navigation.toc.map(\.href), ["direct.xhtml", "wrapped.xhtml"])
     }
 }

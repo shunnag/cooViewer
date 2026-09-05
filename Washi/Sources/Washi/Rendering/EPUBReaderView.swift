@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import WebKit
 
 enum SpineNavigationDisposition: Equatable {
@@ -32,6 +33,55 @@ struct SpineNavigationGate {
     }
 }
 
+/// cooViewer-oxr.47: WebContent 終了の再試行回数とバックオフを spine ごとに
+/// 決定し、短時間のクラッシュループを有限にする。
+struct WebContentReloadLimiter {
+    enum Decision: Equatable {
+        case reload(after: Duration)
+        case suppress(reportFailure: Bool)
+    }
+
+    private struct Entry {
+        var terminations: [Date] = []
+        var didReportFailure = false
+    }
+
+    private var entries: [Int: Entry] = [:]
+    private let window: TimeInterval
+    private let delays: [Duration]
+
+    init(window: TimeInterval = 60,
+         delays: [Duration] = [.zero, .milliseconds(250), .seconds(1)]) {
+        self.window = window
+        self.delays = delays
+    }
+
+    mutating func register(spineIndex: Int, at now: Date = Date()) -> Decision {
+        var entry = entries[spineIndex] ?? Entry()
+        entry.terminations.removeAll {
+            now.timeIntervalSince($0) >= window || now < $0
+        }
+        if entry.terminations.isEmpty {
+            entry.didReportFailure = false
+        }
+        entry.terminations.append(now)
+
+        let attempt = entry.terminations.count
+        guard attempt <= delays.count else {
+            let shouldReport = !entry.didReportFailure
+            entry.didReportFailure = true
+            entries[spineIndex] = entry
+            return .suppress(reportFailure: shouldReport)
+        }
+        entries[spineIndex] = entry
+        return .reload(after: delays[attempt - 1])
+    }
+
+    mutating func reset() {
+        entries.removeAll()
+    }
+}
+
 /// An EPUB reader view (WKWebView-based).
 /// Reflowable content is drawn via `ReaderScripts` pagination; fixed-layout
 /// content is aspect-fitted into its ICB (pageZoom + frame adjustment).
@@ -39,28 +89,55 @@ struct SpineNavigationGate {
 /// background), which keeps the CSS multicol coordinate math simple.
 @MainActor
 public final class EPUBReaderView: NSView {
+    private static let logger = Logger(
+        subsystem: "org.cocoadialog.Washi", category: "EPUBReaderView")
+
     public private(set) var publication: EPUBPublication?
     public weak var delegate: (any EPUBReaderViewDelegate)?
+
+    /// The current normalized text selection, or `nil` when the selection is
+    /// empty or collapsed.
+    public private(set) var currentSelection: EPUBTextSelection?
+
+    /// Print page labels declared by the publication's page list, in document
+    /// order.
+    public var printPageLabels: [String] {
+        flattenedPrintPageList.map(\.title)
+    }
+
+    /// The last print page marker at or before the settled reading position.
+    public private(set) var currentPrintPage: String?
 
     public var settings = EPUBReaderSettings() {
         didSet {
             guard oldValue != settings else { return }
+            let layoutChanged = layoutKey(for: oldValue) != layoutKey(for: settings)
             applyTheme()
+            updateAccessibilityMetadata()
+            if oldValue.announcesPageChanges && !settings.announcesPageChanges {
+                accessibilityAnnouncementTask?.cancel()
+                accessibilityAnnouncementTask = nil
+            }
             if oldValue.forwardsKeyEventsNatively
                 != settings.forwardsKeyEventsNatively {
                 updateNativeKeyMonitor()
             }
+            if oldValue.handlesKeyboardNavigation
+                != settings.handlesKeyboardNavigation {
+                // cooViewer-oxr.24: setup 後の切替も現在の文書へ即時反映する。
+                evaluate("__washi.setKeysEnabled(\(settings.handlesKeyboardNavigation));")
+            }
+            if oldValue.defersTapsForDoubleClick
+                != settings.defersTapsForDoubleClick {
+                // cooViewer-oxr.27: ページ割りを伴わない入力設定も現在文書へ即時反映する。
+                updateTapDeferral()
+            }
             if oldValue.allowsScriptedContent != settings.allowsScriptedContent {
                 // JS 許可はビュー構成ごと作り直す(WKWebViewConfiguration は不変)
                 reloadCurrentPublication()
-            } else if oldValue.fontScale != settings.fontScale
-                        || oldValue.pageGap != settings.pageGap
-                        || oldValue.insets != settings.insets
-                        || oldValue.spreadInsets != settings.spreadInsets
-                        || oldValue.columnMode != settings.columnMode
-                        || oldValue.defaultFontFamily != settings.defaultFontFamily {
-                // ページ割りに影響する変更のみ再ページ割り(余白は webView
-                // フレームにも効かせる)
+            } else if layoutChanged {
+                // cooViewer-oxr.24: 個別フィールド列挙ではなく census と同じ
+                // 導出キーを正とし、userCSS を含む変更漏れを防ぐ。
                 needsLayout = true
                 schedulePagination(preserveProgression: true)
             } else {
@@ -75,22 +152,60 @@ public final class EPUBReaderView: NSView {
     private var schemeHandler: EPUBSchemeHandler?
     private var messageProxy: MessageProxy?
 
+    private struct PrintPageMarker: Equatable {
+        let label: String
+        let page: Int
+    }
+    private var printPageMarkers: [PrintPageMarker] = []
+
+    /// cooViewer-oxr.37: テストは VoiceOver プロセスへ依存せず、確定した
+    /// アナウンス文字列をこの seam で捕捉する。
+    var accessibilityAnnouncementHandler: ((String) -> Void)?
+    var accessibilityAnnouncementDelay: Duration = .milliseconds(150)
+    var accessibilityPreferredLanguageOverride: String?
+    var accessibilityIncreaseContrastOverride: Bool? {
+        didSet { accessibilityDisplayOptionsDidChange() }
+    }
+    var accessibilityDifferentiateWithoutColorOverride: Bool? {
+        didSet { accessibilityDisplayOptionsDidChange() }
+    }
+    private var accessibilityAnnouncementTask: Task<Void, Never>?
+    private struct SettledPageIdentity: Equatable {
+        let spineIndex: Int
+        let page: Int
+        let pageCount: Int
+    }
+    private var lastAnnouncedPage: SettledPageIdentity?
+
     /// ノンブル(各ページの下部中央に素のページ番号。Apple Books 風)。
     /// 見開き時は左右 1 つずつ、単ページ時は先頭だけ使う
     private let pageNumberLabels = [NSTextField(labelWithString: ""),
                                     NSTextField(labelWithString: "")]
     /// 現在ページが「画像 1 枚だけのページ」(表紙等)か。ノンブルを隠す
     private var isImagePage = false
-    /// Number of pages per screen (1 = single page / 2 = spread; from the
-    /// setup result). Exposed read-only so the host can use it as the basis
-    /// for a spread toggle (columnMode).
+    /// Run-time number of pages per screen (1 = single page / 2 = spread).
+    /// Single-image pages report 1 even in spread mode; use
+    /// ``plannedPagesPerScreen`` or ``toggleColumnMode()`` for a spread toggle.
     public private(set) var pagesPerScreen = 1
+
+    /// Whether this WebKit supports the column-axis feature required for
+    /// vertical two-page spreads. Unsupported engines fall back to one page.
+    public private(set) var columnAxisSupported = true
+    /// JS が実測した先頭読書スロット。OPF の綴じ方向と本文 CSS が食い違う本でも、
+    /// 可視ページとネイティブのノンブルを同じ側へ置く(cooViewer-oxr.58)。
+    private var firstPageOnRight = false
 
     /// Current position
     public private(set) var currentSpineIndex = 0
     public private(set) var pageInItem = 0
     public private(set) var pageCountInItem = 1
     private var isFixedLayoutItem = false
+
+    /// Whether a previously recorded navigation position is available.
+    public private(set) var canGoBack = false
+    /// cooViewer-oxr.31: ページめくりとは分離したジャンプ履歴を有限に保つ。
+    private var navigationHistory: [EPUBLocator] = []
+    private static let navigationHistoryLimit = 50
 
     /// 読み込み完了時に適用する表示位置
     private enum PendingTarget {
@@ -133,12 +248,27 @@ public final class EPUBReaderView: NSView {
     private var pendingRepaginate = false
     private var repaginateWork: Task<Void, Never>?
     private var lastLaidOutSize: CGSize = .zero
+    /// cooViewer-oxr.54: 不可視中に畳んだレイアウトを、再表示時に一度だけ行う。
+    private var pendingVisibleLayout = false
     /// 復元先(復元完了まで currentLocator の答えとして使う。復元前の保存で
     /// 位置が (0,0) に潰れるのを防ぐ)
     private var pendingRestoreLocator: EPUBLocator?
     /// FXL の viewport キャッシュ(layoutFixedItem がリサイズ毎に XHTML を
     /// 再パースしないため)
     private var fxlViewportCache: [Int: CGSize] = [:]
+    /// cooViewer-oxr.50: device-* viewport は寸法でなく種別だけをキャッシュし、
+    /// 実寸は毎回現在の表示領域から取る。
+    private var fxlDeviceSizedViewportItems: Set<Int> = []
+
+    /// WebContent 終了の再読み込みは同一 spine の短時間ループを有限にする。
+    private var webContentReloadLimiter = WebContentReloadLimiter()
+    private var pendingWebContentReloadDelay: Duration?
+    private var webContentReloadTask: Task<Void, Never>?
+    private(set) var webContentReloadRequestCount = 0
+    private(set) var webContentReloadAttemptCount = 0
+    var hasPendingWebContentReload: Bool {
+        webContentReloadTask != nil || pendingWebContentReloadDelay != nil
+    }
 
     static let washiWorld = WKContentWorld.world(name: "washi")  // census と共用
 
@@ -163,6 +293,46 @@ public final class EPUBReaderView: NSView {
     /// forwarding and for `makeFirstResponder` on mode switches).
     public override var acceptsFirstResponder: Bool { true }
 
+    /// Routes a key received by the container through the same keyboard
+    /// settings contract used by its web view.
+    public override func keyDown(with event: NSEvent) {
+        // cooViewer-oxr.80: コンテナが responder の場合もキーを取りこぼさない。
+        guard !settings.handlesKeyboardNavigation else {
+            if let webView {
+                webView.keyDown(with: event)
+            } else {
+                super.keyDown(with: event)
+            }
+            return
+        }
+        let modifiers = event.modifierFlags
+        let (key, code) = Self.webKeyIdentity(for: event)
+        delegate?.readerView(self, didReceiveKey: EPUBKeyEvent(
+            key: key,
+            code: code,
+            shift: modifiers.contains(.shift),
+            option: modifiers.contains(.option),
+            control: modifiers.contains(.control),
+            command: modifiers.contains(.command)))
+    }
+
+    private static func webKeyIdentity(for event: NSEvent) -> (String, String) {
+        switch event.keyCode {
+        case 123: return ("ArrowLeft", "ArrowLeft")
+        case 124: return ("ArrowRight", "ArrowRight")
+        case 125: return ("ArrowDown", "ArrowDown")
+        case 126: return ("ArrowUp", "ArrowUp")
+        case 116: return ("PageUp", "PageUp")
+        case 121: return ("PageDown", "PageDown")
+        case 115: return ("Home", "Home")
+        case 119: return ("End", "End")
+        case 49: return (" ", "Space")
+        default:
+            let value = event.charactersIgnoringModifiers ?? event.characters ?? ""
+            return (value, value)
+        }
+    }
+
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         commonInit()
@@ -180,8 +350,18 @@ public final class EPUBReaderView: NSView {
             label.alignment = .center
             label.lineBreakMode = .byTruncatingTail
             label.isHidden = true
+            // cooViewer-oxr.37: ノンブルは独立要素にせず reader の value とする。
+            label.setAccessibilityElement(false)
             addSubview(label)
         }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        updateAccessibilityMetadata()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(accessibilityDisplayOptionsDidChange),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil)
         // ファイルドロップはホスト(delegate)に委ねる(「別の本を開く」等)
         registerForDraggedTypes([.fileURL])
         // ピンチ=フォント倍率(リフローの自然な拡大。認識器なら WKWebView 上の
@@ -189,6 +369,14 @@ public final class EPUBReaderView: NSView {
         addGestureRecognizer(NSMagnificationGestureRecognizer(
             target: self, action: #selector(handleMagnification(_:))))
         applyTheme()
+    }
+
+    @objc private func accessibilityDisplayOptionsDidChange() {
+        // cooViewer-oxr.37: 表示配慮は配色だけを差し替え、census/再ページ割りを
+        // 起動しない。テスト override の didSet も同じ経路へ入る。
+        applyTheme()
+        applyThemeCSSOnly()
+        updateAccessibilityMetadata()
     }
 
     // MARK: - ピンチ(フォント倍率)
@@ -249,9 +437,20 @@ public final class EPUBReaderView: NSView {
     }
 
     public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        guard let url = NSURL(from: sender.draggingPasteboard) as URL? else {
+        dispatchDroppedURL(from: sender.draggingPasteboard)
+    }
+
+    func dispatchDroppedURL(from pasteboard: NSPasteboard) -> Bool {
+        guard let url = NSURL(from: pasteboard) as URL? else {
             return false
         }
+        return dispatchDroppedURL(url)
+    }
+
+    /// cooViewer-oxr.84: URL pasteboard 型に紛れたネットワーク URL は、
+    /// ファイルを開く delegate 契約へ渡さない。
+    func dispatchDroppedURL(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
         return delegate?.readerView(self, didReceiveDroppedFileURL: url) ?? false
     }
 
@@ -267,6 +466,16 @@ public final class EPUBReaderView: NSView {
         }
     }
 
+    private var shouldIncreaseContrast: Bool {
+        accessibilityIncreaseContrastOverride
+            ?? NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+    }
+
+    private var shouldDifferentiateWithoutColor: Bool {
+        accessibilityDifferentiateWithoutColorOverride
+            ?? NSWorkspace.shared.accessibilityDisplayShouldDifferentiateWithoutColor
+    }
+
     public override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyTheme()
@@ -275,7 +484,8 @@ public final class EPUBReaderView: NSView {
 
     /// ネイティブ側(余白の背景・柱・ノンブルの色)へテーマを反映する
     private func applyTheme() {
-        let colors = settings.effectiveColors(isDark: isDarkEffective)
+        let colors = settings.effectiveColors(
+            isDark: isDarkEffective, increaseContrast: shouldIncreaseContrast)
         layer?.backgroundColor = Self.parseCSSColor(colors.background)
             ?? NSColor.textBackgroundColor.cgColor
         // ノンブルは紙の本らしく控えめなグレー
@@ -289,26 +499,175 @@ public final class EPUBReaderView: NSView {
     /// ページ側(Web コンテンツ)へ配色 CSS だけを差し替える(再ページ割りなし)
     private func applyThemeCSSOnly() {
         guard webView != nil else { return }
-        let css = settings.composedUserCSS(isDark: isDarkEffective)
-        let escaped = css
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "`", with: "\\`")
-            .replacingOccurrences(of: "$", with: "\\$")
-        evaluate("__washi.setUserCSS(`\(escaped)`);")
+        let css = settings.composedUserCSS(
+            isDark: isDarkEffective,
+            increaseContrast: shouldIncreaseContrast,
+            differentiateWithoutColor: shouldDifferentiateWithoutColor)
+        callWashiAsync("return __washi.setUserCSS(css);",
+                       arguments: ["css": css])
     }
 
-    /// "#rrggbb" / "#rgb" のみ解釈(それ以外はシステム色にフォールバック)
-    private static func parseCSSColor(_ css: String) -> CGColor? {
-        var hex = css.trimmingCharacters(in: .whitespaces)
-        guard hex.hasPrefix("#") else { return nil }
-        hex.removeFirst()
-        if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
-        guard hex.count == 6, let value = UInt32(hex, radix: 16) else { return nil }
-        return CGColor(
-            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
-            green: CGFloat((value >> 8) & 0xFF) / 255,
-            blue: CGFloat(value & 0xFF) / 255, alpha: 1)
+    /// cooViewer-oxr.27: opt-in 時だけシステムのダブルクリック間隔を JS へ渡す。
+    private func updateTapDeferral() {
+        let enabled = settings.defersTapsForDoubleClick
+        let interval = NSEvent.doubleClickInterval
+        let milliseconds = 1_000 * (interval > 0 ? interval : 0.5)
+        evaluate("__washi.setTapDeferral(\(enabled), \(milliseconds));")
     }
+
+    /// cooViewer-oxr.35: 一般的な CSS 色表記を解釈し、ネイティブ余白と
+    /// ページ CSS が同じ解決済み色を共有できるようにする。
+    static func parseCSSColor(_ css: String) -> CGColor? {
+        let value = css.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if value.hasPrefix("#") {
+            let source = String(value.dropFirst())
+            let expanded: String
+            switch source.count {
+            case 3, 4:
+                expanded = source.map { "\($0)\($0)" }.joined()
+            case 6, 8:
+                expanded = source
+            default:
+                return nil
+            }
+            guard let encoded = UInt64(expanded, radix: 16) else { return nil }
+            let hasAlpha = expanded.count == 8
+            let redShift = hasAlpha ? 24 : 16
+            let greenShift = hasAlpha ? 16 : 8
+            let blueShift = hasAlpha ? 8 : 0
+            let alpha = hasAlpha ? Double(encoded & 0xFF) / 255 : 1
+            return cssColor(red: Double((encoded >> redShift) & 0xFF) / 255,
+                            green: Double((encoded >> greenShift) & 0xFF) / 255,
+                            blue: Double((encoded >> blueShift) & 0xFF) / 255,
+                            alpha: alpha)
+        }
+
+        if let named = cssNamedColors[value] {
+            return cssColor(red: Double(named.0) / 255,
+                            green: Double(named.1) / 255,
+                            blue: Double(named.2) / 255,
+                            alpha: named.3)
+        }
+
+        guard let open = value.firstIndex(of: "("), value.hasSuffix(")") else {
+            return nil
+        }
+        let function = String(value[..<open])
+        let content = value[value.index(after: open)..<value.index(before: value.endIndex)]
+        let components = content
+            .replacingOccurrences(of: ",", with: " ")
+            .replacingOccurrences(of: "/", with: " ")
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+
+        if function == "rgb" || function == "rgba" {
+            guard components.count == 3 || components.count == 4,
+                  let red = cssRGBComponent(components[0]),
+                  let green = cssRGBComponent(components[1]),
+                  let blue = cssRGBComponent(components[2]),
+                  let alpha = components.count == 4
+                    ? cssAlphaComponent(components[3]) : 1
+            else { return nil }
+            return cssColor(red: red, green: green, blue: blue, alpha: alpha)
+        }
+
+        if function == "hsl" || function == "hsla" {
+            guard components.count == 3 || components.count == 4,
+                  let hue = cssHue(components[0]),
+                  let saturation = cssPercentage(components[1]),
+                  let lightness = cssPercentage(components[2]),
+                  let alpha = components.count == 4
+                    ? cssAlphaComponent(components[3]) : 1
+            else { return nil }
+            let chroma = (1 - abs(2 * lightness - 1)) * saturation
+            let sector = hue / 60
+            let x = chroma * (1 - abs(sector.truncatingRemainder(
+                dividingBy: 2) - 1))
+            let (r1, g1, b1): (Double, Double, Double)
+            switch sector {
+            case 0..<1: (r1, g1, b1) = (chroma, x, 0)
+            case 1..<2: (r1, g1, b1) = (x, chroma, 0)
+            case 2..<3: (r1, g1, b1) = (0, chroma, x)
+            case 3..<4: (r1, g1, b1) = (0, x, chroma)
+            case 4..<5: (r1, g1, b1) = (x, 0, chroma)
+            default: (r1, g1, b1) = (chroma, 0, x)
+            }
+            let match = lightness - chroma / 2
+            return cssColor(red: r1 + match, green: g1 + match,
+                            blue: b1 + match, alpha: alpha)
+        }
+        return nil
+    }
+
+    private static func cssColor(red: Double, green: Double, blue: Double,
+                                 alpha: Double) -> CGColor {
+        CGColor(srgbRed: CGFloat(min(1, max(0, red))),
+                green: CGFloat(min(1, max(0, green))),
+                blue: CGFloat(min(1, max(0, blue))),
+                alpha: CGFloat(min(1, max(0, alpha))))
+    }
+
+    private static func cssRGBComponent(_ value: String) -> Double? {
+        if value.hasSuffix("%") {
+            return cssPercentage(value)
+        }
+        guard let number = Double(value), number.isFinite else { return nil }
+        return min(255, max(0, number)) / 255
+    }
+
+    private static func cssAlphaComponent(_ value: String) -> Double? {
+        if value.hasSuffix("%") { return cssPercentage(value) }
+        guard let number = Double(value), number.isFinite else { return nil }
+        return min(1, max(0, number))
+    }
+
+    private static func cssPercentage(_ value: String) -> Double? {
+        guard value.hasSuffix("%"),
+              let number = Double(value.dropLast()), number.isFinite else {
+            return nil
+        }
+        return min(100, max(0, number)) / 100
+    }
+
+    private static func cssHue(_ value: String) -> Double? {
+        let degrees: Double?
+        if value.hasSuffix("turn") {
+            degrees = Double(value.dropLast(4)).map { $0 * 360 }
+        } else if value.hasSuffix("grad") {
+            degrees = Double(value.dropLast(4)).map { $0 * 0.9 }
+        } else if value.hasSuffix("rad") {
+            degrees = Double(value.dropLast(3)).map { $0 * 180 / .pi }
+        } else if value.hasSuffix("deg") {
+            degrees = Double(value.dropLast(3))
+        } else {
+            degrees = Double(value)
+        }
+        guard let degrees, degrees.isFinite else { return nil }
+        let normalized = degrees.truncatingRemainder(dividingBy: 360)
+        return normalized < 0 ? normalized + 360 : normalized
+    }
+
+    private static let cssNamedColors: [String: (UInt8, UInt8, UInt8, Double)] = [
+        "aqua": (0, 255, 255, 1), "black": (0, 0, 0, 1),
+        "blue": (0, 0, 255, 1), "fuchsia": (255, 0, 255, 1),
+        "gray": (128, 128, 128, 1), "grey": (128, 128, 128, 1),
+        "green": (0, 128, 0, 1), "lime": (0, 255, 0, 1),
+        "maroon": (128, 0, 0, 1), "navy": (0, 0, 128, 1),
+        "olive": (128, 128, 0, 1), "purple": (128, 0, 128, 1),
+        "red": (255, 0, 0, 1), "silver": (192, 192, 192, 1),
+        "teal": (0, 128, 128, 1), "white": (255, 255, 255, 1),
+        "yellow": (255, 255, 0, 1), "transparent": (0, 0, 0, 0),
+        "ivory": (255, 255, 240, 1), "beige": (245, 245, 220, 1),
+        "linen": (250, 240, 230, 1), "wheat": (245, 222, 179, 1),
+        "cornsilk": (255, 248, 220, 1), "floralwhite": (255, 250, 240, 1),
+        "oldlace": (253, 245, 230, 1), "antiquewhite": (250, 235, 215, 1),
+        "papayawhip": (255, 239, 213, 1), "seashell": (255, 245, 238, 1),
+        "snow": (255, 250, 250, 1), "whitesmoke": (245, 245, 245, 1),
+        "ghostwhite": (248, 248, 255, 1), "mintcream": (245, 255, 250, 1),
+        "honeydew": (240, 255, 240, 1), "azure": (240, 255, 255, 1),
+        "aliceblue": (240, 248, 255, 1), "lavender": (230, 230, 250, 1),
+    ]
 
     // MARK: - 本の読み込み
 
@@ -316,11 +675,29 @@ public final class EPUBReaderView: NSView {
     /// Host-added overlay subviews keep their z-order across web view rebuilds.
     public func load(publication: EPUBPublication, at locator: EPUBLocator? = nil) {
         cancelPendingTextRangeRequest()
+        setCurrentSelection(nil)
+        printPageMarkers.removeAll()
+        setCurrentPrintPage(nil)
+        accessibilityAnnouncementTask?.cancel()
+        accessibilityAnnouncementTask = nil
+        lastAnnouncedPage = nil
         // 別の本を開くのでメディアオーバーレイ再生は止める(本に紐づく)
         mediaOverlayController?.stop()
         mediaOverlayController = nil
         self.publication = publication
+        updateAccessibilityMetadata()
+        // cooViewer-oxr.31: 公開 load は新しい本を開く境界。内部再読込は
+        // この経路を通らないため、設定変更や WebContent 復旧では履歴を保つ。
+        clearNavigationHistory()
+        webContentReloadTask?.cancel()
+        webContentReloadTask = nil
+        pendingWebContentReloadDelay = nil
+        webContentReloadLimiter.reset()
+        webContentReloadRequestCount = 0
+        webContentReloadAttemptCount = 0
+        columnAxisSupported = true
         fxlViewportCache.removeAll()
+        fxlDeviceSizedViewportItems.removeAll()
         // 旧本あての再ページ割り予約を破棄(新 webView に古い設定同期由来の
         // repaginate が発火しないように)
         repaginateWork?.cancel()
@@ -380,6 +757,9 @@ public final class EPUBReaderView: NSView {
         self.messageProxy = proxy
         let controller = configuration.userContentController
         controller.add(proxy, contentWorld: Self.washiWorld, name: "washi")
+        EPUBScriptedContentHardening.install(
+            in: controller,
+            allowsScriptedContent: settings.allowsScriptedContent)
         controller.addUserScript(WKUserScript(
             source: ReaderScripts.pageScript, injectionTime: .atDocumentStart,
             forMainFrameOnly: true, in: Self.washiWorld))
@@ -387,10 +767,10 @@ public final class EPUBReaderView: NSView {
             source: ReaderScripts.baseCSSInjector, injectionTime: .atDocumentStart,
             forMainFrameOnly: true, in: Self.washiWorld))
 
-        let webView = WashiWebView(frame: contentFrame(),
+        let webView = WashiWebView(frame: contentFrame,
                                    configuration: configuration)
-        webView.suppressesContextMenu = { [weak self] in
-            self?.settings.suppressesContextMenu ?? false
+        webView.contextMenuHandler = { [weak self] menu, event in
+            self?.contextMenu(menu, for: event)
         }
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -427,14 +807,16 @@ public final class EPUBReaderView: NSView {
                         : settings.insets
     }
 
-    /// 見開き判定は publication の rendition:spread を含む画面計画へ一本化する
+    /// 見開き判定は現在 itemref の実効 rendition:spread を含む画面計画へ一本化する
     private var isSpread: Bool {
         EPUBScreenMetrics.plansSpread(
             viewportSize: bounds.size, settings: settings,
-            renditionSpread: publication?.metadata.rendition.spread ?? .auto)
+            renditionSpread: effectiveSpread(forSpineIndex: currentSpineIndex))
     }
 
-    private func contentFrame() -> NSRect {
+    /// The content page area inside the active native margins, expressed in
+    /// reader-view coordinates.
+    public var contentFrame: CGRect {
         if isFixedLayoutItem {
             return NSRect(origin: .zero, size: bounds.size)
         }
@@ -444,6 +826,18 @@ public final class EPUBReaderView: NSView {
             y: insets.bottom,
             width: max(1, bounds.width - insets.left - insets.right),
             height: max(1, bounds.height - insets.top - insets.bottom))
+    }
+
+    /// cooViewer-oxr.35: native のノンブルは見た目だけの furniture なので、
+    /// NSTextField に hit を奪わせず余白と同じ reader-view 入力経路へ通す。
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let target = super.hitTest(point) else { return nil }
+        if pageNumberLabels.contains(where: {
+            target === $0 || target.isDescendant(of: $0)
+        }) {
+            return self
+        }
+        return target
     }
 
     /// ノンブルを各ページの下部中央に置く(Apple Books の版面に倣う。
@@ -480,30 +874,36 @@ public final class EPUBReaderView: NSView {
             && !isFixedLayoutItem && !isImagePage && !furnitureSuppressed
         guard visible else {
             for label in pageNumberLabels { label.isHidden = true }
+            updateAccessibilityMetadata()
             return
         }
-        // スロット順 = [左, 右]。表示ページ順は綴じ方向で決まる
-        var slotNumbers: [Int?] = [nil, nil]
-        let first = pageInItem + 1
-        let second = pageInItem + 2 <= pageCountInItem ? pageInItem + 2 : nil
-        if pagesPerScreen == 2 {
-            if isRTL {
-                slotNumbers = [second, first]
-            } else {
-                slotNumbers = [first, second]
-            }
-        } else {
-            slotNumbers = [first, nil]
-        }
+        // スロット順 = [左, 右]。表示ページ順は実際の CSS カラム方向で決まる。
+        let slotNumbers = pageFurnitureSlotNumbers
         for (index, label) in pageNumberLabels.enumerated() {
             if let number = slotNumbers[index] {
-                label.stringValue = String(number)
+                if settings.showsPrintPageInFurniture,
+                   let currentPrintPage {
+                    label.stringValue = "\(number) [p. \(currentPrintPage)]"
+                } else {
+                    label.stringValue = String(number)
+                }
                 label.isHidden = false
             } else {
                 label.isHidden = true
             }
         }
         layoutFurniture()
+        updateAccessibilityMetadata()
+    }
+
+    /// 可視カラムと共有するノンブル配置。internal は実 WK 回帰試験用。
+    var pageFurnitureSlotNumbers: [Int?] {
+        let first = pageInItem + 1
+        let second = pageInItem + 2 <= pageCountInItem ? pageInItem + 2 : nil
+        if pagesPerScreen == 2 {
+            return firstPageOnRight ? [second, first] : [first, second]
+        }
+        return [first, nil]
     }
 
     // 見開き判定・ノド幅は EPUBScreenMetrics が単一の正(リーダー外の
@@ -517,7 +917,33 @@ public final class EPUBReaderView: NSView {
     private var currentScreenMetrics: EPUBScreenMetrics {
         EPUBScreenMetrics(
             viewportSize: bounds.size, settings: settings,
+            renditionSpread: effectiveSpread(forSpineIndex: currentSpineIndex))
+    }
+
+    /// cooViewer-oxr.24: ライブ再ページ割りの判定にも census と同じ導出値を使う。
+    private func layoutKey(for settings: EPUBReaderSettings) -> String {
+        EPUBScreenMetrics(
+            viewportSize: bounds.size, settings: settings,
+            renditionSpread: effectiveSpread(forSpineIndex: currentSpineIndex))
+            .cacheKey
+    }
+
+    /// census のキーは表示中の項目で揺らさず、文書既定を基底にする。
+    /// 実測時は EPUBPaginationCensus が各 itemref の override を適用する。
+    private var censusScreenMetrics: EPUBScreenMetrics {
+        EPUBScreenMetrics(
+            viewportSize: bounds.size, settings: settings,
             renditionSpread: publication?.metadata.rendition.spread ?? .auto)
+    }
+
+    private func effectiveSpread(forSpineIndex index: Int) -> RenditionSpread {
+        guard let publication,
+              publication.readingOrder.indices.contains(index) else {
+            return publication?.metadata.rendition.spread ?? .auto
+        }
+        // cooViewer-oxr.51: 見開き可否は現在項目の itemref override を使う。
+        return publication.package.effectiveSpread(
+            for: publication.readingOrder[index].itemRef)
     }
 
     private func loadSpineItem(at index: Int, target: PendingTarget,
@@ -534,11 +960,26 @@ public final class EPUBReaderView: NSView {
             if isTextRangeTarget { cancelPendingTextRangeRequest() }
             return
         }
+        // cooViewer-oxr.47: 旧 spine の WebContent 終了に対するバックオフを、
+        // ユーザーが移動した新 spine へ遅配しない。
+        webContentReloadTask?.cancel()
+        webContentReloadTask = nil
+        pendingWebContentReloadDelay = nil
+        setCurrentSelection(nil)
+        printPageMarkers.removeAll(keepingCapacity: true)
+        accessibilityAnnouncementTask?.cancel()
+        accessibilityAnnouncementTask = nil
         currentSpineIndex = index
         pendingTarget = target
+        // cooViewer-oxr.23: pageChanged 前の保存にも、読み込み先の意図した
+        // progression を返せるよう locator として保持する。
+        pendingRestoreLocator = publication.locator(
+            forSpineIndex: index, progression: progression(for: target))
         pageInItem = 0
         pageCountInItem = 1
         isImagePage = false
+        // setup 応答までは OPF を暫定値にし、旧 item の CSS 方向を持ち越さない。
+        firstPageOnRight = isRTL
         isLoadingSpineItem = true
         spineLoadGeneration += 1
         repaginateWork?.cancel()  // 旧文書あての再ページ割りを新文書へ流さない
@@ -553,28 +994,41 @@ public final class EPUBReaderView: NSView {
         let entry = publication.readingOrder[index]
         isFixedLayoutItem =
             publication.package.effectiveLayout(for: entry.itemRef) == .prePaginated
+        // cooViewer-oxr.51: spine 遷移直後から現在 itemref の spread 用余白を
+        // WebView の実寸へ反映し、didFinish/setup が旧項目の innerWidth で
+        // ページ割りしないようにする。
+        webView.frame = contentFrame
         updateFurniture()
-        guard let url = schemeHandler.url(forContainerPath: entry.containerPath) else {
+        guard let url = schemeHandler.url(forReadingOrderItem: entry) else {
             if isTextRangeTarget { cancelPendingTextRangeRequest() }
             return
         }
         webView.alphaValue = 0
-        spineNavigationGate.expect(entry.containerPath)
+        spineNavigationGate.expect(entry.resolvedContainerPath)
         let navigation = webView.load(URLRequest(url: url))
         if navigation == nil {
-            spineNavigationGate.cancelExpectation(for: entry.containerPath)
+            spineNavigationGate.cancelExpectation(for: entry.resolvedContainerPath)
         }
         currentNavigation = navigation
     }
 
     // MARK: - ナビゲーション API
 
-    /// Whether the book is right-to-left bound (page-progression-direction: rtl).
+    /// Whether the book's effective reading direction is right-to-left.
     public var isRTL: Bool {
-        publication?.readingDirection == .rtl
+        publication?.effectiveReadingDirection == .rtl
     }
 
     public var currentLocator: EPUBLocator {
+        // cooViewer-oxr.23: 読み込み中は旧文書由来のページカウンタでなく、
+        // load/go が最後に予約した target を現在位置として答える。
+        if isLoadingSpineItem {
+            let progression = progression(for: pendingTarget)
+            return publication?.locator(
+                forSpineIndex: currentSpineIndex, progression: progression)
+                ?? EPUBLocator(spineIndex: currentSpineIndex,
+                               progression: progression)
+        }
         // 復元がまだ適用されていない間は復元先を答える(開いてすぐ閉じたときに
         // 保存済み位置を (0,0) で潰さない)
         if let pendingRestoreLocator { return pendingRestoreLocator }
@@ -807,6 +1261,13 @@ public final class EPUBReaderView: NSView {
         spineTurnTimeouts[coverID]?.cancel()
         spineTurnTimeouts[coverID] = nil
         func removeCover() { foldTurnCover(cover) }
+        let removeCoverAfterAnimation: @Sendable () -> Void = {
+            [weak self, weak cover] in
+            Task { @MainActor [weak self, weak cover] in
+                guard let self, let cover else { return }
+                self.foldTurnCover(cover)
+            }
+        }
         // カバー・スナップショットとも全面合成なので演出矩形もビュー全面
         let frame = bounds
         if let newPage,
@@ -825,12 +1286,12 @@ public final class EPUBReaderView: NSView {
                 context.duration = 0.22
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 cover.animator().frame = target
-            }, completionHandler: { removeCover() })
+            }, completionHandler: removeCoverAfterAnimation)
         case .fade:
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.22
                 cover.animator().alphaValue = 0
-            }, completionHandler: { removeCover() })
+            }, completionHandler: removeCoverAfterAnimation)
         case .none:
             removeCover()
         }
@@ -841,14 +1302,29 @@ public final class EPUBReaderView: NSView {
     public func turnPageRight() { isRTL ? goBackward() : goForward() }
 
     public func go(to locator: EPUBLocator) {
+        navigate(to: locator, recordsHistory: true)
+    }
+
+    /// Navigates to the most recently recorded jump origin. Does nothing when
+    /// no navigation history is available.
+    public func goBack() {
+        guard let locator = navigationHistory.popLast() else { return }
+        // cooViewer-oxr.31: 戻る移動そのものは新しい履歴として積まない。
+        navigate(to: locator, recordsHistory: false)
+        updateCanGoBack()
+    }
+
+    private func navigate(to locator: EPUBLocator, recordsHistory: Bool) {
         cancelPendingTextRangeRequest()
         guard let publication,
-              publication.readingOrder.indices.contains(locator.spineIndex) else { return }
-        if locator.spineIndex == currentSpineIndex {
-            applyTarget(.progression(locator.progression))
+              // cooViewer-oxr.72: idref があれば index より優先して改版追跡する。
+              let resolved = publication.resolve(locator) else { return }
+        let target = PendingTarget.progression(resolved.progression)
+        if recordsHistory { recordCurrentLocatorInHistory() }
+        if resolved.spineIndex == currentSpineIndex {
+            applyOrQueueTarget(target)
         } else {
-            loadSpineItem(at: locator.spineIndex,
-                          target: .progression(locator.progression))
+            loadSpineItem(at: resolved.spineIndex, target: target)
         }
     }
 
@@ -868,7 +1344,7 @@ public final class EPUBReaderView: NSView {
         textRange: (utf16Offset: Int, utf16Length: Int)
     ) async -> EPUBTextRangeLanding? {
         guard let publication,
-              publication.readingOrder.indices.contains(locator.spineIndex),
+              let locator = publication.resolve(locator),
               textRange.utf16Offset >= 0, textRange.utf16Length > 0,
               textRange.utf16Offset <= Int.max - textRange.utf16Length,
               publication.package.effectiveLayout(
@@ -886,12 +1362,9 @@ public final class EPUBReaderView: NSView {
                     utf16Offset: textRange.utf16Offset,
                     utf16Length: textRange.utf16Length,
                     fallbackProgression: locator.progression)
+                recordCurrentLocatorInHistory()
                 if locator.spineIndex == currentSpineIndex {
-                    if isLoadingSpineItem {
-                        pendingTarget = target
-                    } else {
-                        applyTarget(target)
-                    }
+                    applyOrQueueTarget(target)
                 } else {
                     loadSpineItem(at: locator.spineIndex, target: target)
                 }
@@ -909,11 +1382,42 @@ public final class EPUBReaderView: NSView {
               let index = publication.spineIndex(forNavItem: navItem) else { return }
         let fragment = navItem.href.flatMap(Self.fragment(of:))
         let target: PendingTarget = fragment.map { .fragment($0) } ?? .start
+        recordCurrentLocatorInHistory()
         if index == currentSpineIndex {
-            applyTarget(target)
+            applyOrQueueTarget(target)
         } else {
             loadSpineItem(at: index, target: target)
         }
+    }
+
+    /// Follows a resolved internal link using the reader's default navigation.
+    ///
+    /// This method bypasses the delegate's internal-link policy callback and
+    /// records the current locator in navigation history before moving. Use it
+    /// after intercepting a link when the host later decides to navigate.
+    public func follow(_ link: EPUBInternalLink) {
+        goToContainerPath(link.containerPath, fragment: link.fragment)
+    }
+
+    /// Navigates to a print page label declared by the publication's page
+    /// list. Returns false when no resolvable matching label exists.
+    @discardableResult
+    public func go(toPrintPage label: String) -> Bool {
+        guard let publication,
+              let item = flattenedPrintPageList.first(where: {
+                  $0.title == label && publication.spineIndex(forNavItem: $0) != nil
+              }) else { return false }
+        // cooViewer-oxr.38: TOC と同じ go(navItem:) を通し、oxr.31 の
+        // 履歴記録・fragment 解決・spine 切替を二重実装しない。
+        go(to: item)
+        return true
+    }
+
+    private var flattenedPrintPageList: [EPUBNavItem] {
+        func flatten(_ items: [EPUBNavItem]) -> [EPUBNavItem] {
+            items.flatMap { [$0] + flatten($0.children) }
+        }
+        return flatten(publication?.navigation.pageList ?? [])
     }
 
     public func goToBookStart() { loadSpineItem(at: 0, target: .start) }
@@ -947,7 +1451,10 @@ public final class EPUBReaderView: NSView {
             evaluate("__washi.showLastPage();")
         case .progression(let progression):
             cancelPendingTextRangeRequest()
-            evaluate("__washi.showProgression(\(progression));")
+            // cooViewer-oxr.73: 呼び出し境界でも有限な 0...1 に丸め、
+            // 旧保存形式や外部からの異常値を JavaScript へ渡さない。
+            let safeProgression = Self.clampedProgression(progression)
+            evaluate("__washi.showProgression(\(safeProgression));")
         case .fragment(let fragment):
             cancelPendingTextRangeRequest()
             // 断片 id は EPUB 由来(信頼できない)。文字列連結でなく引数渡しで
@@ -960,7 +1467,8 @@ public final class EPUBReaderView: NSView {
             // pageChanged も出ない(cooViewer-7cn)。locator の進行率へ落として
             // 通常のページ表示と didMoveTo を保証する
             guard let requestID = pendingTextRangeRequest?.id else {
-                evaluate("__washi.showProgression(\(fallbackProgression));")
+                let safeProgression = Self.clampedProgression(fallbackProgression)
+                evaluate("__washi.showProgression(\(safeProgression));")
                 return
             }
             textRangeTask?.cancel()
@@ -971,6 +1479,37 @@ public final class EPUBReaderView: NSView {
                 guard !Task.isCancelled else { return }
                 self.finishTextRangeRequest(id: requestID, landing: landing)
             }
+        }
+    }
+
+    /// cooViewer-oxr.19: spine 読み込み中の同一項目ナビゲーションは旧 DOM へ
+    /// 適用せず、進行中の setup が最後の target を一度だけ消費する。
+    private func applyOrQueueTarget(_ target: PendingTarget) {
+        guard isLoadingSpineItem else {
+            applyTarget(target)
+            return
+        }
+        if case .textRange = target {
+            // 継続は setup 後の exact landing が完了させる。
+        } else {
+            cancelPendingTextRangeRequest()
+        }
+        pendingTarget = target
+        pendingRestoreLocator = publication?.locator(
+            forSpineIndex: currentSpineIndex,
+            progression: progression(for: target))
+    }
+
+    private func progression(for target: PendingTarget) -> Double {
+        switch target {
+        case .end:
+            return 1
+        case .progression(let progression):
+            return Self.clampedProgression(progression)
+        case .textRange(_, _, let fallbackProgression):
+            return Self.clampedProgression(fallbackProgression)
+        case .start, .fragment:
+            return 0
         }
     }
 
@@ -1014,25 +1553,64 @@ public final class EPUBReaderView: NSView {
               let rawRects = dictionary["rects"] as? [[String: Any]]
         else { return nil }
 
-        let rects = rawRects.compactMap { raw -> CGRect? in
-            guard let x = Self.number(raw["x"]),
-                  let y = Self.number(raw["y"]),
-                  let width = Self.number(raw["w"]),
-                  let height = Self.number(raw["h"]),
-                  x.isFinite, y.isFinite, width.isFinite, height.isFinite
-            else { return nil }
-            // DOMRect は左上原点。WKWebView の実座標系へ合わせてから
-            // AppKit の convert に self 座標への反転・inset 加算を任せる
-            let localY = webView.isFlipped
-                ? CGFloat(y)
-                : webView.bounds.height - CGFloat(y) - CGFloat(height)
-            let local = CGRect(x: CGFloat(x), y: localY,
-                               width: CGFloat(width), height: CGFloat(height))
-            return webView.convert(local, to: self)
+        let rects = rawRects.compactMap {
+            readerViewRect(from: $0, in: webView)
         }
         // 空矩形は「特定できなかった」扱い(JS 側も null を返すが多重防御。cooViewer-cvt)
         guard rects.count == rawRects.count, !rects.isEmpty else { return nil }
         return EPUBTextRangeLanding(pageInItem: page, text: text, rects: rects)
+    }
+
+    /// Clears the current DOM selection and immediately publishes a nil
+    /// selection state.
+    public func clearSelection() {
+        setCurrentSelection(nil)
+        callWashiAsync("return __washi.clearSelection();", arguments: [:])
+    }
+
+    /// Returns the visible fragments for a normalized UTF-16 text range in
+    /// the currently loaded spine item. Other spine items return an empty
+    /// array and are not loaded as a side effect.
+    public func rects(
+        forTextRange range: Range<Int>, inSpineIndex index: Int
+    ) async -> [CGRect] {
+        guard index == currentSpineIndex, !isLoadingSpineItem,
+              !isFixedLayoutItem, range.lowerBound >= 0, !range.isEmpty,
+              let webView else { return [] }
+        let result = await callWashiAsync(
+            "return __washi.rectsForTextRange(o, l);",
+            arguments: ["o": range.lowerBound, "l": range.count], in: webView)
+        guard webView === self.webView,
+              let rawRects = result as? [[String: Any]] else { return [] }
+        return rawRects.compactMap { readerViewRect(from: $0, in: webView) }
+    }
+
+    /// cooViewer-oxr.34: 同値通知を畳み、clearSelection の即時 nil と JS の
+    /// selectionchange 遅配が delegate へ二重に届かないようにする。
+    private func setCurrentSelection(_ selection: EPUBTextSelection?) {
+        guard selection != currentSelection else { return }
+        currentSelection = selection
+        delegate?.readerView(self, selectionDidChange: selection)
+    }
+
+    /// cooViewer-oxr.32: DOMRect(左上原点)を現在 WKWebView の実座標系へ直し、
+    /// AppKit に inset と reader-view 座標への変換を任せる。
+    private func readerViewRect(
+        from raw: [String: Any], in webView: WKWebView
+    ) -> CGRect? {
+        guard let x = Self.number(raw["x"]),
+              let y = Self.number(raw["y"]),
+              let width = Self.number(raw["w"]),
+              let height = Self.number(raw["h"]),
+              x.isFinite, y.isFinite, width.isFinite, height.isFinite,
+              width >= 0, height >= 0
+        else { return nil }
+        let localY = webView.isFlipped
+            ? CGFloat(y)
+            : webView.bounds.height - CGFloat(y) - CGFloat(height)
+        let local = CGRect(x: CGFloat(x), y: localY,
+                           width: CGFloat(width), height: CGFloat(height))
+        return webView.convert(local, to: self)
     }
 
     private static func number(_ value: Any?) -> Double? {
@@ -1065,6 +1643,21 @@ public final class EPUBReaderView: NSView {
         super.layout()
         layoutFurniture()
         guard let webView else { return }
+        guard allowsVisibleRenderingWork else {
+            // cooViewer-oxr.54: 非表示中は WebKit の再ページ割りと census を
+            // 起動せず、最後の寸法を表示復帰時に一度だけ反映する。
+            pendingVisibleLayout = true
+            return
+        }
+        layoutVisibleContent(webView, forcePagination: false)
+    }
+
+    private var allowsVisibleRenderingWork: Bool {
+        window != nil && !isHiddenOrHasHiddenAncestor
+    }
+
+    private func layoutVisibleContent(_ webView: WKWebView,
+                                      forcePagination: Bool) {
         if isFixedLayoutItem {
             layoutFixedItem()
             // FXL 項目の表示中でもリサイズで census のメトリクスは変わる
@@ -1072,8 +1665,8 @@ public final class EPUBReaderView: NSView {
             // scheduleCensusIfNeeded はキーで重複排除するので毎回呼んで安全
             scheduleCensusIfNeeded()
         } else {
-            webView.frame = contentFrame()
-            if lastLaidOutSize != bounds.size {
+            webView.frame = contentFrame
+            if forcePagination || lastLaidOutSize != bounds.size {
                 schedulePagination(preserveProgression: true)
             }
         }
@@ -1084,16 +1677,23 @@ public final class EPUBReaderView: NSView {
     /// viewport はキャッシュする(リサイズ毎の XHTML 再パースを避ける)
     private func layoutFixedItem() {
         guard let webView, let publication else { return }
+        let available = contentFrame
         let viewport: CGSize
-        if let cached = fxlViewportCache[currentSpineIndex] {
+        if fxlDeviceSizedViewportItems.contains(currentSpineIndex) {
+            viewport = available.size
+        } else if let cached = fxlViewportCache[currentSpineIndex] {
             viewport = cached
         } else {
-            viewport = (try? publication
-                .fixedLayoutInfo(forSpineIndex: currentSpineIndex))?.viewportSize
-                ?? CGSize(width: 1200, height: 1600)
-            fxlViewportCache[currentSpineIndex] = viewport
+            let info = try? publication.fixedLayoutInfo(
+                forSpineIndex: currentSpineIndex)
+            if info?.viewportIsDeviceSized == true {
+                fxlDeviceSizedViewportItems.insert(currentSpineIndex)
+                viewport = available.size
+            } else {
+                viewport = info?.viewportSize ?? CGSize(width: 1200, height: 1600)
+                fxlViewportCache[currentSpineIndex] = viewport
+            }
         }
-        let available = contentFrame()
         guard viewport.width > 0, viewport.height > 0,
               available.width > 0, available.height > 0 else { return }
         let scale = min(available.width / viewport.width,
@@ -1112,6 +1712,11 @@ public final class EPUBReaderView: NSView {
     /// lastLaidOutSize が先に更新され、以後そのサイズでは再ページ割りされない)
     private func schedulePagination(preserveProgression: Bool) {
         guard webView != nil, publication != nil else { return }
+        guard allowsVisibleRenderingWork else {
+            // cooViewer-oxr.54: 設定変更経路も不可視中は同じ延期状態へ畳む。
+            pendingVisibleLayout = true
+            return
+        }
         // spine 読み込み中(didFinish 前)は再ページ割りを走らせない。
         // ここで走らせると、文書のロード完了前に repaginate が isLoadingSpineItem
         // や alpha を早期リセットして、旧文書の境界イベント受理や表示のちらつきを
@@ -1132,7 +1737,7 @@ public final class EPUBReaderView: NSView {
     }
 
     func setupOptionsJSON() -> String {
-        let frame = contentFrame()
+        let frame = contentFrame
         var options: [String: Any] = [
             "width": Double(frame.width.rounded(.down)),
             "height": Double(frame.height.rounded(.down)),
@@ -1141,8 +1746,19 @@ public final class EPUBReaderView: NSView {
             "gutter": Double(spreadGutter(forContentWidth: frame.width)),
             "fixedLayout": isFixedLayoutItem,
             "keysEnabled": settings.handlesKeyboardNavigation,
-            "userCSS": settings.composedUserCSS(isDark: isDarkEffective),
+            // cooViewer-oxr.27: 既定は即時。明示 opt-in 時だけ click を保留する。
+            "deferTaps": settings.defersTapsForDoubleClick,
+            "fontScale": settings.fontScale,
+            "defaultFontCSS": settings.defaultFontCSS(),
+            "userCSS": settings.composedUserCSS(
+                isDark: isDarkEffective,
+                increaseContrast: shouldIncreaseContrast,
+                differentiateWithoutColor: shouldDifferentiateWithoutColor),
         ]
+        if settings.defersTapsForDoubleClick {
+            let interval = NSEvent.doubleClickInterval
+            options["doubleClickDelayMS"] = 1_000 * (interval > 0 ? interval : 0.5)
+        }
         if isFixedLayoutItem { options["width"] = 0; options["height"] = 0 }
         let data = (try? JSONSerialization.data(withJSONObject: options)) ?? Data("{}".utf8)
         return String(data: data, encoding: .utf8) ?? "{}"
@@ -1152,7 +1768,6 @@ public final class EPUBReaderView: NSView {
     /// pageChanged が届くまで保持する
     func applyPendingTargetAfterSetup() {
         applyTarget(pendingTarget)
-        pendingTarget = .start
     }
 
     /// didFinish 後(または再ページ割り時)のセットアップ実行。
@@ -1176,19 +1791,20 @@ public final class EPUBReaderView: NSView {
         do {
             let result = try await webView.callAsyncJavaScript(
                 call, arguments: [:], in: nil, contentWorld: Self.washiWorld)
-            guard generation == spineLoadGeneration,
+            guard !Task.isCancelled,
+                  generation == spineLoadGeneration,
                   webView === self.webView else { return }
             if let dict = result as? [String: Any] {
-                if let count = dict["pageCount"] as? Int {
-                    pageCountInItem = max(1, count)
-                }
-                isImagePage = dict["imagePage"] as? Bool ?? false
-                pagesPerScreen = max(1, dict["pagesPerScreen"] as? Int ?? 1)
+                applySetupResult(dict)
             }
             if !preserveProgression {
+                // cooViewer-oxr.23: 新文書の target が発行する pageChanged は
+                // 受けつつ、それ以前の旧文書通知だけを loading gate で捨てる。
+                isLoadingSpineItem = false
                 applyPendingTargetAfterSetup()
             }
             isLoadingSpineItem = false
+            pendingTarget = .start
             updateFurniture()
             scheduleCensusIfNeeded()  // メトリクス変化(フォント・寸法)に追従
             webView.alphaValue = 1  // 持ち越しカバーがあればその下で戻る
@@ -1216,6 +1832,7 @@ public final class EPUBReaderView: NSView {
                               cover: pending.cover, forward: pending.forward)
             }
         } catch {
+            guard !Task.isCancelled else { return }
             // 古い文書の JS 失敗で新しい文書の読み込み状態を壊さない
             guard generation == spineLoadGeneration else { return }
             cancelPendingTextRangeRequest()
@@ -1223,6 +1840,37 @@ public final class EPUBReaderView: NSView {
             clearPendingSpineTurn()
             webView.alphaValue = 1
             delegate?.readerView(self, didFailWith: error)
+        }
+    }
+
+    /// cooViewer-oxr.48: JS の機能検出結果を公開状態へ写し、縦見開きの
+    /// 単ページ縮退を診断可能にする。
+    func applySetupResult(_ result: [String: Any]) {
+        if let count = result["pageCount"] as? Int {
+            pageCountInItem = max(1, count)
+        }
+        isImagePage = result["imagePage"] as? Bool ?? false
+        pagesPerScreen = max(1, result["pagesPerScreen"] as? Int ?? 1)
+        if let measured = result["firstPageOnRight"] as? Bool {
+            firstPageOnRight = measured
+        }
+        if let markers = result["printPageMarkers"] as? [[String: Any]] {
+            // cooViewer-oxr.38: JS の文書順を保ち、壊れた値だけを捨てる。
+            printPageMarkers = markers.compactMap { marker in
+                guard let label = marker["label"] as? String, !label.isEmpty,
+                      let page = marker["page"] as? Int, page >= 0 else {
+                    return nil
+                }
+                return PrintPageMarker(label: label, page: page)
+            }
+        }
+        guard let supported = result["supportsColumnAxis"] as? Bool else { return }
+        let shouldLog = columnAxisSupported && !supported && isSpread
+            && ["vrl", "vlr"].contains(result["mode"] as? String ?? "")
+        columnAxisSupported = supported
+        if shouldLog {
+            Self.logger.warning(
+                "Vertical spread fell back to one page because column-axis is unsupported")
         }
     }
 
@@ -1250,15 +1898,17 @@ public final class EPUBReaderView: NSView {
     }
 
     /// Seeds a previously exported census. It is accepted only if it matches
-    /// the current book — same spine item count and same release identifier
-    /// (an unversioned book has a nil identifier and matches only another nil,
-    /// with the spine count as the remaining guard). When its metrics key also
-    /// matches the current display metrics, it takes effect immediately;
-    /// otherwise it is cached and used the moment the display settles to those
-    /// metrics. Returns whether it was accepted.
+    /// the current book — same spine item count and same release identifier.
+    /// The release identifier uses the modified timestamp when present, then
+    /// falls back to the package identifier; it is nil only when the package
+    /// has no unique identifier. When its metrics key also matches the current
+    /// display metrics, it takes effect immediately; otherwise it is cached and
+    /// used the moment the display settles to those metrics. Returns whether it
+    /// was accepted.
     @discardableResult
     public func importCensus(_ record: EPUBCensusRecord) -> Bool {
         guard let publication,
+              EPUBScreenMetrics.usesCurrentPaginationVersion(record.metricsKey),
               record.counts.count == publication.readingOrder.count,
               record.releaseIdentifier == publication.metadata.releaseIdentifier
         else { return false }
@@ -1327,15 +1977,24 @@ public final class EPUBReaderView: NSView {
     /// Position → whole-book page number (0-based). Nil until the census
     /// completes or when the locator does not address a measured spine item.
     public func censusGlobalPage(for locator: EPUBLocator) -> Int? {
-        guard let counts = pageCensus,
+        guard let locator = publication?.resolve(locator),
+              let counts = pageCensus,
               counts.indices.contains(locator.spineIndex) else { return nil }
         let count = counts[locator.spineIndex]
         guard count > 0 else { return nil }
         let offset = counts.prefix(locator.spineIndex).reduce(0, +)
         // censusLocator(forGlobalPage:) と同じ 0 始まり・項目内 (count - 1)
         // 分割へ戻す。rounded() により両方向の量子化を対称にする
-        let inItem = Int((locator.progression * Double(count - 1)).rounded())
+        // cooViewer-oxr.73: Double → Int の範囲外変換は SIGTRAP になるため、
+        // locator 自身の不変条件だけに依存せず変換直前にも防御する。
+        let safeProgression = Self.clampedProgression(locator.progression)
+        let inItem = Int((safeProgression * Double(count - 1)).rounded())
         return offset + min(max(0, inItem), count - 1)
+    }
+
+    private static func clampedProgression(_ value: Double) -> Double {
+        guard !value.isNaN else { return 0 }
+        return min(1, max(0, value))
     }
 
     // MARK: - 画面サムネイル(ホストの一覧 UI 用)
@@ -1346,6 +2005,16 @@ public final class EPUBReaderView: NSView {
     /// value for "what a reflowable text item would be").
     public var plannedPagesPerScreen: Int {
         currentScreenMetrics.pagesPerScreen
+    }
+
+    /// Toggles between planned single-page and two-page layout. Unlike
+    /// ``pagesPerScreen``, this remains correct while a single-image page is
+    /// displayed.
+    public func toggleColumnMode() {
+        var updated = settings
+        // cooViewer-oxr.20: 表紙の実測値(常に 1)でなく画面計画を反転する。
+        updated.columnMode = plannedPagesPerScreen == 2 ? .single : .double
+        settings = updated
     }
 
     private var thumbnailRenderer: EPUBScreenThumbnailRenderer?
@@ -1359,23 +2028,25 @@ public final class EPUBReaderView: NSView {
         let renderer = thumbnailRenderer
             ?? EPUBScreenThumbnailRenderer(publication: publication)
         thumbnailRenderer = renderer
-        let metrics = currentScreenMetrics
+        let itemMetrics = EPUBScreenMetrics(
+            viewportSize: bounds.size, settings: settings,
+            renditionSpread: effectiveSpread(forSpineIndex: spineIndex))
         return await renderer.thumbnail(
             spineIndex: spineIndex, pageInItem: pageInItem,
-            optionsJSON: metrics.themedOptionsJSON(isDark: isDarkEffective),
-            contentSize: metrics.contentSize, snapshotWidth: width)
+            optionsJSON: itemMetrics.themedOptionsJSON(isDark: isDarkEffective),
+            contentSize: itemMetrics.contentSize, snapshotWidth: width)
     }
 
     /// リフロー時のコンテンツ寸法(現在項目が FXL でも「リフロー項目なら
     /// こうなる」寸法。census のメトリクスは現在項目に依存させない)
     private func reflowContentSize() -> NSSize {
-        currentScreenMetrics.contentSize
+        censusScreenMetrics.contentSize
     }
 
     /// census 用のセットアップオプション(= リフロー項目の setup と同値。
     /// メトリクスの同一性キーとしても使う)
     private func censusOptionsJSON() -> String {
-        currentScreenMetrics.censusOptionsJSON
+        censusScreenMetrics.censusOptionsJSON
     }
 
     /// メトリクスごとの実測失敗台帳(2-strike + TTL)。上限を超えたキーは
@@ -1399,13 +2070,57 @@ public final class EPUBReaderView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateNativeKeyMonitor()
-        guard window == nil else { return }
+        guard window == nil else {
+            resumeDeferredVisibleWork()
+            return
+        }
+        pendingVisibleLayout = webView != nil
         cancelPageCensus()
         censusEngine?.invalidate()
         censusEngine = nil
         thumbnailRenderer?.invalidate()
         thumbnailRenderer = nil
     }
+
+    public override func viewDidHide() {
+        super.viewDidHide()
+        guard webView != nil else { return }
+        // cooViewer-oxr.54: 進行中の計測も隠れたビューのために継続しない。
+        pendingVisibleLayout = true
+        repaginateWork?.cancel()
+        repaginateWork = nil
+        pendingRepaginate = false
+        cancelPageCensus()
+        // cooViewer-oxr.54: cancel 済み measure の離脱前に再表示されても同じ
+        // WKWebView へ新旧 census を並走させないよう、エンジンごと交換する。
+        censusEngine?.invalidate()
+        censusEngine = nil
+    }
+
+    public override func viewDidUnhide() {
+        super.viewDidUnhide()
+        resumeDeferredVisibleWork()
+    }
+
+    private func resumeDeferredVisibleWork() {
+        guard allowsVisibleRenderingWork else { return }
+        resumePendingWebContentReloadIfNeeded()
+        guard pendingVisibleLayout else {
+            scheduleCensusIfNeeded()
+            return
+        }
+        pendingVisibleLayout = false
+        guard let webView else { return }
+        layoutFurniture()
+        layoutVisibleContent(webView, forcePagination: true)
+    }
+
+    /// cooViewer-oxr.54: 回帰テストが非表示中の延期状態を同期的に確認する。
+    var hasDeferredVisibleLayout: Bool { pendingVisibleLayout }
+
+    var isPageCensusScheduled: Bool { censusTask != nil }
+
+    var isRepaginationScheduled: Bool { repaginateWork != nil }
 
     // MARK: - ネイティブキー横取り(forwardsKeyEventsNatively)
 
@@ -1436,13 +2151,16 @@ public final class EPUBReaderView: NSView {
     /// メトリクスが変わっていれば census を(デバウンス付きで)再実測する。
     /// runSetup 完了時と FXL 表示中のリサイズで呼ぶ — リサイズ・フォント倍率・
     /// 見開き切替に追従する
-    private func scheduleCensusIfNeeded() {
+    func scheduleCensusIfNeeded() {
         guard let publication, !publication.readingOrder.isEmpty else { return }
-        // ウインドウから外れている間はオフスクリーン計測を始めない
+        // ウインドウから外れている間・非表示中はオフスクリーン計測を始めない
         // (viewDidMoveToWindow で畳んだ直後に runSetup 由来の呼び出しが
         // 実測を復活させ、不可視ウインドウ/プロセスが生き返るのを防ぐ。
         // 再表示されれば layout/runSetup が改めて呼ぶ)
-        guard window != nil else { return }
+        guard allowsVisibleRenderingWork else {
+            pendingVisibleLayout = true
+            return
+        }
         let key = censusOptionsJSON()
         // 実測に使う寸法はキーと同じ瞬間に採る(デバウンス起床時に採ると、
         // 窓の終盤のリサイズで「旧キーに新寸法の実測」が入りキャッシュが汚れる)
@@ -1466,7 +2184,18 @@ public final class EPUBReaderView: NSView {
             delegate?.readerViewDidUpdatePageCensus(self)
             return
         }
-        if censusFailures.shouldSkip(key) { return }
+        if censusFailures.shouldSkip(key) {
+            // cooViewer-oxr.21: 失敗台帳で再試行を省く場合も、別メトリクスの
+            // 成功値を N/M・ページバーへ残してはならない。
+            if censusKey != key {
+                censusTask?.cancel()
+                censusTask = nil
+                censusKey = key
+                pageCensus = nil
+                delegate?.readerViewDidUpdatePageCensus(self)
+            }
+            return
+        }
         // 古いメトリクスの番号を出し続けないよう、まず無効化を通知
         if pageCensus != nil {
             pageCensus = nil
@@ -1505,7 +2234,7 @@ public final class EPUBReaderView: NSView {
             guard let counts else {
                 // 失敗完了は「実測中」ではない — タスクを解放して次の
                 // runSetup での再実測を許す(回数はキーごとに上限あり + TTL)
-                self.censusFailures.recordFailure(key)
+                self.recordCensusFailure(forKey: key)
                 self.censusTask = nil
                 return
             }
@@ -1514,6 +2243,11 @@ public final class EPUBReaderView: NSView {
             self.censusTask = nil  // 成功完了も自己退去(不変条件を対称に保つ)
             self.delegate?.readerViewDidUpdatePageCensus(self)
         }
+    }
+
+    /// cooViewer-oxr.21: 実測経路と決定的な回帰テストで失敗台帳を共有する。
+    func recordCensusFailure(forKey key: String) {
+        censusFailures.recordFailure(key)
     }
 
     // MARK: - スナップショット
@@ -1595,21 +2329,110 @@ public final class EPUBReaderView: NSView {
         return image
     }
 
+    // MARK: - 印刷ページ / アクセシビリティ
+
+    /// cooViewer-oxr.38: 現在 spine の最後の marker を優先し、章頭より前なら
+    /// page-list 上で直前 spine を指す最後のラベルへフォールバックする。
+    private func updateCurrentPrintPage() {
+        let local = printPageMarkers.last {
+            $0.page <= pageInItem
+        }?.label
+        let fallback = flattenedPrintPageList.last { item in
+            guard let publication,
+                  let index = publication.spineIndex(forNavItem: item) else {
+                return false
+            }
+            return index < currentSpineIndex
+        }?.title
+        setCurrentPrintPage(local ?? fallback)
+    }
+
+    private func setCurrentPrintPage(_ label: String?) {
+        guard label != currentPrintPage else { return }
+        currentPrintPage = label
+        updateAccessibilityMetadata()
+        delegate?.readerView(self, didChangePrintPage: label)
+    }
+
+    private var localizedPageValue: String {
+        let language = accessibilityPreferredLanguageOverride
+            ?? Locale.preferredLanguages.first ?? "en"
+        if language.lowercased().hasPrefix("ja") {
+            return "ページ \(pageInItem + 1) / \(pageCountInItem)"
+        }
+        return "Page \(pageInItem + 1) of \(pageCountInItem)"
+    }
+
+    private func updateAccessibilityMetadata() {
+        let title = publication?.metadata.mainTitle?.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        let label = title.flatMap { $0.isEmpty ? nil : "EPUB reader — \($0)" }
+            ?? "EPUB reader"
+        setAccessibilityLabel(label)
+        let value = settings.showsPrintPageInFurniture
+            ? currentPrintPage.map { "\(localizedPageValue) [p. \($0)]" }
+                ?? localizedPageValue
+            : localizedPageValue
+        setAccessibilityValue(value)
+    }
+
+    /// cooViewer-oxr.37: pageChanged の短い連続を最後の確定位置へ畳み、同じ
+    /// spine/page/count の重複通知を読み上げない。
+    private func scheduleAccessibilityPageAnnouncement() {
+        accessibilityAnnouncementTask?.cancel()
+        accessibilityAnnouncementTask = nil
+        guard settings.announcesPageChanges else { return }
+        let identity = SettledPageIdentity(
+            spineIndex: currentSpineIndex, page: pageInItem,
+            pageCount: pageCountInItem)
+        guard identity != lastAnnouncedPage else { return }
+        let message = localizedPageValue
+        let delay = accessibilityAnnouncementDelay
+        accessibilityAnnouncementTask = Task { @MainActor [weak self] in
+            if delay != .zero { try? await Task.sleep(for: delay) }
+            guard let self, !Task.isCancelled,
+                  !self.isLoadingSpineItem,
+                  self.currentSpineIndex == identity.spineIndex,
+                  self.pageInItem == identity.page,
+                  self.pageCountInItem == identity.pageCount else { return }
+            self.accessibilityAnnouncementTask = nil
+            if let handler = self.accessibilityAnnouncementHandler {
+                self.lastAnnouncedPage = identity
+                handler(message)
+                return
+            }
+            guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+            self.lastAnnouncedPage = identity
+            NSAccessibility.post(
+                element: self,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: message,
+                    .priority: NSAccessibilityPriorityLevel.medium,
+                ])
+        }
+    }
+
     // MARK: - JS からのメッセージ
 
-    fileprivate func handleScriptMessage(_ body: Any) {
+    func handleScriptMessage(_ body: Any) {
         guard let dict = body as? [String: Any],
               let type = dict["type"] as? String else { return }
         switch type {
         case "pageChanged":
+            // cooViewer-oxr.19/23: 旧文書から遅配された位置通知で、新しい
+            // pending target / 復元位置とホストの保存位置を上書きしない。
+            guard !isLoadingSpineItem else { break }
             pageInItem = dict["page"] as? Int ?? 0
             pageCountInItem = max(1, dict["pageCount"] as? Int ?? 1)
             pagesPerScreen = max(1, dict["pagesPerScreen"] as? Int ?? pagesPerScreen)
             pendingRestoreLocator = nil  // 実位置が確定した
+            updateCurrentPrintPage()
             updateFurniture()
             delegate?.readerView(self, didMoveTo: currentLocator,
                                  pageInItem: pageInItem,
                                  pageCountInItem: pageCountInItem)
+            scheduleAccessibilityPageAnnouncement()
         case "boundary":
             // spine 切替の読み込み中に旧文書から届く境界イベントは捨てる
             // (トラックパッド慣性やキーリピートでの章飛び越し防止)
@@ -1636,23 +2459,49 @@ public final class EPUBReaderView: NSView {
                 forward ? goForward() : goBackward()
             }
         case "link":
-            if let href = dict["href"] as? String {
-                handleLink(href)
-            }
+            handleLink(dict)
         case "tap":
             // DOM のボタン番号(0=左,1=中,2=右,3/4=サイド)→ NSEvent 流
             // (0=左,1=右,2=中,3/4=サイド)へ写像。右は JS 側で除外済み
             let domButton = dict["button"] as? Int ?? 0
             let button = domButton == 1 ? 2 : (domButton == 2 ? 1 : domButton)
+            let normalizedX = dict["x"] as? Double ?? 0.5
+            let normalizedY = dict["y"] as? Double ?? 0.5
+            let location = webView.map {
+                readerViewPoint(forNormalizedContentX: normalizedX,
+                                y: normalizedY, in: $0)
+            } ?? CGPoint(x: bounds.midX, y: bounds.midY)
             let event = EPUBClickEvent(
-                x: dict["x"] as? Double ?? 0.5,
-                y: dict["y"] as? Double ?? 0.5,
+                x: normalizedX,
+                y: normalizedY,
+                locationInView: location,
                 button: button,
                 shift: dict["shift"] as? Bool ?? false,
                 option: dict["alt"] as? Bool ?? false,
                 control: dict["ctrl"] as? Bool ?? false,
                 command: dict["meta"] as? Bool ?? false)
             dispatchClick(event)
+        case "selection":
+            guard !isLoadingSpineItem else { break }
+            guard let text = dict["text"] as? String, !text.isEmpty,
+                  let start = dict["start"] as? Int,
+                  let end = dict["end"] as? Int,
+                  start >= 0, end > start,
+                  let rawRects = dict["rects"] as? [[String: Any]],
+                  let webView else {
+                setCurrentSelection(nil)
+                break
+            }
+            let rects = rawRects.compactMap {
+                readerViewRect(from: $0, in: webView)
+            }
+            guard rects.count == rawRects.count else {
+                setCurrentSelection(nil)
+                break
+            }
+            setCurrentSelection(EPUBTextSelection(
+                spineIndex: currentSpineIndex, text: text,
+                utf16Range: start..<end, rects: rects))
         case "key":
             let event = EPUBKeyEvent(
                 key: dict["key"] as? String ?? "",
@@ -1665,6 +2514,48 @@ public final class EPUBReaderView: NSView {
         default:
             break
         }
+    }
+
+    /// cooViewer-oxr.35: DOM の左上原点正規化座標を WebView の AppKit 座標へ
+    /// 直し、余白入力と同じ reader-view 座標へ統一する。
+    func readerViewPoint(
+        forNormalizedContentX x: Double, y: Double, in webView: WKWebView
+    ) -> CGPoint {
+        let localY = webView.isFlipped
+            ? CGFloat(y) * webView.bounds.height
+            : (1 - CGFloat(y)) * webView.bounds.height
+        let local = CGPoint(x: CGFloat(x) * webView.bounds.width, y: localY)
+        return webView.convert(local, to: self)
+    }
+
+    private var effectiveContextMenuPolicy: EPUBContextMenuPolicy {
+        if settings.contextMenuPolicy == .system && settings.suppressesContextMenu {
+            return .suppressed
+        }
+        return settings.contextMenuPolicy
+    }
+
+    /// cooViewer-oxr.35, cooViewer-oxr.93: policy を先に適用し、空になっても
+    /// 1 イベントにつき 1 回 delegate の最終カスタマイズへ渡す。
+    /// イベント位置は tap/余白 click と同じ座標系。
+    func contextMenu(_ menu: NSMenu, for event: NSEvent) -> NSMenu? {
+        _ = effectiveContextMenuPolicy.filter(menu)
+        let location = convert(event.locationInWindow, from: nil)
+        let flags = event.modifierFlags
+        let click = EPUBClickEvent(
+            x: Double(location.x / max(1, bounds.width)),
+            y: Double(1 - location.y / max(1, bounds.height)),
+            locationInView: location,
+            button: event.buttonNumber,
+            shift: flags.contains(.shift), option: flags.contains(.option),
+            control: flags.contains(.control), command: flags.contains(.command))
+        guard let delegate else { return menu }
+        guard let resolved = delegate.readerView(
+            self, willShowContextMenu: menu, at: click) else {
+            menu.removeAllItems()
+            return nil
+        }
+        return resolved
     }
 
     /// クリックの共通ディスパッチ(JS の tap 通知と余白のネイティブクリック)
@@ -1732,6 +2623,7 @@ public final class EPUBReaderView: NSView {
         dispatchClick(EPUBClickEvent(
             x: Double(location.x / max(1, bounds.width)),
             y: Double(1 - location.y / max(1, bounds.height)),
+            locationInView: location,
             button: button,
             shift: flags.contains(.shift),
             option: flags.contains(.option),
@@ -1783,16 +2675,123 @@ public final class EPUBReaderView: NSView {
         }
     }
 
+    /// Extracts note content for an intercepted EPUB internal link.
+    ///
+    /// Notes in the displayed document include their inner HTML. Notes in a
+    /// different reading-order document are parsed headlessly and return text
+    /// only. Backlink anchors are removed in both cases.
+    public func noteContent(for link: EPUBInternalLink) async -> EPUBNoteContent? {
+        guard let publication, let fragment = link.fragment,
+              !fragment.isEmpty,
+              let sourceSpineIndex = publication.readingOrder.firstIndex(where: {
+                  $0.resolvedContainerPath == link.containerPath
+                      || $0.containerPath == link.containerPath
+              })
+        else { return nil }
+        let source = publication.readingOrder[sourceSpineIndex]
+
+        guard sourceSpineIndex == currentSpineIndex,
+              !isLoadingSpineItem, let webView else {
+            // cooViewer-oxr.32: 別 spine は UI actor を塞がず Core の XML 抽出で読む。
+            let text = await Task.detached(priority: .userInitiated) {
+                publication.noteText(
+                    at: source.resolvedContainerPath, fragment: fragment)
+            }.value
+            return text.map {
+                EPUBNoteContent(text: $0, html: nil,
+                                sourceSpineIndex: sourceSpineIndex)
+            }
+        }
+
+        // cooViewer-oxr.32: fragment は EPUB 由来なので JS 本文へ埋め込まず、
+        // callAsyncJavaScript の引数として WebKit に渡す。
+        let generation = spineLoadGeneration
+        let result = await callWashiAsync(
+            """
+            function epubTypeOf(element) {
+                return element.getAttributeNS(
+                    'http://www.idpf.org/2007/ops', 'type')
+                    || element.getAttribute('epub:type') || '';
+            }
+            function isNoteContainer(element) {
+                const tag = (element.localName || '').toLowerCase();
+                if (tag !== 'aside' && tag !== 'section') { return false; }
+                const types = epubTypeOf(element).toLowerCase()
+                    .split(/\\s+/).filter(Boolean);
+                const role = (element.getAttribute('role') || '').toLowerCase();
+                return types.includes('footnote') || types.includes('endnote')
+                    || types.includes('rearnote')
+                    || role === 'doc-footnote' || role === 'doc-endnote';
+            }
+            const target = document.getElementById(fragment);
+            if (!target) { return { found: false, text: '', html: '' }; }
+            let selected = target;
+            const targetTag = (target.localName || '').toLowerCase();
+            if (targetTag === 'li' || targetTag === 'p') {
+                let ancestor = target.parentElement;
+                while (ancestor) {
+                    if (isNoteContainer(ancestor)) {
+                        selected = ancestor;
+                        break;
+                    }
+                    ancestor = ancestor.parentElement;
+                }
+            }
+            const copy = selected.cloneNode(true);
+            // cooViewer-oxr.32: 戻り先が不明な公開 link 値にも一貫して
+            // 対応するため、注釈内の fragment-only anchor をすべて除く。
+            for (const candidate of Array.from(copy.getElementsByTagName('*'))) {
+                if ((candidate.localName || '').toLowerCase() !== 'a') { continue; }
+                const href = candidate.getAttribute('href')
+                    || candidate.getAttributeNS(
+                        'http://www.w3.org/1999/xlink', 'href') || '';
+                if (href.trim().startsWith('#')) { candidate.remove(); }
+            }
+            const html = copy.innerHTML;
+            const staging = document.createElement('div');
+            staging.style.cssText = 'position:fixed;left:-100000px;top:0;'
+                + 'width:1000px;opacity:0;pointer-events:none;z-index:-2147483648;';
+            staging.style.setProperty('display', 'block', 'important');
+            copy.removeAttribute('hidden');
+            copy.style.setProperty('display', 'block', 'important');
+            staging.appendChild(copy);
+            (document.body || document.documentElement).appendChild(staging);
+            let text = '';
+            try {
+                text = typeof copy.innerText === 'string'
+                    ? copy.innerText : (copy.textContent || '');
+            }
+            finally { staging.remove(); }
+            return { found: true, text: text, html: html };
+            """,
+            arguments: ["fragment": fragment], in: webView)
+        guard webView === self.webView,
+              generation == spineLoadGeneration,
+              currentSpineIndex == sourceSpineIndex,
+              let dictionary = result as? [String: Any],
+              dictionary["found"] as? Bool == true,
+              let text = dictionary["text"] as? String,
+              let html = dictionary["html"] as? String
+        else { return nil }
+        return EPUBNoteContent(text: text, html: html,
+                               sourceSpineIndex: sourceSpineIndex)
+    }
+
     /// href からフラグメントを取り出す。split は空要素を落とすため
     /// "#note1" のような同一文書内リンクで壊れないよう firstIndex で切る
     static func fragment(of href: String) -> String? {
         guard let hash = href.firstIndex(of: "#") else { return nil }
-        let fragment = String(href[href.index(after: hash)...])
-        return fragment.isEmpty ? nil : fragment
+        let encoded = String(href[href.index(after: hash)...])
+        guard !encoded.isEmpty else { return nil }
+        // cooViewer-oxr.32: DOM id は URI fragment の percent decode 後の値で
+        // 照合する。不正な escape は実在本を壊さないよう原文へ fallback する。
+        return encoded.removingPercentEncoding ?? encoded
     }
 
-    private func handleLink(_ href: String) {
-        guard let publication else { return }
+    private func handleLink(_ message: [String: Any]) {
+        guard let publication,
+              publication.readingOrder.indices.contains(currentSpineIndex),
+              let href = message["href"] as? String else { return }
         // 外部リンク(スキーム付き)
         if let url = URL(string: href), let scheme = url.scheme?.lowercased(),
            ["http", "https", "mailto"].contains(scheme) {
@@ -1801,27 +2800,80 @@ public final class EPUBReaderView: NSView {
             }
             return
         }
-        let currentPath = publication.readingOrder[currentSpineIndex].containerPath
+        let currentPath = publication.readingOrder[currentSpineIndex]
+            .resolvedContainerPath
         guard let path = ContainerPath.resolve(base: currentPath, href: href) else {
             return
         }
-        goToContainerPath(path, fragment: Self.fragment(of: href))
+        let epubType = message["epubType"] as? String
+        let role = message["role"] as? String
+        let link = EPUBInternalLink(
+            href: href,
+            containerPath: path,
+            fragment: Self.fragment(of: href),
+            targetSpineIndex: publication.readingOrder.firstIndex {
+                $0.resolvedContainerPath == path || $0.containerPath == path
+            },
+            epubType: epubType,
+            role: role,
+            isNoteReference: epubType?.lowercased().contains("noteref") == true
+                || role?.caseInsensitiveCompare("doc-noteref") == .orderedSame,
+            hasBacklink: message["backlink"] as? Bool ?? false,
+            targetEpubType: message["targetEpubType"] as? String,
+            anchorRect: (message["anchorRect"] as? [String: Any])
+                .flatMap { raw in
+                    guard let webView else { return nil }
+                    return readerViewRect(from: raw, in: webView)
+                })
+        // cooViewer-oxr.32: delegate の拒否を履歴記録より先に確定し、既定経路は
+        // goToContainerPath の一回だけにして二重記録を避ける。
+        guard delegate?.readerView(self, shouldFollowInternalLink: link) ?? true
+        else { return }
+        goToContainerPath(path, fragment: link.fragment)
     }
 
     /// コンテナ内パスへの移動(リンクの共通経路)。必ず loadSpineItem を
     /// 経由して currentSpineIndex を保つ — WKWebView に直接遷移させると
     /// 柱・ページバー・読書位置の保存がすべて旧 spine 項目のまま狂う
-    func goToContainerPath(_ path: String, fragment: String?) {
+    func goToContainerPath(_ path: String, fragment: String?,
+                           recordsHistory: Bool = true) {
         guard let publication,
               publication.readingOrder.indices.contains(currentSpineIndex)
         else { return }
-        if path == publication.readingOrder[currentSpineIndex].containerPath {
-            if let fragment { applyTarget(.fragment(fragment)) }
+        let current = publication.readingOrder[currentSpineIndex]
+        if path == current.containerPath || path == current.resolvedContainerPath {
+            if recordsHistory { recordCurrentLocatorInHistory() }
+            applyOrQueueTarget(fragment.map { .fragment($0) } ?? .start)
             return
         }
         guard let index = publication.readingOrder
-            .firstIndex(where: { $0.containerPath == path }) else { return }
+            .firstIndex(where: {
+                $0.containerPath == path || $0.resolvedContainerPath == path
+            }) else { return }
+        if recordsHistory { recordCurrentLocatorInHistory() }
         loadSpineItem(at: index, target: fragment.map { .fragment($0) } ?? .start)
+    }
+
+    /// cooViewer-oxr.31: 移動直前の locator を最大 50 件に丸め、利用可否が
+    /// 変わったときだけ delegate へ通知する。
+    private func recordCurrentLocatorInHistory() {
+        if navigationHistory.count >= Self.navigationHistoryLimit {
+            navigationHistory.removeFirst()
+        }
+        navigationHistory.append(currentLocator)
+        updateCanGoBack()
+    }
+
+    private func clearNavigationHistory() {
+        navigationHistory.removeAll(keepingCapacity: true)
+        updateCanGoBack()
+    }
+
+    private func updateCanGoBack() {
+        let updated = !navigationHistory.isEmpty
+        guard updated != canGoBack else { return }
+        canGoBack = updated
+        delegate?.readerViewNavigationHistoryDidChange(self)
     }
 }
 
@@ -1909,8 +2961,69 @@ extension EPUBReaderView: WKNavigationDelegate, WKUIDelegate {
         handleNavigationFailure(error)
     }
 
-    /// Reopens at the current position if the web content process crashes.
+    /// Reopens at the current position if the web content process crashes,
+    /// with bounded retry and backoff for repeated terminations.
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // cooViewer-oxr.47: 再構築前の WebView から遅配された終了通知で、
+        // 現在の再試行枠を消費したり新しい文書を再読込しない。
+        guard webView === self.webView else { return }
+        handleWebContentProcessTermination()
+    }
+
+    /// cooViewer-oxr.47: 時刻注入可能な本体を分け、60 秒窓を sleep なしで検証する。
+    func handleWebContentProcessTermination(at now: Date = Date()) {
+        switch webContentReloadLimiter.register(
+            spineIndex: currentSpineIndex, at: now) {
+        case .reload(let delay):
+            webContentReloadRequestCount += 1
+            scheduleWebContentReload(after: delay)
+        case .suppress(let reportFailure):
+            webContentReloadTask?.cancel()
+            webContentReloadTask = nil
+            pendingWebContentReloadDelay = nil
+            if reportFailure {
+                delegate?.readerView(
+                    self,
+                    didFailWith: EPUBError.malformed(
+                        "web content process terminated repeatedly"))
+            }
+        }
+    }
+
+    private func scheduleWebContentReload(after delay: Duration) {
+        webContentReloadTask?.cancel()
+        webContentReloadTask = nil
+        guard allowsVisibleRenderingWork else {
+            // cooViewer-oxr.47: 不可視中は同じ再試行を保持し、表示復帰で消費する。
+            pendingWebContentReloadDelay = delay
+            return
+        }
+        pendingWebContentReloadDelay = nil
+        guard delay != .zero else {
+            performWebContentReload()
+            return
+        }
+        webContentReloadTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.webContentReloadTask = nil
+            guard self.allowsVisibleRenderingWork else {
+                self.pendingWebContentReloadDelay = .zero
+                return
+            }
+            self.performWebContentReload()
+        }
+    }
+
+    private func resumePendingWebContentReloadIfNeeded() {
+        guard let delay = pendingWebContentReloadDelay,
+              allowsVisibleRenderingWork else { return }
+        scheduleWebContentReload(after: delay)
+    }
+
+    private func performWebContentReload() {
+        guard publication != nil else { return }
+        webContentReloadAttemptCount += 1
         reloadCurrentPublication()
     }
 
@@ -1938,18 +3051,26 @@ private final class MessageProxy: NSObject, WKScriptMessageHandler {
     }
 }
 
-/// 右クリック/コントロールクリックのコンテキストメニューを任意で抑制できる
-/// WKWebView。ホストが独自メニューを出せるようにするための最小サブクラス
-/// (EPUBReaderSettings.suppressesContextMenu)
+/// cooViewer-oxr.35: WebKit の native menu を policy/delegate 経路へ渡す
+/// WKWebView。返却 menu が別インスタンスなら表示対象へ項目を移す。
+@MainActor
 private final class WashiWebView: WKWebView {
-    /// 呼ばれた時点の設定を参照するクロージャ(true で抑制)
-    var suppressesContextMenu: (() -> Bool)?
+    var contextMenuHandler: ((NSMenu, NSEvent) -> NSMenu?)?
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
-        if suppressesContextMenu?() == true {
-            menu.removeAllItems()  // 空メニューは表示されない(標準的な抑制手法)
+        let resolved = contextMenuHandler.map { $0(menu, event) } ?? menu
+        guard let resolved else {
+            menu.removeAllItems()
             return
         }
+        if resolved !== menu {
+            menu.removeAllItems()
+            for item in resolved.items {
+                resolved.removeItem(item)
+                menu.addItem(item)
+            }
+        }
+        guard !menu.items.isEmpty else { return }
         super.willOpenMenu(menu, with: event)
     }
 }

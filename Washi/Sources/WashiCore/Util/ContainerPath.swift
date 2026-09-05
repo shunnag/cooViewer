@@ -8,8 +8,8 @@ import Foundation
 /// stripped and `../` segments are collapsed.
 public enum ContainerPath {
     /// Resolves a relative href against `base` (a file path inside the container).
-    /// Returns the canonical container-internal path, or nil for references that
-    /// escape the container (above the root) or for absolute URLs (http:, etc.).
+    /// Returns the canonical container-internal path, clamping traversal above
+    /// the container root. Returns nil for absolute URLs (http:, etc.).
     public static func resolve(base: String, href: String) -> String? {
         // フラグメント・クエリを除去
         var reference = href
@@ -37,10 +37,8 @@ public enum ContainerPath {
         return collapse(joined)
     }
 
-    /// Normalizes a path (percent-decode plus `../` collapse).
-    /// A reference that escapes the root becomes the empty string (treated as a
-    /// "nonexistent path", so it cannot be used for out-of-container reads in
-    /// ``FolderContainerReader`` and the like).
+    /// Normalizes a path (percent-decode plus `../` collapse), clamping excess
+    /// parent segments at the container root.
     public static func normalize(_ path: String) -> String {
         let decoded = path.removingPercentEncoding ?? path
         return collapse(decoded) ?? ""
@@ -58,7 +56,7 @@ public enum ContainerPath {
         return String(path[..<slash])
     }
 
-    /// "a/./b/../c" → "a/c"。ルートより上へ出たら nil
+    /// "a/./b/../c" → "a/c"。
     private static func collapse(_ path: String) -> String? {
         var stack: [Substring] = []
         for component in path.split(separator: "/") {
@@ -66,8 +64,9 @@ public enum ContainerPath {
             case ".":
                 continue
             case "..":
-                guard !stack.isEmpty else { return nil }
-                stack.removeLast()
+                // cooViewer-oxr.18: WHATWG URL の dot-segment 解決と同様に、
+                // ルートより上への .. は捨ててルートに留める。
+                if !stack.isEmpty { stack.removeLast() }
             default:
                 stack.append(component)
             }
