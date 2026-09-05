@@ -216,12 +216,26 @@ public struct EPUBReaderSettings: Sendable, Equatable {
         let colors = effectiveColors(isDark: isDark)
         css += ":root { color-scheme: \(isDark ? "dark" : "light"); }\n"
         css += "html { background-color: \(colors.background) !important; }\n"
+        // cooViewer-oxr.4: ダークでは本の body の白背景でテーマの地色を覆わない。
+        // 本の配色を尊重するライトでは、クリーム色など本来の body 背景を保つ。
+        // 読みやすさ優先では両テーマで子孫の不透明背景も除くが、画像等の背景は保つ。
+        let readable = forcesReadableColors && textColorCSS == nil
+        if readable {
+            css += "body, body *:not(img):not(svg):not(image):not(video):not(canvas) { background-color: transparent !important; }\n"
+            if isDark {
+                // cooViewer-oxr.4: 透明化規則の :not による詳細度も上回る必要がある。
+                css += "body :is(pre, code):not(img):not(svg):not(image):not(video):not(canvas) { background-color: #242426 !important; }\n"
+            }
+        } else if isDark {
+            css += "body { background-color: transparent !important; }\n"
+        }
         if let text = colors.text {
-            if forcesReadableColors, textColorCSS == nil {
+            if readable {
                 // 読みやすさ優先: 本の色指定(class・要素セレクタ等)より強く
                 // 上書きして必ず読める色に(!important で継承の壁を越える)。
-                // リンクだけは読みやすい色を別途指定して区別を残す
-                css += "body, body *:not(a) { color: \(text) !important; }\n"
+                // cooViewer-oxr.4: リンクの span/ruby とコードの子孫も除外し、
+                // リンクの継承色・コード固有の配色を保つ。
+                css += "body, body *:not(a):not(a *):not(pre):not(code):not(pre *):not(code *) { color: \(text) !important; }\n"
                 css += "a { color: \(isDark ? "#7fb2ff" : "#1a56db") !important; }\n"
             } else {
                 // 本の配色を尊重: body への継承指定のみ(本文が色指定を持つ本は

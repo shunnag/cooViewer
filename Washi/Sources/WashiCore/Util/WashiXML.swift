@@ -357,4 +357,34 @@ extension XMLElement {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
     }
+
+    // cooViewer-oxr.6: 画像ページ判定専用。メタデータや目次の normalizedText は
+    // 変更せず、非本文の要素と非表示の代替文を除く。Core では外部 CSS は評価しない。
+    var normalizedVisibleText: String {
+        func text(in element: XMLElement, insideSVG: Bool) -> String {
+            let name = element.localName?.lowercased() ?? ""
+            let isSVG = insideSVG || name == "svg"
+            if name == "script" || name == "style"
+                || (isSVG && (name == "title" || name == "desc"))
+                || element.attribute(forName: "hidden") != nil {
+                return ""
+            }
+            // cooViewer-oxr.6: インラインの display:none も WebKit 側と揃える。
+            if let style = element.attr("style"),
+               style.range(of: #"(?:^|;)\s*display\s*:\s*none\s*(?:!important\s*)?(?:;|$)"#,
+                           options: [.regularExpression, .caseInsensitive]) != nil {
+                return ""
+            }
+            return (element.children ?? []).map { node in
+                if let child = node as? XMLElement {
+                    return text(in: child, insideSVG: isSVG)
+                }
+                return node.kind == .text ? (node.stringValue ?? "") : ""
+            }.joined()
+        }
+        return text(in: self, insideSVG: false)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
 }

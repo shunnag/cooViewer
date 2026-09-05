@@ -564,25 +564,26 @@ public final class EPUBPublication: Sendable {
             in: CharacterSet(charactersIn: "pxt ")))
     }
 
-    /// 「画像 1 枚だけのページ」判定。本文テキストがなく、img が 1 つ
-    /// (または svg > image が 1 つ)だけの XHTML なら画像 href を返す
+    // cooViewer-oxr.6: 可視本文がなく、img / svg image の参照先が
+    // 重複を除いて 1 種類だけの XHTML なら画像 href を返す。
     private static func simpleImageHref(in root: XMLElement) -> String? {
         guard let body = firstDescendant("body", in: root) else { return nil }
-        // 本文にテキストがあれば画像ページではない
-        guard body.normalizedText.isEmpty else { return nil }
+        // cooViewer-oxr.6: ReaderScripts と同じ可視テキスト・同一 src の判定。
+        // style/script や隠された代替文、KCC のパネル用複製で表紙を除外しない。
+        guard body.normalizedVisibleText.isEmpty else { return nil }
         let imgs = descendants("img", in: body)
-        let svgImages = descendants("image", in: body)
-        if imgs.count == 1, svgImages.isEmpty {
-            return imgs[0].attr("src")
-        }
-        if imgs.isEmpty, svgImages.count == 1 {
-            let image = svgImages[0]
-            return image.attribute(forLocalName: "href",
-                                   uri: XMLNamespace.xlink)?.stringValue
+        let svgImages = descendants("svg", in: body).flatMap { descendants("image", in: $0) }
+        let sources = imgs.map { $0.attr("src") } + svgImages.map { image in
+            image.attribute(forLocalName: "href", uri: XMLNamespace.xlink)?.stringValue
                 ?? image.attr("xlink:href")
                 ?? image.attr("href")
         }
-        return nil
+        guard !sources.isEmpty, sources.allSatisfy({
+            guard let source = $0 else { return false }
+            return !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else { return nil }
+        let uniqueSources = Set(sources.compactMap { $0 })
+        return uniqueSources.count == 1 ? uniqueSources.first : nil
     }
 
     // 別ファイルの extension(本文抽出)からも使うため internal

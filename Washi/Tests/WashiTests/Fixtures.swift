@@ -473,6 +473,44 @@ extension EPUBFixtures {
         ]
     }
 
+    // cooViewer-oxr.3 / cooViewer-oxr.6: 2:3 の実画像を持つ単一 spine。
+    // 12×18 PNG の自然寸法で、属性に依存しない img の比率計算も検証する。
+    static func imagePageEntries(bodyHTML: String) -> [(name: String, data: Data)] {
+        var entries = singleSpineEntries(bodyHTML: bodyHTML)
+        let index = entries.firstIndex { $0.name == "OEBPS/package.opf" }!
+        let opf = String(decoding: entries[index].data, as: UTF8.self)
+            .replacingOccurrences(of: "</manifest>", with:
+                "<item id=\"image\" href=\"images/page.png\" media-type=\"image/png\"/></manifest>")
+        entries[index].data = Data(opf.utf8)
+        entries.append(("OEBPS/images/page.png", Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAwAAAASCAIAAADgy6hbAAAAFUlEQVR4nGMwStlCEDGMKhpVRG9FANnBFoCfl0IfAAAAAElFTkSuQmCC")!))
+        return entries
+    }
+
+    // cooViewer-oxr.6: 同じ XHTML を JS と Core の両側で判定する。
+    static var imagePageDetectionCases: [(name: String, body: String, expected: Bool)] {
+        let img = "<img src=\"../images/page.png\"/>"
+        return [
+            ("画像のみ", img, true),
+            ("style と非表示代替文", "<style>body { margin: 0; }</style>"
+                + "<p style=\"display:none\"><span>表紙の説明</span></p>" + img, true),
+            ("script", "<script>var cover = '表紙';</script>" + img, true),
+            ("hidden", "<div hidden=\"hidden\"><span>代替文</span></div>" + img, true),
+            ("SVG メタデータ", """
+                <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+                     width="100%" height="100%" viewBox="0 0 1200 1800">
+                    <title>表紙</title><desc>表紙の説明</desc>
+                    <image width="1200" height="1800" xlink:href="../images/page.png"/>
+                </svg>
+                """, true),
+            ("同一画像のパネル複製", img + "<div hidden=\"hidden\">" + img + "</div>", true),
+            ("可視の本文", img + "<p>本文</p>", false),
+            ("異なる画像", img + "<img src=\"../images/other.png\"/>", false),
+            ("src の欠落", img + "<img/>", false),
+            ("画像なし", "<style>body { margin: 0; }</style>", false),
+        ]
+    }
+
     /// rendition:spread を宣言する単一 spine の長文リフロー EPUB
     static func reflowSpreadEntries(
         renditionSpread: RenditionSpread, bodyHTML: String
