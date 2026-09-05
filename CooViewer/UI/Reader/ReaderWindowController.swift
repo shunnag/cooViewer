@@ -2,6 +2,51 @@ import AppKit
 import SwiftUI
 import Washi
 
+/// EPUB 本文の再構成に影響する設定だけを表す比較値。
+/// ウインドウ枠の自動保存通知を設定変更と誤認しないために使う(cooViewer-oxr.83)。
+struct EPUBSettingsFingerprint: Equatable {
+    let pageTurnAnimation: Int
+    let fontScale: Double
+    let pinchAdjustsFontScale: Bool
+    let showsPageFurniture: Bool
+    let pageMargins: Int
+    let defaultFontFamily: String
+    let theme: Int
+    let forcesReadableColors: Bool
+    /// cooViewer-oxr.32/33/38: 設計書 §2.4 の新しい EPUB 設定も
+    /// UserDefaults 全体通知から確実に抽出する。
+    let footnotePopover: Bool
+    let hidesFootnoteAsides: Bool
+    let lineHeightScale: Double
+    let letterSpacing: Int
+    let paragraphSpacing: Int
+    let forceFont: Bool
+    let hidesRuby: Bool
+    let showsPrintPage: Bool
+    let horizontalWheelTurnsPages: Bool
+    let flipSwipeDirection: Bool
+}
+
+/// 解析できなかった EPUB を既存の空ページ状態へ載せるための最小ソース
+/// (cooViewer-oxr.41)。隣の本への移動に必要な URL だけを保持する。
+private struct EPUBParseFailureSource: BookSource {
+    let url: URL
+    let supportsDateSort = false
+
+    func entries() async throws -> [PageEntry] { [] }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        throw BookSourceError.unreadable(url)
+    }
+}
+
+/// EPUB の形式振り分け結果。画像パイプラインへ渡す場合も、Washi の解析済み
+/// publication を保持して二重解析を避ける（cooViewer-oxr.42、設計書 §2.4）。
+private enum EPUBRouting {
+    case handled
+    case notHandled(preparsed: EPUBPublication)
+}
+
 /// メインウインドウ。本のオープンフロー・表示更新・メニューアクションを担う。
 /// 旧 Controller の表示/ナビゲーション部分に相当する(仕様書 §4.1-4.3)。
 @MainActor
@@ -108,6 +153,9 @@ final class ReaderWindowController: NSWindowController {
     static let collectionPageMapMaxAttempts = 3
     /// 位置保存のデバウンス(ページ送りのたびに書き込まない)
     var epubSaveDebounce: Task<Void, Never>?
+    /// 現在の publication を最後に永続化できた時刻。連続 callback 中でも
+    /// 30 秒以内に保存する上限判定に使う（cooViewer-oxr.23、設計書 §2.4）。
+    var epubLastSuccessfulSaveAt: Date?
     /// EPUB のページカール演出のホストビュー(連打時の掃除用)
     var epubCurlHosts: [NSView] = []
     /// 章メニュー用に平坦化した目次(representedObject は添字)
@@ -128,6 +176,14 @@ final class ReaderWindowController: NSWindowController {
     var epubSearchLandingTask: Task<Void, Never>?
     /// CLI 検証でページ・矩形数・正規化本文を出力する直近の成功結果
     var lastEPUBSearchLanding: EPUBTextRangeLanding?
+    /// 脚注抽出と transient popover。EPUB 間切替時に旧 Task/表示を破棄する。
+    /// cooViewer-oxr.32 / 設計書 §2.4。
+    var epubFootnoteTask: Task<Void, Never>?
+    var epubFootnotePopover: NSPopover?
+    var epubLastClickLocation: CGPoint?
+    /// 空選択通知では消さず、⌘E が使う直近の非空本文を保持する。
+    /// cooViewer-oxr.34 / 設計書 §2.4。
+    var epubLatestSelectionText: String?
 
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
@@ -152,6 +208,9 @@ final class ReaderWindowController: NSWindowController {
 
     /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
     var preparedNextBook: (path: String, source: any BookSource)?
+    /// 次の EPUB は展開せず publication の解析だけ先行する
+    /// （cooViewer-oxr.45、設計書 §2.4）。
+    var preparedNextEPUB: (path: String, publication: EPUBPublication)?
     var preparingNextBookPath: String?
     /// 同フォルダの本一覧のキャッシュ(+Library。巻末付近の毎ページ走査対策)
     var cachedSiblings: (parent: String, paths: [String], timestamp: Double)?
@@ -268,6 +327,9 @@ final class ReaderWindowController: NSWindowController {
     private var indicatorsTemporarilyVisible = true
     /// applySettings の一括化フラグ(defaults 連続書込対策)
     private var applySettingsScheduled = false
+    /// 最後に確認した EPUB 描画設定。UserDefaults 通知は変更キーを持たないため、
+    /// ウインドウ移動による枠保存だけなら検索着地を維持する(cooViewer-oxr.83)。
+    private var appliedEPUBSettingsFingerprint: EPUBSettingsFingerprint?
 
     convenience init() {
         let window = NSWindow(
@@ -332,12 +394,32 @@ final class ReaderWindowController: NSWindowController {
     /// 設定を即時反映する(設計書 §2.4: 旧 Cancel ロールバック方式からの仕様変更)
     func applySettings() {
         bindings = BindingConfiguration.load()  // 編集タブの変更を即時反映
+        let epubSettingsFingerprint = currentEPUBSettingsFingerprint()
+        let epubSettingsChanged = Self.epubSettingsActuallyChanged(
+            previous: appliedEPUBSettingsFingerprint,
+            current: epubSettingsFingerprint)
+        let epubThumbnailSettingsChanged = Self.epubThumbnailSettingsActuallyChanged(
+            previous: appliedEPUBSettingsFingerprint,
+            current: epubSettingsFingerprint)
+        appliedEPUBSettingsFingerprint = epubSettingsFingerprint
         // EPUB 表示モード中のみ設定を反映する(退出後の隠れたビューへ流すと、
         // 見えない本の再ページ割り+全文 census が走る。再入場時は
         // presentReflowableEPUB が syncEPUBViewSettings で追い付かせる)
+        if epubSettingsChanged {
+            if isEPUBMode {
+                clearEPUBSearchHighlight()
+                if !settings.epubFootnotePopover {
+                    // 表示中に設定を OFF にした場合も旧ポップオーバーと抽出 Task を
+                    // 直ちに畳む(cooViewer-oxr.32、設計書 §2.4)。
+                    dismissEPUBFootnote()
+                }
+                syncEPUBViewSettings()
+            }
+        }
+        if epubThumbnailSettingsChanged {
+            refreshVisibleEPUBThumbnailOverlay()
+        }
         if isEPUBMode {
-            clearEPUBSearchHighlight()
-            syncEPUBViewSettings()
             refreshEPUBLoupeSnapshot()
         }
         let filterChanged = readerView.interpolation != settings.interpolation
@@ -393,6 +475,61 @@ final class ReaderWindowController: NSWindowController {
             applyAdvancedSettings(to: book)
         }
         readerView.singleSetting = settings.singleSetting
+    }
+
+    /// UserDefaults 全体の通知から EPUB に関係する変更だけを抽出する
+    /// (cooViewer-oxr.83)。初回は同期が必要なので変更ありとして扱う。
+    nonisolated static func epubSettingsActuallyChanged(
+        previous: EPUBSettingsFingerprint?,
+        current: EPUBSettingsFingerprint
+    ) -> Bool {
+        previous != current
+    }
+
+    /// サムネイル画像へ影響しない操作設定では一覧を作り直さない
+    /// (cooViewer-oxr.64 / cooViewer-oxr.63、設計書 §2.4 EPUB 対応)。
+    nonisolated static func epubThumbnailSettingsActuallyChanged(
+        previous: EPUBSettingsFingerprint?,
+        current: EPUBSettingsFingerprint
+    ) -> Bool {
+        guard let previous else { return true }
+        return previous.fontScale != current.fontScale
+            || previous.showsPageFurniture != current.showsPageFurniture
+            || previous.pageMargins != current.pageMargins
+            || previous.defaultFontFamily != current.defaultFontFamily
+            || previous.theme != current.theme
+            || previous.forcesReadableColors != current.forcesReadableColors
+            || previous.hidesFootnoteAsides != current.hidesFootnoteAsides
+            || previous.lineHeightScale != current.lineHeightScale
+            || previous.letterSpacing != current.letterSpacing
+            || previous.paragraphSpacing != current.paragraphSpacing
+            || previous.forceFont != current.forceFont
+            || previous.hidesRuby != current.hidesRuby
+            || previous.showsPrintPage != current.showsPrintPage
+    }
+
+    private func currentEPUBSettingsFingerprint() -> EPUBSettingsFingerprint {
+        EPUBSettingsFingerprint(
+            pageTurnAnimation: settings.pageTurnAnimation.rawValue,
+            fontScale: settings.epubFontScale,
+            pinchAdjustsFontScale: settings.epubPinchFontScale,
+            showsPageFurniture: Self.epubShowsFolio(
+                showNumber: settings.showNumber,
+                pageNumPosition: settings.pageNumPosition),
+            pageMargins: settings.epubPageMargins,
+            defaultFontFamily: settings.epubDefaultFont,
+            theme: settings.epubTheme,
+            forcesReadableColors: settings.epubForceReadableColors,
+            footnotePopover: settings.epubFootnotePopover,
+            hidesFootnoteAsides: settings.epubHidesFootnoteAsides,
+            lineHeightScale: settings.epubLineHeightScale,
+            letterSpacing: settings.epubLetterSpacing,
+            paragraphSpacing: settings.epubParagraphSpacing,
+            forceFont: settings.epubForceFont,
+            hidesRuby: settings.epubHidesRuby,
+            showsPrintPage: settings.epubShowsPrintPage,
+            horizontalWheelTurnsPages: settings.swipeToTurnPage,
+            flipSwipeDirection: settings.flipSwipeDirection)
     }
 
     /// 位置(4 隅)と寸法の制約を設定から組み直す(仕様書 §6.1
@@ -917,16 +1054,36 @@ final class ReaderWindowController: NSWindowController {
             initialPageURL = url
         }
 
+        let isEPUBFile = !isDirectory.boolValue && SupportedTypes.isEPUB(bookURL)
+        if let prepared = preparedNextEPUB,
+           CanonicalPath.normalize(prepared.path)
+            != CanonicalPath.normalize(bookURL.path) {
+            // cooViewer-oxr.45: 現在の本が変わる要求では、旧本から先読みした
+            // publication を残さない。
+            preparedNextEPUB = nil
+        }
+        var preparsedEPUB: EPUBPublication?
+        // cooViewer-oxr.45: NAS 上の EPUB 解析より前に HUD を武装する。
+        if isEPUBFile {
+            beginOpeningProgress(generation: generation,
+                                 name: bookURL.lastPathComponent)
+        }
+
         // EPUB の形式振り分け(設計書 追補: Washi 統合)。全オープン入口が
         // openBook(at:) に合流するため、分岐はこの 1 点に集約する:
         // リフロー → 同ウインドウの EPUB 表示モード(+EPUB.swift)へ、
         // 固定レイアウト → EPUBSource で通常の画像パイプラインへ
-        if !isDirectory.boolValue, SupportedTypes.isEPUB(bookURL),
-           await routeEPUBIfNeeded(bookURL, generation: generation,
-                                   atPage: atPage, atLastPage: atLastPage,
-                                   epoch: presentEpoch,
-                                   fromSlideshow: fromSlideshow) {
-            return
+        if isEPUBFile {
+            switch await routeEPUBIfNeeded(
+                bookURL, generation: generation,
+                atPage: atPage, atLastPage: atLastPage,
+                epoch: presentEpoch, fromSlideshow: fromSlideshow
+            ) {
+            case .handled:
+                return
+            case .notHandled(let publication):
+                preparsedEPUB = publication
+            }
         }
 
         // ドロップ/関連付けで開いた画像が**現在の本のページ**なら、本を
@@ -946,7 +1103,10 @@ final class ReaderWindowController: NSWindowController {
         }
 
         // 時間のかかるオープン(大書庫入りフォルダの統合等)の進捗表示を武装
-        beginOpeningProgress(generation: generation, name: bookURL.lastPathComponent)
+        if !isEPUBFile {
+            beginOpeningProgress(generation: generation,
+                                 name: bookURL.lastPathComponent)
+        }
 
         do {
             let source: any BookSource
@@ -975,7 +1135,8 @@ final class ReaderWindowController: NSWindowController {
                     // 開き直してダイアログを出す(ページの黙落ち防止)
                     source = try await BookSourceFactory.make(
                         for: bookURL, readSubFolders: settings.readSubFolder,
-                        nestedPasswordProvider: nestedPasswordProvider())
+                        nestedPasswordProvider: nestedPasswordProvider(),
+                        preparsedEPUB: preparsedEPUB)
                 } else {
                     // 事前スプール済みの本を再利用(切替を待ちなしに。設計書 §5)。
                     // まだ組んでいない場合に備えてパスワード UI を後付けする
@@ -995,7 +1156,8 @@ final class ReaderWindowController: NSWindowController {
                 }
                 source = try await BookSourceFactory.make(
                     for: bookURL, readSubFolders: settings.readSubFolder,
-                    nestedPasswordProvider: nestedPasswordProvider())
+                    nestedPasswordProvider: nestedPasswordProvider(),
+                    preparsedEPUB: preparsedEPUB)
             }
             // 復号済みページの暗号化ディスクキャッシュ判定に使うため、ロック解除前に
             // 暗号化状態を控える(PDFSource は解除後 isEncrypted が false を返すため)
@@ -1095,6 +1257,9 @@ final class ReaderWindowController: NSWindowController {
             // 新しいオープンが始まっていたら、ここで自己状態を commit しない
             // (連打で「先に押した遅い本」が最後に押した本を上書きするのを防ぐ)
             guard generation == openGeneration else { return }
+            // cooViewer-oxr.45: 旧 Book を対象に完了済みの EPUB 先読みを、
+            // 新しい Book の隣接巻として残さない。
+            preparedNextEPUB = nil
             self.book = book
             loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
@@ -1187,24 +1352,50 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
-    /// EPUB の事前判定。リフローなら同じウインドウの EPUB 表示モードへ切り替えて
-    /// true、固定レイアウトなら false(通常フローが EPUBSource で開く)。
+    /// EPUB の事前判定。リフローなら同じウインドウの EPUB 表示モードで処理し、
+    /// 固定レイアウト／画像のみなら解析済み publication を通常フローへ渡す。
     /// DRM 保護は対処可能性をユーザーへ伝える(黙殺 §4.17 の例外:
     /// ファイル自体は正常で、原因がストア側の保護だと分かるため)
     private func routeEPUBIfNeeded(_ url: URL, generation: Int,
                                    atPage: Int? = nil,
                                    atLastPage: Bool = false,
                                    epoch: Int,
-                                   fromSlideshow: Bool = false) async -> Bool {
-        let publication = await epubParseCoalescer.publication(at: url)
+                                   fromSlideshow: Bool = false) async -> EPUBRouting {
+        let preparedCandidate: (path: String, publication: EPUBPublication)?
+        if let candidate = preparedNextEPUB,
+           CanonicalPath.normalize(candidate.path)
+            == CanonicalPath.normalize(url.path) {
+            preparedCandidate = candidate
+        } else {
+            preparedCandidate = nil
+        }
+        let publicationResult = await epubParseCoalescer.publication(
+            at: url, preparsed: preparedCandidate?.publication)
         // 解析の await 中に新しいオープンが始まっていたら、この古いフローは
         // 何も起こさず終える(連打時の巻き戻り防止。openBookFlow と同じ規則)
         guard generation == openGeneration else {
-            endAnyOpeningProgress()
-            return true
+            // 新しい要求が既に所有する HUD を旧解析の完了で消さない
+            // (cooViewer-oxr.45、設計書 §2.4)。
+            endOpeningProgress(generation: generation)
+            return .handled
         }
-        guard let publication else {
-            return false  // 壊れた EPUB は通常フローの黙殺(ビープ)に任せる
+        if let preparedCandidate,
+           preparedNextEPUB?.publication === preparedCandidate.publication {
+            // 同じ先読み結果へ並行要求が合流できるよう、最新要求の確定後に
+            // 消費する（cooViewer-oxr.45）。
+            preparedNextEPUB = nil
+        }
+        let publication: EPUBPublication
+        switch publicationResult {
+        case .success(let parsed):
+            publication = parsed
+        case .failure(let error):
+            endAnyOpeningProgress()
+            presentLockedPlaceholder(
+                source: EPUBParseFailureSource(url: url),
+                reason: Self.epubOpenFailureMessage(
+                    description: error.localizedDescription))
+            return .handled
         }
         if publication.isDRMProtected {
             endAnyOpeningProgress()  // ドリルダウンから引き継いだ HUD を畳む
@@ -1212,14 +1403,24 @@ final class ReaderWindowController: NSWindowController {
             alert.messageText = String(localized: "This book is protected by DRM.")
             alert.informativeText = publication.drmSchemeName ?? ""
             alert.runModal()
-            return true
+            return .handled
         }
-        guard !publication.isFixedLayout else { return false }
+        guard !publication.isFixedLayout,
+              !EPUBImageOnlyHeuristic.qualifies(publication) else {
+            // cooViewer-oxr.42 / cooViewer-oxr.44: 同じ解析結果を factory と
+            // 画像パイプラインへ引き渡す（設計書 §2.4）。
+            return .notHandled(preparsed: publication)
+        }
         endAnyOpeningProgress()
         presentReflowableEPUB(publication, url: url,
                               atPage: atPage, atLastPage: atLastPage, epoch: epoch,
                               fromSlideshow: fromSlideshow)
-        return true
+        return .handled
+    }
+
+    /// EPUB 解析エラーを状態ラベルへ渡す文面(cooViewer-oxr.41)。
+    nonisolated static func epubOpenFailureMessage(description: String) -> String {
+        "この EPUB を開けません: \(description)"
     }
 
     /// EPUB モードへ入る前に画像本を落とす(+EPUB.swift から使用。
@@ -1230,6 +1431,9 @@ final class ReaderWindowController: NSWindowController {
         book?.cancelPrefetch()
         saveCurrentBookState()
         book = nil
+        // cooViewer-oxr.45: 旧 Book 由来の次巻 publication は EPUB 入場時にも
+        // 解放する（設計書 §2.4）。
+        preparedNextEPUB = nil
         hideThumbnailOverlay()
         thumbnailOverlayModel.clear()
         lockedBookReason = nil
@@ -1274,6 +1478,7 @@ final class ReaderWindowController: NSWindowController {
         // リサイズ通知で本文再描画や EPUB ルーペ再取得を走らせない。
         guard (notification.object as? NSWindow) === window else { return }
         clearEPUBSearchHighlight()
+        refreshVisibleEPUBThumbnailOverlay()
         refreshDisplayIfCapRaised()
         refreshEPUBLoupeSnapshot()
     }
@@ -1285,6 +1490,7 @@ final class ReaderWindowController: NSWindowController {
         clearEPUBSearchHighlight()
         // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
         guard window?.inLiveResize == false else { return }
+        refreshVisibleEPUBThumbnailOverlay()
         refreshDisplayIfCapRaised()
         refreshEPUBLoupeSnapshot()
     }
@@ -1300,6 +1506,7 @@ final class ReaderWindowController: NSWindowController {
             return
         }
         teardownEPUBSearch()
+        dismissEPUBFootnote()
         stopSlideshow()
         collectionOverlayTask?.cancel()  // 全冊 census をウインドウ亡き後に残さない
         collectionPageMapTask?.cancel()
@@ -1955,12 +2162,15 @@ final class ReaderWindowController: NSWindowController {
                     viewportSize: contentView.bounds.size,
                     settings: plannedEPUBSettings())
                 let isDark = isDarkWindowAppearance
+                let source = book.source
                 thumbnailRequest = {
                     // 対象本の spread 派生はアトラス内で行うため基底値を渡す
-                    await EPUBAtlasStore.shared.thumbnail(
+                    let preparsed = await source
+                        .preparsedReflowPublication(for: url)
+                    return await EPUBAtlasStore.shared.thumbnail(
                         for: url, spineIndex: spineIndex,
                         pageInItem: pageInItem, metrics: metrics,
-                        isDark: isDark, width: 296)
+                        isDark: isDark, width: 296, preparsed: preparsed)
                 }
             }
         } else {
@@ -2085,12 +2295,15 @@ final class ReaderWindowController: NSWindowController {
                         viewportSize: contentView.bounds.size,
                         settings: plannedEPUBSettings())
                     let isDark = isDarkWindowAppearance
+                    let source = context.source
                     thumbnailRequest = {
                         // 対象本の spread 派生はアトラス内で行うため基底値を渡す
-                        await EPUBAtlasStore.shared.thumbnail(
+                        let preparsed = await source
+                            .preparsedReflowPublication(for: url)
+                        return await EPUBAtlasStore.shared.thumbnail(
                             for: url, spineIndex: spineIndex,
                             pageInItem: pageInItem, metrics: metrics,
-                            isDark: isDark, width: 296)
+                            isDark: isDark, width: 296, preparsed: preparsed)
                     }
                 }
             }
@@ -2561,9 +2774,15 @@ final class ReaderWindowController: NSWindowController {
         switch menuItem.action {
         case #selector(showEPUBSearchMenu(_:)):
             return isEPUBMode
+        case #selector(useSelectionForEPUBFindMenu(_:)):
+            // cooViewer-oxr.34: 設計書 §2.4 の EPUB 選択だけを ⌘E へ渡す。
+            return isEPUBMode && epubLatestSelectionText != nil
         case #selector(findNextEPUBMenu(_:)), #selector(findPreviousEPUBMenu(_:)):
             return isEPUBMode && epubSearchPanel != nil
                 && !(epubSearchModel?.hits.isEmpty ?? true)
+        case #selector(epubGoBackMenu(_:)):
+            // cooViewer-oxr.31: 通常のページ戻りとリンク履歴を混同しない。
+            return isEPUBMode && (epubView?.canGoBack ?? false)
         // ---- 画像表示専用の設定項目: EPUB モードでは無効(灰色)にする。
         // かつては validate 対象外で「有効表示のまま無効果」だった
         // (cooViewer-c6s.20。回転は非表示の readerView に効いて画像モード
@@ -2619,9 +2838,10 @@ final class ReaderWindowController: NSWindowController {
             // リフロー EPUB も専用ハンドラでしおりを扱う(仕様書 §4.7)。
             // validate だけ有効で本体が無反応だった c6s.20 の再発を避ける
             return (book?.pageCount ?? 0) > 0 || isEPUBMode
-        case #selector(cycleReadMode(_:)),
-             #selector(showFileInfoMenu(_:)),
-             #selector(showOtherPageInFinderMenu(_:)):
+        case #selector(showFileInfoMenu(_:)):
+            // cooViewer-oxr.37: 設計書 §2.4 の EPUB メタデータも情報パネルで扱う。
+            return (book?.pageCount ?? 0) > 0 || isEPUBMode
+        case #selector(cycleReadMode(_:)), #selector(showOtherPageInFinderMenu(_:)):
             return (book?.pageCount ?? 0) > 0
         default:
             return true

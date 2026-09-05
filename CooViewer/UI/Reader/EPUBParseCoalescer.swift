@@ -7,25 +7,66 @@ import Washi
 @MainActor
 final class EPUBParseCoalescer {
     /// 正規化パス → 実行中のパース
-    private var inFlight: [String: Task<EPUBPublication?, Never>] = [:]
-    /// 実パース(テストは注入で差し替える)
-    private let parse: @Sendable (URL) -> EPUBPublication?
+    private var inFlight: [String: Task<Result<EPUBPublication, any Error>, Never>] = [:]
+    /// 解析失敗を保持するため、テストから失敗を注入できる実パース
+    /// (cooViewer-oxr.41)。
+    private let parse: @Sendable (URL) throws -> EPUBPublication
+    /// 合流成立を決定論的に観測するテスト用フック(cooViewer-oxr.41)。
+    private let onCoalescedRequest: @Sendable () -> Void
 
-    init(parse: @escaping @Sendable (URL) -> EPUBPublication? = {
-        try? EPUBPublication(url: $0)
-    }) {
+    init(
+        parse: @escaping @Sendable (URL) throws -> EPUBPublication = { url in
+            try EPUBPublication(
+                url: url,
+                readStrategy: VolumeMappingPolicy.epubReadStrategy(for: url))
+        },
+        onCoalescedRequest: @escaping @Sendable () -> Void = {}
+    ) {
         self.parse = parse
+        self.onCoalescedRequest = onCoalescedRequest
     }
 
-    func publication(at url: URL) async -> EPUBPublication? {
+    func publication(
+        at url: URL,
+        preparsed: EPUBPublication? = nil
+    ) async -> Result<EPUBPublication, any Error> {
         let key = CanonicalPath.normalize(url.path)
-        if let running = inFlight[key] { return await running.value }
+        // cooViewer-oxr.42: 設計書 §2.4 の合本代理ページは生成時の解析結果を
+        // 保持する。同じ実体なら解析キューへ載せず、そのインスタンスを渡す。
+        if let preparsed,
+           CanonicalPath.normalize(preparsed.url.path) == key {
+            return .success(preparsed)
+        }
+        if let running = inFlight[key] {
+            onCoalescedRequest()
+            return await running.value
+        }
         let parse = self.parse
-        let task = Task.detached(priority: .userInitiated) { parse(url) }
+        let task = Task.detached(priority: .userInitiated) {
+            () -> Result<EPUBPublication, any Error> in
+            do {
+                return .success(try parse(url))
+            } catch {
+                return .failure(error)
+            }
+        }
         inFlight[key] = task
         let result = await task.value
         // 完了したのが自分のタスクのときだけ外す(合流窓の取り違え防止)
         if inFlight[key] == task { inFlight[key] = nil }
         return result
+    }
+
+    /// cooViewer-oxr.41: エラー内容を必要としない従来経路向けの互換アクセサ。
+    func publicationIfAvailable(
+        at url: URL,
+        preparsed: EPUBPublication? = nil
+    ) async -> EPUBPublication? {
+        switch await publication(at: url, preparsed: preparsed) {
+        case .success(let publication):
+            return publication
+        case .failure:
+            return nil
+        }
     }
 }

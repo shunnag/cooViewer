@@ -10,10 +10,16 @@ final class KeyBindingCatalogTests: XCTestCase {
     }
 
     func testCategoriesCoverAllKeyActions() {
-        // カテゴリ表はキーアクション 0-53 を重複なく網羅する
+        // カテゴリ表はキーアクション 0-54 を重複なく網羅する
         let all = ActionNames.keyActionCategories.flatMap(\.numbers)
         XCTAssertEqual(all.count, Set(all).count, "重複あり")
-        XCTAssertEqual(Set(all), Set(0...53))
+        XCTAssertEqual(Set(all), Set(0...54))
+    }
+
+    func testEPUBGoBackHasCatalogName() {
+        // cooViewer-oxr.31・設計書 §2.4: フォールバックの番号表示にしない。
+        XCTAssertNotEqual(ActionNames.keyActionName(54), "#54")
+        XCTAssertFalse(ActionNames.keyActionName(54).isEmpty)
     }
 
     func testAssignmentIndicesListAllRowsOfAction() {
@@ -42,7 +48,7 @@ final class KeyBindingCatalogTests: XCTestCase {
 
     func testKeySwitchEligibilityMatchesSwapPairs() {
         // 入替ペア(switchedLegacyKeyNumber)の両側だけが対象
-        for number in 0...53 {
+        for number in 0...54 {
             let swaps = ReaderAction.switchedLegacyKeyNumber(number) != number
             XCTAssertEqual(ActionNames.keySwitchActionEligible.contains(number), swaps,
                            "action \(number)")

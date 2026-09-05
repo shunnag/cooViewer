@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Washi
 
 /// 本の中の 1 ページ(1 画像)を表す。
 struct PageEntry: Sendable, Hashable, Identifiable {
@@ -119,6 +120,16 @@ protocol BookSource: Sendable {
     /// cbz ルートの ComicInfo.xml メタデータを read-only で返す(無ければ nil)。
     /// 常にヒントであり、ユーザー設定を上書きしない(適用側の責務。cooViewer-4fi)
     func metadata() async -> ComicInfo?
+
+    /// コレクション内リフロー EPUB の解析済み Publication を返す。
+    /// 既定は非対応で、保持しているソースだけが同一性を検証して返す
+    /// (cooViewer-oxr.42、設計書 §2.4)。
+    func preparsedReflowPublication(for url: URL) async -> EPUBPublication?
+
+    /// ソース固有の、見開きへ組み込んではならないページ位置。
+    /// EPUB の page-spread は規範的メタデータなので ComicInfo の任意ヒントとは
+    /// 別経路で無条件適用する(cooViewer-oxr.40、仕様書 §4.2.1)。
+    func layoutSinglePageIndices() async -> Set<Int>
 }
 
 extension BookSource {
@@ -144,6 +155,8 @@ extension BookSource {
     }
     func applyMediaProfile(_ profile: MediaProfile) async {}
     func metadata() async -> ComicInfo? { nil }
+    func preparsedReflowPublication(for url: URL) async -> EPUBPublication? { nil }
+    func layoutSinglePageIndices() async -> Set<Int> { [] }
 }
 
 enum BookSourceFactory {
@@ -154,6 +167,7 @@ enum BookSourceFactory {
     /// 求めるコールバック(nil なら既知パスワードのみ試して黙って飛ばす)
     static func make(for url: URL, readSubFolders: Bool,
                      nestedPasswordProvider: NestedPasswordProvider? = nil,
+                     preparsedEPUB: EPUBPublication? = nil,
                      vault: PasswordVault? = PasswordVault.sharedIfEnabled())
         async throws -> any BookSource {
         var isDirectory: ObjCBool = false
@@ -174,8 +188,15 @@ enum BookSourceFactory {
             return try PDFSource(url: url)
         }
         if SupportedTypes.isEPUB(url) {
-            // 固定レイアウトのみ(リフローは openBookFlow が専用リーダーへ
-            // 振り分け済み。ここへ来た場合は unsupportedFormat で弾かれる)
+            // FXL と画像のみ EPUB が対象(通常のリフローは openBookFlow が
+            // 専用リーダーへ振り分け済み)。
+            if let preparsedEPUB,
+               CanonicalPath.normalize(preparsedEPUB.url.path)
+                   == CanonicalPath.normalize(url.path) {
+                // ルーティング済み Publication を引き継ぎ、同じ EPUB の
+                // OCF/package を読み直さない(cooViewer-oxr.42、設計書 §2.4)。
+                return try EPUBSource(publication: preparsedEPUB, url: url)
+            }
             return try EPUBSource(url: url)
         }
         if SupportedTypes.isArchive(url) {

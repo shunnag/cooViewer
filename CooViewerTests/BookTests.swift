@@ -13,6 +13,9 @@ final class StubSource: BookSource, @unchecked Sendable {
     var comicInfoStub: ComicInfo?
     func metadata() async -> ComicInfo? { comicInfoStub }
 
+    var layoutSingleIndicesStub: Set<Int> = []
+    func layoutSinglePageIndices() async -> Set<Int> { layoutSingleIndicesStub }
+
     /// ヘッダ寸法(imageSize)を供給するか。既定 false=従来どおり nil を返し、
     /// Book はデコード経由の見開き判定(slow path)を使う。true にすると
     /// サイズ索引(fast path)を通す(cooViewer-utz の検証用)
@@ -94,6 +97,22 @@ final class BookTests: XCTestCase {
         // オプトインオフなら空
         await book.loadComicInfoState(useLayoutHints: false)
         XCTAssertTrue(book.comicSingleIndices.isEmpty)
+    }
+
+    func testSourceLayoutSinglesApplyWithoutComicInfoOptIn() async throws {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 4))
+        stub.layoutSingleIndicesStub = [1]
+        var info = ComicInfo()
+        info.pages = [.init(image: 2, doublePage: true)]
+        stub.comicInfoStub = info
+        let book = try await Book.open(source: stub)
+
+        await book.loadComicInfoState(useLayoutHints: false)
+        XCTAssertEqual(book.comicSingleIndices, [1],
+                       "EPUB page-spread は設定に関係なく適用する")
+        await book.loadComicInfoState(useLayoutHints: true)
+        XCTAssertEqual(book.comicSingleIndices, [1, 2],
+                       "ComicInfo の任意ヒントとは和集合にする")
     }
 
     func testChapterMarksEmptyWithoutComicInfo() async throws {

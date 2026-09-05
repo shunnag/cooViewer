@@ -1,9 +1,81 @@
 import AppKit
 import Washi
 
+/// 開いている EPUB の実測 census を合本計画へ再利用する純粋な判定値
+/// （cooViewer-oxr.65 / cooViewer-oxr.70、設計書 §2.4）。
+struct EPUBOpenBookCensusSeed: Equatable, Sendable {
+    let entryIndex: Int
+    let counts: [Int]
+    let pagesPerScreen: Int
+
+    static func make(
+        requestedMetricsKey: String,
+        viewMetricsKey: String?,
+        counts: [Int]?,
+        pagesPerScreen: Int,
+        entryIndex: Int?
+    ) -> EPUBOpenBookCensusSeed? {
+        guard viewMetricsKey == requestedMetricsKey,
+              let counts, let entryIndex else { return nil }
+        return EPUBOpenBookCensusSeed(
+            entryIndex: entryIndex, counts: counts,
+            pagesPerScreen: pagesPerScreen)
+    }
+}
+
+/// EPUB サムネイルの描画条件をディスクキャッシュ名へ写像する
+/// 純関数群（cooViewer-oxr.64 / cooViewer-oxr.63、設計書 §2.4 EPUB 対応）。
+enum EPUBThumbnailCacheKey {
+    /// Washi と同じテーマ解決規則。システム設定時だけウインドウ外観へ従う
+    /// （cooViewer-oxr.63、設計書 §2.4 EPUB 対応）。
+    static func effectiveIsDark(theme: Int, windowIsDark: Bool) -> Bool {
+        switch theme {
+        case 1: false
+        case 2: true
+        default: windowIsDark
+        }
+    }
+
+    /// ページ割りが同じでも描画結果が変わる条件を分離する
+    /// （cooViewer-oxr.64、設計書 §2.4 EPUB 対応）。
+    static func renderingVariant(metricsKey: String, isDark: Bool,
+                                 forcesReadableColors: Bool) -> String {
+        "metrics:\(metricsKey)#theme:\(isDark ? "d" : "l")"
+            + "#readable:\(forcesReadableColors ? "1" : "0")"
+    }
+
+    /// 単体 EPUB の画面サムネイル用キーを組み立てる
+    /// （cooViewer-oxr.64、設計書 §2.4 EPUB 対応）。
+    static func singleBook(path: String, totalPages: Int, pagesPerScreen: Int,
+                           fontScale: Double, pageMargins: Int,
+                           defaultFont: String, metricsKey: String,
+                           isDark: Bool, forcesReadableColors: Bool) -> String {
+        let variant = renderingVariant(
+            metricsKey: metricsKey, isDark: isDark,
+            forcesReadableColors: forcesReadableColors)
+        return "epub:\(path)#\(totalPages)x\(pagesPerScreen)"
+            + "#\(fontScale)#\(pageMargins)#\(defaultFont)"
+            + "#\(variant)"
+    }
+}
+
 /// サムネイルオーバーレイとリーダーの配線(仕様書 §4.8)。
 /// 表示・非表示の切替と、表示中のページ送りキーの転用を担う。
 extension ReaderWindowController {
+    /// 現在巻と版面キーが一致するときだけ、Washi リーダーの実測値を返す。
+    func openBookCensusSeed(for metricsKey: String) -> EPUBOpenBookCensusSeed? {
+        guard let epubView,
+              EPUBPersistencePolicy.shouldPersist(
+                callbackPublication: epubView.publication,
+                currentPublication: epubPublication) else { return nil }
+        return EPUBOpenBookCensusSeed.make(
+            requestedMetricsKey: metricsKey,
+            viewMetricsKey: epubView.pageCensusMetricsKey,
+            counts: epubView.pageCensus,
+            pagesPerScreen: epubView.plannedPagesPerScreen,
+            entryIndex: epubCollectionContext?.entryIndex)
+    }
+
     /// サムネイルオーバーレイのトグル。本が無ければ何もしない
     func showThumbnail() {
         guard let book else { return }
@@ -86,6 +158,24 @@ extension ReaderWindowController {
             hideThumbnailOverlay()
             return
         }
+        presentEPUBThumbnailOverlay()
+    }
+
+    /// 表示中の EPUB 関連一覧を現在の版面・配色キーで組み直す
+    /// (cooViewer-oxr.64 / cooViewer-oxr.63、設計書 §2.4 EPUB 対応)。
+    func refreshVisibleEPUBThumbnailOverlay() {
+        guard isThumbnailOverlayVisible else { return }
+        if isEPUBMode {
+            presentEPUBThumbnailOverlay()
+            return
+        }
+        guard let book,
+              book.entries.contains(where: { $0.reflowEPUBURL != nil }) else { return }
+        presentThumbnailOverlay(for: book)
+        revealThumbnailOverlay()
+    }
+
+    private func presentEPUBThumbnailOverlay() {
         // コレクション文脈では「合本全体」の一覧(画像ページ+各 EPUB の
         // 全ページ展開)を出す — 合本の画像モードと同じ体験にする
         if let context = epubCollectionContext {
@@ -96,8 +186,17 @@ extension ReaderWindowController {
             NSSound.beep()
             return
         }
-        let counts = epubView.pageCensus
-            ?? Array(repeating: 1, count: epubPublication.readingOrder.count)
+        let currentMetricsKey = EPUBScreenMetrics(
+            viewportSize: window?.contentView?.bounds.size ?? .zero,
+            settings: plannedEPUBSettings())
+            .applyingRenditionSpread(epubPublication.metadata.rendition.spread)
+            .cacheKey
+        // 旧版面の census はセル位置にも使わない。新しい実測が届くまでは
+        // 章単位へ戻し、新版面のキーへ旧番号の画像を保存しない(cooViewer-oxr.64)。
+        let counts = epubView.pageCensusMetricsKey == currentMetricsKey
+            ? (epubView.pageCensus
+                ?? Array(repeating: 1, count: epubPublication.readingOrder.count))
+            : Array(repeating: 1, count: epubPublication.readingOrder.count)
         let screens = EPUBScreenThumbnailSource.makeScreens(
             counts: counts, pagesPerScreen: epubView.plannedPagesPerScreen)
         guard !screens.isEmpty else {
@@ -132,13 +231,18 @@ extension ReaderWindowController {
         var snapshot = ThumbnailOverlayModel.Snapshot()
         snapshot.entries = source.pageEntries
         snapshot.source = source
-        // キャッシュキーはページ割りが変わる要素(寸法・フォント・余白)込み
-        // (使い回すと旧メトリクスのサムネイルが同じ番号で出てしまう)
-        snapshot.bookKey = "epub:\(epubBookURL.path)#\(counts.reduce(0, +))"
-            + "x\(epubView.plannedPagesPerScreen)"
-            + "#\(settings.epubFontScale)#\(settings.epubPageMargins)"
-            + "#\(settings.epubDefaultFont)"
-            + "#\(isDarkWindowAppearance ? "d" : "l")"
+        // census の版面と配色条件をすべて分離し、同じ総ページ数でも古い画像を
+        // 再利用しない（cooViewer-oxr.64、設計書 §2.4 EPUB 対応）。
+        snapshot.bookKey = EPUBThumbnailCacheKey.singleBook(
+            path: epubBookURL.path,
+            totalPages: counts.reduce(0, +),
+            pagesPerScreen: epubView.plannedPagesPerScreen,
+            fontScale: settings.epubFontScale,
+            pageMargins: settings.epubPageMargins,
+            defaultFont: settings.epubDefaultFont,
+            metricsKey: currentMetricsKey,
+            isDark: isDarkWindowAppearance,
+            forcesReadableColors: settings.epubForceReadableColors)
         snapshot.currentIndex = currentScreen
         snapshot.displayedIndices = [currentScreen]
         snapshot.readsFromLeft = epubInputReadsFromLeft
@@ -174,12 +278,15 @@ extension ReaderWindowController {
     func ensureCollectionPageMap() {
         let folderURL: URL
         let entries: [PageEntry]
+        let collectionSource: any BookSource
         if let context = epubCollectionContext {
             folderURL = context.folderURL
             entries = context.entries
+            collectionSource = context.source
         } else if let book, book.source is NestedFolderSource {
             folderURL = book.source.url
             entries = book.entries
+            collectionSource = book.source
         } else {
             collectionPageMapTask?.cancel()
             collectionPageMapPendingKey = nil
@@ -205,17 +312,15 @@ extension ReaderWindowController {
             baseMetrics.applyingRenditionSpread(
                 $0.metadata.rendition.spread).cacheKey
         } ?? key
+        let openSeed = openBookCensusSeed(for: openKey)
         let pendingKey = folderURL.path + "#" + key
         if let map = collectionPageMap, map.folderPath == folderURL.path,
            map.metricsKey == key, map.entries == entries {
             // 開いている巻がまさに欠落中で、同一メトリクスのリーダー census が
             // 出ているなら、上限後でもゼロコスト(atlas 呼び出しなし)で差し込む
             let canSelfHeal: Bool = {
-                guard let context = epubCollectionContext,
-                      map.missingEntries.contains(context.entryIndex),
-                      let epubView, epubView.pageCensusMetricsKey == openKey,
-                      epubView.pageCensus != nil else { return false }
-                return true
+                guard let openSeed else { return false }
+                return map.missingEntries.contains(openSeed.entryIndex)
             }()
             // 完成済み or 再試行上限に達した未完マップはそのまま(毎ナビゲーション
             // 再解析しない)。自己回復できる場合だけ上限を無視して埋め直す
@@ -232,10 +337,8 @@ extension ReaderWindowController {
         // 開いている本の census はリーダー実測を流用(**同一メトリクスの
         // 実測に限る** — 旧寸法の値を新キーのマップへ焼き込まない)
         var seededCounts: [Int: [Int]] = [:]
-        if let context = epubCollectionContext, let epubView,
-           epubView.pageCensusMetricsKey == openKey,
-           let counts = epubView.pageCensus {
-            seededCounts[context.entryIndex] = counts
+        if let openSeed {
+            seededCounts[openSeed.entryIndex] = openSeed.counts
         }
         // 直前の未完マップで計測済みの巻(epubURL != nil の segment)はそのまま流用し、
         // 欠けた巻だけ測り直す(atlas LRU 退避で再測が要るときの二度手間を省く)
@@ -252,8 +355,11 @@ extension ReaderWindowController {
             var counts = seededCounts
             for placeholder in placeholders where counts[placeholder.index] == nil {
                 guard !Task.isCancelled else { return }
+                let preparsed = await collectionSource
+                    .preparsedReflowPublication(for: placeholder.url)
                 if let plan = await EPUBAtlasStore.shared
-                    .screenPlan(for: placeholder.url, metrics: baseMetrics) {
+                    .screenPlan(for: placeholder.url, metrics: baseMetrics,
+                                preparsed: preparsed) {
                     counts[placeholder.index] = plan.counts
                 }
             }
@@ -326,9 +432,13 @@ extension ReaderWindowController {
 
     // MARK: - コレクションの「全ページ展開」一覧(設計書 §2.4 EPUB 対応)
 
-    /// ウインドウの実効外観がダークか(展開サムネイル・ホバーバブルの配色用)
+    /// EPUB の実効テーマがダークか（cooViewer-oxr.63、設計書 §2.4 EPUB 対応）。
+    /// システムテーマ時だけウインドウ外観を参照し、固定テーマを優先する。
     var isDarkWindowAppearance: Bool {
-        window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let windowIsDark = window?.effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return EPUBThumbnailCacheKey.effectiveIsDark(
+            theme: settings.epubTheme, windowIsDark: windowIsDark)
     }
 
     /// 合本内の代理ページの census を集め、揃ったら展開一覧へ差し替える。
@@ -342,14 +452,30 @@ extension ReaderWindowController {
         let metrics = EPUBScreenMetrics(
             viewportSize: window?.contentView?.bounds.size ?? .zero,
             settings: plannedEPUBSettings())
+        let openMetricsKey = epubPublication.map {
+            metrics.applyingRenditionSpread(
+                $0.metadata.rendition.spread).cacheKey
+        } ?? metrics.cacheKey
+        let openSeed = openBookCensusSeed(for: openMetricsKey)
+        let collectionSource = book.source
         let isDark = isDarkWindowAppearance
+        let forcesReadableColors = settings.epubForceReadableColors
         collectionOverlayTask = Task { [weak self, weak book] in
             var counts: [Int: [Int]] = [:]
             var perBookPagesPerScreen: [Int: Int] = [:]
+            if let openSeed {
+                counts[openSeed.entryIndex] = openSeed.counts
+                perBookPagesPerScreen[openSeed.entryIndex] =
+                    openSeed.pagesPerScreen
+            }
             for placeholder in placeholders {
                 guard !Task.isCancelled else { return }
+                if counts[placeholder.index] != nil { continue }
+                let preparsed = await collectionSource
+                    .preparsedReflowPublication(for: placeholder.url)
                 guard let screenPlan = await EPUBAtlasStore.shared
-                    .screenPlan(for: placeholder.url, metrics: metrics)
+                    .screenPlan(for: placeholder.url, metrics: metrics,
+                                preparsed: preparsed)
                 else { continue }
                 counts[placeholder.index] = screenPlan.counts
                 perBookPagesPerScreen[placeholder.index] =
@@ -369,6 +495,7 @@ extension ReaderWindowController {
                 singleSetting: book.singleSetting,
                 coverSingle: book.coverSingleFirst,
                 bookmarkedBookPages: Set(book.bookmarks.map(\.pageIndex)),
+                forcesReadableColors: forcesReadableColors,
                 jumpContext: .imageBook(book))
         }
     }
@@ -388,6 +515,7 @@ extension ReaderWindowController {
         currentCell: Int, readsFromLeft: Bool,
         singleSetting: Int, coverSingle: Bool,
         bookmarkedBookPages: Set<Int>,
+        forcesReadableColors: Bool,
         jumpContext: ExpandedOverlayContext) {
         thumbnailOverlayModel.onJump = { [weak self] cell in
             guard let self, plan.targets.indices.contains(cell) else { return }
@@ -438,11 +566,12 @@ extension ReaderWindowController {
         let pagesPerScreenKey = plan.perBookPagesPerScreen.keys.sorted().map {
             "\($0):\(plan.perBookPagesPerScreen[$0] ?? 1)"
         }.joined(separator: ",")
+        let renderingVariant = EPUBThumbnailCacheKey.renderingVariant(
+            metricsKey: plan.metrics.cacheKey, isDark: plan.isDark,
+            forcesReadableColors: forcesReadableColors)
         snapshot.bookKey = "col:\(folderURL.path)#exp\(plan.entries.count)"
-            + "#pps:\(pagesPerScreenKey)#\(settings.epubFontScale)"
-            + "#\(settings.epubPageMargins)#\(settings.epubDefaultFont)"
-            + "#\(plan.metrics.cacheKey)"
-            + "#\(plan.isDark ? "d" : "l")"
+            + "#pps:\(pagesPerScreenKey)"
+            + "#\(renderingVariant)"
         snapshot.currentIndex = currentCell
         snapshot.displayedIndices = [currentCell]
         snapshot.readsFromLeft = readsFromLeft
@@ -502,7 +631,13 @@ extension ReaderWindowController {
         let metrics = EPUBScreenMetrics(
             viewportSize: window?.contentView?.bounds.size ?? .zero,
             settings: plannedEPUBSettings())
+        let openMetricsKey = epubPublication.map {
+            metrics.applyingRenditionSpread(
+                $0.metadata.rendition.spread).cacheKey
+        } ?? metrics.cacheKey
+        let openSeed = openBookCensusSeed(for: openMetricsKey)
         let isDark = isDarkWindowAppearance
+        let forcesReadableColors = settings.epubForceReadableColors
         let placeholders = context.entries.enumerated().compactMap { index, entry in
             entry.reflowEPUBURL.map { (index: index, url: $0) }
         }
@@ -510,10 +645,19 @@ extension ReaderWindowController {
         collectionOverlayTask = Task { [weak self] in
             var counts: [Int: [Int]] = [:]
             var perBookPagesPerScreen: [Int: Int] = [:]
+            if let openSeed {
+                counts[openSeed.entryIndex] = openSeed.counts
+                perBookPagesPerScreen[openSeed.entryIndex] =
+                    openSeed.pagesPerScreen
+            }
             for placeholder in placeholders {
                 guard !Task.isCancelled else { return }
+                if counts[placeholder.index] != nil { continue }
+                let preparsed = await context.source
+                    .preparsedReflowPublication(for: placeholder.url)
                 guard let screenPlan = await EPUBAtlasStore.shared
-                    .screenPlan(for: placeholder.url, metrics: metrics)
+                    .screenPlan(for: placeholder.url, metrics: metrics,
+                                preparsed: preparsed)
                 else { continue }
                 counts[placeholder.index] = screenPlan.counts
                 perBookPagesPerScreen[placeholder.index] =
@@ -545,6 +689,7 @@ extension ReaderWindowController {
                 singleSetting: context.singleSetting,
                 coverSingle: context.coverSingle,
                 bookmarkedBookPages: context.bookmarkedPages,
+                forcesReadableColors: forcesReadableColors,
                 jumpContext: .epubMode(context))
         }
     }

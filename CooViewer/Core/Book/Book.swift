@@ -135,8 +135,9 @@ final class Book {
     private(set) var chapterMarks: [(page: Int, name: String)] = []
 
     /// ComicInfo が「単ページ(見開きにしない)」と示すページ(DoublePage /
-    /// FrontCover)を実ページへ写像した集合。useLayoutHints オプトイン時のみ構築
-    /// する(cooViewer-bt1)。isSmall の判定に渡す
+    /// FrontCover)と、ソースの規範的な単ページ指定を実ページへ写像した集合。
+    /// ComicInfo は useLayoutHints オプトイン時だけ、EPUB page-spread は無条件で
+    /// 構築する(cooViewer-bt1/oxr.40、仕様書 §4.2.1)。isSmall の判定に渡す
     private(set) var comicSingleIndices: Set<Int> = []
 
     /// open 時に ComicInfo 由来の状態(章メニュー・見開き補助)をまとめて構築する。
@@ -149,15 +150,22 @@ final class Book {
             guard chapter.image >= 0, chapter.image < count else { return nil }
             return (page: chapter.image, name: chapter.name)
         }
+        let metadataIndices: Set<Int>
         if useLayoutHints, let pages = info?.pages {
-            comicSingleIndices = Set(pages.compactMap { page in
+            metadataIndices = Set(pages.compactMap { page in
                 guard page.image >= 0, page.image < count,
                       page.doublePage || page.type == .frontCover else { return nil }
                 return page.image
             })
         } else {
-            comicSingleIndices = []
+            metadataIndices = []
         }
+        // page-spread は EPUB の規範的な配置指定なので、ComicInfo の設定ゲートを
+        // 通さず常に統合する(cooViewer-oxr.40、仕様書 §4.2.1)。
+        let sourceIndices = Set((await source.layoutSinglePageIndices()).filter {
+            $0 >= 0 && $0 < count
+        })
+        comicSingleIndices = metadataIndices.union(sourceIndices)
     }
 
     // MARK: - アクティビティ窓向けの実態アクセサ

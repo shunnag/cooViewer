@@ -137,6 +137,7 @@ WKWebView の takeSnapshot 合成で、固定レイアウトなら通常の cont
 ```sh
 swift Scripts/make-sample-pages.swift /tmp/pages 6          # 番号入りページ画像
 python3 Scripts/make-sample-epub.py /tmp /tmp/pages          # 2 冊の .epub を出力
+python3 Scripts/make-jp-epub-fixtures.py /tmp/washi-fixtures # 日本語 EPUB の検証セット
 ```
 
 ## 3. テスト
@@ -161,6 +162,11 @@ stored cbz 2.5×/RAR 3×/暗号化 7z 30× 等)の生データも同ディレク
 Washi は本リポジトリ(モノレポ)内 `Washi/` で開発し、公開リポジトリへは
 `git subtree split` による**片方向ミラー**で反映する(0.1.0 として公開済み。
 初回手順もこの形で検証済み)。公開更新のたびに:
+
+通常は `Scripts/release-washi.sh <version>` を使う(`--dry-run` で検証と
+実行予定の表示のみ)。スクリプトは公開側のタグを `sort -V` で比較し、最新タグ
+以下の版を拒否する。push が拒否されても強制更新は行わないため、履歴を確認して
+必要な場合だけ下記の手順で手動対応する。
 
 ```bash
 # Washi/ に触れたコミットを済ませたブランチ上で

@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Washi
 
 /// フォルダ内の書庫/PDF を子ソースとして同じ本に統合するフォルダの本
 /// (仕様書 §2.4 の旧ネスト COImageLoader 相当。フォルダ版)。
@@ -135,16 +136,28 @@ actor NestedFolderSource: BookSource {
             guard let pdf = try? PDFSource(url: candidate.fileURL) else { return nil }
             child = pdf
         } else if SupportedTypes.isEPUB(candidate.fileURL) {
-            if let epub = try? EPUBSource(url: candidate.fileURL) {
-                // 固定レイアウトはページとして統合
+            // コレクションの子 EPUB は一度だけ解析し、その Publication と画像のみ
+            // 判定結果を子ソースへ渡す(cooViewer-oxr.42/44、設計書 §2.4)。
+            guard let publication = try? EPUBPublication(
+                url: candidate.fileURL,
+                readStrategy: VolumeMappingPolicy.epubReadStrategy(
+                    for: candidate.fileURL)),
+                !publication.isDRMProtected else { return nil }
+            if publication.isFixedLayout {
+                guard let epub = try? EPUBSource(
+                    publication: publication, url: candidate.fileURL,
+                    precomputedImageOnlyPageInfos: nil) else { return nil }
                 child = epub
-            } else if let placeholder =
-                try? ReflowEPUBPlaceholderSource(url: candidate.fileURL) {
-                // リフローは表紙 1 ページの代理エントリで組み込む
-                // (表示到達で ReaderWindowController が EPUB モードへ切替)
-                child = placeholder
+            } else if let infos = EPUBImageOnlyHeuristic.imageOnlyPageInfos(publication) {
+                guard let epub = try? EPUBSource(
+                    publication: publication, url: candidate.fileURL,
+                    precomputedImageOnlyPageInfos: infos) else { return nil }
+                child = epub
             } else {
-                return nil  // 壊れた EPUB は従来どおり黙って飛ばす
+                // 通常のリフローは表紙 1 ページの代理エントリで組み込む。
+                child = ReflowEPUBPlaceholderSource(
+                    validatedReflowPublication: publication,
+                    url: candidate.fileURL)
             }
         } else {
             guard let nested = try? ArchiveSource(
@@ -236,6 +249,22 @@ actor NestedFolderSource: BookSource {
         case nil:
             return nil
         }
+    }
+
+    /// 代理エントリを持つ子へだけ問い合わせ、コレクション入場時の再解析を
+    /// 避ける。子側が更新日時とサイズを再検証する(cooViewer-oxr.42、設計書 §2.4)。
+    func preparsedReflowPublication(for candidateURL: URL) async
+        -> EPUBPublication? {
+        _ = await buildIfNeeded()
+        let target = CanonicalPath.normalize(candidateURL.path)
+        for location in locations.values {
+            guard case .child(let sourceIndex, let childEntry) = location,
+                  let childURL = childEntry.reflowEPUBURL,
+                  CanonicalPath.normalize(childURL.path) == target else { continue }
+            return await children[sourceIndex].preparsedReflowPublication(
+                for: candidateURL)
+        }
+        return nil
     }
 
     /// 子の書庫のスプールを開始する(ネットワークボリューム上のフォルダ対策)。

@@ -3,7 +3,7 @@ import AppKit
 /// キーアクション番号(仕様書 §5.5)の表示名と、キーの人間可読表記。
 /// バインディング編集 UI で使う。
 enum ActionNames {
-    static let allKeyActionNumbers = Array(0...53)
+    static let allKeyActionNumbers = Array(0...54)
 
     static func keyActionName(_ number: Int) -> String {
         switch number {
@@ -61,6 +61,7 @@ enum ActionNames {
         case 51: String(localized: "Enlarge View Mode")
         case 52: String(localized: "Reduce View Mode")
         case 53: String(localized: "Toggle Interpolation")
+        case 54: String(localized: "EPUB: Go Back to Link Source")
         default: "#\(number)"
         }
     }
@@ -203,14 +204,14 @@ enum ActionNames {
         }
     }
 
-    /// 「できること別」設定画面のカテゴリ(キーアクション番号 0-53)
+    /// 「できること別」設定画面のカテゴリ(キーアクション番号 0-54)
     static let keyActionCategories: [(title: String, numbers: [Int])] = [
         (String(localized: "Turn Pages"), [0, 1, 2, 3, 13, 14, 4, 5]),
         (String(localized: "Bookmarks"), [10, 6, 7]),
         (String(localized: "Books & Folders"), [8, 9, 35, 36, 48]),
         (String(localized: "Scrolling"), [24, 25, 26, 27, 28, 29, 30, 31, 32, 33]),
         (String(localized: "View"), [42, 51, 52, 11, 19, 40, 41, 15, 16, 53]),
-        (String(localized: "Tools"), [34, 37, 38, 18, 20, 12, 17, 21, 39]),
+        (String(localized: "Tools"), [34, 37, 38, 18, 20, 12, 17, 21, 39, 54]),
         (String(localized: "File & Window"), [22, 23, 43, 44, 45, 46, 47, 49, 50]),
     ]
 

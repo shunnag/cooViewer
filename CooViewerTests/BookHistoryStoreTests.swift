@@ -399,14 +399,88 @@ final class BookHistoryStoreTests: XCTestCase {
             path: path, bookmarks: [("第一章", 0, 0.25, "ch1")])
         store.noteReflowCensus(path: path, metricsKey: "m", counts: [2, 3],
                                releaseIdentifier: nil)
+        store.noteReflowCensus(path: path, metricsKey: "wide", counts: [1, 2],
+                               releaseIdentifier: nil)
         XCTAssertNotNil(store.savedReflowCensus(forPath: path))
 
         store.noteReflowBookmarks(path: path, bookmarks: [])
         XCTAssertTrue(store.savedReflowBookmarks(forPath: path).isEmpty)
         XCTAssertNil(store.savedReflowCensus(forPath: path))
+        XCTAssertNil(store.savedReflowCensus(forPath: path, metricsKey: "m"))
+        XCTAssertNil(store.savedReflowCensus(forPath: path, metricsKey: "wide"))
         let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
         XCTAssertTrue(fresh.savedReflowBookmarks(forPath: path).isEmpty)
         XCTAssertNil(fresh.savedReflowCensus(forPath: path))
+    }
+
+    /// 表示メトリクス別 census は 3 件の MRU とし、同じキーの再計測を
+    /// 更新・先頭移動して再起動後も保つ(cooViewer-oxr.45、設計書 §2.4)
+    func testReflowCensusRecordsCapDeduplicateAndRoundTrip() throws {
+        let path = try makeBookFile("novel.epub")
+        store.noteClosedReflow(path: path, spineIndex: 1, progression: 0.5,
+                               forceRememberBeyondRecents: true)
+        store.noteReflowCensus(path: path, metricsKey: "m1", counts: [1],
+                               releaseIdentifier: "r1")
+        store.noteReflowCensus(path: path, metricsKey: "m2", counts: [2],
+                               releaseIdentifier: "r2")
+        store.noteReflowCensus(path: path, metricsKey: "m3", counts: [3],
+                               releaseIdentifier: "r3")
+        store.noteReflowCensus(path: path, metricsKey: "m4", counts: [4],
+                               releaseIdentifier: "r4")
+        store.noteReflowCensus(path: path, metricsKey: "m2", counts: [20, 21],
+                               releaseIdentifier: "r2-new")
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        let newest = try XCTUnwrap(fresh.savedReflowCensus(forPath: path))
+        XCTAssertEqual(newest.metricsKey, "m2")
+        XCTAssertEqual(newest.counts, [20, 21])
+        XCTAssertEqual(newest.releaseIdentifier, "r2-new")
+        XCTAssertNotNil(fresh.savedReflowCensus(forPath: path, metricsKey: "m4"))
+        XCTAssertNotNil(fresh.savedReflowCensus(forPath: path, metricsKey: "m3"))
+        XCTAssertNil(fresh.savedReflowCensus(forPath: path, metricsKey: "m1"))
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: stateFileURL()))
+                as? [String: Any])
+        let records = try XCTUnwrap(object["censusRecords"] as? [[String: Any]])
+        XCTAssertEqual(records.compactMap { $0["metricsKey"] as? String },
+                       ["m2", "m4", "m3"])
+        let mirror = try XCTUnwrap(object["lastCensus"] as? [String: Any])
+        XCTAssertEqual(mirror["metricsKey"] as? String, "m2")
+    }
+
+    /// censusRecords 導入前の lastCensus だけの JSON を 1 件の MRU として読み、
+    /// 次の保存でも失わない(cooViewer-oxr.45、設計書 §2.4)
+    func testLegacyLastCensusDecodesIntoRecords() throws {
+        let path = try makeBookFile("legacy.epub")
+        store.noteClosedReflow(path: path, spineIndex: 1, progression: 0.5,
+                               forceRememberBeyondRecents: true)
+        store.noteReflowCensus(path: path, metricsKey: "legacy", counts: [5, 6],
+                               releaseIdentifier: "old")
+        let url = try stateFileURL()
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url))
+                as? [String: Any])
+        object.removeValue(forKey: "censusRecords")
+        try JSONSerialization.data(withJSONObject: object).write(to: url, options: .atomic)
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        let legacy = try XCTUnwrap(
+            fresh.savedReflowCensus(forPath: path, metricsKey: "legacy"))
+        XCTAssertEqual(legacy.counts, [5, 6])
+        fresh.noteReflowCensus(path: path, metricsKey: "new", counts: [7],
+                               releaseIdentifier: "new")
+
+        let reopened = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(reopened.savedReflowCensus(forPath: path)?.metricsKey, "new")
+        XCTAssertNotNil(
+            reopened.savedReflowCensus(forPath: path, metricsKey: "legacy"))
+        let migrated = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url))
+                as? [String: Any])
+        let records = try XCTUnwrap(migrated["censusRecords"] as? [[String: Any]])
+        XCTAssertEqual(records.compactMap { $0["metricsKey"] as? String },
+                       ["new", "legacy"])
     }
 
     func testReflowBookmarksMissingFromOldJSONDecodesAsEmpty() throws {

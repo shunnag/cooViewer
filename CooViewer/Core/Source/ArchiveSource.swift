@@ -249,12 +249,8 @@ actor ArchiveSource: BookSource {
         let ext = url.pathExtension.lowercased()
         guard mappable.contains(ext) else { return false }
         // ネットワークボリュームでは mmap しないため、高コストな分割 zip の兄弟探索より先に除外する。
-        guard let values = try? url.resourceValues(forKeys: [
-            .volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey,
-        ]) else { return false }
-        guard values.volumeIsLocal == true
-                && values.volumeIsRemovable != true
-                && values.volumeIsEjectable != true else { return false }
+        // EPUB と同じ安全性判定を使い、属性不明時も SIGBUS 回避を優先する(cooViewer-oxr.39)。
+        guard VolumeMappingPolicy.isSafeForMemoryMapping(url: url) else { return false }
         if ext == "zip" || ext == "cbz" {
             let spanned = url.deletingPathExtension().appendingPathExtension("z01")
             if FileManager.default.fileExists(atPath: spanned.path) { return false }
@@ -418,12 +414,17 @@ actor ArchiveSource: BookSource {
         let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
         let child: any BookSource
         if isEPUB {
-            // cooViewer-cj2: リフロー/DRM/破損 EPUB はメモリ上の OCF 解析で
-            // 先に棄却し、採用しない全データを平文 temp へ書き出さない。
+            // cooViewer-cj2/oxr.44: 通常のリフロー/DRM/破損 EPUB はメモリ上の
+            // OCF 解析で先に棄却し、採用しない全データを平文 temp へ書き出さない。
             guard let probe = try? EPUBPublication(
                 data: data,
                 displayURL: URL(fileURLWithPath: candidate.path)),
-                probe.isFixedLayout, !probe.isDRMProtected else { return false }
+                !probe.isDRMProtected else { return false }
+            // rendition:layout がなくても全 spine が単一画像なら画像本として採用し、
+            // 判定で得たページ情報を子へ渡す(cooViewer-oxr.44、設計書 §2.4)。
+            let imageOnlyPageInfos = probe.isFixedLayout
+                ? nil : EPUBImageOnlyHeuristic.imageOnlyPageInfos(probe)
+            guard probe.isFixedLayout || imageOnlyPageInfos != nil else { return false }
             if sensitive {
                 // c6s.23: probe が OCF の Data を保持するため、そのまま子へ渡せば
                 // 6ax の平文 temp 禁止を守れる。実サイズが上限超なら temp へ
@@ -431,17 +432,27 @@ actor ArchiveSource: BookSource {
                 guard useMemory,
                       let epub = try? EPUBSource(
                         publication: probe,
-                        url: URL(fileURLWithPath: candidate.path)) else { return false }
+                        url: URL(fileURLWithPath: candidate.path),
+                        precomputedImageOnlyPageInfos: imageOnlyPageInfos) else {
+                    return false
+                }
                 child = epub
             } else {
                 // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
                 // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
                 guard let fileURL = writeNestedTemp(candidate, data: data),
-                      let epub = try? EPUBSource(url: fileURL) else { return false }
+                      let filePublication = try? EPUBPublication(
+                        url: fileURL,
+                        readStrategy: VolumeMappingPolicy.epubReadStrategy(for: fileURL)),
+                      let epub = try? EPUBSource(
+                        publication: filePublication, url: fileURL,
+                        precomputedImageOnlyPageInfos: imageOnlyPageInfos) else {
+                    return false
+                }
                 child = epub
             }
-            // EPUBSource は FXL 非 DRM のみ成功する。リフロー/DRM/破損は
-            // cooViewer-cj2 と仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
+            // EPUBSource は FXL または画像のみの非 DRM に限る。通常のリフロー・
+            // DRM・破損は仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
         } else if isPDF {
             if useMemory {
                 guard let pdf = try? PDFSource(data: data) else { return false }

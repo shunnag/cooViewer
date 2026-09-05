@@ -576,6 +576,10 @@ extension ReaderWindowController {
         case .minimizeWindow: window?.performMiniaturize(nil)
         case .contextualMenu: showContextMenu()
         case .toggleInterpolation: settings.toggleInterpolationNone()
+        case .epubGoBack:
+            // EPUB 専用アクション。画像本の入力経路では何もしない
+            // (cooViewer-oxr.31・設計書 §2.4)。EPUB は performEPUB が処理する。
+            break
 
         case .positionalNextPrevPage:
             isNextSide ? nextPage(nil) : previousPage(nil)
@@ -728,7 +732,7 @@ extension ReaderWindowController {
         refreshAfterJump()
     }
 
-    private func showContextMenu() {
+    func showContextMenu() {
         guard let view = window?.contentView, let event = NSApp.currentEvent else { return }
         let menu = NSMenu()
         menu.addItem(withTitle: String(localized: "Next Page"),

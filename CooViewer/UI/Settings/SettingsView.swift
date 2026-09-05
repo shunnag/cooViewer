@@ -165,6 +165,15 @@ struct SettingsView: View {
     @AppStorage("EPUBDefaultFont") private var epubDefaultFont = ""
     @AppStorage("EPUBTheme") private var epubTheme = 0
     @AppStorage("EPUBForceReadableColors") private var epubForceReadableColors = true
+    // EPUB の脚注・組版・印刷ページ(cooViewer-oxr.32/.33/.38、設計書 §2.4)
+    @AppStorage("EPUBFootnotePopover") private var epubFootnotePopover = true
+    @AppStorage("EPUBHidesFootnoteAsides") private var epubHidesFootnoteAsides = false
+    @AppStorage("EPUBLineHeightScale") private var epubLineHeightScale = 0.0
+    @AppStorage("EPUBLetterSpacing") private var epubLetterSpacing = 0
+    @AppStorage("EPUBParagraphSpacing") private var epubParagraphSpacing = 0
+    @AppStorage("EPUBForceFont") private var epubForceFont = false
+    @AppStorage("EPUBHidesRuby") private var epubHidesRuby = false
+    @AppStorage("EPUBShowsPrintPage") private var epubShowsPrintPage = false
     @AppStorage("WheelSensitivity") private var wheelSensitivity = 1.0
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
@@ -334,7 +343,15 @@ struct SettingsView: View {
             String(localized: "Text size:"),
             String(localized: "Pinch to change EPUB text size"),
             String(localized: "Page margins:"),
+            String(localized: "Show footnotes in a popover"),
+            String(localized: "Hide end-of-body footnote blocks"),
+            String(localized: "Line spacing:"),
+            String(localized: "Letter spacing:"),
+            String(localized: "Paragraph spacing:"),
             String(localized: "Default font (when the book doesn't specify):"),
+            String(localized: "Prioritize the default font over the book's font"),
+            String(localized: "Hide ruby annotations"),
+            String(localized: "Show print page labels alongside page numbers"),
         ]
         case .display: [
             String(localized: "Reading direction:"),
@@ -777,7 +794,8 @@ struct SettingsView: View {
 
     /// リフロー EPUB の版面設定(設計書 §2.4 EPUB 対応)。変更は即時反映され、
     /// 読書位置(進行率)を保ったまま再ページ割りされる。既定フォントは
-    /// 「本が font-family を指定しないときだけ」効く(本の指定が最優先)
+    /// 通常は本が font-family を指定しないときだけ効き、優先トグル ON では
+    /// 本の指定を上書きする(cooViewer-oxr.33)
     private var epubPane: some View {
         Form {
             Section {
@@ -813,6 +831,39 @@ struct SettingsView: View {
                 }
             }
             Section {
+                // 脚注表示はページ割りを変えるため明示する(cooViewer-oxr.32、
+                // 設計書 §2.4)
+                Toggle(String(localized: "Show footnotes in a popover"),
+                       isOn: $epubFootnotePopover)
+                Toggle(String(localized: "Hide end-of-body footnote blocks"),
+                       isOn: $epubHidesFootnoteAsides)
+                Text(String(localized:
+                    "Hiding end-of-body footnote blocks reflows the pages and remeasures page numbers."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                // 組版設定はすべて再ページ割り対象(cooViewer-oxr.33、設計書 §2.4)
+                Picker(String(localized: "Line spacing:"),
+                       selection: $epubLineHeightScale) {
+                    Text(String(localized: "Keep book setting")).tag(0.0)
+                    Text(verbatim: "1.2").tag(1.2)
+                    Text(verbatim: "1.5").tag(1.5)
+                    Text(verbatim: "1.8").tag(1.8)
+                    Text(verbatim: "2.0").tag(2.0)
+                }
+                Picker(String(localized: "Letter spacing:"),
+                       selection: $epubLetterSpacing) {
+                    Text(String(localized: "Keep book setting")).tag(0)
+                    Text(String(localized: "Slight")).tag(1)
+                    Text(String(localized: "Wider")).tag(2)
+                }
+                Picker(String(localized: "Paragraph spacing:"),
+                       selection: $epubParagraphSpacing) {
+                    Text(String(localized: "Keep book setting")).tag(0)
+                    Text(String(localized: "Slight")).tag(1)
+                    Text(String(localized: "Wider")).tag(2)
+                }
                 Picker(String(localized: "Default font (when the book doesn't specify):"),
                        selection: $epubDefaultFont) {
                     Text(String(localized: "System default")).tag("")
@@ -821,10 +872,19 @@ struct SettingsView: View {
                     Text(verbatim: "游明朝").tag("YuMincho")
                     Text(verbatim: "游ゴシック体").tag("YuGothic")
                 }
+                Toggle(String(localized: "Prioritize the default font over the book's font"),
+                       isOn: $epubForceFont)
+                Toggle(String(localized: "Hide ruby annotations"),
+                       isOn: $epubHidesRuby)
                 Text(String(localized:
-                    "Applies only when the book itself doesn't specify a font. Text size and margins reflow the pages while keeping your reading position."))
+                    "By default, the chosen font applies only when the book doesn't specify one. The override prioritizes it over the book. Typography changes reflow pages and remeasure page numbers while keeping your reading position."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section {
+                // 印刷版ページのノンブル併記(cooViewer-oxr.38、設計書 §2.4)
+                Toggle(String(localized: "Show print page labels alongside page numbers"),
+                       isOn: $epubShowsPrintPage)
             }
         }
         .formStyle(.grouped)
