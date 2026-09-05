@@ -1,9 +1,7 @@
 import Foundation
 
-/// Model of a media overlay (EPUB 3 Media Overlays, a SMIL subset).
-/// Currently offers parsing only, with no playback engine (EPUB RS 3.3 §9
-/// allows a RS without audio-playback capability to ignore SMIL; a future
-/// extension point).
+/// Parsing model for a media overlay (EPUB 3 Media Overlays, a SMIL subset).
+/// Playback is provided by `EPUBReaderView.playMediaOverlay()` in the Washi target.
 public struct MediaOverlay: Sendable {
     /// par: a synchronization pair of a text fragment and an audio clip.
     public struct Parallel: Sendable {

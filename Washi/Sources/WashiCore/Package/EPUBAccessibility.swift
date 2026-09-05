@@ -21,16 +21,19 @@ public struct EPUBAccessibility: Sendable, Equatable {
     public let hazards: [String]
     /// `schema:accessibilitySummary` — a human-readable summary, if provided.
     public let summary: String?
-    /// `dcterms:conformsTo` — EPUB Accessibility conformance URLs, if any.
+    /// `dcterms:conformsTo` — EPUB Accessibility conformance URLs, if any,
+    /// declared through either `meta` or `link` package metadata.
     public let conformsTo: [String]
     /// `a11y:certifiedBy` — the party that certified the conformance claim.
     public let certifiedBy: [String]
+    /// `a11y:certifierCredential` — links to credentials held by the certifier.
+    public let certifierCredentials: [String]
 
     /// True when the book declares no accessibility metadata at all.
     public var isEmpty: Bool {
         accessModes.isEmpty && accessModesSufficient.isEmpty && features.isEmpty
             && hazards.isEmpty && summary == nil && conformsTo.isEmpty
-            && certifiedBy.isEmpty
+            && certifiedBy.isEmpty && certifierCredentials.isEmpty
     }
 }
 
@@ -52,7 +55,7 @@ extension EPUBMetadata {
     }
 
     /// The publication's accessibility metadata, assembled from the document's
-    /// schema.org / EPUB-a11y meta properties.
+    /// schema.org / EPUB-a11y meta properties and accessibility links.
     public var accessibility: EPUBAccessibility {
         // 文書全体の meta(refines == nil)だけを対象にする
         func values(_ property: String) -> [String] {
@@ -73,24 +76,33 @@ extension EPUBMetadata {
             features: values("schema:accessibilityFeature"),
             hazards: values("schema:accessibilityHazard"),
             summary: values("schema:accessibilitySummary").first,
-            conformsTo: values("dcterms:conformsTo"),
-            certifiedBy: values("a11y:certifiedBy"))
+            conformsTo: values("dcterms:conformsTo")
+                + accessibilityConformanceLinks,
+            certifiedBy: values("a11y:certifiedBy"),
+            certifierCredentials: values("a11y:certifierCredential")
+                + accessibilityCertifierCredentialLinks)
     }
 
     /// The primary authors — creators whose MARC role is `aut`, or, when no
-    /// creator is role-tagged, all creators. Ordered by `display-seq` when
-    /// present, then by document order. Display names (not file-as).
+    /// creator is role-tagged, all creators. Ordered by `display-seq` only when
+    /// every creator declares it; otherwise document order. Display names (not file-as).
     public var authors: [String] {
-        let authored = creators.filter { $0.role == "aut" }
-        let chosen = authored.isEmpty ? creators : authored
-        return chosen
-            .enumerated()
-            .sorted { lhs, rhs in
-                let l = lhs.element.displaySeq ?? Int.max
-                let r = rhs.element.displaySeq ?? Int.max
+        // cooViewer-oxr.49: creator 全員に display-seq があるときだけ
+        // 安定ソートし、部分指定なら文書順を保つ。
+        let ordered: [EPUBCreator]
+        if !creators.isEmpty,
+           creators.allSatisfy({ $0.displaySeq != nil }) {
+            ordered = creators.enumerated().sorted { lhs, rhs in
+                let l = lhs.element.displaySeq ?? 0
+                let r = rhs.element.displaySeq ?? 0
                 return l != r ? l < r : lhs.offset < rhs.offset
-            }
-            .map { $0.element.value }
+            }.map(\.element)
+        } else {
+            ordered = creators
+        }
+        let authored = ordered.filter { $0.role == "aut" }
+        let chosen = authored.isEmpty ? ordered : authored
+        return chosen.map(\.value)
     }
 
     /// The series (collection) this publication belongs to, preferring one

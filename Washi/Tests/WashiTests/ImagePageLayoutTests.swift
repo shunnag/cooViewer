@@ -9,12 +9,14 @@ import XCTest
 final class ReaderScriptTestHarness {
     let window: NSWindow
     let webView: WKWebView
+    private let publication: EPUBPublication
     private let schemeHandler: EPUBSchemeHandler
 
     init(entries: [(name: String, data: Data)]) throws {
         let publication = try EPUBPublication(
             data: ZipBuilder.build(entries, method: 8),
             displayURL: URL(fileURLWithPath: "/tmp/washi-batch3.epub"))
+        self.publication = publication
         let size = NSSize(width: 640, height: 400)
         window = NSWindow(
             contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: size),
@@ -36,7 +38,8 @@ final class ReaderScriptTestHarness {
     }
 
     func load() async throws {
-        let url = try XCTUnwrap(schemeHandler.url(forContainerPath: "OEBPS/text/c.xhtml"))
+        let entry = try XCTUnwrap(publication.readingOrder.first)
+        let url = try XCTUnwrap(schemeHandler.url(forReadingOrderItem: entry))
         let waiter = NavigationWaiter()
         webView.navigationDelegate = waiter
         webView.load(URLRequest(url: url))
@@ -78,6 +81,25 @@ final class ImagePageLayoutTests: XCTestCase {
 
     func testImageFollowsViewport() async throws {
         try await checkLayout(body: "<img src=\"../images/page.png\"/>", isSVG: false)
+    }
+
+    /// cooViewer-oxr.15: spine 直下のラスター画像を合成 XHTML wrapper で配信し、
+    /// 既存の image-page 配置へ到達させる。
+    func testImageSpineWrapperIsDetectedAsImagePage() async throws {
+        let harness = try ReaderScriptTestHarness(entries: Self.imageSpineEntries())
+        defer { harness.close() }
+        try await harness.load()
+        let decoded: Bool = try await harness.evaluate("""
+            const image = document.querySelector('img');
+            await image.decode();
+            return image.naturalWidth === 12 && image.naturalHeight === 18;
+            """)
+        XCTAssertTrue(decoded)
+        let setup = try await harness.setup()
+        XCTAssertEqual(setup["imagePage"], 1)
+        XCTAssertEqual(setup["pageCount"], 1)
+        XCTAssertEqual(setup["pagesPerScreen"], 1)
+        try await assertImageRect(harness, width: 640, height: 400)
     }
 
     func testSVGWithNonePreservesAspectRatio() async throws {
@@ -213,5 +235,29 @@ final class ImagePageLayoutTests: XCTestCase {
             return Number(img.style.getPropertyValue('--washi-ratio'));
             """)
         XCTAssertEqual(loaded, 2.0 / 3.0, accuracy: 0.0001)
+    }
+
+    private static func imageSpineEntries() -> [(name: String, data: Data)] {
+        let image = EPUBFixtures.imagePageEntries(bodyHTML: "")
+            .first { $0.name == "OEBPS/images/page.png" }!.data
+        let opf = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+                     unique-identifier="uid">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:identifier id="uid">urn:uuid:image-spine-wrapper</dc:identifier>
+                <dc:title>Image spine wrapper</dc:title><dc:language>en</dc:language>
+              </metadata>
+              <manifest><item id="page" href="images/page.png"
+                media-type="image/png"/></manifest>
+              <spine><itemref idref="page"/></spine>
+            </package>
+            """
+        return [
+            ("mimetype", Data("application/epub+zip".utf8)),
+            ("META-INF/container.xml", Data(EPUBFixtures.containerXML.utf8)),
+            ("OEBPS/package.opf", Data(opf.utf8)),
+            ("OEBPS/images/page.png", image),
+        ]
     }
 }

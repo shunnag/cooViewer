@@ -1,9 +1,55 @@
+import Foundation
 import XCTest
 @testable import Washi
 @testable import WashiCore
 
 /// 見開き判定(usesSpread)の検証
 final class ScreenMetricsTests: XCTestCase {
+    /// cooViewer-oxr.25: 旧形式の census キーは現行エンジンと一致しない。
+    func testPaginationVersionIsEncodedAndRejectsLegacyKey() throws {
+        let metrics = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 800, height: 600),
+            settings: EPUBReaderSettings())
+        let data = try XCTUnwrap(metrics.cacheKey.data(using: .utf8))
+        let options = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        // cooViewer-oxr.56/57/58/59/60/61/76/77: pagination math の
+        // 変更で lifecycle batch の version 2 も再計測する。
+        XCTAssertEqual(EPUBScreenMetrics.paginationVersion, 3)
+        XCTAssertEqual(options["engine"] as? Int,
+                       EPUBScreenMetrics.paginationVersion)
+        XCTAssertTrue(EPUBScreenMetrics.usesCurrentPaginationVersion(
+            metrics.cacheKey))
+        XCTAssertFalse(EPUBScreenMetrics.usesCurrentPaginationVersion(
+            #"{"spread":true,"width":800}"#))
+        XCTAssertFalse(EPUBScreenMetrics.usesCurrentPaginationVersion(
+            #"{"engine":1,"spread":true,"width":800}"#))
+        XCTAssertFalse(EPUBScreenMetrics.usesCurrentPaginationVersion(
+            #"{"engine":2,"spread":true,"width":800}"#))
+        XCTAssertFalse(EPUBScreenMetrics.usesCurrentPaginationVersion(
+            #"{"engine":2.9,"spread":true,"width":800}"#))
+    }
+
+    /// cooViewer-oxr.75: 著者スクリプト許可は census の同一性に含まれる。
+    func testCacheKeyReflectsAllowsScriptedContent() throws {
+        var disabledSettings = EPUBReaderSettings()
+        disabledSettings.allowsScriptedContent = false
+        var enabledSettings = disabledSettings
+        enabledSettings.allowsScriptedContent = true
+        let size = CGSize(width: 800, height: 600)
+        let disabled = EPUBScreenMetrics(
+            viewportSize: size, settings: disabledSettings)
+        let enabled = EPUBScreenMetrics(
+            viewportSize: size, settings: enabledSettings)
+
+        XCTAssertNotEqual(disabled.cacheKey, enabled.cacheKey)
+        XCTAssertFalse(EPUBScreenMetrics.allowsScriptedContent(
+            in: disabled.censusOptionsJSON))
+        XCTAssertTrue(EPUBScreenMetrics.allowsScriptedContent(
+            in: enabled.censusOptionsJSON))
+    }
+
     func testColumnModeRenditionSpreadWidthAndOrientationTruthTable() {
         let modes: [EPUBColumnMode] = [.single, .double, .auto]
         let spreads: [RenditionSpread] = [.auto, .none, .landscape, .both]
@@ -142,5 +188,30 @@ final class ScreenMetricsTests: XCTestCase {
             .applyingRenditionSpread(.landscape)
         XCTAssertEqual(portrait.pagesPerScreen, 1)
         XCTAssertEqual(landscape.pagesPerScreen, 2)
+    }
+
+    /// cooViewer-oxr.51: census は安定した文書単位キーから項目別 spread と
+    /// 対応する余白寸法を導出する。
+    func testCensusSetupPlanAppliesPerItemSpreadAndInsets() throws {
+        var settings = EPUBReaderSettings()
+        settings.insets = EPUBReaderInsets(top: 10, left: 20,
+                                           bottom: 10, right: 20)
+        settings.spreadInsets = EPUBReaderInsets(top: 30, left: 100,
+                                                 bottom: 30, right: 100)
+        let base = EPUBScreenMetrics(
+            viewportSize: CGSize(width: 1_200, height: 900),
+            settings: settings, renditionSpread: .both)
+        let baseKey = base.cacheKey
+
+        let single = EPUBScreenMetrics.setupPlan(
+            optionsJSON: base.censusOptionsJSON, applying: .none)
+        let data = try XCTUnwrap(single.optionsJSON.data(using: .utf8))
+        let options = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(options["spread"] as? Bool, false)
+        XCTAssertEqual(single.contentSize.width, 1_160, accuracy: 0.5)
+        XCTAssertEqual(single.contentSize.height, 880, accuracy: 0.5)
+        XCTAssertEqual(base.cacheKey, baseKey)
     }
 }

@@ -432,13 +432,33 @@ extension EPUBFixtures {
             searchQuery: "検索…終端",
             usesXHTMLDoctype: true),
         EPUBTextMappingFixture(
+            // cooViewer-oxr.10: WHATWG 実体を Core と WebKit で同じ本文へ写像する。
+            name: "WHATWG 名前付き実体",
+            body: "<p>矢印&rarr;検索&yen;価格&ensp;空白</p>",
+            searchQuery: "→検索¥価格",
+            usesXHTMLDoctype: true),
+        EPUBTextMappingFixture(
             name: "pre",
             body: "<pre>  pre検索\n    二行目  </pre>",
             searchQuery: "pre検索"),
         EPUBTextMappingFixture(
-            name: "table/td",
-            body: "<table><tr><td>表セル</td><td>検索セル</td></tr></table>",
-            searchQuery: "表セル検索セル"),
+            // cooViewer-oxr.89: SVG/MathML の不可視注釈を除き可視 text は残す。
+            name: "SVG・MathML 注釈",
+            body: "<p>前<svg xmlns=\"http://www.w3.org/2000/svg\">"
+                + "<title>不可視題</title><desc>不可視説明</desc>"
+                + "<text>SVG可視検索</text></svg>"
+                + "<math xmlns=\"http://www.w3.org/1998/Math/MathML\">"
+                + "<mi>x</mi><annotation>不可視注釈</annotation>"
+                + "<annotation-xml><mtext>不可視XML</mtext></annotation-xml>"
+                + "</math><desc>HTML説明</desc><annotation>HTML注記</annotation>"
+                + "後</p>",
+            searchQuery: "SVG可視検索"),
+        EPUBTextMappingFixture(
+            // cooViewer-oxr.92: 表題・見出し・セルを同じ改行境界で写像する。
+            name: "table/caption/th/td",
+            body: "<table><caption>書誌</caption><tr><th>発行者</th>"
+                + "<td>山田太郎</td><td>検索セル</td></tr></table>",
+            searchQuery: "検索セル"),
         EPUBTextMappingFixture(
             name: "縦書き",
             body: "<p>\(String(repeating: "縦書き本文。", count: 350))縦書き検索\(String(repeating: "後続本文。", count: 350))</p>",

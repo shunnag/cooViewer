@@ -11,9 +11,11 @@ public struct EPUBCensusRecord: Sendable, Codable, Equatable {
     public let metricsKey: String
     /// Page count of each spine item, in reading order.
     public let counts: [Int]
-    /// The book's release identifier (unique-identifier + dcterms:modified) at
-    /// measure time, used to reject counts from a different edition. Nil for
-    /// books that declare no modified date.
+    /// The book's release identifier at measure time, used to reject counts
+    /// from a different edition. It combines the unique identifier and
+    /// `dcterms:modified` when both exist, falls back to the unique identifier
+    /// when the modified date is absent, and is nil only when no unique
+    /// identifier is available.
     public let releaseIdentifier: String?
 
     public init(metricsKey: String, counts: [Int], releaseIdentifier: String?) {

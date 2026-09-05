@@ -104,8 +104,12 @@ final class EPUBTextMappingTests: XCTestCase {
                 let length = swiftText.utf16.distance(
                     from: utf16Lower, to: utf16Upper)
                 let expected = String(swiftText[lower..<upper])
+                // cooViewer-oxr.11: 公開ヒットが DOM 用 UTF-16 範囲を直接持つ。
+                XCTAssertEqual(hit.utf16Range, offset..<(offset + length),
+                               "\(fixture.name): UTF-16 範囲")
                 let landing = try await locate(
-                    webView: webView, offset: offset, length: length)
+                    webView: webView, offset: hit.utf16Range.lowerBound,
+                    length: hit.utf16Range.count)
                 if fixture.name == "非表示テキスト" {
                     // レイアウト箱の無い範囲は null(呼び出し側が近似へ落とす。cooViewer-cvt)
                     XCTAssertNil(landing, "\(fixture.name): locateAndShow は null")

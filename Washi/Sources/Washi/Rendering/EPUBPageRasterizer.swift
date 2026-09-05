@@ -15,10 +15,15 @@ import WebKit
 public final class EPUBPageRasterizer {
     private let publication: EPUBPublication
     private let schemeHandler: EPUBSchemeHandler
+    private let allowsScriptedContent: Bool
     private var window: NSWindow?
     private var webView: WKWebView?
+    private var pendingNavigationWaiter: NavigationWaiter?
+    /// cooViewer-oxr.68: 所有するサムネイルレンダラのアイドル診断用。
+    var hasLiveWebView: Bool { webView != nil }
     /// 直列化: 直前の要求が終わるまで次を待たせる
     private var lastJob: Task<Void, Never>?
+    private var renderJobs: [UUID: Task<CGImage, any Error>] = [:]
 
     /// An error raised while rasterizing a fixed-layout page.
     public enum RasterizeError: Error, Sendable, Equatable, LocalizedError {
@@ -36,9 +41,21 @@ public final class EPUBPageRasterizer {
         }
     }
 
+    /// Creates a rasterizer with author scripts disabled.
     public init(publication: EPUBPublication) {
         self.publication = publication
-        self.schemeHandler = EPUBSchemeHandler(publication: publication)
+        self.allowsScriptedContent = false
+        self.schemeHandler = EPUBSchemeHandler(
+            publication: publication, allowsScripts: false)
+    }
+
+    /// Creates a rasterizer and chooses whether author scripts may run in the
+    /// offscreen page.
+    public init(publication: EPUBPublication, allowsScriptedContent: Bool) {
+        self.publication = publication
+        self.allowsScriptedContent = allowsScriptedContent
+        self.schemeHandler = EPUBSchemeHandler(
+            publication: publication, allowsScripts: allowsScriptedContent)
     }
 
     /// invalidate 後は新規レンダーを受け付けない
@@ -50,6 +67,13 @@ public final class EPUBPageRasterizer {
     public func invalidate() {
         isInvalidated = true
         lastJob?.cancel()
+        for job in renderJobs.values { job.cancel() }
+        renderJobs.removeAll()
+        // cooViewer-oxr.53: delegate を外す前に現在の待機を解決し、
+        // 30 秒タイムアウトを待たず FIFO を終了させる。
+        pendingNavigationWaiter?.cancel()
+        pendingNavigationWaiter = nil
+        webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView = nil
         window?.orderOut(nil)
@@ -63,31 +87,76 @@ public final class EPUBPageRasterizer {
     /// navigations and NavigationWaiter waits forever).
     public func renderPage(atSpineIndex index: Int,
                            maxPixelSize: Int? = nil) async throws -> CGImage {
+        try await enqueueRender(
+            atSpineIndex: index, maxPixelSize: maxPixelSize,
+            deviceViewportSize: nil)
+    }
+
+    /// Renders a page whose viewport may use `device-width` or
+    /// `device-height`, using `deviceViewportSize` as that device viewport.
+    /// For ordinary numeric viewports the publication's declared dimensions
+    /// remain authoritative.
+    public func renderPage(
+        atSpineIndex index: Int,
+        deviceViewportSize: CGSize,
+        maxPixelSize: Int? = nil
+    ) async throws -> CGImage {
+        try await enqueueRender(
+            atSpineIndex: index, maxPixelSize: maxPixelSize,
+            deviceViewportSize: deviceViewportSize)
+    }
+
+    private func enqueueRender(
+        atSpineIndex index: Int, maxPixelSize: Int?,
+        deviceViewportSize: CGSize?
+    ) async throws -> CGImage {
         guard !isInvalidated else { throw RasterizeError.loadFailed }
         let previous = lastJob
         // 優先度は明示的に userInitiated へ(低優先度の呼び出し元 — 例:
         // .utility のサムネイル先読み — の QoS を継ぐと、WebKit への JS 実行が
         // 応答しないことがある。EPUBScreenThumbnailRenderer で実測した逆転)
         let job = Task(priority: .userInitiated) { () throws -> CGImage in
-            _ = await previous?.value  // 先行ジョブの完了を待つ(失敗しても続行)
+            guard await waitForOffscreenPredecessor(previous) else {
+                throw CancellationError()
+            }
             return try await self.performRender(atSpineIndex: index,
-                                                maxPixelSize: maxPixelSize)
+                                                maxPixelSize: maxPixelSize,
+                                                deviceViewportSize: deviceViewportSize)
         }
-        // 次のジョブが待つのは「描画本体まで含めた完了」
-        lastJob = Task(priority: .userInitiated) { _ = try? await job.value }
-        return try await job.value
+        let jobID = UUID()
+        renderJobs[jobID] = job
+        defer { renderJobs[jobID] = nil }
+        // cooViewer-oxr.53: キャンセルされた待機ジョブが先行ジョブより先に
+        // 終了しても、次の要求が先行描画を追い越さない FIFO barrier を残す。
+        lastJob = Task(priority: .userInitiated) {
+            _ = await previous?.value
+            _ = try? await job.value
+        }
+        return try await withTaskCancellationHandler {
+            try await job.value
+        } onCancel: {
+            // cooViewer-oxr.53: 非構造化 FIFO ジョブへ呼び出し元の
+            // キャンセルを明示的に伝播する。
+            job.cancel()
+        }
     }
 
     private func performRender(atSpineIndex index: Int,
-                               maxPixelSize: Int?) async throws -> CGImage {
+                               maxPixelSize: Int?,
+                               deviceViewportSize: CGSize?) async throws -> CGImage {
         // FIFO 待ちの間に invalidate された場合、ここでオフスクリーンを
         // 作り直さない(畳んだはずのウインドウ/プロセスを復活させない)
+        try Task.checkCancellation()
         guard !isInvalidated else { throw RasterizeError.loadFailed }
         guard publication.readingOrder.indices.contains(index) else {
             throw EPUBError.resourceNotFound("spine index \(index)")
         }
         let info = try publication.fixedLayoutInfo(forSpineIndex: index)
-        let rawViewport = info.viewportSize ?? CGSize(width: 1200, height: 1600)
+        // cooViewer-oxr.50: device-* viewport は固定の 3:4 fallback ではなく、
+        // 呼び出し元が要求した描画先の縦横比を ICB として使う。
+        let rawViewport = info.viewportIsDeviceSized
+            ? (deviceViewportSize ?? CGSize(width: 1200, height: 1600))
+            : (info.viewportSize ?? CGSize(width: 1200, height: 1600))
         // 悪意ある FXL は viewport(または SVG viewBox)に巨大値を宣言でき、
         // zoom 下限(0.05)ではフレームを十分に縮められず、巨大なオフスクリーン
         // スナップショット確保でプロセスが落ちる。実在の FXL ページ寸法を
@@ -112,15 +181,19 @@ public final class EPUBPageRasterizer {
         webView.pageZoom = zoom
 
         let entry = publication.readingOrder[index]
-        guard let url = schemeHandler.url(forContainerPath: entry.containerPath) else {
-            throw EPUBError.resourceNotFound(entry.containerPath)
+        guard let url = schemeHandler.url(
+            forContainerPath: entry.resolvedContainerPath) else {
+            throw EPUBError.resourceNotFound(entry.resolvedContainerPath)
         }
         try await loadAndWait(webView: webView, url: url)
+        try Task.checkCancellation()
 
         let configuration = WKSnapshotConfiguration()
         configuration.rect = CGRect(origin: .zero, size: frameSize)
         configuration.afterScreenUpdates = true
         let image = try await webView.takeSnapshot(configuration: configuration)
+        try Task.checkCancellation()
+        guard !isInvalidated else { throw RasterizeError.loadFailed }
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil,
                                           hints: nil) else {
             throw RasterizeError.snapshotFailed
@@ -140,9 +213,8 @@ public final class EPUBPageRasterizer {
             self.window = window
         }
         if webView == nil {
-            let configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = .nonPersistent()
-            configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+            let configuration = EPUBOffscreenWebViewConfiguration.make(
+                allowsScriptedContent: allowsScriptedContent)
             configuration.setURLSchemeHandler(schemeHandler,
                                               forURLScheme: EPUBSchemeHandler.scheme)
             let webView = WKWebView(frame: NSRect(origin: .zero, size: size),
@@ -157,16 +229,33 @@ public final class EPUBPageRasterizer {
 
     private func loadAndWait(webView: WKWebView, url: URL) async throws {
         let delegate = NavigationWaiter()
+        pendingNavigationWaiter = delegate
         webView.navigationDelegate = delegate
         webView.load(URLRequest(url: url))
         // オフスクリーンの WebContent プロセスはジェットサム候補のため、
         // 落ちた/固まったときに永久待ちしないようタイムアウト付きで待つ
-        try await delegate.wait(timeout: .seconds(30))
+        do {
+            try await delegate.wait(timeout: .seconds(30))
+        } catch {
+            if pendingNavigationWaiter === delegate {
+                pendingNavigationWaiter = nil
+            }
+            webView.navigationDelegate = nil
+            if error is CancellationError || Task.isCancelled {
+                webView.stopLoading()
+            }
+            throw error
+        }
+        if pendingNavigationWaiter === delegate {
+            pendingNavigationWaiter = nil
+        }
+        webView.navigationDelegate = nil
         // didFinish 直後はフォント・画像のデコードが残っていることがある。
         // cooViewer-oxr.2: 一度も表示しないウインドウでは rAF が発火しないため
         // 待ってはいけない。フォントと画像デコードを有界に待ち、描画の確定は
         // takeSnapshot(afterScreenUpdates: true)に任せる
         await waitForPostLoadReadiness(webView: webView)
+        try Task.checkCancellation()
         withExtendedLifetime(delegate) {}
     }
 
@@ -260,9 +349,6 @@ final class NavigationWaiter: NSObject, WKNavigationDelegate {
     /// オフスクリーンが最大 15 秒生き残る/次の census が FIFO で連鎖待ちに
     /// なるのを防ぐ)。タイマは解決時に必ず回収する
     func wait(timeout: Duration) async throws {
-        // 同一インスタンスを再利用する呼び出し元に備えた防御(現状は 1 wait 1 個)。
-        // withTaskCancellationHandler が登録する前なので今回の onCancel とは競合しない
-        cancelledBeforeInstall = false
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
@@ -279,11 +365,16 @@ final class NavigationWaiter: NSObject, WKNavigationDelegate {
         } onCancel: {
             // onCancel は @Sendable・非分離 → MainActor へホップして解決する
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.cancelledBeforeInstall = true
-                self.resume(throwing: CancellationError())
+                self?.cancel()
             }
         }
+    }
+
+    /// cooViewer-oxr.53: 所有者の invalidate から、continuation の設置前後を
+    /// 問わず待機を即座にキャンセルする。
+    func cancel() {
+        cancelledBeforeInstall = true
+        resume(throwing: CancellationError())
     }
 
     private func resume(throwing error: (any Error)? = nil) {

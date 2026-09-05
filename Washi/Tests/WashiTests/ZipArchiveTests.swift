@@ -51,6 +51,58 @@ final class ZipArchiveTests: XCTestCase {
         }
     }
 
+    /// cooViewer-oxr.17: ContainerReader 境界では欠落だけ resourceNotFound、
+    /// それ以外の ZIP 読み取り失敗は英語理由付き containerReadFailed に写す。
+    func testZipContainerMapsEveryReadFailureToEPUBError() throws {
+        let path = "a.bin"
+        let payload = Data([1, 2, 3, 4, 5, 6, 7, 8])
+        let original = ZipBuilder.build([(path, payload)])
+        let dataOffset = 30 + path.utf8.count
+        let centralDirectoryOffset = dataOffset + payload.count
+
+        func assertMapped(_ archive: ZipArchive, reasonContains expected: String,
+                          file: StaticString = #filePath, line: UInt = #line) {
+            let reader = ZipContainerReader(archive: archive)
+            XCTAssertThrowsError(try reader.read(path), file: file, line: line) { error in
+                guard case EPUBError.containerReadFailed(
+                    path: let failedPath, reason: let reason) = error
+                else {
+                    return XCTFail("containerReadFailed ではない: \(error)",
+                                   file: file, line: line)
+                }
+                XCTAssertEqual(failedPath, path, file: file, line: line)
+                XCTAssertTrue(reason.contains(expected), reason,
+                              file: file, line: line)
+            }
+        }
+
+        var corrupt = original
+        corrupt[dataOffset] ^= 0xFF
+        assertMapped(try ZipArchive(data: corrupt), reasonContains: "Corrupt entry")
+
+        var encrypted = original
+        encrypted[centralDirectoryOffset + 8] |= 0x01
+        assertMapped(try ZipArchive(data: encrypted), reasonContains: "encrypted entry")
+
+        var unsupported = original
+        unsupported[centralDirectoryOffset + 10] = 99
+        unsupported[centralDirectoryOffset + 11] = 0
+        assertMapped(try ZipArchive(data: unsupported),
+                     reasonContains: "Unsupported compression method")
+
+        var truncated = original
+        truncated[0] = 0
+        assertMapped(try ZipArchive(data: truncated), reasonContains: "Truncated")
+
+        assertMapped(try ZipArchive(data: original, maxEntrySize: payload.count - 1),
+                     reasonContains: "size limit")
+
+        let reader = ZipContainerReader(archive: try ZipArchive(data: original))
+        XCTAssertThrowsError(try reader.read("missing.bin")) { error in
+            XCTAssertEqual(error as? EPUBError, .resourceNotFound("missing.bin"))
+        }
+    }
+
     func testEncryptedEntryRejected() throws {
         var zip = ZipBuilder.build([("secret.txt", Data("x".utf8))])
         // 中央ディレクトリのフラグに暗号化ビットを立てる(EOCD から辿る)

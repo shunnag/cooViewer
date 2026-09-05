@@ -6,6 +6,39 @@ import XCTest
 /// (WebKit のナビゲーションは起こさず、待機ロジックだけを直接叩く)。
 @MainActor
 final class NavigationWaiterTests: XCTestCase {
+    /// cooViewer-oxr.53: 所有者の invalidate 相当の明示キャンセルでも、
+    /// タイムアウト満了を待たず continuation を解決する。
+    func testExplicitCancelResolvesPromptly() async throws {
+        let waiter = NavigationWaiter()
+        let start = ContinuousClock.now
+        let task = Task { try await waiter.wait(timeout: .seconds(30)) }
+        try? await Task.sleep(for: .milliseconds(5))
+        waiter.cancel()
+
+        do {
+            try await task.value
+            XCTFail("明示キャンセルで throw するはず")
+        } catch is CancellationError {
+            XCTAssertLessThan(ContinuousClock.now - start, .seconds(1))
+        } catch {
+            XCTFail("CancellationError のはず: \(error)")
+        }
+    }
+
+    /// cooViewer-oxr.53: continuation 設置前の cancel も失われない。
+    func testExplicitCancelBeforeWaitIsRemembered() async {
+        let waiter = NavigationWaiter()
+        waiter.cancel()
+        do {
+            try await waiter.wait(timeout: .seconds(30))
+            XCTFail("事前キャンセルで throw するはず")
+        } catch is CancellationError {
+            // 期待どおり
+        } catch {
+            XCTFail("CancellationError のはず: \(error)")
+        }
+    }
+
     func testCancellationResolvesPromptly() async throws {
         let waiter = NavigationWaiter()
         let start = ContinuousClock.now
