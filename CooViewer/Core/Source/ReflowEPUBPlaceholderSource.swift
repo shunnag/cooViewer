@@ -12,19 +12,64 @@ import Washi
 struct ReflowEPUBPlaceholderSource: BookSource {
     let url: URL
     private let publication: EPUBPublication
+    private let parsedCanonicalPath: String
+    private let parsedFileIdentity: FileIdentity?
+
+    private struct FileIdentity: Equatable, Sendable {
+        let modificationDate: Date
+        let size: UInt64
+    }
 
     var supportsDateSort: Bool { false }
 
     init(url: URL) throws {
-        guard let publication = try? EPUBPublication(url: url) else {
+        guard let publication = try? EPUBPublication(
+            url: url, readStrategy: VolumeMappingPolicy.epubReadStrategy(for: url)) else {
             throw BookSourceError.unreadable(url)
         }
-        // 固定レイアウトは EPUBSource(ページ統合)の担当
-        guard !publication.isFixedLayout else {
+        try self.init(publication: publication, url: url)
+    }
+
+    /// コレクション列挙時に解析済みの Publication を受け取り、OCF/package を
+    /// 読み直さず代理ページへ保持する(cooViewer-oxr.42、設計書 §2.4)。
+    init(publication: EPUBPublication, url: URL) throws {
+        guard !publication.isDRMProtected else {
+            throw BookSourceError.unreadable(url)
+        }
+        // FXL と画像だけのリフロー EPUB は EPUBSource の担当。
+        guard !publication.isFixedLayout,
+              !EPUBImageOnlyHeuristic.qualifies(publication) else {
             throw BookSourceError.unsupportedFormat(url)
         }
+        self.init(validatedReflowPublication: publication, url: url)
+    }
+
+    /// 呼び出し側で画像のみ判定を済ませたコレクション構築経路。
+    init(validatedReflowPublication publication: EPUBPublication, url: URL) {
         self.url = url
         self.publication = publication
+        self.parsedCanonicalPath = CanonicalPath.normalize(url.path)
+        self.parsedFileIdentity = Self.fileIdentity(at: url)
+    }
+
+    func preparsedReflowPublication(for candidateURL: URL) async
+        -> EPUBPublication? {
+        guard CanonicalPath.normalize(candidateURL.path) == parsedCanonicalPath,
+              let parsedFileIdentity,
+              Self.fileIdentity(at: candidateURL) == parsedFileIdentity else {
+            return nil
+        }
+        return publication
+    }
+
+    private static func fileIdentity(at url: URL) -> FileIdentity? {
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: url.path),
+              let modificationDate = attributes[.modificationDate] as? Date,
+              let size = (attributes[.size] as? NSNumber)?.uint64Value else {
+            return nil
+        }
+        return FileIdentity(modificationDate: modificationDate, size: size)
     }
 
     func entries() async throws -> [PageEntry] {

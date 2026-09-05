@@ -49,6 +49,12 @@ enum MainMenuBuilder {
             action: #selector(ReaderWindowController.findPreviousEPUBMenu(_:)),
             keyEquivalent: "g")
         findPrevious.keyEquivalentModifierMask = [.command, .shift]
+        // EPUB 選択範囲を検索語へ送る標準 ⌘E 操作
+        // (cooViewer-oxr.34・設計書 §2.4)。実処理は EPUB 検索パネル側で行う。
+        menu.addItem(
+            withTitle: String(localized: "Use Selection for Find"),
+            action: #selector(ReaderWindowController.useSelectionForEPUBFindMenu(_:)),
+            keyEquivalent: "e")
 
         let item = NSMenuItem()
         item.submenu = menu
@@ -268,6 +274,12 @@ enum MainMenuBuilder {
                      action: #selector(ReaderWindowController.goToFirstPage(_:)), keyEquivalent: "")
         menu.addItem(withTitle: String(localized: "Last Page"),
                      action: #selector(ReaderWindowController.goToLastPage(_:)), keyEquivalent: "")
+        // EPUB の目次・しおり移動と同じ「移動」メニューに履歴戻りを置く
+        // (cooViewer-oxr.31・設計書 §2.4)。⌘[ は WebKit へ渡さずメニューで処理する。
+        menu.addItem(
+            withTitle: String(localized: "Go Back to Link Source"),
+            action: #selector(ReaderWindowController.epubGoBackMenu(_:)),
+            keyEquivalent: "[")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Add/Remove Bookmark"),
                      action: #selector(ReaderWindowController.addRemoveBookmarkMenu(_:)),

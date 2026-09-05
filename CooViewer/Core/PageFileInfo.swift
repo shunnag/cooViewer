@@ -1,6 +1,7 @@
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+import Washi
 
 /// 「ファイル情報」パネルの内容を組み立てる(旧実装に無い新規機能)。
 /// 画像メタデータ(EXIF/GPS 含む)は ImageIO のプロパティから、実体ファイルの
@@ -9,6 +10,14 @@ enum PageFileInfo {
     struct Row: Equatable {
         let label: String
         let value: String
+        /// 表示値を短縮した行の完全値(ポインタ停止時に表示)。
+        let tooltip: String?
+
+        init(label: String, value: String, tooltip: String? = nil) {
+            self.label = label
+            self.value = value
+            self.tooltip = tooltip
+        }
     }
 
     /// 見出し付きの行グループ(先頭セクションのみ無題)
@@ -35,7 +44,8 @@ enum PageFileInfo {
     static func details(entryName: String, pathInBook: String, containerURL: URL,
                         pageNumber: Int, pageCount: Int,
                         imageData: Data?, fallbackPixelSize: CGSize?,
-                        comicInfo: ComicInfo? = nil) -> Details {
+                        comicInfo: ComicInfo? = nil,
+                        epubAccessibility: EPUBAccessibility? = nil) -> Details {
         var sections: [Section] = []
 
         var pageRows: [Row] = [
@@ -83,6 +93,12 @@ enum PageFileInfo {
             if !rows.isEmpty {
                 sections.append(Section(title: String(localized: "Comic"), rows: rows))
             }
+        }
+        // EPUB でのみ、出版物全体のアクセシビリティ情報を末尾に
+        // 追加する(cooViewer-oxr.37、設計書 §2.4)。未宣言なら節自体を出さない。
+        if let epubAccessibility,
+           let section = EPUBAccessibilityFormatter.section(for: epubAccessibility) {
+            sections.append(section)
         }
         return Details(sections: sections, latitude: latitude,
                        longitude: longitude)

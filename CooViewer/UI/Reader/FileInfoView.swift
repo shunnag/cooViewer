@@ -96,13 +96,29 @@ struct FileInfoContent: View {
                         .foregroundStyle(.secondary)
                         .gridColumnAlignment(.trailing)
                         .frame(minWidth: 110, alignment: .trailing)
-                    Text(row.value)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    rowValue(row)
                 }
             }
         }
         .font(.system(size: 12))
+    }
+
+    /// conformsTo は末尾だけを表示しつつ、完全 URL をポインタ
+    /// 停止で確認できるようにする(cooViewer-oxr.37、設計書 §2.4)。
+    @ViewBuilder
+    private func rowValue(_ row: PageFileInfo.Row) -> some View {
+        if let tooltip = row.tooltip {
+            styledRowValue(row.value)
+                .help(tooltip)
+        } else {
+            styledRowValue(row.value)
+        }
+    }
+
+    private func styledRowValue(_ value: String) -> some View {
+        Text(value)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 撮影地点の地図(ピン付き。ドラッグ/ズーム操作可)

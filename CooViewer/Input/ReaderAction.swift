@@ -1,4 +1,4 @@
-/// 割り当て可能なアクション(仕様書 §5.5 キー 0-52 / §5.6 マウス 0-64)。
+/// 割り当て可能なアクション(仕様書 §5.5 キー 0-52 + 2.0 拡張 / §5.6 マウス 0-64)。
 /// 旧実装の整数は「移行用の対応表」としてのみ使い、内部では型で扱う。
 /// Apple Remote 専用の経路は近代化で削除(設計書 §2.2)。
 enum ReaderAction: Equatable, Sendable {
@@ -36,6 +36,8 @@ enum ReaderAction: Equatable, Sendable {
     case contextualMenu
     /// 補間なし ⇔ 直前の補間の切り替え(新実装で追加。旧番号 53 は未使用域)
     case toggleInterpolation
+    /// EPUB のリンク移動元へ戻る(cooViewer-oxr.31・設計書 §2.4、旧番号 54)
+    case epubGoBack
 
     // 画面の左右どちらで操作したかで分岐する系(仕様書 §5.6 の **)
     case positionalNextPrevPage, positionalHalfNextPrev, positionalLastTop
@@ -102,6 +104,7 @@ extension ReaderAction {
         case 51: .enlargeViewMode
         case 52: .reduceViewMode
         case 53: .toggleInterpolation
+        case 54: .epubGoBack
         default: nil
         }
     }

@@ -5300,6 +5300,276 @@
           }
         }
       }
+    },
+    "Show footnotes in a popover": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "脚注はポップアップで表示する"
+          }
+        }
+      }
+    },
+    "Hide end-of-body footnote blocks": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本文末尾の脚注ブロックを隠す"
+          }
+        }
+      }
+    },
+    "Hiding end-of-body footnote blocks reflows the pages and remeasures page numbers.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本文末尾の脚注ブロックを隠すとページを組み直し、ページ番号を再計測します。"
+          }
+        }
+      }
+    },
+    "Line spacing:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "行間:"
+          }
+        }
+      }
+    },
+    "Keep book setting": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本のまま"
+          }
+        }
+      }
+    },
+    "Letter spacing:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "字間:"
+          }
+        }
+      }
+    },
+    "Slight": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "わずか"
+          }
+        }
+      }
+    },
+    "Wider": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "広め"
+          }
+        }
+      }
+    },
+    "Paragraph spacing:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "段落間隔:"
+          }
+        }
+      }
+    },
+    "Prioritize the default font over the book's font": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既定フォントを本の指定より優先する"
+          }
+        }
+      }
+    },
+    "Hide ruby annotations": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ルビを表示しない"
+          }
+        }
+      }
+    },
+    "By default, the chosen font applies only when the book doesn't specify one. The override prioritizes it over the book. Typography changes reflow pages and remeasure page numbers while keeping your reading position.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既定では、本がフォントを指定しない場合にのみ選択したフォントを使います。優先設定を有効にすると本の指定より優先します。組版設定を変更すると、読書位置を保ったままページを組み直し、ページ番号を再計測します。"
+          }
+        }
+      }
+    },
+    "Show print page labels alongside page numbers": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ノンブルに印刷版ページを併記する"
+          }
+        }
+      }
+    },
+    "EPUB: Go Back to Link Source": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EPUB: リンク元へ戻る"
+          }
+        }
+      }
+    },
+    "Go Back to Link Source": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リンク元へ戻る"
+          }
+        }
+      }
+    },
+    "Use Selection for Find": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択部分を検索に使用"
+          }
+        }
+      }
+    },
+    "Note": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "注"
+          }
+        }
+      }
+    },
+    "Move": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移動"
+          }
+        }
+      }
+    },
+    "Accessibility": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセシビリティ"
+          }
+        }
+      }
+    },
+    "Access Modes": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセスモード"
+          }
+        }
+      }
+    },
+    "Access Modes Sufficient": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "利用に十分なアクセスモード"
+          }
+        }
+      }
+    },
+    "Accessibility Features": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセシビリティ機能"
+          }
+        }
+      }
+    },
+    "Accessibility Hazards": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセシビリティ上の危険要因"
+          }
+        }
+      }
+    },
+    "Accessibility Summary": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセシビリティ概要"
+          }
+        }
+      }
+    },
+    "Conforms To": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "適合規格"
+          }
+        }
+      }
+    },
+    "Certified By": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "認証者"
+          }
+        }
+      }
+    },
+    "Certifier Credentials": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "認証資格"
+          }
+        }
+      }
     }
   },
   "version": "1.1"

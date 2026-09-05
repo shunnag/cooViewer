@@ -213,10 +213,32 @@ final class BindingTests: XCTestCase {
     }
 
     func testAllLegacyKeyNumbersMapped() {
-        for number in 0...53 {
+        for number in 0...54 {
             XCTAssertNotNil(ReaderAction.fromLegacyKeyNumber(number), "key action \(number)")
         }
-        XCTAssertNil(ReaderAction.fromLegacyKeyNumber(54))
+        XCTAssertNil(ReaderAction.fromLegacyKeyNumber(55))
+    }
+
+    func testEPUBGoBackBindingRoundTripsAndResolves() {
+        // cooViewer-oxr.31・設計書 §2.4: 新番号 54 は旧配列形式でも欠落せず解決する。
+        let original = KeyBinding(
+            legacyActionNumber: 54, key: "b", modifiers: LegacyModifier.option,
+            value: nil, switchAction: false)
+        let decoded = BindingConfiguration.keyBindings(
+            fromLegacyArray: BindingConfiguration.legacyArray(from: [original]))
+        let configuration = BindingConfiguration(
+            keyNormal: decoded, keyMode2: [], keyMode3: [],
+            mouseNormal: [], mouseMode2: [], mouseMode3: [])
+
+        XCTAssertEqual(decoded, [original])
+        XCTAssertEqual(configuration.resolveKey(
+            character: "b", modifiers: LegacyModifier.option,
+            fitMode: 0, readsFromLeft: false)?.action, .epubGoBack)
+    }
+
+    func testEPUBGoBackHasNoDefaultBinding() {
+        let allDefaults = bindings.keyNormal + bindings.keyMode2 + bindings.keyMode3
+        XCTAssertFalse(allDefaults.contains { $0.action == .epubGoBack })
     }
 
     func testDefaultFKeyTogglesInterpolation() {

@@ -69,6 +69,39 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         XCTAssertTrue(store.respectComicInfoReadingDirection)
     }
 
+    /// EPUB 脚注・組版・印刷ページの新設キーは安全な既定値から往復する。
+    /// (cooViewer-oxr.32/.33/.38、設計書 §2.4)
+    func testEPUBFootnoteTypographyAndPrintSettingsRoundTrip() {
+        store.registerDefaults()
+
+        XCTAssertTrue(store.epubFootnotePopover)
+        XCTAssertFalse(store.epubHidesFootnoteAsides)
+        XCTAssertEqual(store.epubLineHeightScale, 0)
+        XCTAssertEqual(store.epubLetterSpacing, 0)
+        XCTAssertEqual(store.epubParagraphSpacing, 0)
+        XCTAssertFalse(store.epubForceFont)
+        XCTAssertFalse(store.epubHidesRuby)
+        XCTAssertFalse(store.epubShowsPrintPage)
+
+        store.epubFootnotePopover = false
+        store.epubHidesFootnoteAsides = true
+        store.epubLineHeightScale = 1.8
+        store.epubLetterSpacing = 1
+        store.epubParagraphSpacing = 2
+        store.epubForceFont = true
+        store.epubHidesRuby = true
+        store.epubShowsPrintPage = true
+
+        XCTAssertFalse(store.epubFootnotePopover)
+        XCTAssertTrue(store.epubHidesFootnoteAsides)
+        XCTAssertEqual(store.epubLineHeightScale, 1.8)
+        XCTAssertEqual(store.epubLetterSpacing, 1)
+        XCTAssertEqual(store.epubParagraphSpacing, 2)
+        XCTAssertTrue(store.epubForceFont)
+        XCTAssertTrue(store.epubHidesRuby)
+        XCTAssertTrue(store.epubShowsPrintPage)
+    }
+
     func testDefaultsWhenSwitchIsOff() {
         // 保存値があってもマスタースイッチ OFF なら既定値
         defaults.set(40, forKey: "AdvancedPrefetchAhead")

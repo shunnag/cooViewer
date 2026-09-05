@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Washi
 
 /// 付随機能: しおり・本の状態保存/復元・同フォルダ移動・スライドショー・
 /// ゴミ箱・Finder 表示・原寸表示(仕様書 §4.7-§4.13, §7)。
@@ -387,6 +388,13 @@ extension ReaderWindowController {
     /// 内容を現在ページで更新する)。見開き時は両ページ分を用意し、
     /// パネル上部のセグメントで左右を切り替える(既定は読み順の先頭)
     func showFileInfo() {
+        // リフロー EPUB は画像 Book を降ろしているため、Washi の現在
+        // publication から直接構成する(cooViewer-oxr.37、設計書 §2.4)。
+        if let publication = epubPublication, let url = epubBookURL {
+            let page = reflowEPUBFileInfoPage(publication: publication, url: url)
+            presentFileInfoPanel(pages: [page], initialIndex: 0)
+            return
+        }
         guard let book else { return }
         Task {
             let spread = await book.currentSpread()
@@ -405,20 +413,51 @@ extension ReaderWindowController {
                 ? [String(localized: "Left Page"), String(localized: "Right Page")]
                 : [""]
             let comicInfo = await book.comicInfo()  // 本メタデータ(4fi.5)
+            // FXL EPUB は EPUBSource が publication を保持する。各ページの
+            // 情報へ出版物全体のメタデータを付ける(cooViewer-oxr.37、
+            // 設計書 §2.4)。
+            let epubAccessibility = (book.source as? EPUBSource)?
+                .publication.metadata.accessibility
             var pages: [FileInfoPage] = []
             for (position, index) in ordered.enumerated() {
                 pages.append(await fileInfoPage(
                     for: index, in: book, sideLabel: sideLabels[position],
-                    comicInfo: comicInfo))
+                    comicInfo: comicInfo,
+                    epubAccessibility: epubAccessibility))
             }
             presentFileInfoPanel(pages: pages, initialIndex: initialPosition)
         }
     }
 
+    /// リフロー EPUB の現在 spine 項目と出版物メタデータを
+    /// ファイル情報用の 1 ページへまとめる。
+    private func reflowEPUBFileInfoPage(publication: EPUBPublication,
+                                        url: URL) -> FileInfoPage {
+        let requestedIndex = epubView?.currentLocator.spineIndex ?? 0
+        let index = min(max(0, requestedIndex),
+                        max(0, publication.readingOrder.count - 1))
+        let path = publication.readingOrder.indices.contains(index)
+            ? publication.readingOrder[index].containerPath
+            : url.lastPathComponent
+        let name = (path as NSString).lastPathComponent
+        let details = PageFileInfo.details(
+            entryName: name,
+            pathInBook: path,
+            containerURL: url,
+            pageNumber: index + 1,
+            pageCount: max(1, publication.readingOrder.count),
+            imageData: nil,
+            fallbackPixelSize: nil,
+            epubAccessibility: publication.metadata.accessibility)
+        return FileInfoPage(title: name, sideLabel: "", details: details)
+    }
+
     /// 1 ページ分のファイル情報を収集する
     private func fileInfoPage(for index: Int, in book: Book,
                               sideLabel: String,
-                              comicInfo: ComicInfo?) async -> FileInfoPage {
+                              comicInfo: ComicInfo?,
+                              epubAccessibility: EPUBAccessibility?) async
+        -> FileInfoPage {
         let entry = book.entries[index]
         let containerURL = await book.source.containerFileURL(for: entry)
         let data = await book.source.imageData(for: entry)
@@ -431,7 +470,8 @@ extension ReaderWindowController {
             pageCount: book.pageCount,
             imageData: data,
             fallbackPixelSize: fallback,
-            comicInfo: comicInfo)
+            comicInfo: comicInfo,
+            epubAccessibility: epubAccessibility)
         return FileInfoPage(title: entry.name, sideLabel: sideLabel,
                             details: details)
     }
@@ -560,9 +600,28 @@ extension ReaderWindowController {
               let current = siblings.firstIndex(of: book.source.url.path) else { return }
         let nextPath = siblings[(current + 1) % siblings.count]
         guard nextPath != book.source.url.path,
-              preparedNextBook?.path != nextPath,
-              preparingNextBookPath != nextPath,
-              SupportedTypes.isArchive(URL(fileURLWithPath: nextPath)) else { return }
+              preparingNextBookPath != nextPath else { return }
+        let nextURL = URL(fileURLWithPath: nextPath)
+        if SupportedTypes.isEPUB(nextURL) {
+            guard preparedNextEPUB?.path != nextPath else { return }
+            preparingNextBookPath = nextPath
+            let preparingForBook = book
+            // cooViewer-oxr.45: 次巻 EPUB は utility で publication だけを先に
+            // 解析し、表示要求では同じインスタンスを再利用する（設計書 §2.4）。
+            Task(priority: .utility) {
+                defer { preparingNextBookPath = nil }
+                let publication = await Task.detached(priority: .utility) {
+                    try? EPUBPublication(
+                        url: nextURL,
+                        readStrategy: VolumeMappingPolicy.epubReadStrategy(for: nextURL))
+                }.value
+                guard let publication, self.book === preparingForBook else { return }
+                preparedNextEPUB = (nextPath, publication)
+            }
+            return
+        }
+        guard preparedNextBook?.path != nextPath,
+              SupportedTypes.isArchive(nextURL) else { return }
         preparingNextBookPath = nextPath
         // 準備対象は「今の本の次の兄弟」。準備中に別の本へ切り替わったら、古い
         // フォルダの隣接書庫をスロットに入れない(スプール済み一時データが居座る
@@ -576,14 +635,14 @@ extension ReaderWindowController {
         Task(priority: .utility) {
             defer { preparingNextBookPath = nil }
             guard let source = try? await BookSourceFactory.make(
-                for: URL(fileURLWithPath: nextPath),
+                for: nextURL,
                 readSubFolders: settings.readSubFolder) else { return }
             guard self.book === preparingForBook else { return }
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
                 // 実効プロファイル(自動判定+高度設定の明示上書き)を適用してから展開
                 let profile = await effectiveMediaProfile(
-                    for: URL(fileURLWithPath: nextPath))
+                    for: nextURL)
                 await source.applyMediaProfile(profile)
                 await source.beginBackgroundPreparation(
                     spoolSizeLimit: settings.archiveSpoolSizeLimit)
@@ -606,6 +665,9 @@ extension ReaderWindowController {
     @objc func editBookmarksMenu(_ sender: Any?) { editBookmarks() }
     @objc func nextBookmarkMenu(_ sender: Any?) { goToBookmark(next: true) }
     @objc func previousBookmarkMenu(_ sender: Any?) { goToBookmark(next: false) }
+    @objc func epubGoBackMenu(_ sender: Any?) {
+        _ = performEPUB(.epubGoBack, leftHalf: nil)
+    }
     @objc func nextBookMenu(_ sender: Any?) { openAdjacentBook(forward: true) }
     @objc func previousBookMenu(_ sender: Any?) { openAdjacentBook(forward: false) }
     @objc func openLastBookMenu(_ sender: Any?) { openTheLastBook() }

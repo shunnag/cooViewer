@@ -101,18 +101,23 @@ final class BookHistoryStore {
         /// リフロー EPUB のしおり。固定ページ番号ではなく読書位置と同じ
         /// spine 項目 + 項目内進行率で持つ(仕様書 §4.7、設計書 §2.4)
         var reflowBookmarks: [StoredReflowBookmark] = []
-        /// リフロー EPUB の全文ページ実測(census)。再オープン時に注入すると
-        /// オフスクリーン再実測を省けて N/M・ページバーが即出る(オプショナル追加)
+        /// リフロー EPUB の全文ページ実測(census)の旧ビルド互換ミラー。
+        /// 常に censusRecords の先頭を写し、旧ビルドにも最新値を渡す
+        /// (cooViewer-oxr.45、設計書 §2.4)
         var lastCensus: StoredCensus?
+        /// 表示メトリクス別 census の MRU。先頭が最新で最大 3 件、
+        /// metricsKey の重複は持たない(cooViewer-oxr.45、設計書 §2.4)
+        var censusRecords: [StoredCensus] = []
         /// リフロー EPUB の見開き/単ページ固定(s キー = EPUBColumnMode の
         /// rawValue。1=single / 2=double。nil/0=auto)。画像本の単/見開き固定
         /// (marks)に相当する表示設定で、RememberBookSettings が ON のときだけ
         /// 残る。オプショナル追加なので旧 JSON はデコード互換(cooViewer-0dh)
         var columnMode: Int?
 
-        /// census を除いた「残す価値のある内容」が空か。columnMode を消した結果
-        /// census だけが残る状態(合本の子で起きうる)を検出し、census 単独ファイルを
-        /// 残さない方針(noteReflowCensus)を保つために使う
+        /// lastCensus と censusRecords を除いた「残す価値のある内容」が空か。
+        /// columnMode を消した結果 census だけが残る状態(合本の子で起きうる)を
+        /// 検出し、census 単独ファイルを残さない方針を保つために使う
+        /// (cooViewer-oxr.45、設計書 §2.4)
         var isEmptyIgnoringCensus: Bool {
             readMode == nil && sortMode == nil && marks.isEmpty
                 && bookmarks.isEmpty && (lastPageIndex ?? 0) <= 0
@@ -120,7 +125,9 @@ final class BookHistoryStore {
                 && columnMode == nil
         }
 
-        var isEmpty: Bool { isEmptyIgnoringCensus && lastCensus == nil }
+        var isEmpty: Bool {
+            isEmptyIgnoringCensus && lastCensus == nil && censusRecords.isEmpty
+        }
 
         init(path: String) {
             self.path = path
@@ -151,8 +158,24 @@ final class BookHistoryStore {
                 ReflowPosition.self, forKey: .lastReflowPosition)
             reflowBookmarks = try container.decodeIfPresent(
                 [StoredReflowBookmark].self, forKey: .reflowBookmarks) ?? []
-            lastCensus = try container.decodeIfPresent(
+            let legacyCensus = try container.decodeIfPresent(
                 StoredCensus.self, forKey: .lastCensus)
+            let decodedCensuses = try container.decodeIfPresent(
+                [StoredCensus].self, forKey: .censusRecords) ?? []
+            var seenMetricsKeys: Set<String> = []
+            censusRecords = decodedCensuses.filter {
+                seenMetricsKeys.insert($0.metricsKey).inserted
+            }
+            if censusRecords.count > 3 {
+                censusRecords.removeSubrange(3...)
+            }
+            // censusRecords 導入前の JSON は lastCensus を 1 件の MRU として昇格する。
+            // 新形式では先頭を互換ミラーへ戻し、不整合な永続値も正規化する
+            // (cooViewer-oxr.45、設計書 §2.4)
+            if censusRecords.isEmpty, let legacyCensus {
+                censusRecords = [legacyCensus]
+            }
+            lastCensus = censusRecords.first
             columnMode = try container.decodeIfPresent(Int.self, forKey: .columnMode)
         }
     }
@@ -482,7 +505,10 @@ final class BookHistoryStore {
             // 位置を消した結果 census だけが残る状態(先頭まで戻って閉じた本、
             // 合本の子で起きうる)は census も落とす。census 単独ファイルを残さない
             // 方針(noteReflowCensus)に従う。cooViewer-cr6(0dh と同型の隣接経路)
-            if state.isEmptyIgnoringCensus { state.lastCensus = nil }
+            if state.isEmptyIgnoringCensus {
+                state.lastCensus = nil
+                state.censusRecords.removeAll()
+            }
         } else {
             state.lastReflowPosition = ReflowPosition(
                 spineIndex: spineIndex, progression: progression, idref: idref)
@@ -539,6 +565,7 @@ final class BookHistoryStore {
         // noteReflowCensus の「census 単独ファイルを残さない」方針と同じ
         if state.reflowBookmarks.isEmpty && state.isEmptyIgnoringCensus {
             state.lastCensus = nil
+            state.censusRecords.removeAll()
         }
         // しおりだけを持つ EPUB もファイル移動時に再配置できるようにする。
         // 空配列では isEmpty 判定が URL bookmark を無視して状態を削除する
@@ -559,8 +586,16 @@ final class BookHistoryStore {
         // 入れない設計)にまで census 専用ファイルが残り、回収経路が無いため
         // 際限なく増える。位置やしおりを持つ「読んでいる本」にのみ相乗りさせる
         guard var state = loadState(forNormalizedPath: path) else { return }
-        state.lastCensus = StoredCensus(metricsKey: metricsKey, counts: counts,
-                                        releaseIdentifier: releaseIdentifier)
+        let census = StoredCensus(metricsKey: metricsKey, counts: counts,
+                                  releaseIdentifier: releaseIdentifier)
+        // 同じメトリクスは更新して先頭へ移し、画面を往復しても最大 3 件を再利用する。
+        // lastCensus は旧ビルド向けに先頭と同期する(cooViewer-oxr.45、設計書 §2.4)
+        state.censusRecords.removeAll { $0.metricsKey == metricsKey }
+        state.censusRecords.insert(census, at: 0)
+        if state.censusRecords.count > 3 {
+            state.censusRecords.removeSubrange(3...)
+        }
+        state.lastCensus = state.censusRecords.first
         writeState(state, forNormalizedPath: path)
     }
 
@@ -569,7 +604,18 @@ final class BookHistoryStore {
         -> (metricsKey: String, counts: [Int], releaseIdentifier: String?)? {
         let path = normalize(rawPath)
         guard let state = loadState(forNormalizedPath: path),
-              let census = state.lastCensus else { return nil }
+              let census = state.censusRecords.first ?? state.lastCensus else { return nil }
+        return (census.metricsKey, census.counts, census.releaseIdentifier)
+    }
+
+    /// 指定した表示メトリクスの census を返す(cooViewer-oxr.45、設計書 §2.4)
+    func savedReflowCensus(forPath rawPath: String, metricsKey: String)
+        -> (metricsKey: String, counts: [Int], releaseIdentifier: String?)? {
+        let path = normalize(rawPath)
+        guard let state = loadState(forNormalizedPath: path) else { return nil }
+        let census = state.censusRecords.first { $0.metricsKey == metricsKey }
+            ?? (state.lastCensus?.metricsKey == metricsKey ? state.lastCensus : nil)
+        guard let census else { return nil }
         return (census.metricsKey, census.counts, census.releaseIdentifier)
     }
 
@@ -594,6 +640,7 @@ final class BookHistoryStore {
         // census 単独ファイルを残さない方針(noteReflowCensus)に従う
         if state.columnMode == nil && state.isEmptyIgnoringCensus {
             state.lastCensus = nil
+            state.censusRecords.removeAll()
         }
         // 移動追跡用の URL ブックマーク(EPUB は save() を通らないため、状態を
         // 作る経路では書いておく。noteClosedReflow と同じ理由。c6s.18)

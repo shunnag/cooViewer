@@ -212,46 +212,6 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // (合本内 EPUB↔EPUB の横断連打で last-request-wins を保証。openGeneration は
         // 合本内移動で動かないため専用の epubPresentEpoch で照合する)
         guard epubPresentEpoch == epoch else { return }
-        clearEPUBSearchHighlight()
-        // cooViewer-1p7: EPUB 間の切替は dismissEPUBMode を通らないため、旧本の
-        // 検索結果・パネル・実行中 task を publication の差替え前に破棄する。
-        if epubPublication != nil {
-            teardownEPUBSearch()
-        }
-        unloadImageBookForEPUB(fromSlideshow: fromSlideshow)
-        saveEPUBState()  // EPUB → EPUB の切替でも前の本の位置を残す
-        epubSaveDebounce?.cancel()
-
-        epubCollectionContext = collectionContext
-        epubCollectionReturnPending = false
-        epubPublication = publication
-        epubContentLoaded = false
-        epubBookURL = url
-        // 永続層は Washi 非依存のタプルを返すため、復元位置と同じく境界で
-        // EPUBLocator を直接構築する(matchingLocator 経路は導入しない)
-        epubBookmarks = BookHistoryStore.shared.savedReflowBookmarks(forPath: url.path)
-            .map { bookmark in
-                (bookmark.name, EPUBLocator(
-                    spineIndex: bookmark.spineIndex,
-                    progression: bookmark.progression,
-                    idref: bookmark.idref))
-            }
-        epubFlattenedToc = Self.flattenToc(publication.navigation.toc)
-
-        let view = ensureEPUBView()
-        readerViewForInput.isHidden = true
-        view.isHidden = false
-        let epubTitle = publication.metadata.mainTitle ?? url.lastPathComponent
-        if let collectionContext {
-            // 合本内の巻に入ったとき、題名を子 EPUB 単独の題名にすると『合本を
-            // 抜けた』ように見え「今どこにいるか」を失う。合本名を残して現在巻を
-            // 併記する(画像巻へ戻れば openBookFlow が合本名へ戻す。監査 UX 提案)
-            window?.title =
-                "\(collectionContext.folderURL.lastPathComponent) — \(epubTitle)"
-        } else {
-            window?.title = epubTitle
-        }
-        window?.representedURL = url
 
         let spineCount = publication.readingOrder.count
         let locator: EPUBLocator?
@@ -268,10 +228,62 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         } else {
             locator = restoredEPUBLocator(for: url, publication: publication)
         }
-        // モーダル後の再照合: restoredEPUBLocator の確認ダイアログ(runModal)が
-        // run loop を回す間に別 EPUB が提示され得る。ここで最新要求か確かめてから
-        // 実際の読み込みへ進む
+        // cooViewer-oxr.23: 復元確認の modal が run loop を回している間は、旧
+        // publication と旧 URL を一切差し替えない。旧ビューの callback が新しい
+        // 本へ保存される混線を防ぎ、最新要求だけが以下の状態を変更する（設計書 §2.4）。
         guard epubPresentEpoch == epoch else { return }
+
+        clearEPUBSearchHighlight()
+        dismissEPUBFootnote()
+        epubLatestSelectionText = nil
+        epubLastClickLocation = nil
+        // cooViewer-1p7: EPUB 間の切替は dismissEPUBMode を通らないため、旧本の
+        // 検索結果・パネル・実行中 task を publication の差替え前に破棄する。
+        if epubPublication != nil {
+            teardownEPUBSearch()
+        }
+        unloadImageBookForEPUB(fromSlideshow: fromSlideshow)
+        saveEPUBState()  // EPUB → EPUB の切替でも前の本の位置を残す
+        epubSaveDebounce?.cancel()
+
+        epubCollectionContext = collectionContext
+        epubCollectionReturnPending = false
+        epubPublication = publication
+        epubContentLoaded = false
+        epubBookURL = url
+        epubLastSuccessfulSaveAt = nil
+        // 永続層は Washi 非依存のタプルを返すため、復元位置と同じく境界で
+        // EPUBLocator を直接構築する(matchingLocator 経路は導入しない)
+        epubBookmarks = BookHistoryStore.shared.savedReflowBookmarks(forPath: url.path)
+            .map { bookmark in
+                (bookmark.name, EPUBLocator(
+                    spineIndex: bookmark.spineIndex,
+                    progression: bookmark.progression,
+                    idref: bookmark.idref))
+            }
+        epubFlattenedToc = Self.flattenToc(publication.navigation.toc)
+
+        let view = ensureEPUBView()
+        readerViewForInput.isHidden = true
+        view.isHidden = false
+        let titleMetadata = publication.metadata.titles.first { $0.type == "main" }
+            ?? publication.metadata.titles.first
+        let rawEPUBTitle = titleMetadata?.value ?? url.lastPathComponent
+        // cooViewer-oxr.52: 設計書 §2.4 の title 境界で isolate し、合本名や
+        // AppKit の残りの title へ RTL/LTR 状態を漏らさない。
+        let epubTitle = EPUBTitleFormatter.windowTitle(
+            rawEPUBTitle, direction: titleMetadata?.direction)
+        if let collectionContext {
+            // 合本内の巻に入ったとき、題名を子 EPUB 単独の題名にすると『合本を
+            // 抜けた』ように見え「今どこにいるか」を失う。合本名を残して現在巻を
+            // 併記する(画像巻へ戻れば openBookFlow が合本名へ戻す。監査 UX 提案)
+            window?.title =
+                "\(collectionContext.folderURL.lastPathComponent) — \(epubTitle)"
+        } else {
+            window?.title = epubTitle
+        }
+        window?.representedURL = url
+
         // 設定同期と columnMode 復元は modal(restoredEPUBLocator)より後・
         // load 直前に行う。modal 中に旧本(切替元)のビューへ設定を書くと再ページ
         // 割りが走り、その pageChanged が既に切替先 URL になった epubBookURL で
@@ -288,6 +300,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             restored.columnMode = mode
             view.settings = restored
         }
+        // cooViewer-oxr.45: 設定同期後の新しい publication の版面キーを導き、
+        // 外部画面との往復では直近 3 件から同じ版面を選ぶ。view の完了済みキーは
+        // load 前だと旧 publication の値なので参照しない（設計書 §2.4）。
+        let preferredCensusMetricsKey = EPUBScreenMetrics(
+            viewportSize: window?.contentView?.bounds.size ?? view.bounds.size,
+            settings: view.settings,
+            renditionSpread: publication.metadata.rendition.spread).cacheKey
         // cooViewer-t4e: 再構築される webView の旧スナップショットを保持した
         // ルーペを、次の publication の load より先に必ず無効化する。
         disableEPUBLoupe()
@@ -295,7 +314,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // 保存済みの census を注入する。版・spine 数・メトリクスが一致すれば
         // Washi 側が採用し、同一寸法での再オープンで再実測を省く(整合検証は
         // importCensus 側。不一致なら無視され通常どおり再実測する)
-        if let saved = BookHistoryStore.shared.savedReflowCensus(forPath: url.path) {
+        let matchingCensus = BookHistoryStore.shared.savedReflowCensus(
+            forPath: url.path, metricsKey: preferredCensusMetricsKey)
+        if let saved = matchingCensus
+            ?? BookHistoryStore.shared.savedReflowCensus(forPath: url.path) {
             view.importCensus(EPUBCensusRecord(
                 metricsKey: saved.metricsKey, counts: saved.counts,
                 releaseIdentifier: saved.releaseIdentifier))
@@ -318,7 +340,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         } ?? 0
         updateEPUBPageBar(progress: initial,
                           readsFromLeft: collectionContext?.readsFromLeft
-                              ?? (publication.readingDirection != .rtl))
+                              ?? (publication.effectiveReadingDirection != .rtl))
     }
 
     /// 前回位置の復元。保存側のゲート(§7.3)に加えて、画像本と同じ
@@ -354,31 +376,29 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// 共通の唯一の構築点。ページ番号表示 ShowNumber は下部中央のノンブルに
     /// 読み替え、下配置ではラベルとの重なりを避けて抑止する=epubShowsFolio)
     func currentEPUBReaderSettings() -> EPUBReaderSettings {
-        var epubSettings = EPUBReaderSettings()
-        epubSettings.handlesKeyboardNavigation = false  // キーはアプリのバインドで
-        epubSettings.pageTurnStyle = epubPageTurnStyle
-        epubSettings.fontScale = settings.epubFontScale
-        epubSettings.pinchAdjustsFontScale = settings.epubPinchFontScale
-        // 下配置(PageNumPosition 2/3)ではホストの N/M(章題)ラベル(不透明帯)が
-        // Washi の下部中央ノンブルを覆うため、下配置時はノンブルを抑止しラベル一本に
-        // する(上配置 0/1 は上隅ラベル + 下中央ノンブルで両立=非衝突)。設計書 §2.4
-        epubSettings.showsPageFurniture =
-            Self.epubShowsFolio(showNumber: settings.showNumber,
-                                pageNumPosition: settings.pageNumPosition)
-        epubSettings.insets = Self.epubInsets(forMargins: settings.epubPageMargins)
-        epubSettings.defaultFontFamily =
-            settings.epubDefaultFont.isEmpty ? nil : settings.epubDefaultFont
-        // 背景(配色テーマ): システムに従う / ライト / ダーク
-        epubSettings.theme = EPUBReaderTheme(rawValue: settings.epubTheme) ?? .system
-        // 読みやすさ優先(既定 ON): 本が色を指定していてもテーマ文字色を強制し、
-        // ダーク背景で黒文字がハードコードされた本でも読めるようにする
-        epubSettings.forcesReadableColors = settings.epubForceReadableColors
-        // 水平スワイプ/ホイールめくりを画像本と同じトグル・向きにそろえる
-        // (Washi は既定で内部的にめくるため、SwipeToTurnPage/FlipSwipeDirection
-        // やコレクションの綴じ方向が効かず非対称だった。監査 #2)
-        epubSettings.horizontalWheelTurnsPages = settings.swipeToTurnPage
-        epubSettings.reversesHorizontalWheelTurn = epubHorizontalWheelReversed
-        return epubSettings
+        // cooViewer-oxr.32/33/35/38: 設計書 §2.4 の host 値を pure mapper
+        // へまとめ、本文表示と画面計画が同一の単位変換を使う。
+        EPUBSettingsMapper.readerSettings(from: EPUBSettingsValues(
+            pageTurnStyle: epubPageTurnStyle,
+            fontScale: settings.epubFontScale,
+            pinchAdjustsFontScale: settings.epubPinchFontScale,
+            // 下配置では host の N/M ラベルと Washi のノンブルが重なるため抑止。
+            showsPageFurniture: Self.epubShowsFolio(
+                showNumber: settings.showNumber,
+                pageNumPosition: settings.pageNumPosition),
+            insets: Self.epubInsets(forMargins: settings.epubPageMargins),
+            defaultFontFamily: settings.epubDefaultFont,
+            theme: EPUBReaderTheme(rawValue: settings.epubTheme) ?? .system,
+            forcesReadableColors: settings.epubForceReadableColors,
+            horizontalWheelTurnsPages: settings.swipeToTurnPage,
+            reversesHorizontalWheelTurn: epubHorizontalWheelReversed,
+            hidesFootnoteAsides: settings.epubHidesFootnoteAsides,
+            lineHeightScale: settings.epubLineHeightScale,
+            letterSpacing: settings.epubLetterSpacing,
+            paragraphSpacing: settings.epubParagraphSpacing,
+            forceFont: settings.epubForceFont,
+            hidesRuby: settings.epubHidesRuby,
+            showsPrintPageInFurniture: settings.epubShowsPrintPage))
     }
 
     /// Washi の水平ホイールめくりを画像本のスワイプめくりと同じ論理方向へ
@@ -387,7 +407,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// 混在方向コレクションでは Washi は本の宣言方向でめくるため、コレクション
     /// の readMode との差もここで吸収される)
     private var epubHorizontalWheelReversed: Bool {
-        let bookRTL = epubPublication?.readingDirection == .rtl
+        let bookRTL = epubPublication?.effectiveReadingDirection == .rtl
         // 実効綴じ方向(コレクション文脈はコレクション設定、単体は本の宣言)
         let effReadsFromLeft = epubCollectionContext?.readsFromLeft ?? !bookRTL
         let gIsNext = bookRTL
@@ -501,6 +521,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     func dismissEPUBMode() {
         teardownEPUBSearch()
+        dismissEPUBFootnote()
         guard isEPUBMode else { return }
         disableEPUBLoupe()
         saveEPUBState()
@@ -516,11 +537,16 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubBookmarks = []
         epubFlattenedToc = []
         epubPageLabelText = nil
+        epubLatestSelectionText = nil
+        epubLastClickLocation = nil
         epubCollectionContext = nil
-        epubView?.isHidden = true
+        // cooViewer-oxr.79: 設計書 §2.4 の画像/EPUB 入替では、非表示だけでは
+        // ウインドウのリサイズが Washi へ届き、再ページ割りと census が続く。
+        // インスタンスと設定は保持したまま window から外し、Washi の teardown を促す。
+        epubView?.removeFromSuperview()
         readerViewForInput.isHidden = false
         // EPUB 中にクリックすると WKWebView が first responder を握る。
-        // 隠した後もそのままだとキーイベントが隠れた WebView へ流れ、
+        // 外した後もそのままだとキーイベントが元の WebView へ流れ、
         // ReaderView.keyDown が呼ばれずキー操作が全滅する(特に
         // 「表示できる画像がありません」の空の本はキーだけが頼りなので致命的)。
         // モードを戻すときに必ずフォーカスも戻す
@@ -555,7 +581,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         let generation = openGeneration
         Task { [weak self] in
             guard let self else { return }
-            let publication = await self.epubParseCoalescer.publication(at: url)
+            // cooViewer-oxr.42: 合本生成時に保持した publication を、ファイル
+            // 同一性検証を通して再利用する（設計書 §2.4）。
+            let preparsed = await book.source.preparsedReflowPublication(for: url)
+            let publication = await self.epubParseCoalescer.publicationIfAvailable(
+                at: url, preparsed: preparsed)
             // 解析中に別の本が開かれた/代理ページを離れたら何もしない
             // (openBookFlow の世代規則と同じ。book 同一性だけでは、新しい
             // オープンの途中(book 差し替え前)をすり抜ける)。
@@ -567,6 +597,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                   explicitLocator != nil || book.currentIndex == entryIndex
             else { return }
             guard let publication, !publication.isFixedLayout,
+                  !EPUBImageOnlyHeuristic.qualifies(publication),
                   !publication.isDRMProtected else {
                 if let publication {
                     // 確定降格(FXL/DRM): 以後ずっと静的表紙。恒久ブラックリストへ。
@@ -636,11 +667,16 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         let presentEpoch = epubPresentEpoch
         Task { [weak self] in
             guard let self else { return }
-            let publication = await self.epubParseCoalescer.publication(at: url)
+            // cooViewer-oxr.42: 代理ソースが保持する解析結果を EPUB 間移動にも
+            // 引き継ぐ（設計書 §2.4）。
+            let preparsed = await context.source.preparsedReflowPublication(for: url)
+            let publication = await self.epubParseCoalescer.publicationIfAvailable(
+                at: url, preparsed: preparsed)
             guard self.isEPUBMode,
                   self.epubCollectionContext?.folderURL == context.folderURL
             else { return }
             guard let publication, !publication.isFixedLayout,
+                  !EPUBImageOnlyHeuristic.qualifies(publication),
                   !publication.isDRMProtected else {
                 NSSound.beep()
                 return
@@ -715,7 +751,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// 単体の EPUB は本の宣言(!isRTL)、コレクション文脈では
     /// コレクションの readMode(表示は宣言のまま、操作系だけ合わせる)
     var epubInputReadsFromLeft: Bool {
-        epubCollectionContext?.readsFromLeft ?? !(epubView?.isRTL ?? false)
+        epubCollectionContext?.readsFromLeft
+            ?? (epubPublication?.effectiveReadingDirection != .rtl)
     }
 
     /// アプリの「ページめくり効果」→ Washi の内蔵スタイル。
@@ -730,18 +767,26 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     }
 
     private func ensureEPUBView() -> EPUBReaderView {
-        if let epubView { return epubView }
-        let view = EPUBReaderView()
-        view.settings = currentEPUBReaderSettings()
-        view.delegate = self
-        view.translatesAutoresizingMaskIntoConstraints = false
-        // 自動隠しインジケータのためのマウス移動監視(owner に直接イベントが
-        // 届く。WKWebView 上でも tracking area は独立して機能する)
-        view.addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
-            owner: self))
-        if let contentView = window?.contentView {
+        let view: EPUBReaderView
+        if let epubView {
+            view = epubView
+        } else {
+            view = EPUBReaderView()
+            view.settings = currentEPUBReaderSettings()
+            view.delegate = self
+            view.translatesAutoresizingMaskIntoConstraints = false
+            // 自動隠しインジケータのためのマウス移動監視(owner に直接イベントが
+            // 届く。WKWebView 上でも tracking area は独立して機能する)
+            view.addTrackingArea(NSTrackingArea(
+                rect: .zero,
+                options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                owner: self))
+            self.epubView = view
+        }
+        if view.superview == nil, let contentView = window?.contentView {
+            // cooViewer-oxr.79: 再入場時は同じビューを load より前に戻す。
+            // readerView の直上に置くことで、ページ表示・検索・カール・ルーペの
+            // ホストを従来どおり EPUB 本文より上に保つ(設計書 §2.4)。
             // readerView と同じ全面配置。ページ番号等のオーバーレイより下、
             // readerView より上(入替表示なので実質どちらでもよい)
             contentView.addSubview(view, positioned: .above,
@@ -753,7 +798,6 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                 view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             ])
         }
-        epubView = view
         return view
     }
 
@@ -761,7 +805,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     /// 現在の EPUB の読書位置を保存する(切替時・クローズ時・終了時)
     func saveEPUBState() {
-        guard let epubBookURL, let epubView, isEPUBMode else { return }
+        guard let epubBookURL, let epubView, isEPUBMode,
+              EPUBPersistencePolicy.shouldPersist(
+                callbackPublication: epubView.publication,
+                currentPublication: epubPublication)
+        else { return }
         let locator = epubView.currentLocator
         BookHistoryStore.shared.noteClosedReflow(
             path: epubBookURL.path,
@@ -789,6 +837,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         BookHistoryStore.shared.noteReflowColumnMode(
             path: epubBookURL.path, columnMode: epubView.settings.columnMode.rawValue)
         saveEPUBBookmarks()
+        epubLastSuccessfulSaveAt = Date()
     }
 
     /// 表示中 EPUB のしおりを Washi 非依存のタプルへ変換して保存する
@@ -863,6 +912,16 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// ⇧⌘G と検索パネルのボタンから前のヒットへ移動する。
     @objc func findPreviousEPUBMenu(_ sender: Any?) {
         goToEPUBSearchHit(forward: false)
+    }
+
+    /// AppKit 標準の「選択部分を検索に使用」(⌘E)を EPUB の検索パネルへ渡す。
+    /// cooViewer-oxr.34 / 設計書 §2.4。
+    @objc func useSelectionForEPUBFindMenu(_ sender: Any?) {
+        guard isEPUBMode, let term = epubLatestSelectionText else { return }
+        showEPUBSearchMenu(sender)
+        guard let model = epubSearchModel else { return }
+        model.query = term
+        startEPUBSearch(query: term, debounce: false)
     }
 
     /// 入力連打をデバウンスし、Washi の同期検索を MainActor の外で実行する。
@@ -1070,6 +1129,54 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             panel.orderOut(nil)
             panel.close()
         }
+    }
+
+    // MARK: - 脚注ポップオーバー
+
+    /// 本切替・退出・次の注参照で、旧 publication の非同期結果を残さない。
+    /// cooViewer-oxr.32 / 設計書 §2.4。
+    func dismissEPUBFootnote() {
+        epubFootnoteTask?.cancel()
+        epubFootnoteTask = nil
+        epubFootnotePopover?.performClose(nil)
+        epubFootnotePopover = nil
+    }
+
+    private func presentEPUBFootnote(
+        _ content: EPUBNoteContent,
+        for link: EPUBInternalLink,
+        in view: EPUBReaderView
+    ) {
+        epubFootnotePopover?.performClose(nil)
+
+        let noteLabel = String(localized: "Note")
+        let target = link.fragment?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = target.flatMap { $0.isEmpty ? nil : "\(noteLabel) — #\($0)" }
+            ?? noteLabel
+        let placement = EPUBFootnotePopoverGeometry.placement(
+            anchorRect: link.anchorRect,
+            lastClickLocation: epubLastClickLocation,
+            in: view.bounds)
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = EPUBFootnotePopoverController(
+            title: title,
+            text: content.text,
+            onMove: { [weak self, weak view, weak popover] in
+                guard let self, let view, self.epubView === view else { return }
+                popover?.performClose(nil)
+                if self.epubFootnotePopover === popover {
+                    self.epubFootnotePopover = nil
+                }
+                // Washi 1.16.0 の公開 API。通常の internal-link 履歴もここで積む。
+                view.follow(link)
+            })
+        epubFootnotePopover = popover
+        popover.show(
+            relativeTo: placement.anchorRect,
+            of: view,
+            preferredEdge: placement.preferredEdge)
     }
 
     /// スナップショット CLI から検索を開始する。
@@ -1299,9 +1406,13 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// 入力した 1 始まりページを比率へ換算して epubJump へ渡す — 単体・
     /// コレクションのどちらも Int((fraction*(total-1)).rounded()) が
     /// page-1 に丸め戻るため、goToPercent と同じ経路で正確なページ着地になる。
-    /// census 未完で総ページ不明なら操作不能としてビープ
+    /// cooViewer-oxr.38: 数値でなければ印刷版ページ名へ解決する。全体 census
+    /// が未完でも page-list があれば操作できる（設計書 §2.4）。
     private func promptEPUBGoToPage() {
-        guard let total = epubCurrentTotalPages, total > 0 else {
+        guard let epubView else { return }
+        let total = epubCurrentTotalPages ?? 0
+        let printLabels = epubView.printPageLabels
+        guard total > 0 || !printLabels.isEmpty else {
             NSSound.beep()
             return
         }
@@ -1310,12 +1421,27 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         alert.addButton(withTitle: String(localized: "Go"))
         alert.addButton(withTitle: String(localized: "Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
-        field.placeholderString = "1-\(total)"
+        if total > 0, let firstPrintLabel = printLabels.first {
+            field.placeholderString = "1-\(total) / \(firstPrintLabel)"
+        } else if total > 0 {
+            field.placeholderString = "1-\(total)"
+        } else {
+            field.placeholderString = printLabels.first
+        }
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn,
-              let page = Int(field.stringValue) else { return }
-        epubGoToPage(page)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        switch EPUBPageJumpResolver.resolve(
+            input: field.stringValue,
+            printLabels: printLabels,
+            totalPages: total) {
+        case .global(let page):
+            epubGoToPage(page)
+        case .printPage(let label):
+            _ = epubView.go(toPrintPage: label)
+        case .invalid:
+            break
+        }
     }
 
     /// 1 始まりページ番号へジャンプ(promptEPUBGoToPage と検証フラグから使う)。
@@ -1640,6 +1766,12 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             epubGoToFirst()
         case .goToLastPage:
             epubGoToLast()
+        case .epubGoBack:
+            // cooViewer-oxr.31: 設計書 §2.4 のリンク履歴だけを戻す。
+            // 履歴が無い場合も割当済み操作として消費し、ビープは鳴らさない。
+            if epubView?.canGoBack == true {
+                epubView?.goBack()
+            }
         case .skip:
             // スキップ=次のセクション。リフローに安定した「ページ枚数」が
             // 無いため、バインドの枚数 value は意図的に読まない
@@ -1661,7 +1793,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // jumpToPercent と同じく本全体の進行率へ(ページバーと同じ換算)
             epubJump(toBookFraction: (value ?? 0) / 100.0)
         case .goToPage:
-            // ページ番号ダイアログ(§5.8)。census 完了時のみ番号ジャンプ可能
+            // ページ番号ダイアログ(§5.8)。census 完了後は全体ページ番号、
+            // page-list があれば印刷版ラベルでも移動できる(cooViewer-oxr.38)。
             promptEPUBGoToPage()
         case .addRemoveBookmark:
             toggleEPUBBookmark()
@@ -1717,21 +1850,17 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // applySettings が showsPageFurniture へ橋渡しする
             settings.showNumber.toggle()
         case .switchSingleSpread:
-            // 単ページ⇔見開き。EPUB では columnMode(auto/single/double)が
-            // 担うため、いま見えている画面数を基準に固定値へトグルする
-            // (進行率は Washi の settings didSet が保って再ページ割り)
+            // cooViewer-oxr.20: 設計書 §2.4。画像だけの表紙では実測
+            // pagesPerScreen が常に 1 なので、Washi の画面計画を反転する。
             guard let epubView else { return false }
-            var epubSettings = epubView.settings
-            epubSettings.columnMode = epubView.pagesPerScreen >= 2
-                ? .single : .double
-            epubView.settings = epubSettings
+            epubView.toggleColumnMode()
             // 単/見開き固定は本ごとに永続化する(画像本の marks が
             // saveCurrentBookState で即保存されるのと同型。再起動で auto に
             // 戻る不具合 = cooViewer-0dh の修正)
             if let epubBookURL {
                 BookHistoryStore.shared.noteReflowColumnMode(
                     path: epubBookURL.path,
-                    columnMode: epubSettings.columnMode.rawValue)
+                    columnMode: epubView.settings.columnMode.rawValue)
             }
         case .toggleSlideshow:
             // スライドショー(§4.9)。タイマーは book に依存しないので
@@ -1761,6 +1890,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             window?.toggleFullScreen(nil)
         case .minimizeWindow:
             window?.performMiniaturize(nil)
+        case .contextualMenu:
+            // cooViewer-oxr.35: 右クリックに既存の「コンテキストメニュー」
+            // アクションが割り当てられている場合も画像本と同じ host menu を出す
+            // （設計書 §2.4）。willShowContextMenu はその後 Washi 側を抑止する。
+            showContextMenu()
         default:
             return false
         }
@@ -1858,6 +1992,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     func readerView(_ view: EPUBReaderView, didMoveTo locator: EPUBLocator,
                     pageInItem: Int, pageCountInItem: Int) {
+        // cooViewer-oxr.23: 旧 WKWebView の遅延通知を新 URL の状態へ混ぜない
+        // （設計書 §2.4）。
+        guard EPUBPersistencePolicy.shouldPersist(
+            callbackPublication: view.publication,
+            currentPublication: epubPublication) else { return }
+        // 参照後に利用者が別ページへ動いた場合、旧アンカーの非同期結果や
+        // 表示中の注を新しいページへ残さない(cooViewer-oxr.32、設計書 §2.4)。
+        dismissEPUBFootnote()
         epubMoveCount &+= 1
         if epubSearchLandingTask != nil {
             // 着地 Task の実行中に届く pageChanged(着地自身、⌘G 連打で取り残された
@@ -1871,8 +2013,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         epubContentLoaded = true
         updateEPUBIndicators()
         refreshEPUBLoupeSnapshot()
-        // 位置は 2 秒デバウンスで保存(ページ送りのたびの書き込みを避ける)
+        // 通常は 2 秒デバウンスしつつ、通知が連続する朗読でも 30 秒を上限に
+        // 保存を確定する（cooViewer-oxr.23、設計書 §2.4）。
         epubSaveDebounce?.cancel()
+        if EPUBPersistencePolicy.shouldSaveNow(
+            lastSave: epubLastSuccessfulSaveAt, now: Date()) {
+            saveEPUBState()
+            return
+        }
         epubSaveDebounce = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
@@ -1917,11 +2065,56 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         }
     }
 
+    func readerView(
+        _ view: EPUBReaderView,
+        shouldFollowInternalLink link: EPUBInternalLink
+    ) -> Bool {
+        guard EPUBFootnotePolicy.shouldPopover(
+            link: link, isEnabled: settings.epubFootnotePopover) else {
+            return true
+        }
+
+        dismissEPUBFootnote()
+        if link.anchorRect.map({ !$0.isNull && !$0.isEmpty }) != true,
+           let window {
+            // internal link は didClick(non-link 専用)を通らない。Washi が矩形を
+            // 解決できなかった場合も「最後のクリック位置」を現在のポインタから
+            // 補い、中央への不意な表示を避ける(cooViewer-oxr.32、設計書 §2.4)。
+            epubLastClickLocation = view.convert(
+                window.mouseLocationOutsideOfEventStream, from: nil)
+        }
+        // Washi の delegate 判定は同期、本文抽出は async のため候補リンクだけを
+        // いったん保留する。抽出不能なら follow(_:) へ戻して通常移動と同じ結果にする。
+        // cooViewer-oxr.32 / 設計書 §2.4。
+        epubFootnoteTask = Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            let content = await view.noteContent(for: link)
+            guard !Task.isCancelled, self.isEPUBMode, self.epubView === view else {
+                return
+            }
+            self.epubFootnoteTask = nil
+            guard let content else {
+                view.follow(link)
+                return
+            }
+            self.presentEPUBFootnote(content, for: link, in: view)
+        }
+        return false
+    }
+
+    func readerViewNavigationHistoryDidChange(_ view: EPUBReaderView) {
+        guard isEPUBMode, epubView === view else { return }
+        // cooViewer-oxr.31: 設計書 §2.4。⌘[ の enabled 状態を直ちに再検証する。
+        NSApp.mainMenu?.update()
+    }
+
     func readerView(_ view: EPUBReaderView, didClick event: EPUBClickEvent) -> Bool {
         // マウス割当を画像本と同じ解決順で引く(仕様書 §5.3)。
-        // 左・中・サイドボタン+修飾キー(Shift/Option/Control)に対応
-        // (右クリックは Washi が WebKit のメニューに委ねるため届かない)。
+        // 左・中・サイドボタン+修飾キー(Shift/Option/Control)に対応。
+        // 右クリックは cooViewer-oxr.35 の willShowContextMenu で解決する
+        // （設計書 §2.4）。
         // 未割当なら false → Washi の既定(修飾なし左の左右端タップめくり)
+        epubLastClickLocation = event.locationInView
         var modifiers = 0
         if event.shift { modifiers += LegacyModifier.shift }
         if event.option { modifiers += LegacyModifier.option }
@@ -1932,6 +2125,48 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             let action = binding.action else { return false }
         performEPUB(action, value: binding.value, leftHalf: event.x < 0.5)
         return true
+    }
+
+    func readerView(
+        _ view: EPUBReaderView,
+        selectionDidChange selection: EPUBTextSelection?
+    ) {
+        guard epubView === view,
+              let term = EPUBSelectionSearchTerm.term(from: selection?.text) else {
+            return
+        }
+        // cooViewer-oxr.34: 空選択では直前値を消さず、標準 ⌘E の対象を維持する。
+        epubLatestSelectionText = term
+        NSApp.mainMenu?.update()
+    }
+
+    func readerView(
+        _ view: EPUBReaderView,
+        willShowContextMenu menu: NSMenu,
+        at event: EPUBClickEvent?
+    ) -> NSMenu? {
+        guard epubView === view, let event else { return menu }
+        epubLastClickLocation = event.locationInView
+        var modifiers = 0
+        if event.shift { modifiers += LegacyModifier.shift }
+        if event.option { modifiers += LegacyModifier.option }
+        if event.control { modifiers += LegacyModifier.control }
+        // cooViewer-oxr.35: context-menu callback では右ボタンの割当だけを
+        // イベント修飾付きで解決する（設計書 §2.4）。
+        let binding = bindings.resolveMouse(
+            button: 1, modifiers: modifiers,
+            fitMode: 0, readsFromLeft: epubInputReadsFromLeft)
+        let action = binding?.action
+        guard EPUBContextMenuDecision.shouldSuppressMenu(
+            hasResolvedAction: action != nil),
+              let binding, let action else {
+            return menu
+        }
+        _ = performEPUB(
+            action,
+            value: binding.value,
+            leftHalf: event.locationInView.x < view.bounds.midX)
+        return nil
     }
 
     func readerView(_ view: EPUBReaderView,
@@ -1947,10 +2182,20 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     }
 
     func readerViewDidUpdatePageCensus(_ view: EPUBReaderView) {
+        // cooViewer-oxr.23: 本切替前の census callback は表示にも保存にも使わない
+        // （設計書 §2.4）。
+        guard EPUBPersistencePolicy.shouldPersist(
+            callbackPublication: view.publication,
+            currentPublication: epubPublication) else { return }
         // 全文ページ数の実測が完了/無効化された(フォントサイズ・寸法の
         // 変更に追従)。ページ番号とバーをページ単位へ切替え/差し戻す
         updateEPUBIndicators()
         refreshEPUBSearchPageNumbers()
+        // 合本一覧の census はアトラス側で独立に集めるため、現在巻の通知で
+        // 全巻計画を再始動しない。単体一覧だけを実測値へ差し替える(cooViewer-oxr.64)。
+        if epubCollectionContext == nil {
+            refreshVisibleEPUBThumbnailOverlay()
+        }
         // 実測が完了したら永続化する。次回同一メトリクスで開くとき注入して
         // オフスクリーン再実測を省き、N/M・ページバーを即出す
         if let url = epubBookURL, let record = view.exportCensus() {

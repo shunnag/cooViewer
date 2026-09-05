@@ -142,10 +142,11 @@ struct CollectionThumbnailSource: BookSource {
         case .epubScreen(let url, _, let spineIndex, let pageInItem, _):
             // アトラス参照はストア(MainActor)内に留める — NSWindow/WKWebView
             // を抱えるオブジェクトを非分離文脈で保持・解放させない
+            let preparsed = await base.preparsedReflowPublication(for: url)
             guard let image = await EPUBAtlasStore.shared.thumbnail(
                 for: url, spineIndex: spineIndex, pageInItem: pageInItem,
                 metrics: plan.metrics, isDark: plan.isDark,
-                width: CGFloat(maxPixelSize ?? 320))
+                width: CGFloat(maxPixelSize ?? 320), preparsed: preparsed)
             else {
                 throw BookSourceError.pageLoadFailed(entry.name)
             }

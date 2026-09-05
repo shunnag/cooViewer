@@ -34,6 +34,16 @@ final class SettingsStore {
             "EPUBPageMargins": 1,
             "EPUBTheme": 0,                    // 0=システム / 1=ライト / 2=ダーク
             "EPUBForceReadableColors": true,   // 既定は読みやすさ優先
+            // EPUB の脚注・組版・印刷ページ設定(cooViewer-oxr.32/.33/.38、
+            // 設計書 §2.4)。旧キーを変えず、新設キーは安全側の既定値にする
+            "EPUBFootnotePopover": true,
+            "EPUBHidesFootnoteAsides": false,
+            "EPUBLineHeightScale": 0.0,
+            "EPUBLetterSpacing": 0,
+            "EPUBParagraphSpacing": 0,
+            "EPUBForceFont": false,
+            "EPUBHidesRuby": false,
+            "EPUBShowsPrintPage": false,
         ])
     }
 
@@ -469,6 +479,73 @@ final class SettingsStore {
     var epubForceReadableColors: Bool {
         get { defaults.bool(forKey: "EPUBForceReadableColors") }
         set { defaults.set(newValue, forKey: "EPUBForceReadableColors") }
+    }
+
+    /// EPUB の脚注参照を本文へ移動せずポップオーバーで開く。
+    /// 新設キー・既定 ON(cooViewer-oxr.32、設計書 §2.4 EPUB 対応)
+    var epubFootnotePopover: Bool {
+        get {
+            guard defaults.object(forKey: "EPUBFootnotePopover") != nil else {
+                return true
+            }
+            return defaults.bool(forKey: "EPUBFootnotePopover")
+        }
+        set { defaults.set(newValue, forKey: "EPUBFootnotePopover") }
+    }
+
+    /// EPUB 本文末尾の脚注 aside を非表示にする(新設キー・既定 OFF)。
+    /// Washi の hidesFootnoteAsides へ写像する(cooViewer-oxr.32、設計書 §2.4)
+    var epubHidesFootnoteAsides: Bool {
+        get { defaults.bool(forKey: "EPUBHidesFootnoteAsides") }
+        set { defaults.set(newValue, forKey: "EPUBHidesFootnoteAsides") }
+    }
+
+    /// EPUB の行高倍率。0=本のまま、ほかは UI が提示する倍率だけを保存する。
+    /// Washi の lineHeightScale へ写像する(cooViewer-oxr.33、設計書 §2.4)
+    var epubLineHeightScale: Double {
+        get {
+            let value = defaults.double(forKey: "EPUBLineHeightScale")
+            return [1.2, 1.5, 1.8, 2.0].contains(value) ? value : 0
+        }
+        set {
+            defaults.set([1.2, 1.5, 1.8, 2.0].contains(newValue) ? newValue : 0,
+                         forKey: "EPUBLineHeightScale")
+        }
+    }
+
+    /// EPUB の字間プリセット。0=本のまま / 1=0.05 em / 2=0.1 em。
+    /// Washi の letterSpacingEm へ写像する(cooViewer-oxr.33、設計書 §2.4)
+    var epubLetterSpacing: Int {
+        get { min(2, max(0, defaults.integer(forKey: "EPUBLetterSpacing"))) }
+        set { defaults.set(min(2, max(0, newValue)), forKey: "EPUBLetterSpacing") }
+    }
+
+    /// EPUB の段落間隔プリセット。0=本のまま / 1=0.5 em / 2=1.0 em。
+    /// Washi の paragraphSpacingEm へ写像する(cooViewer-oxr.33、設計書 §2.4)
+    var epubParagraphSpacing: Int {
+        get { min(2, max(0, defaults.integer(forKey: "EPUBParagraphSpacing"))) }
+        set { defaults.set(min(2, max(0, newValue)), forKey: "EPUBParagraphSpacing") }
+    }
+
+    /// 既定フォントを本の font-family より優先する(新設キー・既定 OFF)。
+    /// Washi の fontFamilyOverride へ写像する(cooViewer-oxr.33、設計書 §2.4)
+    var epubForceFont: Bool {
+        get { defaults.bool(forKey: "EPUBForceFont") }
+        set { defaults.set(newValue, forKey: "EPUBForceFont") }
+    }
+
+    /// EPUB のルビを非表示にする(新設キー・既定 OFF)。
+    /// Washi の hidesRuby へ写像する(cooViewer-oxr.33、設計書 §2.4)
+    var epubHidesRuby: Bool {
+        get { defaults.bool(forKey: "EPUBHidesRuby") }
+        set { defaults.set(newValue, forKey: "EPUBHidesRuby") }
+    }
+
+    /// EPUB のノンブルに印刷版ページを併記する(新設キー・既定 OFF)。
+    /// Washi の showsPrintPageInFurniture へ写像する(cooViewer-oxr.38、設計書 §2.4)
+    var epubShowsPrintPage: Bool {
+        get { defaults.bool(forKey: "EPUBShowsPrintPage") }
+        set { defaults.set(newValue, forKey: "EPUBShowsPrintPage") }
     }
 
     /// バブルのサムネイル表示。旧既定は OFF だったが新実装では ON を既定にする
