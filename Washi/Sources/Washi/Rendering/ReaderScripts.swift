@@ -56,38 +56,86 @@ enum ReaderScripts {
         function detectImagePage() {
             const body = document.body;
             if (!body) { return false; }
-            const text = (body.textContent || '').replace(/\s+/g, '');
-            if (text.length > 0) { return false; }
-            const imgs = body.querySelectorAll('img').length;
-            const svgImages = body.querySelectorAll('svg image').length;
-            return (imgs + svgImages) === 1;
+            // cooViewer-oxr.6: Core の画像ページ判定と同じく、本文以外の文字と
+            // 非表示の代替文を除く。WebKit ではスタイルシートの display も評価する。
+            function hasVisibleText(node) {
+                if (node.nodeType === Node.TEXT_NODE) { return /\S/.test(node.textContent); }
+                if (node.nodeType !== Node.ELEMENT_NODE) { return false; }
+                if (['script', 'style', 'title', 'desc'].includes(node.localName)
+                    || node.hasAttribute('hidden')
+                    || getComputedStyle(node).display === 'none') { return false; }
+                return Array.from(node.childNodes).some(hasVisibleText);
+            }
+            if (hasVisibleText(body)) { return false; }
+            // cooViewer-oxr.6: KCC のパネル表示用に複製された同一画像は 1 枚と数える。
+            const sources = Array.from(body.querySelectorAll('img, svg image')).map(el =>
+                el.localName === 'img' ? el.getAttribute('src')
+                    : (el.getAttributeNS('http://www.w3.org/1999/xlink', 'href')
+                        || el.getAttribute('xlink:href') || el.getAttribute('href')));
+            return sources.length > 0 && sources.every(src => src && src.trim())
+                && new Set(sources).size === 1;
+        }
+
+        let imagePagePrepared = false;
+        function prepareImagePage() {
+            if (imagePagePrepared) { return; }
+            imagePagePrepared = true;
+            // cooViewer-oxr.3 / Washi ミラー issue #1: SVG の auto × auto は
+            // 高さ未確定の flex ラッパー内で 0×0 になる。比率から高さを確定する。
+            document.body.querySelectorAll('img, svg[viewBox]').forEach(el => {
+                if (el.localName === 'svg' && !el.querySelector('image')) { return; }
+                const wrappers = [];
+                for (let node = el; node && node !== root(); node = node.parentElement) {
+                    // cooViewer-oxr.6: 非表示のパネル複製を flex 指定で再表示しない。
+                    if (node.hasAttribute('hidden') || getComputedStyle(node).display === 'none') {
+                        return;
+                    }
+                    if (node !== el && node !== document.body) { wrappers.push(node); }
+                }
+                wrappers.forEach(node => node.classList.add('washi-image-wrapper'));
+                el.classList.add('washi-image');
+                function setRatio(width, height) {
+                    if (width > 0 && height > 0) {
+                        el.style.setProperty('--washi-ratio', String(width / height));
+                    }
+                }
+                if (el.localName === 'svg') {
+                    const box = el.viewBox.baseVal;
+                    setRatio(box.width, box.height);
+                    // cooViewer-oxr.3: Calibre/Kindle の none による表紙の引き伸ばしを防ぐ。
+                    el.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                    el.querySelectorAll('image').forEach(image =>
+                        image.setAttribute('preserveAspectRatio', 'xMidYMid meet'));
+                } else {
+                    const updateRatio = () => setRatio(
+                        el.naturalWidth || Number(el.getAttribute('width')),
+                        el.naturalHeight || Number(el.getAttribute('height')));
+                    updateRatio();
+                    if (!el.complete) { el.addEventListener('load', updateRatio, { once: true }); }
+                }
+            });
         }
 
         function applyImagePageCSS() {
             const s = ensureStyle('washi-pagination');
+            // cooViewer-oxr.3 / Washi ミラー issue #1: 報告者提案の viewport 単位を
+            // 採用し、repaginate の待ち時間中も追従する。WebView 自体がページ箱。
             s.textContent = `
-                html, body {
+                html, body, body .washi-image-wrapper {
                     margin: 0 !important; padding: 0 !important;
-                    width: ${pageW}px !important; height: ${pageH}px !important;
+                    width: 100vw !important; height: 100vh !important;
                     overflow: hidden !important;
                 }
-                body {
+                body, body .washi-image-wrapper {
                     display: flex !important;
                     align-items: center !important;
                     justify-content: center !important;
                 }
-                /* 表紙はラッパー(青空文庫系の .cover-main 等)ごと中央へ。
-                   body だけ flex にしてもラッパー箱の中で img が左に寄る。
-                   画像 1 枚だけのページと確定済みなので全ラッパーに効かせる */
-                body :not(img):not(svg):not(image) {
-                    display: flex !important;
-                    align-items: center !important;
-                    justify-content: center !important;
-                }
-                body img, body svg {
-                    max-width: ${pageW}px !important;
-                    max-height: ${pageH}px !important;
-                    width: auto; height: auto;
+                svg.washi-image, img.washi-image {
+                    height: min(100vh, calc(100vw / var(--washi-ratio, 0.7))) !important;
+                    width: auto !important;
+                    max-width: none !important; max-height: none !important;
+                    display: block; margin: 0 auto;
                     object-fit: contain;
                 }`;
         }
@@ -130,6 +178,12 @@ enum ReaderScripts {
 
         function clampScroll(offset) {
             const max = Math.max(0, scrollExtent() - clientExtent());
+            // cooViewer-oxr.1: vrl 見開きは page0DocStart = rect.left + scrollX
+            // で校正した右起点から後続ページへ scrollX が負方向に進むため、
+            // 到達範囲も [-max, 0] として符号を保つ
+            if (axisIsX() && mode === 'vrl') {
+                return Math.max(-max, Math.min(offset, 0));
+            }
             return Math.max(0, Math.min(offset, max));
         }
 
@@ -314,7 +368,9 @@ enum ReaderScripts {
                     || document.querySelector('[name="' + CSS.escape(id) + '"]');
             } catch (e) { el = null; }
             if (!el) { return washi.showPage(0); }
-            const rect = el.getBoundingClientRect();
+            // cooViewer-oxr.5: 縦書き見開きの結合矩形は最終ページまで左へ伸びる。
+            // locateAndShow と同じ先頭断片を使い、章ラッパーでも冒頭へ着地する。
+            const rect = el.getClientRects()[0] || el.getBoundingClientRect();
             return washi.showPage(pageForRect(rect));
         };
 
@@ -551,10 +607,11 @@ enum ReaderScripts {
             try { el.classList.add(cls); } catch (e) {}
             mediaOverlayActiveIds.push(id);
             // 現在のスプレッド外なら該当ページへめくる(既に見えていれば据え置き)
-            const before = currentPage;
-            const target = washi.showFragment(id);
-            if (target >= before && target < before + pagesPerScreen) {
-                washi.showPage(before);  // 既に可視: めくらない
+            // cooViewer-oxr.5: 可視判定にも先頭断片を使い、不要な往復を避ける。
+            const rect = el.getClientRects()[0] || el.getBoundingClientRect();
+            const target = pageForRect(rect);
+            if (target < currentPage || target >= currentPage + pagesPerScreen) {
+                washi.showPage(target);
             }
             return currentPage;
         };
@@ -614,6 +671,7 @@ enum ReaderScripts {
                 // Apple Books の表紙表示と同じ)
                 pageW = viewportW;
                 pagesPerScreen = 1;
+                prepareImagePage();
                 applyImagePageCSS();
                 pageCount = 1;
                 currentPage = 0;

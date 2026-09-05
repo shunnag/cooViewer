@@ -163,15 +163,79 @@ public final class EPUBPageRasterizer {
         // 落ちた/固まったときに永久待ちしないようタイムアウト付きで待つ
         try await delegate.wait(timeout: .seconds(30))
         // didFinish 直後はフォント・画像のデコードが残っていることがある。
-        // readyState + フォント読了 + 1 フレームを待ってから撮る
-        _ = try? await webView.callAsyncJavaScript(
-            """
-            await document.fonts.ready;
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            return true;
-            """,
-            arguments: [:], in: nil, contentWorld: .defaultClient)
+        // cooViewer-oxr.2: 一度も表示しないウインドウでは rAF が発火しないため
+        // 待ってはいけない。フォントと画像デコードを有界に待ち、描画の確定は
+        // takeSnapshot(afterScreenUpdates: true)に任せる
+        await waitForPostLoadReadiness(webView: webView)
         withExtendedLifetime(delegate) {}
+    }
+
+    private func waitForPostLoadReadiness(webView: WKWebView) async {
+        let race = PostLoadReadinessRace()
+        // 優先度は renderPage と同じ userInitiated を明示する。低 QoS の
+        // WebKit JS 呼び出しが応答しない問題をここで再導入しない
+        let scriptTask = Task(priority: .userInitiated) { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                """
+                const work = (async () => {
+                    await document.fonts.ready;
+                    await Promise.all([...document.images].map(
+                        image => image.decode().catch(() => {})));
+                    return true;
+                })();
+                return await Promise.race([
+                    work,
+                    new Promise(resolve => setTimeout(() => resolve(false), 1500))
+                ]);
+                """,
+                arguments: [:], in: nil, contentWorld: .defaultClient)
+            race.finish()
+        }
+        // cooViewer-oxr.2: JS 側のタイマごと WebKit が応答しない場合も、
+        // FIFO の後続ジョブを塞がないよう Swift 側で待機を打ち切る
+        let timeoutTask = Task(priority: .userInitiated) { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            race.finish()
+        }
+        await withTaskCancellationHandler {
+            await race.wait()
+        } onCancel: {
+            scriptTask.cancel()
+            timeoutTask.cancel()
+            Task { @MainActor in race.finish() }
+        }
+        scriptTask.cancel()
+        timeoutTask.cancel()
+    }
+}
+
+/// WebKit の応答と Swift 側タイムアウトのうち先に終わった方だけを採用する。
+/// 非構造化 Task を使い、応答しない WebKit 子タスクの終了を待たずに戻す
+@MainActor
+private final class PostLoadReadinessRace {
+    private var isFinished = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !isFinished else { return }
+        await withCheckedContinuation { continuation in
+            if isFinished {
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func finish() {
+        guard !isFinished else { return }
+        isFinished = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 
