@@ -1,5 +1,4 @@
 import XCTest
-import XADMaster
 @testable import cooViewer
 
 /// 設定「高度」: マスタースイッチと保存値の解決(SettingsStore)
@@ -7,17 +6,20 @@ import XADMaster
 final class SettingsStoreAdvancedTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: SettingsStore!
-    private var originalZipLazyLocalHeaders = true
+    private var originalXADZipLazyLocalHeaders = true
+    private var originalKaitoZipLazyLocalHeaders = true
 
     override func setUp() {
         super.setUp()
-        originalZipLazyLocalHeaders = XADArchive.defaultZipLazyLocalHeaders()
+        originalXADZipLazyLocalHeaders = XADMasterEngine.defaultZipLazyLocalHeaders
+        originalKaitoZipLazyLocalHeaders = KaitoKitEngine.defaultZipLazyLocalHeaders
         defaults = UserDefaults(suiteName: "advanced-test-\(UUID().uuidString)")!
         store = SettingsStore(defaults: defaults)
     }
 
     override func tearDown() {
-        XADArchive.setDefaultZipLazyLocalHeaders(originalZipLazyLocalHeaders)
+        XADMasterEngine.setDefaultZipLazyLocalHeaders(originalXADZipLazyLocalHeaders)
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(originalKaitoZipLazyLocalHeaders)
         store = nil
         defaults = nil
         super.tearDown()
@@ -25,28 +27,57 @@ final class SettingsStoreAdvancedTests: XCTestCase {
 
     func testZipLazyLocalHeadersDefaultsToOnWhenUnset() {
         XCTAssertNil(defaults.object(forKey: "ZipLazyLocalHeaders"))
-        XADArchive.setDefaultZipLazyLocalHeaders(false)
+        XADMasterEngine.setDefaultZipLazyLocalHeaders(false)
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(false)
 
         store.applyArchiveParserSettings()
 
         XCTAssertTrue(store.zipLazyLocalHeaders)
-        XCTAssertTrue(XADArchive.defaultZipLazyLocalHeaders())
+        XCTAssertTrue(XADMasterEngine.defaultZipLazyLocalHeaders)
+        XCTAssertTrue(KaitoKitEngine.defaultZipLazyLocalHeaders)
     }
 
     func testZipLazyLocalHeadersOffReachesParserClassDefault() {
         store.zipLazyLocalHeaders = false
 
         XCTAssertFalse(defaults.bool(forKey: "ZipLazyLocalHeaders"))
-        XCTAssertFalse(XADArchive.defaultZipLazyLocalHeaders())
+        XCTAssertFalse(XADMasterEngine.defaultZipLazyLocalHeaders)
+        XCTAssertFalse(KaitoKitEngine.defaultZipLazyLocalHeaders)
     }
 
     func testZipLazyLocalHeadersOnReachesParserClassDefault() {
-        XADArchive.setDefaultZipLazyLocalHeaders(false)
+        XADMasterEngine.setDefaultZipLazyLocalHeaders(false)
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(false)
 
         store.zipLazyLocalHeaders = true
 
         XCTAssertTrue(defaults.bool(forKey: "ZipLazyLocalHeaders"))
-        XCTAssertTrue(XADArchive.defaultZipLazyLocalHeaders())
+        XCTAssertTrue(XADMasterEngine.defaultZipLazyLocalHeaders)
+        XCTAssertTrue(KaitoKitEngine.defaultZipLazyLocalHeaders)
+    }
+
+    /// 書庫エンジンは XADMaster 既定で文字列往復し、CLI 上書きは保存値を
+    /// 変更せず当該プロセスだけに効く(設計書 §2.4 段階的な置き換え)。
+    func testArchiveEngineRoundTripAndRuntimeOverride() {
+        // registerDefaults で "xadmaster" が登録されるため object(forKey:) は nil にならない。
+        // 登録既定値が XADMaster であることを確認する
+        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), ArchiveEngineKind.xadmaster.rawValue)
+        XCTAssertEqual(store.archiveEngine, .xadmaster)
+        XCTAssertEqual(store.effectiveArchiveEngine, .xadmaster)
+
+        store.archiveEngine = .kaitokit
+        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), "kaitokit")
+        XCTAssertEqual(store.archiveEngine, .kaitokit)
+        XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
+
+        store.overrideArchiveEngineForCurrentRun(.xadmaster)
+        XCTAssertEqual(store.effectiveArchiveEngine, .xadmaster)
+        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), "kaitokit")
+        store.overrideArchiveEngineForCurrentRun(nil)
+        XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
+
+        defaults.set("unknown", forKey: "ArchiveEngine")
+        XCTAssertEqual(store.archiveEngine, .xadmaster)
     }
 
     /// 表示モード(FitMode)と表紙単ページ(SpreadCoverSingle)の既定と往復
