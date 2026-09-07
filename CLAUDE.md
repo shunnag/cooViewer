@@ -33,6 +33,14 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 
 - A run-script phase builds XADMaster/UniversalDetector into `Frameworks/` (skipped while
   outputs exist). After updating the submodules, `rm -rf Frameworks` to force a rebuild.
+- **KaitoKit (since 9153ef2, 2026-09-08)**: a second archive engine, built from a sibling
+  checkout `../KaitoKit` (override with `KAITOKIT_SOURCE_DIR`) by
+  `Scripts/build-kaitokit-framework.sh` into `Frameworks/KaitoKit.framework`. The checkout is
+  **required** — the build fails without it (the repo github.com/shunnag/KaitoKit is private
+  until cooViewer switches its default engine; see cooViewer-vwey.10). After editing KaitoKit
+  sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. The engine is selected
+  by the `ArchiveEngine` default (`xadmaster` by default) or `--engine kaitokit` on the
+  snapshot CLI; see development-guide §3.6.
 - EPUB support lives in `Washi/` — an independent, MIT-licensed, zero-dependency SwiftPM
   package (see `Washi/README.md`), published as a one-way subtree mirror at
   https://github.com/shunnag/Washi (procedure: development-guide §3.5; commits
