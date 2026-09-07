@@ -1,13 +1,14 @@
 import CoreGraphics
 import CryptoKit
 import Foundation
+import os
 import PDFKit
 import Washi
-import XADMaster
 
 /// 書庫(zip/rar/7z 等)を本として読む(仕様書 §2.4, §4.17)。
-/// XADArchive はスレッド安全でないため actor で直列化する。
-/// ファイル名エンコーディングは XADMaster + UniversalDetector が自動判定する。
+/// 書庫エンジンはスレッド安全でないため actor で直列化する。
+/// 既定はファイル名エンコーディングを自動判定する XADMaster とし、
+/// KaitoKit は高度な設定から次に開く本だけに選べる(設計書 §2.4)。
 ///
 /// ネットワークドライブや solid 書庫でも快適に読めるよう、開いた後に
 /// バックグラウンドで全ページをローカル一時領域へ逐次展開する(スプール。
@@ -19,7 +20,12 @@ import XADMaster
 /// 「書庫内パス/子の相対パス」になる。
 actor ArchiveSource: BookSource {
     nonisolated let url: URL
-    private let archive: XADArchive
+    private let archive: any ArchiveEngine
+    /// このソースを実際に開いた実装。KaitoKit 失敗時は XADMaster になる。
+    nonisolated let archiveEngineKind: ArchiveEngineKind
+    /// ネスト子と展開係も同じ比較条件で生成する。
+    private let preferredEngine: ArchiveEngineKind
+    private let engineFactory: ArchiveEngineFactory
     /// メモリ背景(暗号化親のネスト子)。非 nil のとき disk を読まず、
     /// 展開プールもこの共有 NSData から再オープンする(平文を temp に置かない)
     private let sourceData: Data?
@@ -62,6 +68,9 @@ actor ArchiveSource: BookSource {
     private let spoolKey = SymmetricKey(size: .bits256)
     private var spoolTask: Task<Void, Never>?
 
+    private static let logger = Logger(
+        subsystem: "jp.coo.cooViewer", category: "archive")
+
     /// スプールする合計展開サイズの上限(これを超える書庫はオンデマンドのみ)
     static let defaultSpoolSizeLimit: Int64 = 4 << 30
 
@@ -94,7 +103,7 @@ actor ArchiveSource: BookSource {
     private static let nonSolidExtensions: Set<String> = ["zip", "cbz"]
 
     /// 並列展開の粒度(init で書庫構造から確定。cooViewer-7ni)。
-    /// zip 系は無条件にエントリ独立。それ以外は XADArchive の solid グループ
+    /// zip 系は無条件にエントリ独立。それ以外は書庫エンジンの solid グループ
     /// 情報(solidGroupOfEntry)で判定する: 全エントリが独立なら perEntry
     /// (非 solid の 7z/rar/lha が該当し、zip と同じ並列プールが解禁される)、
     /// 複数エントリを束ねるグループがあるが分割されていれば byGroup
@@ -113,7 +122,7 @@ actor ArchiveSource: BookSource {
     private var groupExtractorAssignment: [Int: Int] = [:]
 
     /// 書庫構造から並列粒度を決める(init 専用の純関数)
-    private static func computeParallelMode(archive: XADArchive,
+    private static func computeParallelMode(archive: any ArchiveEngine,
                                             images: [PageEntry],
                                             fileExtension ext: String) -> ParallelMode {
         if nonSolidExtensions.contains(ext.lowercased()) { return .perEntry }
@@ -147,7 +156,7 @@ actor ArchiveSource: BookSource {
     }
 
     /// 展開プール(エントリ独立圧縮の形式のみ。PDFSource のレンダラープールと
-    /// 同型)。XADArchive は非スレッド安全なので actor 毎に独立の書庫を開き、
+    /// 同型)。書庫エンジンは非スレッド安全なので actor 毎に独立の書庫を開き、
     /// 未スプールのページ展開をエントリ間で並列化する(最大 3)。
     /// 空きの再利用が最優先で、**全員使用中のときだけ**成長する:
     /// 直列読み(HDD プロファイル等)では 1 つのままで余計に開かない。
@@ -156,7 +165,7 @@ actor ArchiveSource: BookSource {
     private var extractors: [ArchiveEntryExtractor] = []
     private var extractorBusyCounts: [Int] = []
     private var extractorGrowthDisabled = false
-    /// 展開係プールの上限。従来は固定 3。各係は独立した XADArchive の再オープン
+    /// 展開係プールの上限。従来は固定 3。各係は独立した書庫の再オープン
     /// (ファイルハンドル + 中央ディレクトリ解析)を伴うので、コア数に応じて
     /// 控えめに増やす(3〜6)。deflate 書庫の並列展開と高速めくりで効く。
     static var extractorPoolSize: Int {  // テスト参照のため internal
@@ -203,38 +212,33 @@ actor ArchiveSource: BookSource {
     /// 一時展開パス(url が temp)から作った無意味なキーが静かに紛れ込むのを
     /// コンパイル時に防ぐため)
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
-         persistenceKey: PasswordVault.Key, sensitive: Bool = false) throws {
+         persistenceKey: PasswordVault.Key, sensitive: Bool = false,
+         preferredEngine: ArchiveEngineKind = .xadmaster,
+         engineFactory: ArchiveEngineFactory = .live) throws {
         self.url = url
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker ?? NestedUnlocker()
         self.persistenceKey = persistenceKey
+        self.preferredEngine = preferredEngine
+        self.engineFactory = engineFactory
         // ローカル固定ボリュームの単一ファイル書庫は mmap 経由で開く(open+全列挙が
         // 実測 −30%: 中央ディレクトリ走査の syscall・stdio シーク破棄が消える。
         // cooViewer-01h)。sourceData に載せることで展開プールも同じマップを共有し
         // 再オープンの I/O も消える。マップ中の切り詰めは SIGBUS になり得る残余
         // リスク(mappedIfSafe+ローカル限定が緩和策。エントリ数一致検証は従来通り)。
         // 失敗時(マップ不可・パース不能)は従来のファイル経路へ黙って戻す
-        let openedArchive: XADArchive
-        if Self.shouldMemoryMap(url: url),
-           let mapped = try? Data(contentsOf: url, options: .mappedIfSafe),
-           let mappedArchive = XADArchive(data: mapped) {
-            openedArchive = mappedArchive
-            self.sourceData = mapped
-        } else {
-            guard let fileArchive = XADArchive(file: url.path) else {
-                throw BookSourceError.unreadable(url)
-            }
-            openedArchive = fileArchive
-            self.sourceData = nil
-        }
-        self.archive = openedArchive
-        let enumerated = Self.enumerateEntries(openedArchive, nestingDepth: nestingDepth)
-        self.outerImages = enumerated.images
-        self.nestedCandidates = enumerated.candidates
-        self.comicInfoEntryIndex = enumerated.comicInfo
+        let opened = try Self.open(
+            url: url, nestingDepth: nestingDepth,
+            preferredEngine: preferredEngine, factory: engineFactory)
+        self.archive = opened.archive
+        self.archiveEngineKind = opened.kind
+        self.sourceData = opened.sourceData
+        self.outerImages = opened.enumerated.images
+        self.nestedCandidates = opened.enumerated.candidates
+        self.comicInfoEntryIndex = opened.enumerated.comicInfo
         self.parallelMode = Self.computeParallelMode(
-            archive: openedArchive, images: enumerated.images,
+            archive: opened.archive, images: opened.enumerated.images,
             fileExtension: url.pathExtension)
     }
 
@@ -262,42 +266,225 @@ actor ArchiveSource: BookSource {
     /// cooViewer-6ax)。name は書庫内パス: 合成 url の拡張子がプール判定/型判定に
     /// 使われる(disk は決して読まない)。sensitive は常に true(暗号化祖先由来)
     init(data: Data, name: String, nestingDepth: Int, unlocker: NestedUnlocker,
-         persistenceKey: PasswordVault.Key, sensitive: Bool = true) throws {
+         persistenceKey: PasswordVault.Key, sensitive: Bool = true,
+         preferredEngine: ArchiveEngineKind = .xadmaster,
+         engineFactory: ArchiveEngineFactory = .live) throws {
         self.url = URL(fileURLWithPath: name)
-        self.sourceData = data
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker
         self.persistenceKey = persistenceKey
-        guard let archive = XADArchive(data: data) else {
-            throw BookSourceError.unreadable(url)
-        }
-        self.archive = archive
-        let enumerated = Self.enumerateEntries(archive, nestingDepth: nestingDepth)
-        self.outerImages = enumerated.images
-        self.nestedCandidates = enumerated.candidates
-        self.comicInfoEntryIndex = enumerated.comicInfo
+        self.preferredEngine = preferredEngine
+        self.engineFactory = engineFactory
+        let opened = try Self.open(
+            data: data, name: name, nestingDepth: nestingDepth,
+            preferredEngine: preferredEngine, factory: engineFactory)
+        self.archive = opened.archive
+        self.archiveEngineKind = opened.kind
+        self.sourceData = opened.sourceData
+        self.outerImages = opened.enumerated.images
+        self.nestedCandidates = opened.enumerated.candidates
+        self.comicInfoEntryIndex = opened.enumerated.comicInfo
         self.parallelMode = Self.computeParallelMode(
-            archive: archive, images: enumerated.images,
+            archive: opened.archive, images: opened.enumerated.images,
             fileExtension: URL(fileURLWithPath: name).pathExtension)
+    }
+
+    private typealias EnumeratedEntries = (
+        images: [PageEntry], candidates: [(index: Int32, path: String)],
+        comicInfo: Int32?
+    )
+
+    private struct OpenedArchive {
+        let archive: any ArchiveEngine
+        let kind: ArchiveEngineKind
+        let sourceData: Data?
+        let enumerated: EnumeratedEntries
+    }
+
+    private enum EngineOpenError: Error, CustomStringConvertible {
+        case returnedNil(ArchiveEngineKind, String)
+        case threw(ArchiveEngineKind, String, String)
+        case invalidEntryCount(ArchiveEngineKind, Int32)
+        case missingEntryName(ArchiveEngineKind, Int32)
+
+        var description: String {
+            switch self {
+            case .returnedNil(let kind, let route):
+                "\(kind.displayName) が \(route) から書庫を開けませんでした"
+            case .threw(let kind, let route, let message):
+                "\(kind.displayName) の \(route) オープンに失敗しました: \(message)"
+            case .invalidEntryCount(let kind, let count):
+                "\(kind.displayName) が不正なエントリ数 \(count) を返しました"
+            case .missingEntryName(let kind, let index):
+                "\(kind.displayName) がエントリ \(index) を列挙できませんでした"
+            }
+        }
+    }
+
+    /// ファイル入力を選択実装で開き、KaitoKit の生成・列挙失敗だけを
+    /// XADMaster へ一度退避する(設計書 §2.4)。
+    private static func open(url: URL, nestingDepth: Int,
+                             preferredEngine: ArchiveEngineKind,
+                             factory: ArchiveEngineFactory) throws -> OpenedArchive {
+        let mapped: Data?
+        if shouldMemoryMap(url: url) {
+            mapped = try? Data(contentsOf: url, options: .mappedIfSafe)
+        } else {
+            mapped = nil
+        }
+        do {
+            return try attemptOpen(
+                url: url, mappedData: mapped, nestingDepth: nestingDepth,
+                kind: preferredEngine, factory: factory)
+        } catch {
+            guard preferredEngine == .kaitokit else {
+                throw BookSourceError.unreadable(url)
+            }
+            noteFallback(error, input: url.path)
+            do {
+                return try attemptOpen(
+                    url: url, mappedData: mapped, nestingDepth: nestingDepth,
+                    kind: .xadmaster, factory: factory)
+            } catch {
+                logger.error(
+                    "XADMaster fallback failed for \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
+                throw BookSourceError.unreadable(url)
+            }
+        }
+    }
+
+    /// メモリ入力も同じ一回退避規則で開く。暗号化祖先の平文を disk へ戻さない。
+    private static func open(data: Data, name: String, nestingDepth: Int,
+                             preferredEngine: ArchiveEngineKind,
+                             factory: ArchiveEngineFactory) throws -> OpenedArchive {
+        let displayURL = URL(fileURLWithPath: name)
+        do {
+            return try attemptOpen(
+                data: data, nestingDepth: nestingDepth,
+                kind: preferredEngine, factory: factory)
+        } catch {
+            guard preferredEngine == .kaitokit else {
+                throw BookSourceError.unreadable(displayURL)
+            }
+            noteFallback(error, input: name)
+            do {
+                return try attemptOpen(
+                    data: data, nestingDepth: nestingDepth,
+                    kind: .xadmaster, factory: factory)
+            } catch {
+                logger.error(
+                    "XADMaster fallback failed for \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+                throw BookSourceError.unreadable(displayURL)
+            }
+        }
+    }
+
+    private static func attemptOpen(
+        url: URL, mappedData: Data?, nestingDepth: Int,
+        kind: ArchiveEngineKind, factory: ArchiveEngineFactory
+    ) throws -> OpenedArchive {
+        let archive: any ArchiveEngine
+        let retainedData: Data?
+        if let mappedData {
+            do {
+                archive = try open(data: mappedData, kind: kind, factory: factory)
+                retainedData = mappedData
+            } catch {
+                // XADMaster の従来動作だけは mmap 解析不能時に file: へ戻す。
+                // KaitoKit の失敗は比較結果として記録して XADMaster へ退避する。
+                guard kind == .xadmaster else { throw error }
+                archive = try open(file: url.path, kind: kind, factory: factory)
+                retainedData = nil
+            }
+        } else {
+            archive = try open(file: url.path, kind: kind, factory: factory)
+            retainedData = nil
+        }
+        let enumerated = try enumerateEntries(
+            archive, nestingDepth: nestingDepth, kind: kind,
+            requireCompleteNames: kind == .kaitokit)
+        return OpenedArchive(
+            archive: archive, kind: kind, sourceData: retainedData,
+            enumerated: enumerated)
+    }
+
+    private static func attemptOpen(
+        data: Data, nestingDepth: Int, kind: ArchiveEngineKind,
+        factory: ArchiveEngineFactory
+    ) throws -> OpenedArchive {
+        let archive = try open(data: data, kind: kind, factory: factory)
+        let enumerated = try enumerateEntries(
+            archive, nestingDepth: nestingDepth, kind: kind,
+            requireCompleteNames: kind == .kaitokit)
+        return OpenedArchive(
+            archive: archive, kind: kind, sourceData: data,
+            enumerated: enumerated)
+    }
+
+    private static func open(file path: String, kind: ArchiveEngineKind,
+                             factory: ArchiveEngineFactory) throws
+        -> any ArchiveEngine {
+        do {
+            guard let archive = try factory.openFile(kind, path) else {
+                throw EngineOpenError.returnedNil(kind, "file")
+            }
+            return archive
+        } catch let error as EngineOpenError {
+            throw error
+        } catch {
+            throw EngineOpenError.threw(kind, "file", String(describing: error))
+        }
+    }
+
+    private static func open(data: Data, kind: ArchiveEngineKind,
+                             factory: ArchiveEngineFactory) throws
+        -> any ArchiveEngine {
+        do {
+            guard let archive = try factory.openData(kind, data) else {
+                throw EngineOpenError.returnedNil(kind, "data")
+            }
+            return archive
+        } catch let error as EngineOpenError {
+            throw error
+        } catch {
+            throw EngineOpenError.threw(kind, "data", String(describing: error))
+        }
+    }
+
+    private static func noteFallback(_ error: Error, input: String) {
+        let message = "\(input): \(String(describing: error))"
+        ArchiveEngineDiagnostics.recordFallback(message: message)
+        logger.error(
+            "KaitoKit failed for \(input, privacy: .public); falling back to XADMaster once: \(String(describing: error), privacy: .public)")
     }
 
     /// 書庫のエントリを画像/ネスト候補へ振り分ける(両 init 共通)。
     /// 旧実装(XADWrapper)同様、ディレクトリとサイズ 0 のエントリを除外し、
     /// 画像以外のファイルと macOS メタデータ(__MACOSX/、._*)も除外する。
-    private static func enumerateEntries(_ archive: XADArchive, nestingDepth: Int)
-        -> (images: [PageEntry], candidates: [(index: Int32, path: String)],
-            comicInfo: Int32?) {
+    private static func enumerateEntries(
+        _ archive: any ArchiveEngine, nestingDepth: Int,
+        kind: ArchiveEngineKind, requireCompleteNames: Bool
+    ) throws -> EnumeratedEntries {
         var images: [PageEntry] = []
         var candidates: [(index: Int32, path: String)] = []
         var comicInfo: Int32?
-        for index in 0..<archive.numberOfEntries() {
-            guard let name = archive.name(ofEntry: index) else { continue }
-            // 空判定は 64bit の uncompressedSize(ofEntry:)。32bit の size(ofEntry:) は
-            // 真サイズが 4GiB の倍数のとき 0 に桁溢れし、そのページを空扱いで
-            // 落としてしまう(cooViewer-0jt)。ディレクトリは entryIsDirectory が拾う
+        let count = archive.numberOfEntries()
+        guard count >= 0 else { throw EngineOpenError.invalidEntryCount(kind, count) }
+        for index in 0..<count {
+            guard let name = archive.name(ofEntry: index) else {
+                if requireCompleteNames {
+                    throw EngineOpenError.missingEntryName(kind, index)
+                }
+                continue
+            }
+            // 空判定はサイズ申告がある場合だけ 64bit 値で行う。未知サイズを 0 と
+            // 表す互換実装でも正規エントリを空扱いしない。32bit の size(ofEntry:)
+            // は真サイズが 4GiB の倍数のとき 0 に桁溢れするため使わない
+            // (cooViewer-0jt)。ディレクトリは entryIsDirectory が拾う。
             guard !archive.entryIsDirectory(index),
-                  archive.uncompressedSize(ofEntry: index) != 0 else {
+                  !archive.entryHasSize(index)
+                    || archive.uncompressedSize(ofEntry: index) != 0 else {
                 continue
             }
             let lastComponent = (name as NSString).lastPathComponent
@@ -465,14 +652,16 @@ actor ArchiveSource: BookSource {
         } else if useMemory {
             guard let nested = try? ArchiveSource(
                 data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
-                unlocker: unlocker, persistenceKey: childKey, sensitive: true)
+                unlocker: unlocker, persistenceKey: childKey, sensitive: true,
+                preferredEngine: preferredEngine, engineFactory: engineFactory)
             else { return false }
             child = nested
         } else {
             guard let fileURL = writeNestedTemp(candidate, data: data),
                   let nested = try? ArchiveSource(
                     url: fileURL, nestingDepth: nestingDepth + 1,
-                    unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive)
+                    unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
+                    preferredEngine: preferredEngine, engineFactory: engineFactory)
             else { return false }
             child = nested
         }
@@ -695,10 +884,14 @@ actor ArchiveSource: BookSource {
             let grown: ArchiveEntryExtractor?
             if let sourceData {
                 grown = ArchiveEntryExtractor(data: sourceData, password: password,
-                                              expectedEntryCount: expected)
+                                              expectedEntryCount: expected,
+                                              engineKind: archiveEngineKind,
+                                              factory: engineFactory)
             } else {
                 grown = ArchiveEntryExtractor(url: url, password: password,
-                                              expectedEntryCount: expected)
+                                              expectedEntryCount: expected,
+                                              engineKind: archiveEngineKind,
+                                              factory: engineFactory)
             }
             if let extractor = grown {
                 extractors.append(extractor)
@@ -734,6 +927,16 @@ actor ArchiveSource: BookSource {
         case .perEntry: "perEntry"
         case .byGroup: "byGroup"
         }
+    }
+
+    /// ファイル情報・診断表示へ、現在ページを実際に供給した書庫実装を返す。
+    /// ネスト PDF/EPUB は親書庫から抽出されているため親の実装を表示する。
+    func archiveEngineKind(for entry: PageEntry) async -> ArchiveEngineKind? {
+        if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
+            return await children[sourceIndex].archiveEngineKind(for: childEntry)
+                ?? archiveEngineKind
+        }
+        return archiveEngineKind
     }
 
     /// ルーペ用。ネストした PDF はベクトルから倍率連動で描き直せるよう子へ委譲する
@@ -844,10 +1047,15 @@ actor ArchiveSource: BookSource {
         for entry in outerImages {
             // 64bit の uncompressedSize(ofEntry:) を使う。32bit の size(ofEntry:) は
             // 2〜4GiB のエントリで負の Int32 を返し、Int64 化で total を減らして
-            // 予算判定をすり抜け、4GiB の天井を超えてスプールし得る(cooViewer-0jt)
-            total += archive.uncompressedSize(ofEntry: Int32(entry.id))
+            // 予算判定をすり抜け、4GiB の天井を超えてスプールし得る(cooViewer-0jt)。
+            // サイズ不明(Int64.max)を加算すると複数件で桁溢れするため、未申告は
+            // オンデマンドへ残し、加算前に残予算と比較する(設計書 §2.4)。
+            let index = Int32(entry.id)
+            guard archive.entryHasSize(index) else { return }
+            let size = archive.uncompressedSize(ofEntry: index)
+            guard size >= 0, size <= sizeLimit - total else { return }
+            total += size
         }
-        guard total <= sizeLimit else { return }
 
         // ネスト temp(:359)と同じく所有者限定(0o700)で作る。復号済み平文が
         // 乗り得るため他ユーザーから列挙・読み取りされないようにする(監査 #4)
@@ -921,17 +1129,24 @@ actor ArchiveSource: BookSource {
     }
 }
 
-/// 書庫エントリの展開係(独立した XADArchive を actor で直列化)。
+/// 書庫エントリの展開係(独立した書庫エンジンを actor で直列化)。
 /// ArchiveSource がプールとして複数持ち、エントリ独立圧縮の形式(zip 系)で
 /// エントリ間の並列展開を実現する(PDFPageRenderer と同型)
 actor ArchiveEntryExtractor {
-    private let archive: XADArchive
+    private let archive: any ArchiveEngine
 
     /// expectedEntryCount: メイン書庫のエントリ数。開いた後にファイルが
     /// 差し替えられていた場合に、一覧と食い違う内容を展開しないための検証
     /// (エントリ数が同じ差し替えまでは検出しない割り切り。PDF 側と同じ)
-    init?(url: URL, password: String?, expectedEntryCount: Int32) {
-        guard let archive = XADArchive(file: url.path) else { return nil }
+    init?(url: URL, password: String?, expectedEntryCount: Int32,
+          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory) {
+        let opened: (any ArchiveEngine)?
+        do {
+            opened = try factory.openFile(engineKind, url.path)
+        } catch {
+            return nil
+        }
+        guard let archive = opened else { return nil }
         if let password {
             archive.setPassword(password)
         }
@@ -941,8 +1156,15 @@ actor ArchiveEntryExtractor {
 
     /// メモリ背景版(暗号化親のネスト子。共有 NSData から独立ハンドルを開く。
     /// 平文を disk に置かずに並列展開する。cooViewer-6ax)
-    init?(data: Data, password: String?, expectedEntryCount: Int32) {
-        guard let archive = XADArchive(data: data) else { return nil }
+    init?(data: Data, password: String?, expectedEntryCount: Int32,
+          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory) {
+        let opened: (any ArchiveEngine)?
+        do {
+            opened = try factory.openData(engineKind, data)
+        } catch {
+            return nil
+        }
+        guard let archive = opened else { return nil }
         if let password {
             archive.setPassword(password)
         }

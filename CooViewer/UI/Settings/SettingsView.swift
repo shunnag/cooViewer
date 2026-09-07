@@ -179,6 +179,8 @@ struct SettingsView: View {
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
 
     // 高度な設定(SettingsStore.AdvancedDefault と同値の既定)
+    @AppStorage("ArchiveEngine") private var archiveEngine =
+        ArchiveEngineKind.xadmaster.rawValue
     @AppStorage("AdaptiveMediaTuning") private var adaptiveMediaTuning = true
     @AppStorage("ZipLazyLocalHeaders") private var zipLazyLocalHeaders = true
     @AppStorage("AdvancedSpoolPolicy") private var advSpoolPolicy = 0
@@ -416,6 +418,8 @@ struct SettingsView: View {
             "MAG", "MAKI", "Pi", "PIC", "PBM",
         ]
         case .advanced: [
+            String(localized: "Archive engine:"),
+            String(localized: "KaitoKit (experimental)"),
             String(localized: "Adapt to media speed (SSD / HDD / network)"),
             String(localized: "Open ZIP archives faster"),
             String(localized: "Use advanced settings"),
@@ -918,6 +922,18 @@ struct SettingsView: View {
     private var advancedPane: some View {
         Form {
             Section {
+                Picker(String(localized: "Archive engine:"),
+                       selection: archiveEngineBinding) {
+                    Text(verbatim: "XADMaster").tag(ArchiveEngineKind.xadmaster)
+                    Text(String(localized: "KaitoKit (experimental)"))
+                        .tag(ArchiveEngineKind.kaitokit)
+                }
+                Text(String(localized:
+                    "The archive engine selection applies to books opened afterwards."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 Toggle(String(localized: "Adapt to media speed (SSD / HDD / network)"),
                        isOn: $adaptiveMediaTuning)
                 Text(String(localized:
@@ -1008,6 +1024,13 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// 未知の保存値は SettingsStore と同じく既定へ戻して表示する。
+    private var archiveEngineBinding: Binding<ArchiveEngineKind> {
+        Binding(
+            get: { ArchiveEngineKind(rawValue: archiveEngine) ?? .xadmaster },
+            set: { archiveEngine = $0.rawValue })
     }
 
     /// 現在のパーセント指定が実メモリで何バイトになるかの表示。
