@@ -11,9 +11,6 @@ actor NestedFolderSource: BookSource {
     nonisolated let url: URL
     private let folder: FolderSource
     private let unlocker: NestedUnlocker
-    /// コレクション内の各書庫も本を開いた時点の選択で揃える(設計書 §2.4)。
-    private let preferredEngine: ArchiveEngineKind
-    private let engineFactory: ArchiveEngineFactory
 
     nonisolated var supportsDateSort: Bool { false }
     /// フォルダ画像はゲート制御下で並列。子(書庫/PDF)が全員「いまの状態で
@@ -46,14 +43,10 @@ actor NestedFolderSource: BookSource {
     /// ネストページの id 基数(ArchiveSource と同じ 1M 刻み)
     private static let nestedIDStride = 1_000_000
 
-    init(folder: FolderSource, unlocker: NestedUnlocker? = nil,
-         preferredEngine: ArchiveEngineKind = .xadmaster,
-         engineFactory: ArchiveEngineFactory = .live) {
+    init(folder: FolderSource, unlocker: NestedUnlocker? = nil) {
         self.url = folder.url
         self.folder = folder
         self.unlocker = unlocker ?? NestedUnlocker()
-        self.preferredEngine = preferredEngine
-        self.engineFactory = engineFactory
     }
 
     func entries() async throws -> [PageEntry] {
@@ -84,8 +77,6 @@ actor NestedFolderSource: BookSource {
         let candidates = folder.nestedBookCandidates
         let unlocker = unlocker
         let profile = mediaProfile
-        let preferredEngine = preferredEngine
-        let engineFactory = engineFactory
         var prepared: [Int: (any BookSource, [PageEntry])] = [:]
         if !candidates.isEmpty {
             assemblyProgress?(0, candidates.count)
@@ -99,8 +90,7 @@ actor NestedFolderSource: BookSource {
                 next += 1
                 group.addTask {
                     (ordinal, await Self.prepareChild(
-                        candidate: candidate, unlocker: unlocker, profile: profile,
-                        preferredEngine: preferredEngine, engineFactory: engineFactory))
+                        candidate: candidate, unlocker: unlocker, profile: profile))
                 }
             }
             for _ in 0..<4 { addTask() }
@@ -135,8 +125,7 @@ actor NestedFolderSource: BookSource {
     /// 壊れた子・解除できない子は nil(従来どおり黙って飛ばす)
     private static func prepareChild(
         candidate: (fileURL: URL, relativePath: String),
-        unlocker: NestedUnlocker, profile: MediaProfile,
-        preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory
+        unlocker: NestedUnlocker, profile: MediaProfile
     ) async -> (any BookSource, [PageEntry])? {
         // コレクション内の子はディスク上の実ファイルなので、保存キーは
         // 正規化した実パス — 単体で同じ zip を開いたときと同一キーになり、
@@ -173,8 +162,7 @@ actor NestedFolderSource: BookSource {
         } else {
             guard let nested = try? ArchiveSource(
                 url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker,
-                persistenceKey: childKey, preferredEngine: preferredEngine,
-                engineFactory: engineFactory) else {
+                persistenceKey: childKey) else {
                 return nil
             }
             child = nested
@@ -277,15 +265,6 @@ actor NestedFolderSource: BookSource {
                 for: candidateURL)
         }
         return nil
-    }
-
-    /// フォルダ合本では現在ページの子だけへ問い合わせ、直下画像には実装名を付けない。
-    func archiveEngineKind(for entry: PageEntry) async -> ArchiveEngineKind? {
-        _ = await buildIfNeeded()
-        guard case .child(let sourceIndex, let childEntry) = locations[entry.id] else {
-            return nil
-        }
-        return await children[sourceIndex].archiveEngineKind(for: childEntry)
     }
 
     /// 子の書庫のスプールを開始する(ネットワークボリューム上のフォルダ対策)。

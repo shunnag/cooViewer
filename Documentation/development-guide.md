@@ -69,7 +69,6 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | 引数 | 内容 |
 |---|---|
 | `--open <path>` | 指定の本を開く(`--at-page <1 始まり>` で開始ページ指定。リフロー EPUB では spine 項目の指定になる) |
-| `--engine <kaitokit\|xadmaster>` | この起動で後から開く書庫のエンジンを一時的に上書きする。defaults の設定値は変更しない |
 | `--snapshot <png>` | `--then` の完了と表示整定を待ち、さらに 2 秒後に contentView を PNG 出力して終了 |
 | `--show-thumbnails` | サムネイルオーバーレイを開いて撮る(EPUB モードでは census 一致の画面単位一覧。生成は逐次なのでセルが埋まるまで `--then-goto-percent` 等でステップを足して撮影を遅らせる)。行列はウインドウサイズとセルサイズから自動算出されるため、`-ThumbnailCellSize <pt>`(80–400)の注入でズーム水準を変えて撮れる |
 | `--show-bookmark-editor` | しおり編集をウインドウ表示(シートは撮れないため) |
@@ -103,17 +102,6 @@ EPUB 入場の完了)を待ってから逐次実行される。各整定待ち�
 検証できる。組合せ例: コレクション内 EPUB の巻末超え復帰の検証は
 `--open <フォルダ> --then-next-page --then-next-page --then-goto-percent 100 --then-next-page`
 (送りで代理ページへ→自動入場→EPUB 内 100%→巻末超えで合本の次エントリへ)。
-
-書庫エンジンの A/B 比較では同じ本・ページ・ウインドウ条件を使い、出力 PNG を
-画素比較する。KaitoKit が開けず XADMaster へフォールバックした場合は同一画像に
-なり得るため、「書庫エンジンの状態…」でも実際に使われたエンジンを確認する。
-
-```sh
-build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
-  --engine kaitokit --open sample.cbz --at-page 3 --snapshot /tmp/kaitokit.png
-build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
-  --engine xadmaster --open sample.cbz --at-page 3 --snapshot /tmp/xadmaster.png
-```
 
 パスワードマネージャーの検証: テスト・`--snapshot` 実行では Keychain に触れない(保管庫は「利用できません」になる)。実際に保存・自動解錠を検証するときは、**Debug ビルド限定**の環境変数 `COOVIEWER_TEST_VAULT_KEY=<hex64桁>` と `COOVIEWER_TEST_VAULT_DIR=<一時ディレクトリ>`(必ず両方セットで指定)により使い捨ての鍵と保存先を注入して起動する(開発機の Keychain とプロンプトを汚さない。Release は環境変数を受け付けない)。
 
@@ -196,42 +184,6 @@ git push https://github.com/shunnag/Washi.git X.Y.Z
   `git push --force` で上書きしてよい(マージはしない)。
 - 公開側で受けた PR はモノレポへ手で取り込んでからミラーに反映する
   (`Washi/README.md` の「開発体制」に明記済み)。
-
-## 3.6 KaitoKit の組み込み
-
-KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リポジトリで、
-サブモジュールではない。既定では `../KaitoKit` を使い、別の配置を試す場合は
-`KAITOKIT_SOURCE_DIR` に Package.swift のあるディレクトリを指定する。
-
-`Scripts/build-kaitokit-framework.sh` はソース・Package.swift・ビルドスクリプトの
-mtime と Swift コンパイラのスタンプを調べ、更新時だけ KaitoKit 側の
-`Scripts/build-framework.sh` を呼ぶ。KaitoKit 側が生成する arm64/x86_64 の
-ユニバーサルフレームワークを `Frameworks/KaitoKit.framework` へ複製し、通常は
-CooViewer.xcodeproj の Run Script フェーズから自動実行される。配置を明示して
-単独で組み立てる場合は次のとおり:
-
-```sh
-KAITOKIT_SOURCE_DIR=/path/to/KaitoKit Scripts/build-kaitokit-framework.sh
-```
-
-フレームワークには `KaitoKit` と `KaitoKitCompat` の両モジュールが
-`Modules/` 以下に入る。`KaitoKitCompat` の interface が `KaitoKit` を import
-するため、利用側には通常の framework search path に加えて次の include path
-(`-I` 相当)が必要になる。これはアプリ・テストが継承するプロジェクト設定にあり、
-テストターゲットも KaitoKit.framework を明示的にリンクしている。
-
-```text
-$(SRCROOT)/Frameworks/KaitoKit.framework/Modules
-```
-
-兄弟チェックアウトを更新するときは KaitoKit 側で fast-forward し、cooViewer 側の
-コピーを削除してから通常のビルドを行う。削除対象はこのリポジトリの
-`Frameworks/KaitoKit.framework` であり、兄弟チェックアウトのソースではない。
-
-```sh
-git -C ../KaitoKit pull --ff-only
-rm -rf Frameworks/KaitoKit.framework
-```
 
 ## 4. リリース手順(2.0b14 まで検証済み)
 
