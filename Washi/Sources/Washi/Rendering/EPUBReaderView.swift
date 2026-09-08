@@ -1084,11 +1084,18 @@ public final class EPUBReaderView: NSView {
         publication?.effectiveReadingDirection == .rtl
     }
 
+    /// washi world で式を評価して結果を受け取る(内部・テスト共用)。
+    /// 拡張側からは webView が見えないのでここに置く。
+    func callWashiReturning(_ body: String,
+                            arguments: [String: Any] = [:]) async -> Any? {
+        guard let webView else { return nil }
+        return try? await webView.callAsyncJavaScript(
+            body, arguments: arguments, in: nil, contentWorld: Self.washiWorld)
+    }
+
     /// テスト用: washi world で任意の式を評価する
     func evaluateForTest(_ body: String) async throws -> Any? {
-        guard let webView else { return nil }
-        return try await webView.callAsyncJavaScript(
-            body, arguments: [:], in: nil, contentWorld: Self.washiWorld)
+        await callWashiReturning(body)
     }
 
     /// Saved highlights (and notes) to draw over the book.

@@ -20,6 +20,9 @@
 - 音声同期の再生位置を取り出して復元できるようにした
   (`mediaOverlayPosition` と `playMediaOverlay(atSpineIndex:parIndex:)`)。
   閉じたときの位置をホスト側で保存できる。
+- 音声同期を、章の先頭ではなく**いま画面に見えている区間**から始められる
+  ようにした(`playMediaOverlayFromCurrentPage()`)。これまでは必ず章頭へ
+  引き戻されていた。
 - EPUB 3.4 の `rendition:layout="roll"`(縦スクロール漫画・絵巻の切れ目ない
   表示)を認識するようにした。これまで未知の値としてリフローに倒していた。
   日本の出版社が roll 以前に使っていた `pre-paginated` +
