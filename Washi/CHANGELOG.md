@@ -54,6 +54,12 @@
   / `-epub-text-emphasis-position` / `-epub-text-underline-position` /
   `-epub-ruby-position` も補う(いずれも macOS 26 の WebKit で無視されることを
   実測して選んだ。解釈されるものには手を触れない)。
+- `rendition:layout` より前の時代の固定レイアウト表明を読むようにした。
+  2011〜2013 年の iBooks / Kobo 向け漫画や、Amazon 形式から作られた中間 EPUB は
+  リフロー扱いになり、固定レイアウトとして開けなかった。対象は
+  `<meta name="fixed-layout" content="true">`、`book-type: comic`、
+  `original-resolution: 幅x高さ`、および META-INF の display-options.xml の
+  `fixed-layout` 指定。明示の `rendition:layout` がある本には影響しない。
 
 ## [1.16.5] - 2026-09-09
 

@@ -205,8 +205,11 @@ public final class EPUBPublication: Sendable {
               reader.exists(packagePath) else {
             throw EPUBError.malformed("Package document not found")
         }
+        // cooViewer-oxr.46 C46: iBooks / Kobo の display-options.xml による
+        // 固定レイアウト表明はパッケージ文書の外にあるので、ここで読んで渡す。
         let package = try PackageDocumentParser.parse(
-            data: reader.read(packagePath), at: packagePath)
+            data: reader.read(packagePath), at: packagePath,
+            legacyFixedLayoutHint: Self.displayOptionsDeclareFixedLayout(reader: reader))
         self.package = package
 
         // encryption.xml(なければ空)
@@ -725,6 +728,36 @@ public final class EPUBPublication: Sendable {
                 .first { FontDeobfuscator.adobeKey(uniqueIdentifier: $0) != nil }
                 ?? metadata.uniqueIdentifier
         }
+    }
+
+    /// META-INF の display-options.xml(Apple / Kobo)が固定レイアウトを表明して
+    /// いるか。`<option name="fixed-layout">true</option>` の形。
+    private static func displayOptionsDeclareFixedLayout(
+        reader: any ContainerReader) -> Bool {
+        let paths = ["META-INF/com.apple.ibooks.display-options.xml",
+                     "META-INF/com.kobobooks.display-options.xml"]
+        for path in paths where reader.exists(path) {
+            guard let data = try? reader.read(path),
+                  let document = try? WashiXML.document(from: data),
+                  let root = document.rootElement() else { continue }
+            if optionSaysFixedLayout(root) { return true }
+        }
+        return false
+    }
+
+    private static func optionSaysFixedLayout(_ element: XMLElement) -> Bool {
+        if element.name?.lowercased() == "option",
+           element.attr("name")?.lowercased() == "fixed-layout",
+           (element.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+               .lowercased() == "true" {
+            return true
+        }
+        for child in element.children ?? [] {
+            if let child = child as? XMLElement, optionSaysFixedLayout(child) {
+                return true
+            }
+        }
+        return false
     }
 
     /// Reads a resource from a base path plus a relative href (e.g. resolving navigation items).
