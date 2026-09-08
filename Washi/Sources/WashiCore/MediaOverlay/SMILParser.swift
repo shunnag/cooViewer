@@ -99,6 +99,16 @@ enum SMILParser {
 
 extension EPUBPublication {
     /// Loads the media overlay associated with a spine item (nil if none).
+    /// cooViewer-oxr.46 C07: その spine 項目が参照する SMIL のコンテナ内パス。
+    /// 1 つの SMIL が複数の XHTML を束ねる本では、隣り合う項目が同じ SMIL を
+    /// 指す。同じものを頭から鳴らし直さないための識別子に使う。
+    public func mediaOverlayPath(forSpineIndex index: Int) -> String? {
+        guard readingOrder.indices.contains(index) else { return nil }
+        guard let overlayID = readingOrder[index].item.mediaOverlay,
+              let overlayItem = package.manifestByID[overlayID] else { return nil }
+        return containerPath(forHref: overlayItem.href, relativeTo: package.path)
+    }
+
     public func mediaOverlay(forSpineIndex index: Int) -> MediaOverlay? {
         guard readingOrder.indices.contains(index) else { return nil }
         let entry = readingOrder[index]

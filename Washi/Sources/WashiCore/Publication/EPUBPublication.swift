@@ -802,6 +802,11 @@ public final class EPUBPublication: Sendable {
         return nil
     }
 
+    /// Container path → reading-order index (nil when the path is not in the spine).
+    public func spineIndex(forContainerPath path: String) -> Int? {
+        spineIndexByContainerPath[ContainerPath.sanitize(path)]
+    }
+
     /// Whether any spine item declares a media overlay (SMIL narration). Use
     /// ``mediaOverlay(forSpineIndex:)`` to get the parsed clips for one item.
     public var hasMediaOverlays: Bool {
