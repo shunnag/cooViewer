@@ -33,6 +33,15 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 
 - A run-script phase builds XADMaster/UniversalDetector into `Frameworks/` (skipped while
   outputs exist). After updating the submodules, `rm -rf Frameworks` to force a rebuild.
+- **KaitoKit (since 9153ef2, 2026-09-08)**: a second archive engine, built from a sibling
+  checkout `../KaitoKit` (override with `KAITOKIT_SOURCE_DIR`) by
+  `Scripts/build-kaitokit-framework.sh` into `Frameworks/KaitoKit.framework`. The checkout is
+  **required** — the build fails without it (the repo is public at
+  github.com/shunnag/KaitoKit, MIT). After editing KaitoKit
+  sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. The engine is selected
+  by the `ArchiveEngine` default (`kaitokit` since 2.0b34) or `--engine xadmaster` on the
+  snapshot CLI; see development-guide §3.6. XADMaster stays bundled as the automatic
+  fallback for archives KaitoKit cannot open.
 - EPUB support lives in `Washi/` — an independent, MIT-licensed, zero-dependency SwiftPM
   package (see `Washi/README.md`), published as a one-way subtree mirror at
   https://github.com/shunnag/Washi (procedure: development-guide §3.5; commits
@@ -119,7 +128,8 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 ## Architecture (new app)
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
-  `ArchiveSource` (actor over XADMaster; filename encoding auto-detection comes from
+  `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit by default, automatic one-shot
+  fallback to XADMaster; filename encoding auto-detection comes from
   XADMaster+UniversalDetector), `PDFSource` (actor over PDFKit, point-size rendering),
   `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
   extraction for single-image pages, WebKit rasterization fallback).

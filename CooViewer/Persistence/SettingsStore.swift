@@ -1,5 +1,4 @@
 import AppKit
-import XADMaster
 
 /// 型付き設定アクセス。キー名は旧実装(仕様書 §6.1)と同一で、
 /// ドメイン jp.coo.cooViewer を引き継ぐため既存ユーザーの値がそのまま生きる。
@@ -7,6 +6,9 @@ import XADMaster
 final class SettingsStore {
     static let shared = SettingsStore()
     private let defaults: UserDefaults
+    /// スナップショット CLI の 1 実行だけに使う上書き。UserDefaults へは書かず、
+    /// A/B 撮影後も通常起動の選択を変えない(設計書 §2.4 検証可能性)。
+    private var archiveEngineOverride: ArchiveEngineKind?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -30,6 +32,7 @@ final class SettingsStore {
             "ForceClickLoupe": true,
             "PasswordVaultEnabled": true,
             "PlayAnimatedImages": true,
+            "ArchiveEngine": ArchiveEngineKind.kaitokit.rawValue,
             "EPUBPinchFontScale": true,
             "EPUBPageMargins": 1,
             "EPUBTheme": 0,                    // 0=システム / 1=ライト / 2=ダーク
@@ -340,9 +343,29 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "AdaptiveMediaTuning") }
     }
 
+    /// 新しく開く書庫に使うエンジン。未知値は既定の XADMaster へ戻し、
+    /// 旧版や手編集した defaults からも確実に書庫を開けるようにする。
+    var archiveEngine: ArchiveEngineKind {
+        get {
+            defaults.string(forKey: "ArchiveEngine")
+                .flatMap(ArchiveEngineKind.init(rawValue:)) ?? .kaitokit
+        }
+        set { defaults.set(newValue.rawValue, forKey: "ArchiveEngine") }
+    }
+
+    /// CLI 上書きを含む、このプロセスで新しく開く書庫の実効値。
+    var effectiveArchiveEngine: ArchiveEngineKind {
+        archiveEngineOverride ?? archiveEngine
+    }
+
+    /// `--engine` の指定をこのプロセス内だけへ適用する。
+    func overrideArchiveEngineForCurrentRun(_ engine: ArchiveEngineKind?) {
+        archiveEngineOverride = engine
+    }
+
     /// ZIP のローカルヘッダをデータ取得時まで遅延する(既定 ON)。
-    /// XADArchive は初期化中に解析を終えるため、保存と同時にクラス既定値へ
-    /// 反映し、次に生成されるパーサから切り替える。
+    /// 両エンジンとも初期化中に解析方針を固定するため、保存と同時にクラス
+    /// 既定値へ反映し、次に生成されるパーサから切り替える。
     var zipLazyLocalHeaders: Bool {
         get {
             defaults.object(forKey: "ZipLazyLocalHeaders") == nil
@@ -350,13 +373,15 @@ final class SettingsStore {
         }
         set {
             defaults.set(newValue, forKey: "ZipLazyLocalHeaders")
-            XADArchive.setDefaultZipLazyLocalHeaders(newValue)
+            XADMasterEngine.setDefaultZipLazyLocalHeaders(newValue)
+            KaitoKitEngine.setDefaultZipLazyLocalHeaders(newValue)
         }
     }
 
-    /// 起動時、書庫生成より先に保存値(未設定なら ON)を XADMaster へ渡す。
+    /// 起動時、書庫生成より先に保存値(未設定なら ON)を両エンジンへ渡す。
     func applyArchiveParserSettings() {
-        XADArchive.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
+        XADMasterEngine.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
     }
 
     /// 書庫スプールの方針(高度設定の三択)。

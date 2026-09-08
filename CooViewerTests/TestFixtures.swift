@@ -9,9 +9,12 @@ extension ArchiveSource {
     /// テスト用の委譲イニシャライザ: 保存キーは URL から組む(単体書庫相当)。
     /// アプリ本体では persistenceKey を必須にして一時パス由来のキー混入を
     /// コンパイル時に防いでいるため、省略形はテストにのみ置く
-    init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil) throws {
+    init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
+         preferredEngine: ArchiveEngineKind = .xadmaster,
+         engineFactory: ArchiveEngineFactory = .live) throws {
         try self.init(url: url, nestingDepth: nestingDepth, unlocker: unlocker,
-                      persistenceKey: .file(path: url.path))
+                      persistenceKey: .file(path: url.path),
+                      preferredEngine: preferredEngine, engineFactory: engineFactory)
     }
 }
 

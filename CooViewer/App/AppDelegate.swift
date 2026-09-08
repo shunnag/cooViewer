@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         SettingsStore.shared.registerDefaults()
         SettingsStore.shared.applyArchiveParserSettings()
+        applyArchiveEngineArgumentOverride()
         // 旧形式の本の状態(BookSettings/RecentItems/LastPages)を v2 へ
         // 一括インポート(初回のみ。旧キーは 1.x 用に凍結保持)
         BookHistoryStore.shared.migrateLegacyDataIfNeeded()
@@ -114,6 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// 動作検証用の隠し引数(スクリーンショット権限なしで描画結果を確認するため):
     /// --open <path> で本を開き、--snapshot <path> で 2 秒後に contentView を
     /// PNG 出力して終了する。
+    /// `--engine` だけは Finder 経由の文書オープンより先に必要なため、
+    /// applicationWillFinishLaunching で適用済みとする(設計書 §2.4)。
     private func handleDebugArguments() {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--dump-first-responder"),
@@ -491,6 +494,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// A/B 指定を UserDefaults へ保存せず、このプロセスで今後開く本だけに
+    /// 適用する。起動時の文書イベントより先に固定する(設計書 §2.4)。
+    private func applyArchiveEngineArgumentOverride() {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--engine"),
+              index + 1 < arguments.count,
+              let engine = ArchiveEngineKind(rawValue: arguments[index + 1]) else {
+            return
+        }
+        SettingsStore.shared.overrideArchiveEngineForCurrentRun(engine)
+    }
+
     /// draw(_:) ベースのビュー(SwiftUI シート等)は cacheDisplay で撮る
     private func writeCachedSnapshot(of targetView: NSView?, to path: String) {
         guard let view = targetView else { return }
@@ -617,6 +632,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func openRecentBook(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
         readerWindowController?.openBook(at: URL(fileURLWithPath: path))
+    }
+
+    /// Debug メニューから現在の書庫バックエンドとフォールバック履歴を表示する。
+    /// 実本比較中だけ必要な診断面で、通常 UI へ実装詳細を露出させない
+    /// (設計書 §2.4 段階的な置き換え)。
+    @objc func showArchiveEngineStatus(_ sender: Any?) {
+        let currentBook = readerWindowController?.book
+        Task { @MainActor in
+            let diagnostics = ArchiveEngineDiagnostics.snapshot()
+            var currentEngine: String?
+            if let currentBook,
+               currentBook.entries.indices.contains(currentBook.currentIndex) {
+                let entry = currentBook.entries[currentBook.currentIndex]
+                currentEngine = await currentBook.source
+                    .archiveEngineKind(for: entry)?.displayName
+            }
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = String(localized: "Archive Engine Status")
+            let engine = currentEngine ?? String(localized: "No archive is open")
+            let error = diagnostics.lastError ?? String(localized: "None")
+            alert.informativeText = [
+                String(format: String(localized:
+                    "Engine in use for the current book: %@"), engine),
+                String(format: String(localized: "Fallback count: %lld"),
+                       Int64(diagnostics.fallbackCount)),
+                String(format: String(localized: "Last error: %@"), error),
+            ].joined(separator: "\n")
+            alert.addButton(withTitle: String(localized: "OK"))
+            alert.runModal()
+        }
     }
 
     @objc func openDocument(_ sender: Any?) {
