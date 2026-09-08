@@ -1305,6 +1305,59 @@ enum ReaderScripts {
             return -1;
         };
 
+        // cooViewer-oxr.46 C40: 保存済みハイライトの描画。CSS Custom Highlight
+        // API を使うので本文の DOM には一切触れない(著者 CSS・選択・検索と
+        // 干渉せず、範囲が重なっても入れ子要素を作らない)。
+        const highlightStyles = ['yellow', 'green', 'blue', 'pink', 'underline'];
+
+        function ensureHighlightCSS() {
+            const style = ensureStyle('washi-highlights');
+            if (style.textContent) { return; }
+            // currentColor 基準にして明暗どちらのテーマでも成立させる
+            const rules = [
+                '::highlight(washi-hl-yellow){background-color:' +
+                    'color-mix(in srgb, #ffd400 45%, transparent)}',
+                '::highlight(washi-hl-green){background-color:' +
+                    'color-mix(in srgb, #35c759 35%, transparent)}',
+                '::highlight(washi-hl-blue){background-color:' +
+                    'color-mix(in srgb, #0a84ff 30%, transparent)}',
+                '::highlight(washi-hl-pink){background-color:' +
+                    'color-mix(in srgb, #ff2d55 30%, transparent)}',
+                '::highlight(washi-hl-underline){text-decoration-line:underline;' +
+                    'text-decoration-thickness:0.12em;' +
+                    'text-decoration-color:currentColor}'
+            ];
+            style.textContent = rules.join('\n');
+        }
+
+        /// list: [{ offset, length, style }]。戻り値は実際に描けた個数。
+        washi.setHighlights = function (list) {
+            if (typeof Highlight === 'undefined' || !window.CSS || !CSS.highlights) {
+                return 0;   // 未対応環境では黙って何もしない
+            }
+            ensureHighlightCSS();
+            const ranges = {};
+            for (const name of highlightStyles) { ranges[name] = []; }
+            let drawn = 0;
+            for (const item of (list || [])) {
+                const style = highlightStyles.indexOf(item.style) >= 0
+                    ? item.style : 'yellow';
+                const mapped = domRangeForTextRange(item.offset, item.length);
+                if (!mapped) { continue; }
+                ranges[style].push(mapped.range);
+                drawn += 1;
+            }
+            for (const name of highlightStyles) {
+                const key = 'washi-hl-' + name;
+                if (ranges[name].length === 0) {
+                    CSS.highlights.delete(key);
+                } else {
+                    CSS.highlights.set(key, new Highlight(...ranges[name]));
+                }
+            }
+            return drawn;
+        };
+
         washi.rectsForTextRange = function (utf16Offset, utf16Length) {
             const mapped = domRangeForTextRange(utf16Offset, utf16Length);
             if (!mapped) { return []; }
