@@ -207,6 +207,12 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
                 + "script-src \(scriptSource); connect-src 'none'; frame-src 'none'",
         ]
         headers["Content-Type"] = Self.contentType(for: mediaType, data: data)
+        // cooViewer-oxr.46 C42: WebKit に別名の無い -epub- 接頭辞 CSS を補う
+        // (縦中横の -epub-text-combine-horizontal など。実測で 6 つ)。
+        var data = data
+        if mediaType.hasPrefix("text/css") {
+            data = EPUBPrefixedCSS.polyfilledStylesheet(data)
+        }
 
         // Range 要求(audio/video のシーク)には 206 で応える
         if let rangeHeader, rangeHeader.hasPrefix("bytes="),
