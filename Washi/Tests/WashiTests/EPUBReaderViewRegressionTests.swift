@@ -668,6 +668,30 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
         XCTAssertTrue(view.hasDeferredVisibleLayout)
     }
 
+    /// cooViewer-oxr.46 C35: setup で渡す文書の印で、差し替え前の文書から
+    /// 遅れて届いた通知を判別する。印が無い通知は従来どおり受け入れる。
+    func testSetupCarriesDocumentTokenAndStaleTokensAreRejected() throws {
+        let view = EPUBReaderView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let book = try makePublication()
+        view.load(publication: book)
+        let token = try XCTUnwrap(
+            Self.documentToken(fromOptionsJSON: view.setupOptionsJSON()),
+            "setup に文書の印が入っていない")
+        XCTAssertFalse(token.isEmpty)
+
+        XCTAssertTrue(view.isFromCurrentDocument(["token": token]))
+        XCTAssertFalse(view.isFromCurrentDocument(["token": token + "-old"]))
+        // 印を持たない通知(ラスタライザ経路・古い注入)は受け入れる
+        XCTAssertTrue(view.isFromCurrentDocument([:]))
+    }
+
+    private static func documentToken(fromOptionsJSON json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else { return nil }
+        return dictionary["documentToken"] as? String
+    }
+
     /// cooViewer-oxr.80: コンテナ自身が keyDown を受けても、host 優先設定なら
     /// DOM 往復なしで didReceiveKey へ配送する。
     func testReaderViewKeyDownForwardsWhenKeyboardNavigationDisabled() throws {
