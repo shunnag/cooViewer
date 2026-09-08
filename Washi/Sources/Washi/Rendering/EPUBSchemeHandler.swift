@@ -204,7 +204,11 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
             "Content-Security-Policy":
                 "default-src 'self'; img-src 'self' data:; media-src 'self' data:; "
                 + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
-                + "script-src \(scriptSource); connect-src 'none'; frame-src 'none'",
+                // cooViewer-oxr.46 C50: frame-src は 'self'。'none' だと同じ
+                // コンテナ内の iframe(EPUB 3.3 が認める非スクリプトのものを
+                // 含む)まで空枠になる。外部への埋め込みは default-src 'self' と
+                // オリジン分離(ホスト名が本ごとの UUID)で塞がったまま。
+                + "script-src \(scriptSource); connect-src 'none'; frame-src 'self'",
         ]
         headers["Content-Type"] = Self.contentType(for: mediaType, data: data)
         // cooViewer-oxr.46 C42: WebKit に別名の無い -epub- 接頭辞 CSS を補う
