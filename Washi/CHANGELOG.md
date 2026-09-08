@@ -12,6 +12,13 @@
   文字サイズ・画面幅・テーマを変えてもずれない。描画は CSS Custom Highlight
   API で行い本文の DOM には触れないため、著者 CSS や選択・検索と干渉せず、
   範囲が重なっても入れ子要素を作らない。見た目は 4 色 + 下線。
+- 本が要求する表示形式(`rendition:flow`)と、切れ目ないスクロールを求めて
+  いるかを読めるようにした(`requestedFlow` / `requestsContinuousScroll`)。
+  これまで解析はしていたが表示層から参照できなかった。表示自体は現状どおり
+  段組みで行う。
+- `dc:source` / `dc:type` / `dc:relation` / `dc:coverage` / `dc:format` を
+  保持するようにした。これまで読み捨てていたため、書誌表示や索引作成で
+  使えなかった。
 - 音声同期の再生速度を設定できるようにした(`mediaOverlayPlaybackRate`、
   0.5〜3.0)。これまで収録速度に固定だった。
 - 読み飛ばす区間を `epub:type` で指定できるようにした

@@ -179,6 +179,16 @@ public struct EPUBMetadata: Sendable {
     public var date: String?
     public var description: String?
     public var rights: String?
+    /// dc:source — 派生元の資料(底本)。EPUB 3.3 §5.3。
+    public var sources: [String] = []
+    /// dc:type — 出版物の種別("dictionary" 等)。
+    public var types: [String] = []
+    /// dc:relation — 関連資料。
+    public var relations: [String] = []
+    /// dc:coverage — 対象とする範囲(時代・地域)。
+    public var coverages: [String] = []
+    /// dc:format — 媒体・形式。
+    public var formats: [String] = []
     public var subjects: [String] = []
     public var collections: [EPUBCollectionMembership] = []
     public var rendition = RenditionProperties()

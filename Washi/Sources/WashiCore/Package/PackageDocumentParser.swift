@@ -299,6 +299,18 @@ enum PackageDocumentParser {
                 if metadata.rights == nil { metadata.rights = value }
             case "subject":
                 metadata.subjects.append(value)
+            // cooViewer-gse.8: dc:* を落とさず保持する(書誌の完全性。
+            // 索引作成や書誌表示で使う側が拾えるようにする)
+            case "source":
+                metadata.sources.append(value)
+            case "type":
+                metadata.types.append(value)
+            case "relation":
+                metadata.relations.append(value)
+            case "coverage":
+                metadata.coverages.append(value)
+            case "format":
+                metadata.formats.append(value)
             default:
                 break
             }
