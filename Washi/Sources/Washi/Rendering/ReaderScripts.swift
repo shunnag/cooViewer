@@ -1165,10 +1165,15 @@ enum ReaderScripts {
                 parts.push(String.fromCharCode.apply(
                     null, outUnit.subarray(index, Math.min(index + 8192, upper))));
             }
+            const nodeNumbers = new Map();
+            for (let index = 0; index < nodes.length; index += 1) {
+                nodeNumbers.set(nodes[index], index);
+            }
             textMapCache = {
                 text: parts.join(''),
                 length: Math.max(0, upper - lower),
                 nodes: nodes,
+                nodeNumbers: nodeNumbers,
                 nodeIdx: outNode.slice(lower, upper),
                 offset: outOffset.slice(lower, upper),
                 endOffset: outEndOffset.slice(lower, upper)
@@ -1179,34 +1184,59 @@ enum ReaderScripts {
         // cooViewer-oxr.34: DOM 境界を正規化本文の UTF-16 境界へ戻す。
         // 直接対応がない要素境界・畳まれた空白は Range の文書順で最寄りの
         // 正規化単位へ寄せる。
+        // cooViewer-oxr.94: 地図は文書順なのでノード番号は非減少、同じノードの
+        // 中では offset も非減少(EPUBTextMappingTests が実 fixture で固定)。
+        // 選択が変わるたびに 2 回呼ばれるので、全長の線形走査をやめて二分探索する。
+        // 述語が false…false,true…true の境界を返す(見つからなければ end)。
+        function lowerBound(start, end, holds) {
+            let low = start;
+            let high = end;
+            while (low < high) {
+                const middle = (low + high) >> 1;
+                if (holds(middle)) { high = middle; } else { low = middle + 1; }
+            }
+            return low;
+        }
+
         washi.textOffsetFor = function (node, domOffset) {
             const textMap = washi.buildTextMap();
             if (!node || !Number.isInteger(domOffset) || domOffset < 0) {
                 return null;
             }
-            let lastDirect = null;
-            for (let index = 0; index < textMap.length; index += 1) {
-                if (textMap.nodes[textMap.nodeIdx[index]] !== node) { continue; }
-                if (domOffset <= textMap.offset[index]) { return index; }
-                if (domOffset <= textMap.endOffset[index]) { return index + 1; }
-                lastDirect = index + 1;
+            const number = textMap.nodeNumbers.get(node);
+            if (number !== undefined) {
+                const start = lowerBound(0, textMap.length,
+                                         i => textMap.nodeIdx[i] >= number);
+                const end = lowerBound(start, textMap.length,
+                                       i => textMap.nodeIdx[i] > number);
+                if (start < end) {
+                    // 線形走査は「domOffset <= offset なら index、そうでなく
+                    // domOffset <= endOffset なら index+1」を先頭から探す。
+                    // endOffset >= offset なので endBound <= startBound。
+                    const startBound = lowerBound(start, end,
+                        i => domOffset <= textMap.offset[i]);
+                    const endBound = lowerBound(start, end,
+                        i => domOffset <= textMap.endOffset[i]);
+                    if (endBound >= end) { return end; }   // 旧 lastDirect
+                    return endBound === startBound ? startBound : endBound + 1;
+                }
             }
-            if (lastDirect !== null) { return lastDirect; }
             try {
                 const boundary = document.createRange();
                 boundary.setStart(node, domOffset);
                 boundary.collapse(true);
-                for (let index = 0; index < textMap.length; index += 1) {
-                    const unitNode = textMap.nodes[textMap.nodeIdx[index]];
-                    if (!(unitNode instanceof Text)) { continue; }
+                // 地図の各単位の境界も文書順に非減少なので、ここも二分探索できる。
+                // 本文に Text ノードが 1 つも無いときだけ nodeIdx が -1 になる。
+                if (textMap.nodes.length === 0) { return textMap.length; }
+                const atOrAfter = index => {
                     const point = document.createRange();
-                    point.setStart(unitNode, textMap.offset[index]);
+                    point.setStart(textMap.nodes[textMap.nodeIdx[index]],
+                                   textMap.offset[index]);
                     point.collapse(true);
-                    if (boundary.compareBoundaryPoints(Range.START_TO_START, point) <= 0) {
-                        return index;
-                    }
-                }
-                return textMap.length;
+                    return boundary.compareBoundaryPoints(
+                        Range.START_TO_START, point) <= 0;
+                };
+                return lowerBound(0, textMap.length, atOrAfter);
             } catch (e) {
                 return null;
             }
