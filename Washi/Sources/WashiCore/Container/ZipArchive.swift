@@ -198,6 +198,11 @@ public final class ZipArchive: Sendable {
         guard reader.count >= minEOCD else { throw ZipError.notAZipFile }
         let scanStart = max(0, reader.count - minEOCD - 0xFFFF)
         var eocdOffset = -1
+        // 末尾にゴミが付いた ZIP(自炊層で実在。Python/Info-ZIP は開ける)では
+        // コメント長がファイル末尾と一致しないので、整合する候補を優先しつつ、
+        // 無ければ「中央ディレクトリが自分より前に収まる」候補を採る
+        // (cooViewer-oxr.46 C44)。
+        var relaxedOffset = -1
         var pos = reader.count - minEOCD
         while pos >= scanStart {
             if (try? reader.u32(at: pos)) == 0x0605_4B50 {
@@ -208,9 +213,19 @@ public final class ZipArchive: Sendable {
                     eocdOffset = pos
                     break
                 }
+                if relaxedOffset < 0,
+                   let cdSize = try? reader.u32(at: pos + 12),
+                   let cdStart = try? reader.u32(at: pos + 16),
+                   let entries = try? reader.u16(at: pos + 8),
+                   entries > 0 || cdSize == 0,
+                   Int(cdStart) + Int(cdSize) <= pos,
+                   (try? reader.u32(at: Int(cdStart))) == 0x0201_4B50 {
+                    relaxedOffset = pos
+                }
             }
             pos -= 1
         }
+        if eocdOffset < 0 { eocdOffset = relaxedOffset }
         guard eocdOffset >= 0 else { throw ZipError.notAZipFile }
 
         let diskNumber = try reader.u16(at: eocdOffset + 4)
@@ -271,7 +286,7 @@ public final class ZipArchive: Sendable {
         let nameData = try reader.slice(at: offset + 46, count: nameLength)
         // OCF 仕様はエントリ名 UTF-8 を要求するが、実在ファイルには CP932 名の
         // 不正 ZIP もあるため Shift_JIS → Latin-1 の順でフォールバックする
-        let name: String
+        var name: String
         if flags & 0x0800 != 0 {
             name = String(data: nameData, encoding: .utf8)
                 ?? String(data: nameData, encoding: .isoLatin1) ?? ""
@@ -304,9 +319,31 @@ public final class ZipArchive: Sendable {
                     diskStart = UInt64(try reader.u32(at: p)); p += 4
                 }
             }
+            // cooViewer-oxr.46 C44: Info-ZIP Unicode Path Extra Field。
+            // 正規の UTF-8 名を持つので、CRC が一致するなら推測復号より優先する
+            // (version 1 / CRC32(見出しの生名) / UTF-8 名)。
+            if fieldID == 0x7075, fieldSize >= 5 {
+                let fieldEnd = min(extraOffset + 4 + fieldSize, extraEnd)
+                if let version = try? reader.u8(at: extraOffset + 4), version == 1,
+                   let nameCRC = try? reader.u32(at: extraOffset + 5),
+                   nameCRC == CRC32.checksum(nameData),
+                   let unicodeData = try? reader.slice(
+                       at: extraOffset + 9, count: max(0, fieldEnd - (extraOffset + 9))),
+                   let unicodeName = String(data: unicodeData, encoding: .utf8),
+                   !unicodeName.isEmpty {
+                    name = unicodeName
+                }
+            }
             extraOffset += 4 + fieldSize
         }
         guard diskStart == 0 else { throw ZipError.multiDiskUnsupported }
+
+        // cooViewer-oxr.46 C44: 旧 Windows ツールは区切りに \\ を使うことがある。
+        // ZIP 仕様の区切りは / だけなので、/ を 1 つも含まない名前に限って直す
+        // (名前に \\ を含む正規のエントリを壊さない)。
+        if name.contains("\\") && !name.contains("/") {
+            name = name.replacingOccurrences(of: "\\", with: "/")
+        }
 
         let entry = ZipEntryInfo(
             name: name,
@@ -352,6 +389,11 @@ struct ByteReader {
 
     private func byte(at offset: Int) -> UInt8 {
         data[data.startIndex + offset]
+    }
+
+    func u8(at offset: Int) throws -> UInt8 {
+        guard offset >= 0, offset + 1 <= count else { throw ZipError.truncated("u8") }
+        return byte(at: offset)
     }
 
     func u16(at offset: Int) throws -> UInt16 {

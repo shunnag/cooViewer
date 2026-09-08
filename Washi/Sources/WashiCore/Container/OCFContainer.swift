@@ -205,3 +205,69 @@ struct OCFContainer: Sendable {
         self.packageDocumentPaths = paths
     }
 }
+
+/// cooViewer-oxr.46 C44: 自炊層に多い梱包ミスを、厳密な解決が外れたときだけ
+/// 救済する包み。ルート接頭辞(フォルダごと圧縮)・大文字小文字違いの一意一致を
+/// 扱う。正しい本では最初の完全一致で抜けるので、経路も費用も変わらない。
+struct RescuingContainerReader: ContainerReader {
+    let base: any ContainerReader
+    /// 全エントリが共有する余分な先頭ディレクトリ("book/" 等。無ければ空)
+    let rootPrefix: String
+    /// 小文字化したパス → 実際のパス(一意に定まるものだけ)
+    let caseInsensitiveIndex: [String: String]
+
+    init(base: any ContainerReader) {
+        self.base = base
+        let paths = base.allPaths
+        // フォルダごと ZIP 圧縮すると全エントリが "書名/" の下に入る。
+        // container.xml がその形でだけ見つかるなら、その接頭辞を剥がす。
+        var prefix = ""
+        if !paths.contains("META-INF/container.xml") {
+            let marker = "/META-INF/container.xml"
+            let candidates = paths.filter { $0.hasSuffix(marker) }
+            if candidates.count == 1, let only = candidates.first {
+                prefix = String(only.dropLast(marker.count - 1))
+            }
+        }
+        self.rootPrefix = prefix
+        // OPF の href は大文字小文字が食い違うことがある。一意に定まる場合だけ
+        // 救済し、複数候補があるときは曖昧なので手を出さない。
+        var lowered: [String: [String]] = [:]
+        for path in paths {
+            lowered[path.lowercased(), default: []].append(path)
+        }
+        self.caseInsensitiveIndex = lowered.compactMapValues {
+            $0.count == 1 ? $0[0] : nil
+        }
+    }
+
+    var allPaths: [String] {
+        guard !rootPrefix.isEmpty else { return base.allPaths }
+        return base.allPaths.compactMap {
+            $0.hasPrefix(rootPrefix) ? String($0.dropFirst(rootPrefix.count)) : nil
+        }
+    }
+
+    /// 厳密な解決に失敗したときだけ試す候補(順に評価する)
+    private func resolve(_ path: String) -> String? {
+        if base.exists(path) { return path }
+        if !rootPrefix.isEmpty, base.exists(rootPrefix + path) {
+            return rootPrefix + path
+        }
+        if let match = caseInsensitiveIndex[path.lowercased()] { return match }
+        if !rootPrefix.isEmpty,
+           let match = caseInsensitiveIndex[(rootPrefix + path).lowercased()] {
+            return match
+        }
+        return nil
+    }
+
+    func exists(_ path: String) -> Bool { resolve(path) != nil }
+
+    func read(_ path: String) throws -> Data {
+        guard let resolved = resolve(path) else {
+            throw EPUBError.resourceNotFound(path)
+        }
+        return try base.read(resolved)
+    }
+}
