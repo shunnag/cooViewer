@@ -84,6 +84,27 @@ final class LegacyFixedLayoutTests: XCTestCase {
         XCTAssertFalse(book.package.isFixedLayout, "明示の宣言を旧表明が上書きした")
     }
 
+    /// cooViewer-oxr.46 C27: EPUB 3.4 の roll を認識し、日本の出版社が
+    /// roll 以前に使っていた pre-paginated + scrolled-continuous と同一視する。
+    func testRollLayoutAndScrolledContinuousEquivalence() throws {
+        let roll = try book(renditionLayout: "roll")
+        XCTAssertEqual(roll.package.metadata.rendition.layout, .roll,
+                       "roll をリフローに倒している")
+        XCTAssertTrue(roll.package.isScrollLike)
+        XCTAssertFalse(roll.package.isFixedLayout)
+
+        let legacy = try book(
+            metas: "<meta property=\"rendition:flow\">scrolled-continuous</meta>",
+            renditionLayout: "pre-paginated")
+        XCTAssertTrue(legacy.package.isScrollLike,
+                      "pre-paginated + scrolled-continuous を roll 同義に扱えていない")
+
+        // 普通の固定レイアウトはスクロール扱いにしない
+        let fxl = try book(renditionLayout: "pre-paginated")
+        XCTAssertFalse(fxl.package.isScrollLike)
+        XCTAssertFalse(try book().package.isScrollLike)
+    }
+
     /// 表明が無い普通の本はリフローのまま(退行防止)
     func testPlainBookStaysReflowable() throws {
         XCTAssertFalse(try book().package.isFixedLayout)

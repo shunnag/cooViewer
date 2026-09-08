@@ -41,6 +41,10 @@ public enum EPUBTextDirection: String, Sendable {
 public enum RenditionLayout: String, Sendable {
     case reflowable
     case prePaginated = "pre-paginated"
+    /// EPUB 3.4 CR の新しい値。1 つの長い文書を切れ目なくスクロールさせる
+    /// 表示(縦スクロール漫画・絵巻)。Washi の描画層は現状これをリフローと
+    /// 同じ経路で表示する(cooViewer-oxr.46 C27)。
+    case roll
 }
 
 /// rendition:orientation
@@ -273,6 +277,17 @@ public struct EPUBPackage: Sendable {
     /// Whether the whole document is fixed-layout.
     public var isFixedLayout: Bool {
         metadata.rendition.layout == .prePaginated
+    }
+
+    /// Whether the publication asks to be shown as one continuous scroll.
+    /// True for `rendition:layout="roll"` (EPUB 3.4) and for the
+    /// `pre-paginated` + `scrolled-continuous` combination that Japanese
+    /// publishers shipped before `roll` existed; EPUB Reading Systems 3.4
+    /// notes the two are to be treated alike (cooViewer-oxr.46 C27).
+    public var isScrollLike: Bool {
+        if metadata.rendition.layout == .roll { return true }
+        return metadata.rendition.layout == .prePaginated
+            && metadata.rendition.flow == .scrolledContinuous
     }
 
     /// The effective layout for a single spine item (the itemref's rendition:layout-* override).
