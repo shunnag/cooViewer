@@ -916,14 +916,49 @@ enum ReaderScripts {
         // キャッシュの無効化は不要: 地図は DOM のみに依存し(レイアウト・
         // ページ割り・repaginate には依存しない)、DOM は変異させず、spine 項目の
         // 読み込みで文書ごと差し替わる(= JS コンテキストも新しくなる)
-        // TODO(cooViewer-oxr.69): locateAndShow 完了後は UTF-16 単位の
-        // 対応表を保持せず、次の要求に必要な範囲だけへ縮小する。
+        // cooViewer-oxr.69: 保持する表現は「単位ごとのオブジェクト配列」ではなく
+        // Text ノード表 + Int32Array 3 本(ノード番号・offset・endOffset)+ 本文。
+        // 1 単位あたり約 250B から 12B + 本文 2B へ落ちる。寿命は従来どおり
+        // 文書と同じなので、選択 API や rectsForTextRange と地図を共有する
+        // 前提(バッチ 13 で時限破棄を見送った理由)はそのまま成り立つ。
         var textMapCache = null;
 
         washi.buildTextMap = function () {
             if (textMapCache) { return textMapCache; }
 
-            const raw = [];
+            // cooViewer-oxr.69: 単位ごとのオブジェクトを作らない。
+            // {unit, node, offset, endOffset} を Uint16Array 1 本(コード単位)と
+            // Int32Array 3 本(ノード番号・offset・endOffset)へ分解し、
+            // node は「Text ノード表への番号」で持つ(合成改行など未確定は -1)。
+            // unit は UTF-16 コード単位そのもの(サロゲートは旧実装と同じく
+            // 上位/下位を別単位として扱う)。
+            // textContent は script/style/rt など地図に載らない分も数えるので
+            // 本文単位数の上限になる。倍々確保の複写(旧世代がそのまま
+            // ヒープ高水位になる)を避けるため、最初から必要量を取る。
+            // 要素境界の合成改行は textContent に現れないので reserve は残す。
+            const textBudget = (document.body || document.documentElement || {})
+                .textContent;
+            let capacity = Math.max(4096, (textBudget ? textBudget.length : 0) + 1024);
+            let rawUnit = new Uint16Array(capacity);
+            let rawNode = new Int32Array(capacity);
+            let rawOffset = new Int32Array(capacity);
+            let rawEndOffset = new Int32Array(capacity);
+            let rawCount = 0;
+            const nodes = [];
+
+            function reserve(extra) {
+                if (rawCount + extra <= capacity) { return; }
+                let next = capacity;
+                while (next < rawCount + extra) { next *= 2; }
+                const unit = new Uint16Array(next); unit.set(rawUnit);
+                const node = new Int32Array(next); node.set(rawNode);
+                const offset = new Int32Array(next); offset.set(rawOffset);
+                const endOffset = new Int32Array(next); endOffset.set(rawEndOffset);
+                rawUnit = unit; rawNode = node;
+                rawOffset = offset; rawEndOffset = endOffset;
+                capacity = next;
+            }
+
             // cooViewer-oxr.89: Core と同じ名前空間文脈で不可視注釈を除く。
             const skipped = {
                 always: new Set(['script', 'style', 'rt', 'rp', 'rtc']),
@@ -940,16 +975,28 @@ enum ReaderScripts {
             ]);
 
             function appendBreak() {
-                if (raw.length === 0 || raw[raw.length - 1].unit !== '\n') {
-                    raw.push({ unit: '\n', node: null, offset: 0, endOffset: 0 });
+                if (rawCount === 0 || rawUnit[rawCount - 1] !== 10) {
+                    reserve(1);
+                    rawUnit[rawCount] = 10;
+                    rawNode[rawCount] = -1;
+                    rawOffset[rawCount] = 0;
+                    rawEndOffset[rawCount] = 0;
+                    rawCount += 1;
                 }
             }
 
             function appendText(node) {
                 const value = node.data || '';
+                if (value.length === 0) { return; }
+                const number = nodes.length;
+                nodes.push(node);
+                reserve(value.length);
                 for (let offset = 0; offset < value.length; offset += 1) {
-                    raw.push({ unit: value.slice(offset, offset + 1), node: node,
-                               offset: offset, endOffset: offset + 1 });
+                    rawUnit[rawCount] = value.charCodeAt(offset);
+                    rawNode[rawCount] = number;
+                    rawOffset[rawCount] = offset;
+                    rawEndOffset[rawCount] = offset + 1;
+                    rawCount += 1;
                 }
             }
 
@@ -1002,96 +1049,130 @@ enum ReaderScripts {
             // 直後)の Text 境界を与え、正規化本文の全単位を Range 境界へ写す。
             // cooViewer-oxr.34: 前方走査を先にしないと、次段落の先頭選択が
             // その直前の合成改行まで含む offset へ逆写像される。
-            let previousPoint = null;
-            for (const item of raw) {
-                if (item.node && item.endOffset !== item.offset) {
-                    previousPoint = { node: item.node, offset: item.endOffset };
-                } else if (!item.node && previousPoint) {
-                    item.node = previousPoint.node;
-                    item.offset = previousPoint.offset;
-                    item.endOffset = previousPoint.offset;
+            let previousNode = -1;
+            let previousOffset = 0;
+            for (let index = 0; index < rawCount; index += 1) {
+                if (rawNode[index] >= 0 && rawEndOffset[index] !== rawOffset[index]) {
+                    previousNode = rawNode[index];
+                    previousOffset = rawEndOffset[index];
+                } else if (rawNode[index] < 0 && previousNode >= 0) {
+                    rawNode[index] = previousNode;
+                    rawOffset[index] = previousOffset;
+                    rawEndOffset[index] = previousOffset;
                 }
             }
-            let nextPoint = null;
-            for (let index = raw.length - 1; index >= 0; index -= 1) {
-                const item = raw[index];
-                if (item.node && item.endOffset !== item.offset) {
-                    nextPoint = { node: item.node, offset: item.offset };
-                } else if (!item.node && nextPoint) {
-                    item.node = nextPoint.node;
-                    item.offset = nextPoint.offset;
-                    item.endOffset = nextPoint.offset;
-                }
-            }
-
-            // components(separatedBy: .whitespaces) と同じ集合:
-            // Unicode Zs + TAB。改行系はこの段階では畳まない
-            const isWhitespace = unit => /[\p{Zs}\u0009]/u.test(unit);
-            const lines = [{ units: [], separatorBefore: null }];
-            for (const item of raw) {
-                if (item.unit === '\n') {
-                    lines.push({ units: [], separatorBefore: item });
-                } else {
-                    lines[lines.length - 1].units.push(item);
+            let nextNode = -1;
+            let nextOffset = 0;
+            for (let index = rawCount - 1; index >= 0; index -= 1) {
+                if (rawNode[index] >= 0 && rawEndOffset[index] !== rawOffset[index]) {
+                    nextNode = rawNode[index];
+                    nextOffset = rawOffset[index];
+                } else if (rawNode[index] < 0 && nextNode >= 0) {
+                    rawNode[index] = nextNode;
+                    rawOffset[index] = nextOffset;
+                    rawEndOffset[index] = nextOffset;
                 }
             }
 
-            function collapseLine(units) {
-                const result = [];
-                let pendingWhitespace = null;
+            // components(separatedBy: .whitespaces) と同じ集合: Unicode Zs + TAB。
+            // 改行系はこの段階では畳まない。コード単位で判定するため Zs を
+            // 直接並べる(BMP のみ。正規表現との一致は EPUBTextMappingTests で検証)
+            function isWhitespaceCode(code) {
+                return code === 0x0020 || code === 0x0009 || code === 0x00A0
+                    || code === 0x1680 || (code >= 0x2000 && code <= 0x200A)
+                    || code === 0x202F || code === 0x205F || code === 0x3000;
+            }
+            // trimmingCharacters(in: .whitespacesAndNewlines) と同じ集合
+            function isTrimCode(code) {
+                return isWhitespaceCode(code) || code === 0x000A || code === 0x000B
+                    || code === 0x000C || code === 0x000D || code === 0x0085
+                    || code === 0x2028 || code === 0x2029;
+            }
+
+            // 行(合成改行区切り)ごとに空白を畳みつつ、そのまま出力列へ書く。
+            // 空行の連続は 1 本へ丸めるので、行頭の区切り改行は「その行が
+            // 何か出す」と決まるまで保留する(旧実装の collapsedLines →
+            // normalized の 2 段と同じ結果になる)。
+            const outUnit = new Uint16Array(rawCount);
+            const outNode = new Int32Array(rawCount);
+            const outOffset = new Int32Array(rawCount);
+            const outEndOffset = new Int32Array(rawCount);
+            let outCount = 0;
+            let emittedLines = 0;
+            let lastLineWasEmpty = false;
+
+            function emit(unit, node, offset, endOffset) {
+                outUnit[outCount] = unit;
+                outNode[outCount] = node;
+                outOffset[outCount] = offset;
+                outEndOffset[outCount] = endOffset;
+                outCount += 1;
+            }
+            function emitSeparator(separatorIndex) {
+                if (emittedLines > 0 && separatorIndex >= 0
+                    && rawNode[separatorIndex] >= 0) {
+                    emit(10, rawNode[separatorIndex], rawOffset[separatorIndex],
+                         rawEndOffset[separatorIndex]);
+                }
+            }
+
+            let separatorIndex = -1;   // この行の直前にある合成改行(先頭行は -1)
+            let lineStart = 0;
+            for (let index = 0; index <= rawCount; index += 1) {
+                if (index < rawCount && rawUnit[index] !== 10) { continue; }
+                // [lineStart, index) が 1 行
+                let pendingWhitespace = -1;
                 let hasText = false;
-                for (const item of units) {
-                    if (isWhitespace(item.unit)) {
-                        if (hasText && !pendingWhitespace) { pendingWhitespace = item; }
+                for (let cursor = lineStart; cursor < index; cursor += 1) {
+                    if (isWhitespaceCode(rawUnit[cursor])) {
+                        if (hasText && pendingWhitespace < 0) {
+                            pendingWhitespace = cursor;
+                        }
                         continue;
                     }
-                    if (pendingWhitespace) {
-                        result.push({ unit: ' ', node: pendingWhitespace.node,
-                                      offset: pendingWhitespace.offset,
-                                      endOffset: pendingWhitespace.endOffset });
-                        pendingWhitespace = null;
+                    if (!hasText) { emitSeparator(separatorIndex); }
+                    if (pendingWhitespace >= 0) {
+                        emit(0x20, rawNode[pendingWhitespace],
+                             rawOffset[pendingWhitespace],
+                             rawEndOffset[pendingWhitespace]);
+                        pendingWhitespace = -1;
                     }
-                    result.push(item);
+                    emit(rawUnit[cursor], rawNode[cursor], rawOffset[cursor],
+                         rawEndOffset[cursor]);
                     hasText = true;
                 }
-                return result;
-            }
-
-            // 空行の連続を 1 本へ丸める
-            const collapsedLines = [];
-            for (const line of lines) {
-                const units = collapseLine(line.units);
-                if (units.length === 0 && collapsedLines.length > 0
-                    && collapsedLines[collapsedLines.length - 1].units.length === 0) {
-                    continue;
+                if (hasText) {
+                    emittedLines += 1;
+                    lastLineWasEmpty = false;
+                } else if (!(emittedLines > 0 && lastLineWasEmpty)) {
+                    emitSeparator(separatorIndex);
+                    emittedLines += 1;
+                    lastLineWasEmpty = true;
                 }
-                collapsedLines.push({ units: units,
-                                      separatorBefore: line.separatorBefore });
+                separatorIndex = index;
+                lineStart = index + 1;
             }
 
-            const normalized = [];
-            for (let index = 0; index < collapsedLines.length; index += 1) {
-                const line = collapsedLines[index];
-                if (index > 0) {
-                    const separator = line.separatorBefore;
-                    if (separator && separator.node) {
-                        normalized.push({ unit: '\n', node: separator.node,
-                                          offset: separator.offset,
-                                          endOffset: separator.endOffset });
-                    }
-                }
-                normalized.push(...line.units);
-            }
-
-            // trimmingCharacters(in: .whitespacesAndNewlines) と同じ集合
-            const isTrim = unit =>
-                /[\p{Zs}\u0009\u000A\u000B\u000C\u000D\u0085\u2028\u2029]/u.test(unit);
             let lower = 0;
-            let upper = normalized.length;
-            while (lower < upper && isTrim(normalized[lower].unit)) { lower += 1; }
-            while (upper > lower && isTrim(normalized[upper - 1].unit)) { upper -= 1; }
-            const map = normalized.slice(lower, upper);
-            textMapCache = { text: map.map(item => item.unit).join(''), map: map };
+            let upper = outCount;
+            while (lower < upper && isTrimCode(outUnit[lower])) { lower += 1; }
+            while (upper > lower && isTrimCode(outUnit[upper - 1])) { upper -= 1; }
+
+            // 保持するのは確定長の 3 本と本文だけ(1 単位あたり 12B + 2B)。
+            // slice は新しいバッファへ複写するので、上限確保した作業用は捨てられる。
+            const parts = [];
+            for (let index = lower; index < upper; index += 8192) {
+                parts.push(String.fromCharCode.apply(
+                    null, outUnit.subarray(index, Math.min(index + 8192, upper))));
+            }
+            textMapCache = {
+                text: parts.join(''),
+                length: Math.max(0, upper - lower),
+                nodes: nodes,
+                nodeIdx: outNode.slice(lower, upper),
+                offset: outOffset.slice(lower, upper),
+                endOffset: outEndOffset.slice(lower, upper)
+            };
             return textMapCache;
         };
 
@@ -1104,11 +1185,10 @@ enum ReaderScripts {
                 return null;
             }
             let lastDirect = null;
-            for (let index = 0; index < textMap.map.length; index += 1) {
-                const item = textMap.map[index];
-                if (item.node !== node) { continue; }
-                if (domOffset <= item.offset) { return index; }
-                if (domOffset <= item.endOffset) { return index + 1; }
+            for (let index = 0; index < textMap.length; index += 1) {
+                if (textMap.nodes[textMap.nodeIdx[index]] !== node) { continue; }
+                if (domOffset <= textMap.offset[index]) { return index; }
+                if (domOffset <= textMap.endOffset[index]) { return index + 1; }
                 lastDirect = index + 1;
             }
             if (lastDirect !== null) { return lastDirect; }
@@ -1116,17 +1196,17 @@ enum ReaderScripts {
                 const boundary = document.createRange();
                 boundary.setStart(node, domOffset);
                 boundary.collapse(true);
-                for (let index = 0; index < textMap.map.length; index += 1) {
-                    const item = textMap.map[index];
-                    if (!(item.node instanceof Text)) { continue; }
+                for (let index = 0; index < textMap.length; index += 1) {
+                    const unitNode = textMap.nodes[textMap.nodeIdx[index]];
+                    if (!(unitNode instanceof Text)) { continue; }
                     const point = document.createRange();
-                    point.setStart(item.node, item.offset);
+                    point.setStart(unitNode, textMap.offset[index]);
                     point.collapse(true);
                     if (boundary.compareBoundaryPoints(Range.START_TO_START, point) <= 0) {
                         return index;
                     }
                 }
-                return textMap.map.length;
+                return textMap.length;
             } catch (e) {
                 return null;
             }
@@ -1137,17 +1217,21 @@ enum ReaderScripts {
                 || utf16Offset < 0 || utf16Length <= 0) { return null; }
             const textMap = washi.buildTextMap();
             const end = utf16Offset + utf16Length;
-            if (!Number.isSafeInteger(end) || end > textMap.map.length) { return null; }
-            const first = textMap.map[utf16Offset];
-            const last = textMap.map[end - 1];
-            if (!first || !last || !(first.node instanceof Text)
-                || !(last.node instanceof Text)) { return null; }
+            if (!Number.isSafeInteger(end) || end > textMap.length) { return null; }
+            const firstNode = textMap.nodes[textMap.nodeIdx[utf16Offset]];
+            const lastNode = textMap.nodes[textMap.nodeIdx[end - 1]];
+            if (!(firstNode instanceof Text) || !(lastNode instanceof Text)) {
+                return null;
+            }
+            const firstOffset = textMap.offset[utf16Offset];
+            const lastEndOffset = textMap.endOffset[end - 1];
             try {
                 const range = document.createRange();
-                range.setStart(first.node, first.offset);
-                range.setEnd(last.node, last.endOffset);
-                return { range: range, textMap: textMap, first: first,
-                         last: last, end: end };
+                range.setStart(firstNode, firstOffset);
+                range.setEnd(lastNode, lastEndOffset);
+                return { range: range, textMap: textMap, firstNode: firstNode,
+                         firstOffset: firstOffset, lastNode: lastNode,
+                         lastEndOffset: lastEndOffset, end: end };
             } catch (e) {
                 return null;
             }
@@ -1173,7 +1257,7 @@ enum ReaderScripts {
             const end = washi.textOffsetFor(range.endContainer, range.endOffset);
             const textMap = washi.buildTextMap();
             if (!Number.isInteger(start) || !Number.isInteger(end) || end <= start
-                || end > textMap.map.length) {
+                || end > textMap.length) {
                 post({ type: 'selection', text: '' });
                 return;
             }
@@ -1203,8 +1287,6 @@ enum ReaderScripts {
             if (!mappedRange) { return { found: false }; }
             const textMap = mappedRange.textMap;
             const end = mappedRange.end;
-            const first = mappedRange.first;
-            const last = mappedRange.last;
             try {
                 const range = mappedRange.range;
                 const beforeRects = range.getClientRects();
@@ -1223,13 +1305,14 @@ enum ReaderScripts {
                 // text は地図上の正規化本文(=検索した文字列)。range.toString() は
                 // 地図が飛ばした空白ノードや rt を含む DOM 生テキストなので別枠で返し、
                 // 端点の UTF-16 単位は Range が正しい DOM 位置を指す証明に使う
-                const mapped = textMap.map.slice(utf16Offset, end)
-                    .map(item => item.unit).join('');
+                const mapped = textMap.text.slice(utf16Offset, end);
                 return {
                     found: true,
                     page: targetPage, text: mapped, domText: range.toString(),
-                    firstUnit: first.node.data.charCodeAt(first.offset),
-                    lastUnit: last.node.data.charCodeAt(last.endOffset - 1),
+                    firstUnit: mappedRange.firstNode.data
+                        .charCodeAt(mappedRange.firstOffset),
+                    lastUnit: mappedRange.lastNode.data
+                        .charCodeAt(mappedRange.lastEndOffset - 1),
                     rects: rects
                 };
             } catch (e) {

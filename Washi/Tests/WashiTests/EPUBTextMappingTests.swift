@@ -4,6 +4,18 @@ import XCTest
 @testable import Washi
 
 @MainActor
+private final class BlankLoadWaiter: NSObject, WKNavigationDelegate {
+    var finished = false
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        finished = true
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
+                 withError error: any Error) {
+        finished = true
+    }
+}
+
+@MainActor
 final class EPUBTextMappingTests: XCTestCase {
     private struct Landing: Sendable {
         let page: Int
@@ -131,6 +143,99 @@ final class EPUBTextMappingTests: XCTestCase {
                                      "\(fixture.name): 可視 Range 矩形")
             }
         }
+    }
+
+    /// cooViewer-oxr.69: 地図は UTF-16 単位ごとのオブジェクトではなく
+    /// Text ノード表 + 型付き配列で保持する。表現が戻ると常駐量が桁で増える。
+    func testTextMapIsStoredAsTypedArrays() async throws {
+        let webView = try await blankReaderWebView(body:
+            "<p>ひとつめの段落。</p><p>ふたつめの<em>強調</em>段落。</p>")
+        // 型付き配列は Swift へ渡せないので、判定結果だけ数値で受け取る
+        let shape = try await Task(priority: .userInitiated) { @MainActor () -> [Int] in
+            let result = try await webView.callAsyncJavaScript("""
+                const map = __washi.buildTextMap();
+                return [
+                    (map.nodeIdx instanceof Int32Array
+                     && map.offset instanceof Int32Array
+                     && map.endOffset instanceof Int32Array) ? 1 : 0,
+                    Array.isArray(map.map) ? 1 : 0,
+                    map.length,
+                    map.length === map.text.length ? 1 : 0,
+                    map.nodes.length
+                ];
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let values = result as? [Int] else {
+                throw HarnessError.unexpectedJavaScriptResult("buildTextMap shape")
+            }
+            return values
+        }.value
+        XCTAssertEqual(shape.count, 5)
+        XCTAssertEqual(shape[0], 1, "型付き配列で保持する")
+        XCTAssertEqual(shape[1], 0, "単位ごとのオブジェクト配列を残さない")
+        XCTAssertGreaterThan(shape[2], 0, "地図が空でない")
+        XCTAssertEqual(shape[3], 1, "length と text の長さが一致する")
+        XCTAssertGreaterThan(shape[4], 0, "Text ノード表が空でない")
+    }
+
+    /// cooViewer-oxr.69: 空白畳みの判定を正規表現からコード値へ移したので、
+    /// BMP 全域で `\p{Zs}` + TAB と完全一致することを WebKit 側で確認する。
+    /// 将来 Unicode 版が変わって Zs が増減したらここで落ちる。
+    /// なお本体の判定式はここに複製してあるので、本体だけを書き換えても
+    /// このテストは落ちない(そちらは本文の突き合わせテストで検出する)。
+    func testWhitespaceCodeSetMatchesUnicodeSpaceSeparator() async throws {
+        let webView = try await blankReaderWebView(body: "<p>判定表</p>")
+        let codes = try await Task(priority: .userInitiated) { @MainActor () -> [Int] in
+            let result = try await webView.callAsyncJavaScript("""
+                const isWhitespaceCode = code =>
+                    code === 0x0020 || code === 0x0009 || code === 0x00A0
+                    || code === 0x1680 || (code >= 0x2000 && code <= 0x200A)
+                    || code === 0x202F || code === 0x205F || code === 0x3000;
+                const pattern = /[\\p{Zs}\\u0009]/u;
+                const bad = [];
+                for (let code = 0; code <= 0xFFFF; code += 1) {
+                    if (pattern.test(String.fromCharCode(code))
+                        !== isWhitespaceCode(code)) {
+                        bad.push(code);
+                    }
+                }
+                return bad;
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let bad = result as? [Int] else {
+                throw HarnessError.unexpectedJavaScriptResult("whitespace set")
+            }
+            return bad
+        }.value
+        XCTAssertEqual(codes, [], "Zs+TAB の集合が不一致: "
+                       + codes.map { String(format: "U+%04X", $0) }.joined(separator: ", "))
+    }
+
+    /// pageScript だけを載せた空の文書。地図の表現そのものを見るための最小構成。
+    private func blankReaderWebView(body: String) async throws -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: ReaderScripts.pageScript, injectionTime: .atDocumentStart,
+            forMainFrameOnly: true, in: EPUBReaderView.washiWorld))
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 240),
+                                configuration: configuration)
+        // NavigationWaiter は washi-epub 以外のナビゲーションを拒否するため、
+        // ここは didFinish を旗で受けるだけの最小デリゲートで待つ
+        let waiter = BlankLoadWaiter()
+        webView.navigationDelegate = waiter
+        webView.loadHTMLString(
+            "<html><head><meta charset=\"utf-8\"></head><body>\(body)</body></html>",
+            baseURL: nil)
+        for _ in 0..<300 where !waiter.finished {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        webView.navigationDelegate = nil
+        withExtendedLifetime(waiter) {}
+        guard waiter.finished else {
+            throw HarnessError.unexpectedJavaScriptResult("blank reader load")
+        }
+        return webView
     }
 
     private func setup(webView: WKWebView, optionsJSON: String) async throws -> Int {
