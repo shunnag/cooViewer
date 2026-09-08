@@ -15,6 +15,8 @@ final class MediaOverlayController {
     private var overlay: MediaOverlay?
     /// 再生中の spine 項目(ホストが現在項目と突き合わせて古い章の再開を防ぐ)
     private(set) var spineIndex = 0
+    /// 再生中の spine 項目(テストの観測点)
+    var currentSpineIndex: Int { spineIndex }
     private var parIndex = 0
     /// 再生中の par 番号(テストの観測点)
     var currentParIndex: Int { parIndex }
@@ -204,6 +206,12 @@ final class MediaOverlayController {
     /// 現在項目のオーバーレイ終了。連続再生なら次の該当項目へ
     private func finishItem() {
         stopAudio()
+        // cooViewer-oxr.46 C07: 再生中に利用者が別の章へ移っていたら、
+        // そこから連続再生の続きへ引き戻さない(そのまま止める)。
+        if let displayed = reader?.currentSpineIndex, displayed != spineIndex {
+            finish()
+            return
+        }
         guard continuesToNextItem,
               let nextIndex = nextSpineIndexWithOverlay(after: spineIndex) else {
             finish()
@@ -233,22 +241,54 @@ final class MediaOverlayController {
         reader?.mediaOverlayDidFinish()
     }
 
+    /// 次に再生すべき spine 項目。cooViewer-oxr.46 C07: 1 つの SMIL が
+    /// 複数の XHTML を束ねる本では隣の項目も同じ SMIL を指すため、同じ
+    /// SMIL の項目は飛ばす(飛ばさないと同じ音声を par 0 から鳴らし直す)。
     private func nextSpineIndexWithOverlay(after index: Int) -> Int? {
         let order = publication.readingOrder
+        let currentOverlayPath = publication.mediaOverlayPath(forSpineIndex: index)
         var i = index + 1
         while i < order.count {
-            if order[i].item.mediaOverlay != nil { return i }
+            if order[i].item.mediaOverlay != nil,
+               publication.mediaOverlayPath(forSpineIndex: i) != currentOverlayPath {
+                return i
+            }
             i += 1
         }
         return nil
     }
 
     private func highlight(par: MediaOverlay.Parallel) {
-        let fragment = par.textHref.flatMap {
-            $0.split(separator: "#", maxSplits: 1).count == 2
-                ? String($0.split(separator: "#", maxSplits: 1)[1]) : nil
+        // cooViewer-oxr.46 C07: 1 つの SMIL が複数の XHTML を束ねる本では、
+        // par の textHref が別の文書を指すことがある。文書部分を捨てると
+        // その par のハイライトが空振りするので、必要なら先に移動する。
+        if let target = spineIndex(forPar: par), target != spineIndex {
+            let generation = playbackGeneration
+            reader?.navigateForMediaOverlay(toSpineIndex: target)
+            guard generation == playbackGeneration,
+                  reader?.mediaOverlayController === self else { return }
+            spineIndex = target
         }
-        reader?.mediaOverlayHighlight(fragmentID: fragment, cssClass: activeClass)
+        reader?.mediaOverlayHighlight(fragmentID: Self.fragment(of: par.textHref),
+                                      cssClass: activeClass)
+    }
+
+    /// par の text が指す spine 項目(同じ文書内なら nil ではなく現在値を返す)
+    private func spineIndex(forPar par: MediaOverlay.Parallel) -> Int? {
+        guard let overlay, let href = par.textHref else { return nil }
+        let withoutFragment = href.split(separator: "#", maxSplits: 1,
+                                         omittingEmptySubsequences: false)[0]
+        guard !withoutFragment.isEmpty,
+              let path = ContainerPath.resolve(base: overlay.basePath,
+                                               href: String(withoutFragment))
+        else { return nil }
+        return publication.spineIndex(forContainerPath: path)
+    }
+
+    private static func fragment(of href: String?) -> String? {
+        guard let href else { return nil }
+        let parts = href.split(separator: "#", maxSplits: 1)
+        return parts.count == 2 ? String(parts[1]) : nil
     }
 
     private func clearHighlight() {
