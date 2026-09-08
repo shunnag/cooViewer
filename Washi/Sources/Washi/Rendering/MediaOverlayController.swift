@@ -20,6 +20,7 @@ final class MediaOverlayController {
     private var loadedAudioPath: String?
     private var ticker: Timer?
     private(set) var isPlaying = false
+    private var playbackGeneration: UInt = 0
     /// 項目末尾で次項目のオーバーレイへ連続再生するか(既定 true)
     var continuesToNextItem = true
 
@@ -32,6 +33,7 @@ final class MediaOverlayController {
 
     /// 指定 spine 項目のオーバーレイを先頭から再生する(既に再生中なら停止して開始)
     func play(fromSpineIndex index: Int) {
+        playbackGeneration &+= 1
         stopAudio()
         spineIndex = index
         parIndex = 0
@@ -47,6 +49,7 @@ final class MediaOverlayController {
 
     /// 一時停止(ハイライトは残す)
     func pause() {
+        playbackGeneration &+= 1
         player?.pause()
         ticker?.invalidate(); ticker = nil
         setPlaying(false)
@@ -54,17 +57,20 @@ final class MediaOverlayController {
 
     /// 一時停止からの再開
     func resume() {
-        guard overlay != nil, player != nil else {
+        playbackGeneration &+= 1
+        guard let overlay, overlay.parallels.indices.contains(parIndex) else {
             play(fromSpineIndex: spineIndex)
             return
         }
-        player?.play()
-        startTicker()
+        // A silent or unavailable-audio par also has a resumable position.
+        // Recreate its advance timer instead of restarting the entire chapter.
+        startCurrentPar(seek: false)
         setPlaying(true)
     }
 
     /// 停止してハイライトを消す
     func stop() {
+        playbackGeneration &+= 1
         stopAudio()
         clearHighlight()
         overlay = nil
@@ -104,6 +110,7 @@ final class MediaOverlayController {
             }
         }
         // 音声を用意できない par: ハイライトだけして一定時間後に次へ
+        stopAudio()
         highlight(par: par)
         scheduleSilentAdvance()
     }
@@ -181,7 +188,10 @@ final class MediaOverlayController {
             finish()
             return
         }
+        let generation = playbackGeneration
         reader?.navigateForMediaOverlay(toSpineIndex: nextIndex)
+        guard generation == playbackGeneration,
+              reader?.mediaOverlayController === self else { return }
         spineIndex = nextIndex
         parIndex = 0
         overlay = publication.mediaOverlay(forSpineIndex: nextIndex)
@@ -190,9 +200,15 @@ final class MediaOverlayController {
     }
 
     private func finish() {
+        let generation = playbackGeneration
         stopAudio()
         clearHighlight()
+        overlay = nil
         setPlaying(false)
+        // The state callback can load another book, restart playback or stop.
+        // Do not deliver the old completion into that new operation.
+        guard generation == playbackGeneration,
+              reader?.mediaOverlayController === self else { return }
         reader?.mediaOverlayDidFinish()
     }
 

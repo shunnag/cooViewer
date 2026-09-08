@@ -23,4 +23,17 @@ public struct EPUBCensusRecord: Sendable, Codable, Equatable {
         self.counts = counts
         self.releaseIdentifier = releaseIdentifier
     }
+
+    // Persisted host data can be corrupt even when book and metrics identities
+    // match. All page offsets require positive counts and a representable sum.
+    var hasValidCounts: Bool {
+        var total = 0
+        for count in counts {
+            guard count > 0 else { return false }
+            let sum = total.addingReportingOverflow(count)
+            guard !sum.overflow else { return false }
+            total = sum.partialValue
+        }
+        return true
+    }
 }

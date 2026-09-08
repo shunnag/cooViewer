@@ -4,6 +4,32 @@ import XCTest
 
 /// コンテナ内パス解決の検証
 final class ContainerPathTests: XCTestCase {
+    func testResolveDoesNotDecodeCanonicalBaseAgain() {
+        let base = "OEBPS/literal%20folder/ch%2F1.xhtml"
+        XCTAssertEqual(ContainerPath.resolve(base: base, href: "#section"), base)
+        XCTAssertEqual(ContainerPath.resolve(base: base, href: "?view=1"), base)
+        XCTAssertEqual(ContainerPath.resolve(base: base, href: "image%2520.png"),
+                       "OEBPS/literal%20folder/image%20.png")
+    }
+
+    func testPublicationResolvesResourcesUnderLiteralPercentDirectory() throws {
+        var entries = EPUBFixtures.singleSpineEntries(bodyHTML: "<p>Percent folder text.</p>")
+        for index in entries.indices {
+            if entries[index].name == "META-INF/container.xml" {
+                entries[index].data = Data(String(decoding: entries[index].data, as: UTF8.self)
+                    .replacingOccurrences(of: "OEBPS/package.opf", with:
+                        "OEBPS/literal%2520folder/package.opf").utf8)
+            } else if entries[index].name.hasPrefix("OEBPS/") {
+                entries[index].name = entries[index].name.replacingOccurrences(
+                    of: "OEBPS/", with: "OEBPS/literal%20folder/")
+            }
+        }
+        let publication = try EPUBPublication(
+            data: ZipBuilder.build(entries, method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/percent-folder.epub"))
+        XCTAssertEqual(try publication.extractText(forSpineIndex: 0), "Percent folder text.")
+    }
+
     func testResolveRelativeHref() {
         XCTAssertEqual(
             ContainerPath.resolve(base: "OEBPS/package.opf", href: "text/ch1.xhtml"),
