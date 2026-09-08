@@ -177,6 +177,37 @@ final class MediaOverlayUXTests: XCTestCase {
         view.stopMediaOverlay()
     }
 
+    /// cooViewer-oxr.46 C26: 章頭ではなく、いま見えている区間から鳴らす。
+    func testPlaybackStartsFromTheClipVisibleOnScreen() async throws {
+        let book = try EPUBPublication(
+            data: ZipBuilder.build(
+                EPUBFixtures.multiDocumentMediaOverlayEntries(), method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/washi-from-page.epub"))
+        let window = NSWindow(
+            contentRect: NSRect(x: -20_000, y: -20_000, width: 480, height: 360),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = EPUBReaderView(frame: NSRect(x: 0, y: 0, width: 480, height: 360))
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.orderOut(nil) }
+
+        view.load(publication: book)
+        for _ in 0..<300 where view.pageCountInItem < 1 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+
+        await view.playMediaOverlayFromCurrentPage()
+        let position = try XCTUnwrap(view.mediaOverlayPosition)
+        XCTAssertEqual(position.spineIndex, 0)
+        // a.xhtml の 2 区間はどちらも 1 ページに収まるので par 0 から始まる。
+        // 少なくとも「章頭に固定」ではなく画面の内容で決まっていること。
+        XCTAssertTrue((0...1).contains(position.parIndex),
+                      "画面に見える区間から始まっていない: \(position.parIndex)")
+        view.stopMediaOverlay()
+    }
+
     /// 既定のハイライトクラスに下地の CSS を与えている
     func testDefaultActiveClassHasBaseStyle() {
         XCTAssertTrue(
