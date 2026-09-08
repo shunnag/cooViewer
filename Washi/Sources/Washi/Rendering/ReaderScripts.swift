@@ -1273,6 +1273,38 @@ enum ReaderScripts {
             }
         }
 
+        /// cooViewer-oxr.46 C52: 表示中ページの先頭に見えている文字の、
+        /// 抽出本文における UTF-16 位置。しおり・読書位置を font 倍率や
+        /// 画面幅の変化を跨いで同じ文へ戻すためのアンカーに使う。
+        /// 特定できなければ -1(呼び出し側は progression のみで復元する)。
+        washi.visibleTextOffset = function () {
+            if (!ready) { return -1; }
+            // ページ左上(縦書きは右上)から少しずつ内側を突いて、最初に
+            // 本文の文字を拾えた点を採る。余白・画像・空行での取りこぼし対策。
+            const pad = 4;
+            const xs = [];
+            const ys = [];
+            for (let i = 0; i < 8; i += 1) {
+                xs.push(pad + i * Math.max(8, Math.floor(pageW / 24)));
+                ys.push(pad + i * Math.max(8, Math.floor(pageH / 24)));
+            }
+            const rightToLeft = (mode === 'vrl');
+            for (const y of ys) {
+                for (const x of xs) {
+                    const px = rightToLeft ? (viewportW - 1 - x) : x;
+                    let range = null;
+                    try {
+                        range = document.caretRangeFromPoint(px, y);
+                    } catch (e) { range = null; }
+                    if (!range || !(range.startContainer instanceof Text)) { continue; }
+                    const offset = washi.textOffsetFor(range.startContainer,
+                                                       range.startOffset);
+                    if (Number.isInteger(offset)) { return offset; }
+                }
+            }
+            return -1;
+        };
+
         washi.rectsForTextRange = function (utf16Offset, utf16Length) {
             const mapped = domRangeForTextRange(utf16Offset, utf16Length);
             if (!mapped) { return []; }
