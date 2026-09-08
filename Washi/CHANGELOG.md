@@ -20,6 +20,12 @@
   日本の出版社が roll 以前に使っていた `pre-paginated` +
   `scrolled-continuous` の組み合わせも同義として扱い、`isScrollLike` で
   判別できる。描画は現状リフローと同じ経路で行う。
+- 読書位置・しおりにテキストアンカーを併記できるようにした
+  (`EPUBLocator.textOffset` と `currentLocatorWithTextAnchor()`)。位置は
+  これまで進行率だけで保存しており、文字サイズや画面幅を変えると再量子化で
+  数ページずれて「しおりを打った文」が画面外へ出ていた(青空文庫のような
+  1 ファイル 1 冊の本で顕著)。アンカーがあれば同じ文へ戻る。既存の保存データは
+  そのまま読め、アンカーが無ければ従来どおり進行率で復元する。
 - 本の中のスクリプトを有効にしたとき、`navigator.epubReadingSystem` を
   提供するようにした(EPUB Reading Systems 3.3 §6.4 の必須要件)。対応状況は
   実際に合わせて申告する(touch-events は false)。既定でスクリプトは無効の

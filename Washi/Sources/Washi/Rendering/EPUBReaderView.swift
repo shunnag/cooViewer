@@ -1084,6 +1084,25 @@ public final class EPUBReaderView: NSView {
         publication?.effectiveReadingDirection == .rtl
     }
 
+    /// The current position with a text anchor attached (cooViewer-oxr.46 C52).
+    /// `progression` alone is re-quantized on restore, so a saved position
+    /// drifts by a few pages after a font-size or viewport change; the anchor
+    /// records which character is at the top of the page so the reader can land
+    /// on the same sentence. Ask for it when persisting a position (bookmarks,
+    /// last-read); it costs one round trip to the web view. Falls back to the
+    /// plain locator when the position cannot be resolved (images, empty pages).
+    public func currentLocatorWithTextAnchor() async -> EPUBLocator {
+        var locator = currentLocator
+        guard !isLoadingSpineItem, let webView else { return locator }
+        let result = try? await webView.callAsyncJavaScript(
+            "return __washi.visibleTextOffset();",
+            arguments: [:], in: nil, contentWorld: Self.washiWorld)
+        if let offset = result as? Int, offset >= 0 {
+            locator.textOffset = offset
+        }
+        return locator
+    }
+
     public var currentLocator: EPUBLocator {
         // cooViewer-oxr.23: 読み込み中は旧文書由来のページカウンタでなく、
         // load/go が最後に予約した target を現在位置として答える。
@@ -1426,7 +1445,16 @@ public final class EPUBReaderView: NSView {
               // cooViewer-oxr.72: idref があれば index より優先して改版追跡する。
               let resolved = publication.resolve(locator) else { return }
         let request = beginNavigationRequest()
-        let target = PendingTarget.progression(resolved.progression)
+        // cooViewer-oxr.46 C52: テキストアンカーがあれば、進行率の再量子化で
+        // 数ページずれる代わりに、保存したときと同じ文へ厳密に着地させる。
+        // 見つからなければ進行率へ落ちる(textRange の fallback がその役目)。
+        let target: PendingTarget
+        if let textOffset = resolved.textOffset {
+            target = .textRange(utf16Offset: textOffset, utf16Length: 1,
+                                fallbackProgression: resolved.progression)
+        } else {
+            target = .progression(resolved.progression)
+        }
         if recordsHistory { recordCurrentLocatorInHistory() }
         guard request == navigationRequestGeneration else { return }
         if resolved.spineIndex == currentSpineIndex {
