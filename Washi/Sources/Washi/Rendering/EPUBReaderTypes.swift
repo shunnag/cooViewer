@@ -658,6 +658,22 @@ public protocol EPUBReaderViewDelegate: AnyObject {
                     shouldFollowInternalLink link: EPUBInternalLink) -> Bool
     /// Key forwarding, used when handlesKeyboardNavigation is false.
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent)
+    /// Asks whether the key just delivered to `didReceiveKey` stops at the
+    /// reader view. Return false to let the original event continue up the
+    /// responder chain, so keys the host does not handle (`-`, Esc, `+`, …)
+    /// still reach the window and the menu bar. Default: true, which keeps the
+    /// behaviour of Washi 1.16.x and earlier (the key stops here).
+    ///
+    /// Called right after `didReceiveKey` for the same key, so a host can
+    /// record what it handled there and simply report it back:
+    /// `didReceiveKey` sets a flag, this method returns it.
+    ///
+    /// Only consulted for keys the reader view itself receives. Keys typed
+    /// while the web view holds first responder are resent to the responder
+    /// chain by WebKit when the page leaves them unhandled, so they propagate
+    /// regardless of what this method returns.
+    func readerView(_ view: EPUBReaderView,
+                    shouldConsumeKey event: EPUBKeyEvent) -> Bool
     /// A native key-down event, delivered only when
     /// `EPUBReaderSettings.forwardsKeyEventsNatively` is true. Return true to
     /// consume the event (the web view never sees it); return false to let it
@@ -731,6 +747,8 @@ public extension EPUBReaderViewDelegate {
     func readerView(_ view: EPUBReaderView,
                     shouldFollowInternalLink link: EPUBInternalLink) -> Bool { true }
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent) {}
+    func readerView(_ view: EPUBReaderView,
+                    shouldConsumeKey event: EPUBKeyEvent) -> Bool { true }
     func readerView(_ view: EPUBReaderView,
                     didReceiveNativeKey event: NSEvent) -> Bool { false }
     func readerView(_ view: EPUBReaderView,

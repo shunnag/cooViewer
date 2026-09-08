@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.16.3] - 2026-09-09
+
+### 追加
+- `EPUBReaderViewDelegate` に `readerView(_:shouldConsumeKey:)` を追加した
+  (既定 `true`)。`handlesKeyboardNavigation` が `false` のとき、
+  `didReceiveKey` へ配送したキーをここで止めるかを問い合わせる。`false` を
+  返すと元の `NSEvent` がそのまま responder チェーンへ上がるため、ホストが
+  扱わないキー(`-`・Esc・`+` など)がウインドウやメニューへ届く(Washi #3
+  のコメントで報告)。既定値は 1.16.2 までと同じ挙動で、delegate 未設定の
+  場合も従来どおりキーはここで止まる。
+
 ## [1.16.2] - 2026-09-08
 
 ### 修正

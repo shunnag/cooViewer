@@ -335,13 +335,20 @@ public final class EPUBReaderView: NSView {
         }
         let modifiers = event.modifierFlags
         let (key, code) = Self.webKeyIdentity(for: event)
-        delegate?.readerView(self, didReceiveKey: EPUBKeyEvent(
+        let forwarded = EPUBKeyEvent(
             key: key,
             code: code,
             shift: modifiers.contains(.shift),
             option: modifiers.contains(.option),
             control: modifiers.contains(.control),
-            command: modifiers.contains(.command)))
+            command: modifiers.contains(.command))
+        delegate?.readerView(self, didReceiveKey: forwarded)
+        // Washi #3(コメント): ホストが扱わなかったキーをここで消さず
+        // responder チェーンへ返す。既定は true(1.16.x までと同じ握り潰し)で、
+        // delegate 未設定も同じ扱い。WebKit を経由しないため #3 の往復は起きない。
+        if delegate?.readerView(self, shouldConsumeKey: forwarded) == false {
+            super.keyDown(with: event)
+        }
     }
 
     private static func webKeyIdentity(for event: NSEvent) -> (String, String) {
