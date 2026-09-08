@@ -16,9 +16,6 @@
 		C00000000000000000000037 /* Washi.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; };
 		C00000000000000000000039 /* Washi.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C0000000000000000000003F /* Washi.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; };
-		C00000000000000000000040 /* KaitoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000043 /* KaitoKit.framework */; };
-		C00000000000000000000041 /* KaitoKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000043 /* KaitoKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		C00000000000000000000042 /* KaitoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000043 /* KaitoKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,7 +39,6 @@
 				C00000000000000000000010 /* UniversalDetector.framework in Embed Frameworks */,
 				C00000000000000000000033 /* Sparkle.framework in Embed Frameworks */,
 				C00000000000000000000039 /* Washi.framework in Embed Frameworks */,
-				C00000000000000000000041 /* KaitoKit.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -56,7 +52,6 @@
 		C0000000000000000000000C /* UniversalDetector.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniversalDetector.framework; path = Frameworks/UniversalDetector.framework; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Sparkle.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Sparkle.framework; path = Frameworks/Sparkle.framework; sourceTree = "<group>"; };
 		C00000000000000000000038 /* Washi.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Washi.framework; path = Frameworks/Washi.framework; sourceTree = "<group>"; };
-		C00000000000000000000043 /* KaitoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = KaitoKit.framework; path = Frameworks/KaitoKit.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -94,7 +89,6 @@
 				C0000000000000000000000E /* UniversalDetector.framework in Frameworks */,
 				C00000000000000000000032 /* Sparkle.framework in Frameworks */,
 				C00000000000000000000037 /* Washi.framework in Frameworks */,
-				C00000000000000000000040 /* KaitoKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -103,7 +97,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				C0000000000000000000003F /* Washi.framework in Frameworks */,
-				C00000000000000000000042 /* KaitoKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -133,7 +126,6 @@
 			isa = PBXGroup;
 			children = (
 				C0000000000000000000000B /* XADMaster.framework */,
-				C00000000000000000000043 /* KaitoKit.framework */,
 				C00000000000000000000034 /* Sparkle.framework */,
 				C00000000000000000000038 /* Washi.framework */,
 				C0000000000000000000000C /* UniversalDetector.framework */,
@@ -150,7 +142,6 @@
 			buildPhases = (
 				C00000000000000000000015 /* Build XADMaster frameworks */,
 				C0000000000000000000003A /* Build Washi framework */,
-				C00000000000000000000044 /* Build KaitoKit framework */,
 				C00000000000000000000011 /* Sources */,
 				C00000000000000000000012 /* Frameworks */,
 				C00000000000000000000013 /* Resources */,
@@ -278,21 +269,6 @@
 			shellPath = /bin/zsh;
 			shellScript = "exec \"${PROJECT_DIR}/Scripts/build-washi-framework.sh\"\n";
 		};
-		C00000000000000000000044 /* Build KaitoKit framework */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-			);
-			name = "Build KaitoKit framework";
-			outputPaths = (
-				"$(PROJECT_DIR)/Frameworks/KaitoKit.framework/Versions/A/KaitoKit",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/zsh;
-			shellScript = "exec \"${PROJECT_DIR}/Scripts/build-kaitokit-framework.sh\"\n";
-		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -346,7 +322,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
-				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/Frameworks/Washi.framework/Modules $(SRCROOT)/Frameworks/KaitoKit.framework/Modules";
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/Frameworks/Washi.framework/Modules";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};
@@ -375,7 +351,7 @@
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/Frameworks/Washi.framework/Modules $(SRCROOT)/Frameworks/KaitoKit.framework/Modules";
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/Frameworks/Washi.framework/Modules";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
 			};

@@ -462,8 +462,6 @@ extension ReaderWindowController {
         let containerURL = await book.source.containerFileURL(for: entry)
         let data = await book.source.imageData(for: entry)
         let fallback = data == nil ? await book.source.imageSize(for: entry) : nil
-        let archiveEngineName = await book.source
-            .archiveEngineKind(for: entry)?.displayName
         let details = PageFileInfo.details(
             entryName: entry.name,
             pathInBook: entry.pathInBook,
@@ -473,8 +471,7 @@ extension ReaderWindowController {
             imageData: data,
             fallbackPixelSize: fallback,
             comicInfo: comicInfo,
-            epubAccessibility: epubAccessibility,
-            archiveEngineName: archiveEngineName)
+            epubAccessibility: epubAccessibility)
         return FileInfoPage(title: entry.name, sideLabel: sideLabel,
                             details: details)
     }
@@ -623,9 +620,7 @@ extension ReaderWindowController {
             }
             return
         }
-        let archiveEngine = settings.effectiveArchiveEngine
-        guard preparedNextBook?.path != nextPath
-                || preparedNextBook?.archiveEngine != archiveEngine,
+        guard preparedNextBook?.path != nextPath,
               SupportedTypes.isArchive(nextURL) else { return }
         preparingNextBookPath = nextPath
         // 準備対象は「今の本の次の兄弟」。準備中に別の本へ切り替わったら、古い
@@ -641,8 +636,7 @@ extension ReaderWindowController {
             defer { preparingNextBookPath = nil }
             guard let source = try? await BookSourceFactory.make(
                 for: nextURL,
-                readSubFolders: settings.readSubFolder,
-                archiveEngine: archiveEngine) else { return }
+                readSubFolders: settings.readSubFolder) else { return }
             guard self.book === preparingForBook else { return }
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
@@ -654,7 +648,7 @@ extension ReaderWindowController {
                     spoolSizeLimit: settings.archiveSpoolSizeLimit)
             }
             guard self.book === preparingForBook else { return }
-            preparedNextBook = (nextPath, source, archiveEngine)
+            preparedNextBook = (nextPath, source)
         }
     }
 

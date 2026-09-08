@@ -409,46 +409,6 @@
         }
       }
     },
-    "Archive Engine": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "書庫エンジン"
-          }
-        }
-      }
-    },
-    "Archive Engine Status": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "書庫エンジンの状態"
-          }
-        }
-      }
-    },
-    "Archive Engine Status…": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "書庫エンジンの状態…"
-          }
-        }
-      }
-    },
-    "Archive engine:": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "書庫エンジン:"
-          }
-        }
-      }
-    },
     "Archive spool": {
       "localizations": {
         "ja": {
@@ -973,16 +933,6 @@
         }
       }
     },
-    "Debug": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "デバッグ"
-          }
-        }
-      }
-    },
     "Delete": {
       "localizations": {
         "ja": {
@@ -1273,16 +1223,6 @@
         }
       }
     },
-    "Engine in use for the current book: %@": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "現在の本で使用中のエンジン: %@"
-          }
-        }
-      }
-    },
     "Enlarge View Mode": {
       "localizations": {
         "ja": {
@@ -1361,16 +1301,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "フェード"
-          }
-        }
-      }
-    },
-    "Fallback count: %lld": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "フォールバック回数: %lld"
           }
         }
       }
@@ -1895,16 +1825,6 @@
         }
       }
     },
-    "KaitoKit (experimental)": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "KaitoKit(試験的)"
-          }
-        }
-      }
-    },
     "Keep double-page spreads and cover pages from being paired, when ComicInfo.xml marks them.": {
       "localizations": {
         "ja": {
@@ -1971,16 +1891,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "最終確認: %@"
-          }
-        }
-      }
-    },
-    "Last error: %@": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最後のエラー: %@"
           }
         }
       }
@@ -2644,16 +2554,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "いいえ"
-          }
-        }
-      }
-    },
-    "No archive is open": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "書庫を開いていません"
           }
         }
       }
@@ -4594,16 +4494,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "基本設定は変わりません。"
-          }
-        }
-      }
-    },
-    "The archive engine selection applies to books opened afterwards.": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "この設定は、この後に開く本から適用されます。"
           }
         }
       }

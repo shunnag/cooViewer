@@ -130,10 +130,6 @@ protocol BookSource: Sendable {
     /// EPUB の page-spread は規範的メタデータなので ComicInfo の任意ヒントとは
     /// 別経路で無条件適用する(cooViewer-oxr.40、仕様書 §4.2.1)。
     func layoutSinglePageIndices() async -> Set<Int>
-
-    /// ページを供給した書庫エンジン。フォルダ合本やネスト書庫では現在ページの
-    /// 子まで辿り、書庫と無関係なページなら nil を返す(設計書 §2.4)。
-    func archiveEngineKind(for entry: PageEntry) async -> ArchiveEngineKind?
 }
 
 extension BookSource {
@@ -161,7 +157,6 @@ extension BookSource {
     func metadata() async -> ComicInfo? { nil }
     func preparsedReflowPublication(for url: URL) async -> EPUBPublication? { nil }
     func layoutSinglePageIndices() async -> Set<Int> { [] }
-    func archiveEngineKind(for entry: PageEntry) async -> ArchiveEngineKind? { nil }
 }
 
 enum BookSourceFactory {
@@ -173,8 +168,7 @@ enum BookSourceFactory {
     static func make(for url: URL, readSubFolders: Bool,
                      nestedPasswordProvider: NestedPasswordProvider? = nil,
                      preparsedEPUB: EPUBPublication? = nil,
-                     vault: PasswordVault? = PasswordVault.sharedIfEnabled(),
-                     archiveEngine: ArchiveEngineKind = .xadmaster)
+                     vault: PasswordVault? = PasswordVault.sharedIfEnabled())
         async throws -> any BookSource {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
@@ -188,9 +182,7 @@ enum BookSourceFactory {
             if folder.nestedBookCandidates.isEmpty {
                 return folder
             }
-            return NestedFolderSource(
-                folder: folder, unlocker: unlocker,
-                preferredEngine: archiveEngine)
+            return NestedFolderSource(folder: folder, unlocker: unlocker)
         }
         if SupportedTypes.isPDF(url) {
             return try PDFSource(url: url)
@@ -209,8 +201,7 @@ enum BookSourceFactory {
         }
         if SupportedTypes.isArchive(url) {
             return try ArchiveSource(url: url, unlocker: unlocker,
-                                     persistenceKey: .file(path: url.path),
-                                     preferredEngine: archiveEngine)
+                                     persistenceKey: .file(path: url.path))
         }
         throw BookSourceError.unsupportedFormat(url)
     }

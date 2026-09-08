@@ -28,8 +28,7 @@ final class PageFileInfoTests: XCTestCase {
         let details = PageFileInfo.details(
             entryName: "p1.png", pathInBook: "vol1.zip/p1.png",
             containerURL: archive, pageNumber: 3, pageCount: 10,
-            imageData: data, fallbackPixelSize: nil,
-            archiveEngineName: "KaitoKit")
+            imageData: data, fallbackPixelSize: nil)
         let values = allValues(details)
 
         XCTAssertEqual(details.sections.first?.rows.first?.value, "p1.png")
@@ -37,7 +36,6 @@ final class PageFileInfoTests: XCTestCase {
         XCTAssertTrue(values.contains("3 / 10"), "ページ行")
         XCTAssertTrue(values.contains("40 × 60"), "ピクセル寸法行")
         XCTAssertTrue(values.contains(archive.path), "場所=書庫本体")
-        XCTAssertTrue(values.contains("KaitoKit"), "実際に使用中の書庫エンジン")
         XCTAssertNil(details.latitude, "GPS の無い画像は座標なし")
         // EXIF の無い画像に EXIF セクションを作らない
         XCTAssertFalse(details.sections.contains { $0.title == "EXIF" })

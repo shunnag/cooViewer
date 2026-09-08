@@ -206,12 +206,8 @@ final class ReaderWindowController: NSWindowController {
     /// しおり編集シート(仕様書 §4.7.2)
     var bookmarkEditorWindow: NSWindow?
 
-    /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)。
-    /// 書庫エンジンの設定変更後に旧エンジンの準備結果を再利用しないよう、
-    /// 生成時の選択もキャッシュ同一性へ含める(設計書 §2.4)。
-    var preparedNextBook: (
-        path: String, source: any BookSource, archiveEngine: ArchiveEngineKind
-    )?
+    /// 事前準備済みの「次の本」(巻末接近時にバックグラウンドでスプール開始)
+    var preparedNextBook: (path: String, source: any BookSource)?
     /// 次の EPUB は展開せず publication の解析だけ先行する
     /// （cooViewer-oxr.45、設計書 §2.4）。
     var preparedNextEPUB: (path: String, publication: EPUBPublication)?
@@ -1112,9 +1108,6 @@ final class ReaderWindowController: NSWindowController {
                                  name: bookURL.lastPathComponent)
         }
 
-        // オープン途中の設定変更で親とネスト子の選択が混ざらないよう、
-        // この一回の要求に使う値を固定する(設計書 §2.4)。
-        let requestedArchiveEngine = settings.effectiveArchiveEngine
         do {
             let source: any BookSource
             if epubCollectionReturnPending, let context = epubCollectionContext,
@@ -1134,9 +1127,7 @@ final class ReaderWindowController: NSWindowController {
                 await context.source.attachNestedPasswordProvider(
                     nestedPasswordProvider())
                 source = context.source
-            } else if let prepared = preparedNextBook,
-                      prepared.path == bookURL.path,
-                      prepared.archiveEngine == requestedArchiveEngine {
+            } else if let prepared = preparedNextBook, prepared.path == bookURL.path {
                 preparedNextBook = nil
                 if await prepared.source.hasSkippedLockedContent() {
                     // バックグラウンド準備(パスワード UI なし)がロック済みの
@@ -1145,8 +1136,7 @@ final class ReaderWindowController: NSWindowController {
                     source = try await BookSourceFactory.make(
                         for: bookURL, readSubFolders: settings.readSubFolder,
                         nestedPasswordProvider: nestedPasswordProvider(),
-                        preparsedEPUB: preparsedEPUB,
-                        archiveEngine: requestedArchiveEngine)
+                        preparsedEPUB: preparsedEPUB)
                 } else {
                     // 事前スプール済みの本を再利用(切替を待ちなしに。設計書 §5)。
                     // まだ組んでいない場合に備えてパスワード UI を後付けする
@@ -1160,16 +1150,14 @@ final class ReaderWindowController: NSWindowController {
                 // データを抱えたまま居座るリーク。監査 #11)。同フォルダ内なら
                 // 巻末で maybePrepareNextBook が置換するので保持のままでよい
                 if let prepared = preparedNextBook,
-                   prepared.archiveEngine != requestedArchiveEngine
-                    || URL(fileURLWithPath: prepared.path).deletingLastPathComponent().path
-                        != bookURL.deletingLastPathComponent().path {
+                   URL(fileURLWithPath: prepared.path).deletingLastPathComponent().path
+                       != bookURL.deletingLastPathComponent().path {
                     preparedNextBook = nil
                 }
                 source = try await BookSourceFactory.make(
                     for: bookURL, readSubFolders: settings.readSubFolder,
                     nestedPasswordProvider: nestedPasswordProvider(),
-                    preparsedEPUB: preparsedEPUB,
-                    archiveEngine: requestedArchiveEngine)
+                    preparsedEPUB: preparsedEPUB)
             }
             // 復号済みページの暗号化ディスクキャッシュ判定に使うため、ロック解除前に
             // 暗号化状態を控える(PDFSource は解除後 isEncrypted が false を返すため)
