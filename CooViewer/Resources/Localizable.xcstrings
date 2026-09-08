@@ -2,6 +2,26 @@
   "sourceLanguage": "en",
   "strings": {
     "": {},
+    "Open": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開く"
+          }
+        }
+      }
+    },
+    "Open this link outside cooViewer?": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このリンクを cooViewer の外で開きますか?"
+          }
+        }
+      }
+    },
     "“%@” in this book is password-protected.": {
       "localizations": {
         "ja": {

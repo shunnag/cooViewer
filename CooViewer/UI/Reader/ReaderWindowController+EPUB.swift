@@ -366,6 +366,22 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         return alert.runModal() == .alertFirstButtonReturn ? locator : nil
     }
 
+    /// cooViewer-oxr.46 C41 / 仕様 RS 3.3 §3.9: 本文中のリンクでブラウザや
+    /// メールソフトを黙って起動しない。本の中身は信頼できない前提なので、
+    /// 開く前に行き先を見せて確認する(既定はキャンセル側)。
+    func readerView(_ view: EPUBReaderView, shouldOpenExternalURL url: URL) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Open this link outside cooViewer?")
+        // 極端に長い URL でダイアログが伸びないよう頭を見せる
+        let shown = url.absoluteString
+        alert.informativeText = shown.count > 200
+            ? String(shown.prefix(200)) + "…" : shown
+        alert.addButton(withTitle: String(localized: "Open"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// EPUB のノンブル(下部中央の素の番号)を出すか。下配置(2/3)ではホストの
     /// N/M ラベルと帯が重なるため抑止する(純関数=決定論テスト用)
     nonisolated static func epubShowsFolio(showNumber: Bool, pageNumPosition: Int) -> Bool {
