@@ -232,8 +232,9 @@ extension EPUBPublication {
             let length = foldedText.distance(from: range.lowerBound,
                                              to: range.upperBound)
             // 1:1 畳み込みなので offset/length は元テキストの chars にそのまま対応
-            let lower = max(0, offset - snippetRadius)
-            let upper = min(chars.count, offset + length + snippetRadius)
+            let lower = offset - min(offset, snippetRadius)
+            let matchEnd = offset + length
+            let upper = matchEnd + min(chars.count - matchEnd, snippetRadius)
             let snippet = String(chars[lower..<upper])
             let utf16Range = utf16Offsets[offset]..<utf16Offsets[offset + length]
             hits.append(EPUBSearchHit(spineIndex: spineIndex,

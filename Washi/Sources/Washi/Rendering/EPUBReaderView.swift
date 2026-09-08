@@ -1039,6 +1039,9 @@ public final class EPUBReaderView: NSView {
         let entry = publication.readingOrder[index]
         isFixedLayoutItem =
             publication.package.effectiveLayout(for: entry.itemRef) == .prePaginated
+        // FXL aspect fitting changes pageZoom on the shared WebView. Restore
+        // normal CSS pixels before a reflowable document begins loading/setup.
+        if !isFixedLayoutItem { webView.pageZoom = 1 }
         // cooViewer-oxr.51: spine 遷移直後から現在 itemref の spread 用余白を
         // WebView の実寸へ反映し、didFinish/setup が旧項目の innerWidth で
         // ページ割りしないようにする。
@@ -2010,11 +2013,13 @@ public final class EPUBReaderView: NSView {
     /// has no unique identifier. When its metrics key also matches the current
     /// display metrics, it takes effect immediately; otherwise it is cached and
     /// used the moment the display settles to those metrics. Returns whether it
-    /// was accepted.
+    /// was accepted. Nonpositive counts and counts whose sum overflows `Int`
+    /// are rejected without changing the current census.
     @discardableResult
     public func importCensus(_ record: EPUBCensusRecord) -> Bool {
         guard let publication,
               EPUBScreenMetrics.usesCurrentPaginationVersion(record.metricsKey),
+              record.hasValidCounts,
               record.counts.count == publication.readingOrder.count,
               record.releaseIdentifier == publication.metadata.releaseIdentifier
         else { return false }
@@ -2094,7 +2099,10 @@ public final class EPUBReaderView: NSView {
         // cooViewer-oxr.73: Double → Int の範囲外変換は SIGTRAP になるため、
         // locator 自身の不変条件だけに依存せず変換直前にも防御する。
         let safeProgression = Self.clampedProgression(locator.progression)
-        let inItem = Int((safeProgression * Double(count - 1)).rounded())
+        // Double(Int.max - 1) rounds up beyond Int.max. A clamped progression
+        // alone does not make conversion safe for a very large imported count.
+        let inItem = Int(exactly: (safeProgression * Double(count - 1)).rounded())
+            ?? (count - 1)
         return offset + min(max(0, inItem), count - 1)
     }
 

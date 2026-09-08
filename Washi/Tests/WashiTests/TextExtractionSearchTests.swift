@@ -4,6 +4,16 @@ import XCTest
 
 /// cooViewer-oxr.10/11/89/92: 本文抽出と検索の追加仕様を検証する。
 final class PublicationTestsTextExtractionSearch: XCTestCase {
+    func testSearchSnippetRadiusAtIntegerLimits() throws {
+        let publication = try makePublication(body: "<p>Before target after.</p>")
+        XCTAssertEqual(publication.search("target", snippetRadius: Int.max).first?.snippet,
+                       "Before target after.")
+        XCTAssertEqual(publication.search("target", snippetRadius: Int.min).first?.snippet,
+                       "target")
+        XCTAssertEqual(publication.search("target", snippetRadius: 1).first?.snippet,
+                       " target ")
+    }
+
     /// cooViewer-oxr.11: 全角空白と NBSP を本文同様に畳んで検索する。
     func testSearchNormalizesIdeographicAndNonbreakingWhitespace() throws {
         let publication = try makePublication(

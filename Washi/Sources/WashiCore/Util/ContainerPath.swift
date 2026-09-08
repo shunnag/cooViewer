@@ -7,7 +7,8 @@ import Foundation
 /// When resolving from an href (a URI reference), the fragment and query are
 /// stripped and `../` segments are collapsed.
 public enum ContainerPath {
-    /// Resolves a relative href against `base` (a file path inside the container).
+    /// Resolves a relative href against `base` (an already-decoded canonical
+    /// file path inside the container). Only the href is percent-decoded.
     /// Returns the canonical container-internal path, clamping traversal above
     /// the container root. Returns nil for absolute URLs (http:, etc.).
     public static func resolve(base: String, href: String) -> String? {
@@ -19,7 +20,7 @@ public enum ContainerPath {
         if let query = reference.firstIndex(of: "?") {
             reference = String(reference[..<query])
         }
-        guard !reference.isEmpty else { return normalize(base) }
+        guard !reference.isEmpty else { return sanitize(base) }
         // スキームのコロンは最初のセグメントにだけ現れる。後続セグメントの
         // コロンまで弾くと、正当なファイル名を外部 URL と誤認する
         let firstSegment = reference.prefix { $0 != "/" }
@@ -31,7 +32,7 @@ public enum ContainerPath {
             // ルート相対(仕様外だが実在する)はコンテナルートからの絶対とみなす
             joined = String(decoded.dropFirst())
         } else {
-            let baseDir = directory(of: normalize(base))
+            let baseDir = directory(of: sanitize(base))
             joined = baseDir.isEmpty ? decoded : baseDir + "/" + decoded
         }
         return collapse(joined)
