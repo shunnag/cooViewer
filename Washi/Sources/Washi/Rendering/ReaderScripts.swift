@@ -1880,7 +1880,13 @@ enum ReaderScripts {
             if (handled) { event.preventDefault(); }
         }, true);
 
-        // 選択やドラッグでの意図しないスクロールを戻す(ページ位置維持)
+        // 中途半端なスクロール位置をページ境界へ揃える。
+        // cooViewer-oxr.46 C10: 以前は必ず currentPage へ戻していたため、
+        // VoiceOver のカーソル移動や Tab フォーカスのために WebKit が行った
+        // スクロールも巻き戻され、読み上げ位置・フォーカス要素が画面外に
+        // 残り、ページ番号や保存位置も更新されなかった。着地したスクロール
+        // 位置が属するページへ揃え、そのページを通知する。選択ドラッグの
+        // ような半ページ未満のずれは同じページへ丸まるので従来どおり戻る。
         let scrollGuard = 0;
         window.addEventListener('scroll', function () {
             if (fixedLayout) { return; }
@@ -1889,7 +1895,13 @@ enum ReaderScripts {
                 if (!ready) { return; }
                 const off = axisIsX() ? window.scrollX : window.scrollY;
                 const expected = Math.round(clampScroll(scrollTargetFor(currentPage)));
-                if (Math.abs(off - expected) > 2) { scrollToPage(currentPage); }
+                if (Math.abs(off - expected) <= 2) { return; }
+                const landed = Math.max(0, Math.min(pageFromScroll(), pageCount - 1));
+                if (spreadStart(landed) === currentPage) {
+                    scrollToPage(currentPage);
+                } else {
+                    washi.showPage(landed);
+                }
             }, 120);
         }, { passive: true });
     })();

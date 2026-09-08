@@ -22,6 +22,10 @@ private final class RenderingLifecycleMessageRecorder: NSObject, WKScriptMessage
         messages.count { $0["type"] as? String == type }
     }
 
+    func compactMap<T>(_ transform: ([String: Any]) -> T?) -> [T] {
+        messages.compactMap(transform)
+    }
+
     func first(type: String) -> [String: Any]? {
         messages.first { $0["type"] as? String == type }
     }
@@ -128,6 +132,47 @@ private final class RenderingLifecycleScriptHarness {
 /// cooViewer-oxr.23/24/25/26/27/48/81/82: ReaderScripts のライフサイクル回帰。
 @MainActor
 final class ReaderScriptsRenderingLifecycleTests: XCTestCase {
+    /// cooViewer-oxr.46 C10: 支援技術やフォーカス移動が起こした大きな
+    /// スクロールを巻き戻さず、着地したページへ揃えて通知する。
+    /// 半ページ未満のずれ(選択ドラッグ等)は従来どおり元のページへ戻す。
+    func testScrollGuardFollowsLargeScrollAndReportsLandedPage() async throws {
+        let body = (0..<400).map { "<p>本文の段落 \($0) です。ここは検証用の文章。</p>" }
+            .joined()
+        let harness = try RenderingLifecycleScriptHarness(bodyHTML: body)
+        defer { harness.close() }
+        try await harness.load()
+        try await harness.setup()
+        try await harness.settleMessages()
+        harness.messages.reset()
+
+        // 支援技術やフォーカス移動を模して、文書のかなり先へスクロールさせる
+        let _: Bool = try await harness.evaluate("""
+            const el = document.scrollingElement || document.documentElement;
+            window.scrollTo(Math.round(el.scrollWidth * 0.4),
+                            Math.round(el.scrollHeight * 0.4));
+            await new Promise(r => setTimeout(r, 500));
+            return true;
+            """)
+        let reported = harness.messages
+            .compactMap { $0["type"] as? String == "pageChanged" ? $0["page"] as? Int : nil }
+        XCTAssertFalse(reported.isEmpty, "着地ページが通知されていない(巻き戻された)")
+        let landedPage = try XCTUnwrap(reported.last)
+        XCTAssertGreaterThan(landedPage, 0, "先頭ページへ巻き戻っている")
+
+        // わずかなずれ(2px 超・半ページ未満)は元のページへ戻し、ページは動かさない
+        harness.messages.reset()
+        let _: Bool = try await harness.evaluate("""
+            window.scrollBy(20, 20);
+            await new Promise(r => setTimeout(r, 500));
+            return true;
+            """)
+        let after = harness.messages
+            .compactMap { $0["type"] as? String == "pageChanged" ? $0["page"] as? Int : nil }
+        for page in after {
+            XCTAssertEqual(page, landedPage, "わずかなずれでページが動いた")
+        }
+    }
+
     func testVisibleMediaOverlayHighlightDoesNotPostPageChanged() async throws {
         let harness = try RenderingLifecycleScriptHarness(
             bodyHTML: "<p id=\"visible\">現在ページの読み上げ範囲</p>")
