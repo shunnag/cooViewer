@@ -4,7 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
-## [1.16.6] - 2026-09-09
+## [1.17.0] - 2026-09-09
+
+### 追加
+- 本の中のスクリプトを有効にしたとき、`navigator.epubReadingSystem` を
+  提供するようにした(EPUB Reading Systems 3.3 §6.4 の必須要件)。対応状況は
+  実際に合わせて申告する(touch-events は false)。既定でスクリプトは無効の
+  ままなので、通常の本には影響しない。
 
 ### 修正
 - コンテナ内リソースの応答から `Cache-Control: no-store` を外した。非 HTTP
@@ -60,6 +66,9 @@
   `<meta name="fixed-layout" content="true">`、`book-type: comic`、
   `original-resolution: 幅x高さ`、および META-INF の display-options.xml の
   `fixed-layout` 指定。明示の `rendition:layout` がある本には影響しない。
+- 同じ本の中の iframe が空枠になっていた(CSP の `frame-src` が `none` だった)。
+  EPUB 3.3 が認めるコンテナ内の iframe を表示できるようにした。外部への
+  埋め込みは従来どおり遮断される。
 
 ## [1.16.5] - 2026-09-09
 
