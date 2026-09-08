@@ -238,6 +238,7 @@ public final class EPUBReaderView: NSView {
     private var spineNavigationGate = SpineNavigationGate()
     /// ネイティブキー横取りのローカルモニタ(forwardsKeyEventsNatively)
     private var keyEventMonitor: Any?
+    private var isForwardingKeyDown = false
     /// メディアオーバーレイ(SMIL)再生エンジン(再生時に生成)
     var mediaOverlayController: MediaOverlayController?
     /// めくりアニメーションのオーバーレイ(spine 切替時に掃除)
@@ -296,13 +297,28 @@ public final class EPUBReaderView: NSView {
     /// Routes a key received by the container through the same keyboard
     /// settings contract used by its web view.
     public override func keyDown(with event: NSEvent) {
-        // cooViewer-oxr.80: コンテナが responder の場合もキーを取りこぼさない。
-        guard !settings.handlesKeyboardNavigation else {
+        routeKeyDown(with: event) { event in
             if let webView {
                 webView.keyDown(with: event)
             } else {
                 super.keyDown(with: event)
             }
+        }
+    }
+
+    // WebKit への配送を分離し、プロセス間通信に依存せず再入経路を検証する。
+    func routeKeyDown(with event: NSEvent, forward: (NSEvent) -> Void) {
+        // Washi #3: WebKit が未処理キーを super.keyDown 経由で返すと
+        // このコンテナへ戻る。転送中の再入は上位 responder へ通し、往復を断つ。
+        guard !isForwardingKeyDown else {
+            super.keyDown(with: event)
+            return
+        }
+        // cooViewer-oxr.80: コンテナが responder の場合もキーを取りこぼさない。
+        guard !settings.handlesKeyboardNavigation else {
+            isForwardingKeyDown = true
+            defer { isForwardingKeyDown = false }
+            forward(event)
             return
         }
         let modifiers = event.modifierFlags

@@ -4,6 +4,14 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
+## [1.16.1] - 2026-09-08
+
+### 修正
+- 既定のキーボードナビゲーションが有効なとき、WebView が処理しないキー
+  (`-`・Esc・`+` など)で `EPUBReaderView` と WebView が無限再帰して
+  クラッシュする問題を修正した。再入したキーは上位レスポンダへ渡す
+  ([Washi #3](https://github.com/shunnag/Washi/issues/3))。
+
 ## [1.16.0] - 2026-09-06
 
 ### 追加
