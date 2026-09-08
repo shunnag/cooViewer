@@ -1098,6 +1098,24 @@ public final class EPUBReaderView: NSView {
         await callWashiReturning(body)
     }
 
+    /// The flow the publication asks for (`rendition:flow`), and whether it
+    /// wants one continuous scroll (`rendition:layout="roll"`, or the
+    /// `pre-paginated` + `scrolled-continuous` pair Japanese publishers used
+    /// before `roll` existed).
+    ///
+    /// The reader paginates with CSS multi-column in every case today, so this
+    /// is reported rather than obeyed: a host can use it to pick its own
+    /// presentation. A dedicated scrolled mode is separate work
+    /// (cooViewer-gse.8 / cooViewer-oxr.46 C27).
+    public var requestedFlow: RenditionFlow {
+        publication?.package.metadata.rendition.flow ?? .auto
+    }
+
+    /// Whether the publication asks to be shown as one continuous scroll.
+    public var requestsContinuousScroll: Bool {
+        publication?.package.isScrollLike ?? false
+    }
+
     /// Saved highlights (and notes) to draw over the book.
     ///
     /// Only the ones whose `spineIndex` (or `idref`) matches the item on screen
