@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import Washi
+@testable import WashiCore
 
 /// cooViewer-oxr.46 C08: 再生エンジンのタイマーが実行ループの追跡モードでも
 /// 動くこと。ライブリサイズやメニュー追跡の間 tick が止まると、音声だけ先へ
@@ -116,5 +117,70 @@ final class MediaOverlayPlaybackTests: XCTestCase {
         while Date() < deadline {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
+    }
+}
+
+/// cooViewer-oxr.46 C26: 再生 UX(読み飛ばし・速度・位置の保存と復元)。
+@MainActor
+final class MediaOverlayUXTests: XCTestCase {
+    private func par(_ type: String?) -> MediaOverlay.Parallel {
+        MediaOverlay.Parallel(textHref: "c.xhtml#x", audioHref: nil,
+                              clipBegin: 0, clipEnd: nil, epubType: type)
+    }
+
+    func testSkippabilityMatchesBareAndPrefixedTypes() {
+        let types: Set<String> = ["pagebreak", "footnote"]
+        XCTAssertTrue(MediaOverlayController.isSkipped(par("pagebreak"), types: types))
+        XCTAssertTrue(MediaOverlayController.isSkipped(
+            par("frontmatter:pagebreak"), types: types))
+        XCTAssertTrue(MediaOverlayController.isSkipped(
+            par("footnote noteref"), types: types))
+        XCTAssertFalse(MediaOverlayController.isSkipped(par("bodymatter"), types: types))
+        XCTAssertFalse(MediaOverlayController.isSkipped(par(nil), types: types))
+        // 既定(空集合)は何も飛ばさない
+        XCTAssertFalse(MediaOverlayController.isSkipped(par("pagebreak"), types: []))
+    }
+
+    func testSkippedParsAreNotPlayed() throws {
+        let book = try EPUBPublication(
+            data: ZipBuilder.build(
+                EPUBFixtures.multiDocumentMediaOverlayEntries(), method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/washi-skip.epub"))
+        let view = EPUBReaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        view.load(publication: book)
+        let controller = MediaOverlayController(
+            reader: view, publication: book, activeClass: "x")
+        view.mediaOverlayController = controller
+        controller.continuesToNextItem = false
+        // fixture の par は epub:type を持たないので、飛ばし指定は効かない
+        controller.skippedTypes = ["pagebreak"]
+        controller.play(fromSpineIndex: 0)
+        XCTAssertEqual(controller.currentParIndex, 0)
+        controller.stop()
+    }
+
+    /// 保存した位置から再開できる
+    func testPlaybackResumesAtSavedPosition() throws {
+        let book = try EPUBPublication(
+            data: ZipBuilder.build(
+                EPUBFixtures.multiDocumentMediaOverlayEntries(), method: 8),
+            displayURL: URL(fileURLWithPath: "/tmp/washi-resume.epub"))
+        let view = EPUBReaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        view.load(publication: book)
+        XCTAssertTrue(view.playMediaOverlay(atSpineIndex: 0, parIndex: 2))
+        let position = try XCTUnwrap(view.mediaOverlayPosition)
+        XCTAssertEqual(position.parIndex, 2)
+        view.stopMediaOverlay()
+        // 範囲外の位置は先頭へ丸める
+        XCTAssertTrue(view.playMediaOverlay(atSpineIndex: 0, parIndex: 999))
+        XCTAssertEqual(view.mediaOverlayPosition?.parIndex, 0)
+        view.stopMediaOverlay()
+    }
+
+    /// 既定のハイライトクラスに下地の CSS を与えている
+    func testDefaultActiveClassHasBaseStyle() {
+        XCTAssertTrue(
+            ReaderScripts.baseCSS.contains("-epub-media-overlay-active"),
+            "既定クラスの下地 CSS が無い")
     }
 }

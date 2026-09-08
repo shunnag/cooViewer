@@ -1939,6 +1939,12 @@ enum ReaderScripts {
         @font-face { font-family: "sans-serif-ja-v"; font-weight: bold; \
         src: local("HiraginoSans-W6"), local("YuGothic-Bold"); }
         ruby > rt, ruby > rp { -webkit-user-select: none; user-select: none; }
+        /* cooViewer-oxr.46 C26: media:active-class を宣言せず、対応する CSS も
+           持たない本(草枕など)では音声同期のハイライトが見えない。既定クラスに
+           だけ最小限の下地を与える(本が同じクラスを飾っていれば後勝ちで上書き
+           される)。currentColor を使い、明暗どちらのテーマでも成立させる。 */
+        [class~="-epub-media-overlay-active"] {
+        background-color: color-mix(in srgb, currentColor 18%, transparent);         border-radius: 0.15em; }
         """
 
     /// 基礎 CSS を挿し込む起動スクリプト(atDocumentStart。head 出現を待つ)

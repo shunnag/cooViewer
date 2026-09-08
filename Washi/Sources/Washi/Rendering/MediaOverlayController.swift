@@ -27,6 +27,14 @@ final class MediaOverlayController {
     private var playbackGeneration: UInt = 0
     /// 項目末尾で次項目のオーバーレイへ連続再生するか(既定 true)
     var continuesToNextItem = true
+    /// 再生速度(1.0 = 収録速度)。0.5〜3.0 へ丸める
+    var playbackRate: Double = 1.0 {
+        didSet { applyPlaybackRate() }
+    }
+    /// cooViewer-oxr.46 C26 / RS 3.3 §9.4.1: 読み飛ばす epub:type。
+    var skippedTypes: Set<String> = []
+    /// 再生位置(ホストが保存して次回復元するため)
+    var position: (spineIndex: Int, parIndex: Int) { (spineIndex, parIndex) }
 
     init(reader: EPUBReaderView, publication: EPUBPublication,
          activeClass: String) {
@@ -36,16 +44,17 @@ final class MediaOverlayController {
     }
 
     /// 指定 spine 項目のオーバーレイを先頭から再生する(既に再生中なら停止して開始)
-    func play(fromSpineIndex index: Int) {
+    func play(fromSpineIndex index: Int, parIndex startPar: Int = 0) {
         playbackGeneration &+= 1
         stopAudio()
         spineIndex = index
-        parIndex = 0
+        parIndex = max(0, startPar)
         overlay = publication.mediaOverlay(forSpineIndex: index)
         guard let overlay, !overlay.parallels.isEmpty else {
             finish()
             return
         }
+        if parIndex >= overlay.parallels.count { parIndex = 0 }
         _ = overlay
         startCurrentPar(seek: true)
         setPlaying(true)
@@ -98,6 +107,11 @@ final class MediaOverlayController {
             finish()
             return
         }
+        // cooViewer-oxr.46 C26: 読み飛ばし指定(ページ番号・注など)の区間は鳴らさない
+        if Self.isSkipped(overlay.parallels[parIndex], types: skippedTypes) {
+            advancePar()
+            return
+        }
         let par = overlay.parallels[parIndex]
         if let audioHref = par.audioHref,
            let audioPath = ContainerPath.resolve(base: overlay.basePath,
@@ -110,6 +124,7 @@ final class MediaOverlayController {
                 // cooViewer-oxr.46 C08: play() の失敗を無視すると、tick が
                 // !isPlaying を見て即座に次の par へ進み、25ms 間隔で本の
                 // 終わりまで駆け抜ける。失敗したら音声の無い par と同じ扱いにする。
+                applyPlaybackRate()
                 if player.play() {
                     highlight(par: par)
                     startTicker()
@@ -152,6 +167,25 @@ final class MediaOverlayController {
         }
         RunLoop.main.add(timer, forMode: .common)
         ticker = timer
+    }
+
+    /// epub:type は空白区切りの複数値。1 つでも該当すれば読み飛ばす。
+    static func isSkipped(_ par: MediaOverlay.Parallel,
+                          types: Set<String>) -> Bool {
+        guard !types.isEmpty, let epubType = par.epubType else { return false }
+        for value in epubType.split(separator: " ") {
+            // "frontmatter:pagebreak" のような接頭辞付きも末尾で判定する
+            let bare = value.split(separator: ":").last.map(String.init) ?? String(value)
+            if types.contains(bare) || types.contains(String(value)) { return true }
+        }
+        return false
+    }
+
+    private func applyPlaybackRate() {
+        guard let player else { return }
+        let clamped = min(max(playbackRate, 0.5), 3.0)
+        player.enableRate = true
+        player.rate = Float(clamped)
     }
 
     private func loadAudio(path: String) {
