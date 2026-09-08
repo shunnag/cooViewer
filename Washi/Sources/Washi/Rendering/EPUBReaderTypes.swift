@@ -287,9 +287,11 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// `NSEvent` key-down to `readerView(_:didReceiveNativeKey:)` before the
     /// embedded `WKWebView` can consume it. Use this instead of the JS-based
     /// `didReceiveKey` path when the host has its own key bindings and needs
-    /// reliable, in-order `NSEvent`s (the JS path silently drops keys whenever
-    /// the web view holds first responder). Independent of
+    /// reliable, in-order `NSEvent`s before WebKit handles them (the JS path
+    /// delivers DOM key identities asynchronously). Independent of
     /// `handlesKeyboardNavigation`. Default false.
+    /// Applies only while this reader or its embedded web content has keyboard
+    /// focus. Each event is delivered once, including events resent by WebKit.
     public var forwardsKeyEventsNatively = false
     /// Whether to allow scripted content (the book's JavaScript). Default
     /// false.
@@ -662,6 +664,8 @@ public protocol EPUBReaderViewDelegate: AnyObject {
     /// propagate normally. Preferred over `didReceiveKey` for hosts with their
     /// own key bindings — it is a real `NSEvent`, in order, and reaches you even
     /// while the web view holds first responder.
+    /// Events for other controls in the same window are not intercepted, and
+    /// WebKit's resend of an unhandled event does not call this method again.
     ///
     /// The monitor runs before the responder chain, so returning true also
     /// suppresses menu key equivalents (⌘C, ⌘W, …) for that event. Return true
