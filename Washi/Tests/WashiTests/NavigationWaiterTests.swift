@@ -25,6 +25,40 @@ final class NavigationWaiterTests: XCTestCase {
         }
     }
 
+    /// cooViewer-oxr.46 C33: 取り消し由来のエラー(-999 / WebKit 102)は
+    /// 失敗として扱わない。取り消された前の読み込みの通知が次の計測へ
+    /// 配達されると、偽の失敗が累積して census が止まる。
+    func testCancellationErrorsAreNotTreatedAsFailure() async throws {
+        let waiter = NavigationWaiter()
+        let webView = WKWebView(frame: .zero)
+        let task = Task { try await waiter.wait(timeout: .seconds(2)) }
+        try? await Task.sleep(for: .milliseconds(20))
+        waiter.webView(webView, didFail: nil, withError: NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        waiter.webView(webView, didFailProvisionalNavigation: nil, withError: NSError(
+            domain: "WebKitErrorDomain", code: 102))
+        try? await Task.sleep(for: .milliseconds(50))
+        // まだ解決していない(本当の完了・本当の失敗・タイムアウトを待つ)
+        waiter.webView(webView, didFinish: nil)
+        try await task.value
+    }
+
+    /// 本物の失敗は従来どおり throw する(退行防止)。
+    func testRealFailureStillThrows() async {
+        let waiter = NavigationWaiter()
+        let webView = WKWebView(frame: .zero)
+        let task = Task { try await waiter.wait(timeout: .seconds(2)) }
+        try? await Task.sleep(for: .milliseconds(20))
+        waiter.webView(webView, didFail: nil, withError: NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+        do {
+            try await task.value
+            XCTFail("本物の失敗は throw するはず")
+        } catch {
+            XCTAssertEqual((error as NSError).code, NSURLErrorTimedOut)
+        }
+    }
+
     /// cooViewer-oxr.53: continuation 設置前の cancel も失われない。
     func testExplicitCancelBeforeWaitIsRemembered() async {
         let waiter = NavigationWaiter()

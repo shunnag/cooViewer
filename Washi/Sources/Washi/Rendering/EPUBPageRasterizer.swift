@@ -231,7 +231,7 @@ public final class EPUBPageRasterizer {
         let delegate = NavigationWaiter()
         pendingNavigationWaiter = delegate
         webView.navigationDelegate = delegate
-        webView.load(URLRequest(url: url))
+        delegate.expect(webView.load(URLRequest(url: url)))
         // オフスクリーンの WebContent プロセスはジェットサム候補のため、
         // 落ちた/固まったときに永久待ちしないようタイムアウト付きで待つ
         do {
@@ -338,6 +338,34 @@ final class NavigationWaiter: NSObject, WKNavigationDelegate {
     /// continuation を設置する前にキャンセルが着弾したときのフラグ(直列
     /// MainActor 上で install が先に走るので通常は不要だが、多重防御)
     private var cancelledBeforeInstall = false
+    /// cooViewer-oxr.46 C33: 待っているナビゲーション。取り消された前の
+    /// 読み込みの通知が次の待機へ配達されても取り違えない(設定しなければ
+    /// 従来どおり最初に届いた通知で解決する)
+    private var expectedNavigation: WKNavigation?
+    private var hasExpectation = false
+
+    /// この待機が対象とするナビゲーションを宣言する(load の直後に呼ぶ)。
+    func expect(_ navigation: WKNavigation?) {
+        expectedNavigation = navigation
+        hasExpectation = true
+    }
+
+    private func isExpected(_ navigation: WKNavigation?) -> Bool {
+        guard hasExpectation else { return true }
+        return navigation === expectedNavigation
+    }
+
+    /// 取り消し由来のエラーは「失敗」ではない。取り消された前の読み込みの
+    /// -999 が次の計測へ配達されると、偽の失敗として累積し、census が
+    /// 2 回で停止してしまう(cooViewer-oxr.46 C33)。
+    private static func isCancellation(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain,
+           nsError.code == NSURLErrorCancelled { return true }
+        // WebKitErrorFrameLoadInterruptedByPolicyChange
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return true }
+        return false
+    }
 
     enum WaitError: Error {
         case timeout
@@ -402,17 +430,20 @@ final class NavigationWaiter: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard isExpected(navigation) else { return }
         resume()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
                  withError error: any Error) {
+        guard isExpected(navigation), !Self.isCancellation(error) else { return }
         resume(throwing: error)
     }
 
     func webView(_ webView: WKWebView,
                  didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: any Error) {
+        guard isExpected(navigation), !Self.isCancellation(error) else { return }
         resume(throwing: error)
     }
 
