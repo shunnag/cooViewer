@@ -192,8 +192,11 @@ public final class EPUBPublication: Sendable {
         try self.init(url: displayURL, reader: ZipContainerReader(archive: archive))
     }
 
-    init(url: URL, reader: any ContainerReader) throws {
+    init(url: URL, reader baseReader: any ContainerReader) throws {
         self.url = url
+        // cooViewer-oxr.46 C44: 自炊層の梱包ミス(フォルダごと圧縮・大文字小文字
+        // 違い)を、厳密な解決が外れたときだけ救済する。
+        let reader: any ContainerReader = RescuingContainerReader(base: baseReader)
         let container = try OCFContainer(reader: reader)
         self.container = container
 
