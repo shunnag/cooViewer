@@ -293,6 +293,14 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// Applies only while this reader or its embedded web content has keyboard
     /// focus. Each event is delivered once, including events resent by WebKit.
     public var forwardsKeyEventsNatively = false
+    /// Playback rate for media-overlay narration (1.0 = the recorded speed).
+    /// Clamped to 0.5…3.0, the range AVAudioPlayer reproduces intelligibly.
+    public var mediaOverlayPlaybackRate: Double = 1.0
+    /// `epub:type` values whose media-overlay clips are skipped during playback
+    /// (EPUB Reading Systems 3.3 §9.4.1 skippability). Typical values are
+    /// "pagebreak", "footnote", "noteref" and "annotation". Empty by default,
+    /// which plays everything.
+    public var mediaOverlaySkippedTypes: Set<String> = []
     /// Whether to allow scripted content (the book's JavaScript). Default
     /// false.
     public var allowsScriptedContent = false

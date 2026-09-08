@@ -4,7 +4,7 @@ import Foundation
 /// 再生・一時停止・停止と、テキストのハイライト/ページ追従を仲介する
 extension EPUBReaderView {
     /// media:active-class の既定(本が宣言していないとき)
-    private static let defaultActiveClass = "-epub-media-overlay-active"
+    static let defaultActiveClass = "-epub-media-overlay-active"
 
     /// 現在の spine 項目がメディアオーバーレイ(音声同期)を持つか
     public var hasMediaOverlayForCurrentItem: Bool {
@@ -40,8 +40,34 @@ extension EPUBReaderView {
             ?? Self.defaultActiveClass
         let controller = MediaOverlayController(
             reader: self, publication: publication, activeClass: activeClass)
+        controller.playbackRate = settings.mediaOverlayPlaybackRate
+        controller.skippedTypes = settings.mediaOverlaySkippedTypes
         mediaOverlayController = controller
         controller.play(fromSpineIndex: currentSpineIndex)
+    }
+
+    /// The media-overlay playback position (spine item + clip index), for a host
+    /// that persists where the reader stopped listening. `nil` when idle.
+    public var mediaOverlayPosition: (spineIndex: Int, parIndex: Int)? {
+        mediaOverlayController.map(\.position)
+    }
+
+    /// Resumes narration at a saved position (see ``mediaOverlayPosition``).
+    /// Returns false when the book has no overlay at that spine item.
+    @discardableResult
+    public func playMediaOverlay(atSpineIndex index: Int, parIndex: Int) -> Bool {
+        guard let publication,
+              publication.mediaOverlay(forSpineIndex: index) != nil else { return false }
+        let activeClass = publication.metadata.mediaOverlayActiveClass
+            ?? Self.defaultActiveClass
+        let controller = mediaOverlayController
+            ?? MediaOverlayController(reader: self, publication: publication,
+                                      activeClass: activeClass)
+        controller.playbackRate = settings.mediaOverlayPlaybackRate
+        controller.skippedTypes = settings.mediaOverlaySkippedTypes
+        mediaOverlayController = controller
+        controller.play(fromSpineIndex: index, parIndex: parIndex)
+        return true
     }
 
     /// 一時停止(ハイライトは残す)
