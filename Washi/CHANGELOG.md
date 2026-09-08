@@ -4,7 +4,7 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
-## [Unreleased]
+## [1.16.2] - 2026-09-08
 
 ### 修正
 - 固定レイアウトとリフローが混在する本で、本文へ移動した際に WebView の
