@@ -69,7 +69,11 @@ struct PropertyResolver: Sendable {
 
 /// パッケージ文書(OPF)のパーサ(EPUB 3.3 §5、EPUB 2.0.1 互換込み)
 enum PackageDocumentParser {
-    static func parse(data: Data, at containerPath: String) throws -> EPUBPackage {
+    /// - Parameter legacyFixedLayoutHint: パッケージ文書の外(META-INF の
+    ///   display-options.xml)が固定レイアウトを表明している場合に true。
+    ///   明示の rendition:layout がある本には影響しない(cooViewer-oxr.46 C46)。
+    static func parse(data: Data, at containerPath: String,
+                      legacyFixedLayoutHint: Bool = false) throws -> EPUBPackage {
         let document = try WashiXML.document(from: data)
         guard let root = document.rootElement(), root.localName == "package" else {
             throw EPUBError.malformed("package 要素がない: \(containerPath)")
@@ -86,7 +90,8 @@ enum PackageDocumentParser {
             metadataElement,
             resolver: resolver,
             packageDirection: packageDirection,
-            packageLanguage: packageLanguage)
+            packageLanguage: packageLanguage,
+            legacyFixedLayoutHint: legacyFixedLayoutHint)
         if let uniqueIDRef = root.attr("unique-identifier") {
             metadata.uniqueIdentifier = metadata.identifiers
                 .first { $0.id == uniqueIDRef }?.value
@@ -176,7 +181,8 @@ enum PackageDocumentParser {
         _ element: XMLElement,
         resolver: PropertyResolver,
         packageDirection: EPUBTextDirection?,
-        packageLanguage: String?
+        packageLanguage: String?,
+        legacyFixedLayoutHint: Bool = false
     ) -> EPUBMetadata {
         // cooViewer-oxr.52: package から metadata へ継承した基底方向と言語を
         // dc:title / dc:creator の要素固有属性より低い優先度で保持する。
@@ -340,6 +346,16 @@ enum PackageDocumentParser {
                 break
             }
         }
+
+        // cooViewer-oxr.46 C46: rendition:layout より前の時代の固定レイアウト表明。
+        // 2011〜2013 年の iBooks/Kobo 向け漫画や Amazon 形式からの中間 EPUB は
+        // rendition:layout を持たないため、これが無いとリフロー扱いになり、
+        // ホスト側(cooViewer の EPUBSource)が固定レイアウトとして開けない。
+        // 明示の rendition:layout があるときは何もしない(新しい宣言を優先)。
+        if !seenRenditionProperties.contains("rendition:layout"),
+           legacyFixedLayoutHint || Self.declaresLegacyFixedLayout(metaItems) {
+            metadata.rendition.layout = .prePaginated
+        }
         // belongs-to-collection は refine(collection-type / group-position)の
         // 解決に meta 要素自身の id 属性が要るため XML を直接見て組み立てる
         metadata.collections = resolveCollections(element, resolver: resolver,
@@ -398,4 +414,35 @@ enum PackageDocumentParser {
                 < ($1.element[keyPath: seq] ?? 0, $1.offset)
         }.map(\.element)
     }
+    /// 明示の rendition:layout 宣言があるか(旧世代表明より優先する判断に使う)
+    static func declaresRenditionLayout(_ metaItems: [EPUBMetaItem]) -> Bool {
+        metaItems.contains { $0.refines == nil && $0.property == "rendition:layout" }
+    }
+
+    /// EPUB 2 時代の `<meta name=… content=…>` による固定レイアウト表明。
+    /// - `fixed-layout: true`(Kobo ほか)
+    /// - `book-type: comic`(iBooks 向け漫画)
+    /// - `original-resolution: 幅x高さ`(Amazon 形式からの中間 EPUB)
+    static func declaresLegacyFixedLayout(_ metaItems: [EPUBMetaItem]) -> Bool {
+        for item in metaItems where item.refines == nil {
+            let value = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            switch item.property {
+            case "fixed-layout" where value == "true":
+                return true
+            case "book-type" where value == "comic":
+                return true
+            case "original-resolution":
+                // "1200x1600" 形だけを表明とみなす
+                let parts = value.split(separator: "x", maxSplits: 1)
+                if parts.count == 2, parts.allSatisfy({ Int($0) ?? 0 > 0 }) {
+                    return true
+                }
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
 }
