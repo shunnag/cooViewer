@@ -96,6 +96,24 @@ public enum FontDeobfuscator {
         return Data(bytes)
     }
 
+    /// Whether the bytes start with a font signature (sfnt / OpenType / WOFF).
+    /// Used to tell a correct deobfuscation from a wrong key or a stale
+    /// `encryption.xml` declaration: the result is garbage in both cases, and
+    /// WebKit then silently falls back to a substitute font.
+    public static func looksLikeFont(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return false }
+        let magic = data.prefix(4)
+        let signatures: [[UInt8]] = [
+            [0x00, 0x01, 0x00, 0x00],           // TrueType
+            Array("true".utf8),                 // TrueType (Apple)
+            Array("ttcf".utf8),                 // TrueType Collection
+            Array("OTTO".utf8),                 // CFF OpenType
+            Array("wOFF".utf8),                 // WOFF
+            Array("wOF2".utf8),                 // WOFF2
+        ]
+        return signatures.contains(Array(magic))
+    }
+
     /// Undo obfuscated data (XOR is an involution, so applying it equals undoing it).
     public static func deobfuscate(
         _ data: Data, algorithm: EPUBEncryptionInfo.ObfuscationAlgorithm,

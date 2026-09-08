@@ -661,10 +661,8 @@ public final class EPUBPublication: Sendable {
             throw EPUBError.drmProtected(scheme: algorithm)
         }
         var data = try container.reader.read(path)
-        if let algorithm = encryption.obfuscatedResources[path],
-           let uid = obfuscationIdentifier(for: algorithm) {
-            data = FontDeobfuscator.deobfuscate(data, algorithm: algorithm,
-                                                uniqueIdentifier: uid)
+        if let algorithm = encryption.obfuscatedResources[path] {
+            data = deobfuscatedFont(data, algorithm: algorithm)
         }
         let mediaType = manifestByPath[path]?.mediaType
             ?? EPUBMediaType.guessed(fromPath: path)
@@ -675,6 +673,41 @@ public final class EPUBPublication: Sendable {
     /// Adobe は「UUID 形の dc:identifier」を鍵にするツールが実在するため、
     /// unique-identifier が UUID 形でなければ他の識別子から UUID 形を探す
     /// (readium-js #153 の実運用知見)
+    /// 難読化を解いたうえで、結果がフォントとして読めることを確かめる。
+    /// encryption.xml の宣言は無条件には信じられない: Sigil や calibre の
+    /// 編集で dc:identifier が差し替わった本、難読化していないのに宣言だけ
+    /// 残った本があり、そのまま XOR するとフォントが壊れて WebKit が黙って
+    /// 代替フォントへ落ちる(縦書き専用フォントや外字で字形が消える)。
+    /// 宣言された識別子群を順に試し、どれも通らなければ素のデータを見る。
+    /// 見つからなければ従来どおり最初の候補の結果を返す(cooViewer-oxr.46 C47)。
+    private func deobfuscatedFont(
+        _ data: Data, algorithm: EPUBEncryptionInfo.ObfuscationAlgorithm) -> Data {
+        var fallback: Data?
+        for identifier in obfuscationIdentifierCandidates(for: algorithm) {
+            let candidate = FontDeobfuscator.deobfuscate(
+                data, algorithm: algorithm, uniqueIdentifier: identifier)
+            if FontDeobfuscator.looksLikeFont(candidate) { return candidate }
+            if fallback == nil { fallback = candidate }
+        }
+        // 宣言だけ残っていて実際には難読化されていない本の救済。
+        if FontDeobfuscator.looksLikeFont(data) { return data }
+        return fallback ?? data
+    }
+
+    /// 難読化解除に使う識別子の候補(先頭が従来の選択)。
+    private func obfuscationIdentifierCandidates(
+        for algorithm: EPUBEncryptionInfo.ObfuscationAlgorithm) -> [String] {
+        var candidates: [String] = []
+        if let primary = obfuscationIdentifier(for: algorithm) {
+            candidates.append(primary)
+        }
+        for identifier in metadata.identifiers.map(\.value)
+        where !candidates.contains(identifier) {
+            candidates.append(identifier)
+        }
+        return candidates
+    }
+
     private func obfuscationIdentifier(
         for algorithm: EPUBEncryptionInfo.ObfuscationAlgorithm) -> String? {
         switch algorithm {
