@@ -61,7 +61,13 @@ enum ReaderScripts {
             return detectedColumnAxisSupport;
         }
 
+        // cooViewer-oxr.46 C35: setup で受け取る文書トークン。native 側は
+        // これで「今表示している文書からの通知か」を判別する。JS コンテキストは
+        // 文書ごとに作り直されるので、旧文書からの遅配は必ず別の値になる。
+        let documentToken = '';
+
         function post(message) {
+            if (documentToken) { message.token = documentToken; }
             try { window.webkit.messageHandlers.washi.postMessage(message); }
             catch (e) { /* ハンドラ未登録(ラスタライザ等)は黙って無視 */ }
         }
@@ -1410,6 +1416,9 @@ enum ReaderScripts {
         // ---- セットアップ(native から didFinish 後に呼ぶ) ----
 
         washi.setup = function (options) {
+            if (typeof options.documentToken === 'string') {
+                documentToken = options.documentToken;
+            }
             resetPaginationMarkers();
             fixedLayout = !!options.fixedLayout;
             keysEnabled = options.keysEnabled !== false;

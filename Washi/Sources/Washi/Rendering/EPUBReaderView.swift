@@ -231,6 +231,16 @@ public final class EPUBReaderView: NSView {
     /// 送りで古いセットアップが新しい文書の状態(pendingTarget・
     /// isLoadingSpineItem・復元位置)を消費・破壊しないようにする
     private var spineLoadGeneration = 0
+    /// cooViewer-oxr.46 C35: setup ごとに更新する文書の印。JS からの通知に
+    /// 同じ値が付いていなければ、差し替え前の文書からの遅配とみなして捨てる。
+    /// (isLoadingSpineItem のガードは「読み込み中」しか見ないため、新文書が
+    /// 確定した後に届く旧文書の report を弾けない)
+    private var currentDocumentToken: String { "g\(spineLoadGeneration)" }
+    /// 印を持たない通知(古い注入・ラスタライザ経路)は従来どおり受け入れる
+    func isFromCurrentDocument(_ dict: [String: Any]) -> Bool {
+        guard let token = dict["token"] as? String else { return true }
+        return token == currentDocumentToken
+    }
     // delegate 通知中の load/go は新しい要求。外側の旧要求を続行させない。
     private var navigationRequestGeneration: UInt = 0
 
@@ -1857,6 +1867,8 @@ public final class EPUBReaderView: NSView {
             "gutter": Double(spreadGutter(forContentWidth: frame.width)),
             "fixedLayout": isFixedLayoutItem,
             "keysEnabled": settings.handlesKeyboardNavigation,
+            // cooViewer-oxr.46 C35: 通知が今の文書のものかを判別する印。
+            "documentToken": currentDocumentToken,
             // cooViewer-oxr.27: 既定は即時。明示 opt-in 時だけ click を保留する。
             "deferTaps": settings.defersTapsForDoubleClick,
             "fontScale": settings.fontScale,
@@ -2561,7 +2573,9 @@ public final class EPUBReaderView: NSView {
         case "pageChanged":
             // cooViewer-oxr.19/23: 旧文書から遅配された位置通知で、新しい
             // pending target / 復元位置とホストの保存位置を上書きしない。
-            guard !isLoadingSpineItem else { break }
+            // cooViewer-oxr.46 C35: 読み込みが済んだ後に届く旧文書の通知も、
+            // setup で渡した印が違うので同じく捨てる。
+            guard !isLoadingSpineItem, isFromCurrentDocument(dict) else { break }
             let request = navigationRequestGeneration
             let generation = spineLoadGeneration
             pageInItem = dict["page"] as? Int ?? 0
