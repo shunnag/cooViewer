@@ -15,6 +15,11 @@
 - 音声同期の再生位置を取り出して復元できるようにした
   (`mediaOverlayPosition` と `playMediaOverlay(atSpineIndex:parIndex:)`)。
   閉じたときの位置をホスト側で保存できる。
+- EPUB 3.4 の `rendition:layout="roll"`(縦スクロール漫画・絵巻の切れ目ない
+  表示)を認識するようにした。これまで未知の値としてリフローに倒していた。
+  日本の出版社が roll 以前に使っていた `pre-paginated` +
+  `scrolled-continuous` の組み合わせも同義として扱い、`isScrollLike` で
+  判別できる。描画は現状リフローと同じ経路で行う。
 - 本の中のスクリプトを有効にしたとき、`navigator.epubReadingSystem` を
   提供するようにした(EPUB Reading Systems 3.3 §6.4 の必須要件)。対応状況は
   実際に合わせて申告する(touch-events は false)。既定でスクリプトは無効の
