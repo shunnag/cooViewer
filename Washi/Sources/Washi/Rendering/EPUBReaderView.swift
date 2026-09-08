@@ -1084,6 +1084,44 @@ public final class EPUBReaderView: NSView {
         publication?.effectiveReadingDirection == .rtl
     }
 
+    /// テスト用: washi world で任意の式を評価する
+    func evaluateForTest(_ body: String) async throws -> Any? {
+        guard let webView else { return nil }
+        return try await webView.callAsyncJavaScript(
+            body, arguments: [:], in: nil, contentWorld: Self.washiWorld)
+    }
+
+    /// Saved highlights (and notes) to draw over the book.
+    ///
+    /// Only the ones whose `spineIndex` (or `idref`) matches the item on screen
+    /// are drawn; the rest are kept so a page turn shows them without another
+    /// round trip. Drawing uses the CSS Custom Highlight API, so the book's DOM
+    /// is never modified and overlapping ranges do not nest elements.
+    /// Anchors are extracted-text UTF-16 ranges, so they survive font-size,
+    /// viewport and theme changes (cooViewer-oxr.46 C40).
+    public var highlights: [EPUBHighlight] = [] {
+        didSet {
+            guard highlights != oldValue else { return }
+            applyHighlights()
+        }
+    }
+
+    /// Draws the highlights for the item currently on screen. Called on every
+    /// change and after each spine load / repagination.
+    func applyHighlights() {
+        guard webView != nil, !isLoadingSpineItem else { return }
+        let idref = publication?.readingOrder.indices.contains(currentSpineIndex) == true
+            ? publication?.readingOrder[currentSpineIndex].itemRef.idref : nil
+        let payload = highlights
+            .filter { $0.spineIndex == currentSpineIndex
+                || ($0.idref != nil && $0.idref == idref) }
+            .map { ["offset": $0.utf16Offset, "length": $0.utf16Length,
+                    "style": $0.style.rawValue] as [String: Any] }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        evaluate("__washi.setHighlights(\(json));")
+    }
+
     /// The current position with a text anchor attached (cooViewer-oxr.46 C52).
     /// `progression` alone is re-quantized on restore, so a saved position
     /// drifts by a few pages after a font-size or viewport change; the anchor
@@ -1948,6 +1986,9 @@ public final class EPUBReaderView: NSView {
             if let dict = result as? [String: Any] {
                 applySetupResult(dict)
             }
+            // cooViewer-oxr.46 C40: ページ割りが決まった後に描き直す
+            // (Range は文書に紐づくので、再ページ割りでも作り直す必要がある)
+            applyHighlights()
             if !preserveProgression {
                 // cooViewer-oxr.23: 新文書の target が発行する pageChanged は
                 // 受けつつ、それ以前の旧文書通知だけを loading gate で捨てる。
