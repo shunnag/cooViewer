@@ -16,6 +16,8 @@ final class MediaOverlayController {
     /// 再生中の spine 項目(ホストが現在項目と突き合わせて古い章の再開を防ぐ)
     private(set) var spineIndex = 0
     private var parIndex = 0
+    /// 再生中の par 番号(テストの観測点)
+    var currentParIndex: Int { parIndex }
     private var player: AVAudioPlayer?
     private var loadedAudioPath: String?
     private var ticker: Timer?
@@ -103,10 +105,14 @@ final class MediaOverlayController {
             }
             if let player {
                 if seek { player.currentTime = par.clipBegin }
-                player.play()
-                highlight(par: par)
-                startTicker()
-                return
+                // cooViewer-oxr.46 C08: play() の失敗を無視すると、tick が
+                // !isPlaying を見て即座に次の par へ進み、25ms 間隔で本の
+                // 終わりまで駆け抜ける。失敗したら音声の無い par と同じ扱いにする。
+                if player.play() {
+                    highlight(par: par)
+                    startTicker()
+                    return
+                }
             }
         }
         // 音声を用意できない par: ハイライトだけして一定時間後に次へ
@@ -117,14 +123,33 @@ final class MediaOverlayController {
 
     /// 音声の無い/失敗した par を、決まった短い間ののち次へ送る一発タイマー
     private func scheduleSilentAdvance() {
-        ticker?.invalidate()
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) {
-            [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isPlaying else { return }
-                self.advancePar()
-            }
+        scheduleTicker(interval: 0.4, repeats: false) { controller in
+            guard controller.isPlaying else { return }
+            controller.advancePar()
         }
+    }
+
+    /// cooViewer-oxr.46 C08: Timer.scheduledTimer は .default モードにしか
+    /// 入らないため、ライブリサイズやメニュー追跡の間 tick が止まる。その間に
+    /// 音声だけ進むと clipEnd を跨いでしまい、復帰後の連続判定が外れて
+    /// clipBegin へ巻き戻る。.common モードへ入れて止まらないようにする。
+    private func scheduleTicker(
+        interval: TimeInterval, repeats: Bool,
+        _ body: @escaping @Sendable @MainActor (MediaOverlayController) -> Void
+    ) {
+        ticker?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: repeats) { [weak self] timer in
+            // 繰り返しタイマーは実行ループが保持するので、所有者が消えても
+            // invalidate するまで 25ms ごとに起き続ける。空振りに気づいた
+            // 時点で自分を止める(所有者側の stop() が最初の防衛線)。
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            MainActor.assumeIsolated { body(self) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        ticker = timer
     }
 
     private func loadAudio(path: String) {
@@ -140,12 +165,8 @@ final class MediaOverlayController {
     }
 
     private func startTicker() {
-        ticker?.invalidate()
         // 25ms 間隔で clipEnd 到達を監視して par を進める
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) {
-            [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
+        scheduleTicker(interval: 0.025, repeats: true) { $0.tick() }
     }
 
     private func tick() {
