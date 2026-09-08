@@ -195,8 +195,12 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
     private func reply(to task: any WKURLSchemeTask, url: URL,
                        data: Data, mediaType: String, rangeHeader: String?) {
         let scriptSource = allowsScripts ? "'self' 'unsafe-inline'" : "'none'"
+        // cooViewer-oxr.46 C30: Cache-Control を付けない。非 HTTP スキームの
+        // サブリソースへ WebKit が与える無期限鮮度を no-store が打ち消しており、
+        // 章送り・census 全項目・サムネイルのたびに同じ CSS/フォントを再 inflate
+        // していた。ホスト名は本ごとの UUID なので別の本と取り違えることはなく、
+        // データストアは nonPersistent なのでディスクにも残らない。
         var headers: [String: String] = [
-            "Cache-Control": "no-store",
             "Content-Security-Policy":
                 "default-src 'self'; img-src 'self' data:; media-src 'self' data:; "
                 + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
