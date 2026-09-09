@@ -6,6 +6,8 @@ import XCTest
 @MainActor
 private final class ReaderViewDelegateSpy: EPUBReaderViewDelegate {
     var keys: [EPUBKeyEvent] = []
+    var consumeQuery: [EPUBKeyEvent] = []
+    var onShouldConsumeKey: ((EPUBKeyEvent) -> Bool)?
     var droppedURLs: [URL] = []
     var failures: [any Error] = []
     var censusUpdateCount = 0
@@ -18,6 +20,12 @@ private final class ReaderViewDelegateSpy: EPUBReaderViewDelegate {
 
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent) {
         keys.append(event)
+    }
+
+    func readerView(_ view: EPUBReaderView,
+                    shouldConsumeKey event: EPUBKeyEvent) -> Bool {
+        consumeQuery.append(event)
+        return onShouldConsumeKey?(event) ?? true
     }
 
     func readerView(_ view: EPUBReaderView,
@@ -660,6 +668,30 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
         XCTAssertTrue(view.hasDeferredVisibleLayout)
     }
 
+    /// cooViewer-oxr.46 C35: setup で渡す文書の印で、差し替え前の文書から
+    /// 遅れて届いた通知を判別する。印が無い通知は従来どおり受け入れる。
+    func testSetupCarriesDocumentTokenAndStaleTokensAreRejected() throws {
+        let view = EPUBReaderView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let book = try makePublication()
+        view.load(publication: book)
+        let token = try XCTUnwrap(
+            Self.documentToken(fromOptionsJSON: view.setupOptionsJSON()),
+            "setup に文書の印が入っていない")
+        XCTAssertFalse(token.isEmpty)
+
+        XCTAssertTrue(view.isFromCurrentDocument(["token": token]))
+        XCTAssertFalse(view.isFromCurrentDocument(["token": token + "-old"]))
+        // 印を持たない通知(ラスタライザ経路・古い注入)は受け入れる
+        XCTAssertTrue(view.isFromCurrentDocument([:]))
+    }
+
+    private static func documentToken(fromOptionsJSON json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else { return nil }
+        return dictionary["documentToken"] as? String
+    }
+
     /// cooViewer-oxr.80: コンテナ自身が keyDown を受けても、host 優先設定なら
     /// DOM 往復なしで didReceiveKey へ配送する。
     func testReaderViewKeyDownForwardsWhenKeyboardNavigationDisabled() throws {
@@ -680,6 +712,76 @@ final class EPUBReaderViewRegressionTests: XCTestCase {
         XCTAssertEqual(delegate.keys.count, 1)
         XCTAssertEqual(delegate.keys.first?.key, "x")
         XCTAssertEqual(delegate.keys.first?.shift, true)
+    }
+
+    /// Washi #3(コメント): host 優先設定でも、ホストが扱わなかったキーは
+    /// responder チェーンへ流す。既定(true)では従来どおりここで止まる。
+    func testUnconsumedForwardedKeyReachesNextResponder() throws {
+        let view = EPUBReaderView(frame: .zero)
+        let delegate = ReaderViewDelegateSpy()
+        view.delegate = delegate
+        let responder = KeyDownResponderSpy()
+        view.nextResponder = responder
+        defer { view.nextResponder = nil }
+        var settings = view.settings
+        settings.handlesKeyboardNavigation = false
+        view.settings = settings
+        func event(_ characters: String, _ keyCode: UInt16) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: 1, windowNumber: 0, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: keyCode))
+        }
+
+        // 既定: 配送だけで上位へは流さない(1.16.x までと同じ)。
+        let consumed = try event("x", 7)
+        view.keyDown(with: consumed)
+        XCTAssertEqual(delegate.keys.count, 1)
+        XCTAssertEqual(delegate.consumeQuery.count, 1)
+        XCTAssertTrue(responder.events.isEmpty)
+
+        // false を返したキーだけ、元の NSEvent のまま上位へ渡る。
+        delegate.onShouldConsumeKey = { $0.key != "x" ? false : true }
+        for (characters, keyCode) in [("-", UInt16(27)), ("\u{1b}", 53), ("+", 24)] {
+            let unhandled = try event(characters, keyCode)
+            view.keyDown(with: unhandled)
+            XCTAssertTrue(responder.events.last === unhandled)
+        }
+        XCTAssertEqual(responder.events.count, 3)
+        XCTAssertEqual(delegate.keys.count, 4)
+        XCTAssertEqual(delegate.consumeQuery.count, 4)
+        // 判定は配送済みのキーについて行う。
+        XCTAssertEqual(delegate.keys.map(\.key), delegate.consumeQuery.map(\.key))
+    }
+
+    /// 既定実装(shouldConsumeKey 未実装)は 1.16.x と同じく握り潰す。
+    func testDefaultDelegateStillConsumesForwardedKeys() throws {
+        final class KeyOnlyDelegate: EPUBReaderViewDelegate {
+            var keys: [EPUBKeyEvent] = []
+            func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent) {
+                keys.append(event)
+            }
+        }
+        let view = EPUBReaderView(frame: .zero)
+        let delegate = KeyOnlyDelegate()
+        view.delegate = delegate
+        let responder = KeyDownResponderSpy()
+        view.nextResponder = responder
+        defer { view.nextResponder = nil }
+        var settings = view.settings
+        settings.handlesKeyboardNavigation = false
+        view.settings = settings
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 1, windowNumber: 0, context: nil,
+            characters: "-", charactersIgnoringModifiers: "-",
+            isARepeat: false, keyCode: 27))
+
+        view.keyDown(with: event)
+
+        XCTAssertEqual(delegate.keys.count, 1)
+        XCTAssertTrue(responder.events.isEmpty)
     }
 
     /// Washi #3: WebKit の未処理キー返却を同期的に再現する。

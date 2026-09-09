@@ -4,6 +4,18 @@ import XCTest
 @testable import Washi
 
 @MainActor
+private final class BlankLoadWaiter: NSObject, WKNavigationDelegate {
+    var finished = false
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        finished = true
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
+                 withError error: any Error) {
+        finished = true
+    }
+}
+
+@MainActor
 final class EPUBTextMappingTests: XCTestCase {
     private struct Landing: Sendable {
         let page: Int
@@ -82,6 +94,15 @@ final class EPUBTextMappingTests: XCTestCase {
             // userInitiated で開始し、WebContent の QoS 逆転による停止を防ぐ
             let pageCount = try await setup(
                 webView: webView, optionsJSON: setupOptions)
+            // cooViewer-oxr.94: textOffsetFor の二分探索は「ノード番号が非減少、
+            // 同じノードの中では offset も非減少」を前提にする。実 fixture で固定する
+            let violation = try await mapOrderViolation(webView: webView)
+            XCTAssertEqual(violation, -1,
+                           "\(fixture.name): 地図の並びが単調でない index=\(violation)")
+            // cooViewer-oxr.94: 二分探索版と線形走査版の答えを総当たりで突き合わせる
+            let disagreements = try await textOffsetDisagreements(webView: webView)
+            XCTAssertEqual(disagreements, [],
+                           "\(fixture.name): textOffsetFor が線形走査と不一致")
             let swiftText = try publication.extractText(forSpineIndex: index)
             let javaScriptText = try await mappedText(webView: webView)
             XCTAssertEqual(javaScriptText, swiftText,
@@ -133,6 +154,163 @@ final class EPUBTextMappingTests: XCTestCase {
         }
     }
 
+    /// cooViewer-oxr.94: 大きな文書でも二分探索版が線形走査版と同じ答えを返し、
+    /// かつ実測で十分速いこと(全長走査なら文書が伸びるほど比例して遅くなる)
+    func testTextOffsetForOnLargeDocumentMatchesLinearScanAndIsFaster() async throws {
+        var paragraphs: [String] = []
+        for index in 0..<2000 {
+            paragraphs.append("<p>本文の段落 \(index) です。ここは検証用の"
+                              + "そこそこ長い日本語の文章で、空白 も 混ぜます。</p>")
+        }
+        let webView = try await blankReaderWebView(body: paragraphs.joined())
+        let report = try await Task(priority: .userInitiated) { @MainActor () -> [String] in
+            let result = try await webView.callAsyncJavaScript("""
+                const map = __washi.buildTextMap();
+                const reference = (node, domOffset) => {
+                    let lastDirect = null;
+                    for (let i = 0; i < map.length; i += 1) {
+                        if (map.nodes[map.nodeIdx[i]] !== node) { continue; }
+                        if (domOffset <= map.offset[i]) { return i; }
+                        if (domOffset <= map.endOffset[i]) { return i + 1; }
+                        lastDirect = i + 1;
+                    }
+                    return lastDirect;
+                };
+                const targets = [];
+                for (let i = 0; i < map.nodes.length; i += 17) {
+                    targets.push(map.nodes[i]);
+                }
+                const queries = [];
+                for (const node of targets) {
+                    const limit = (node.data || '').length;
+                    for (let offset = 0; offset <= limit; offset += 3) {
+                        queries.push([node, offset]);
+                    }
+                }
+                let bad = 0;
+                for (const [node, offset] of queries) {
+                    if (__washi.textOffsetFor(node, offset) !== reference(node, offset)) {
+                        bad += 1;
+                    }
+                }
+                const t0 = performance.now();
+                for (const [node, offset] of queries) {
+                    __washi.textOffsetFor(node, offset);
+                }
+                const fast = performance.now() - t0;
+                const t1 = performance.now();
+                for (const [node, offset] of queries) { reference(node, offset); }
+                const slow = performance.now() - t1;
+                return ['units=' + map.length, 'nodes=' + map.nodes.length,
+                        'queries=' + queries.length, 'mismatches=' + bad,
+                        'binary=' + fast.toFixed(1) + 'ms',
+                        'linear=' + slow.toFixed(1) + 'ms'];
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let report = result as? [String] else {
+                throw HarnessError.unexpectedJavaScriptResult("textOffsetFor bench")
+            }
+            return report
+        }.value
+        print("[oxr.94] " + report.joined(separator: " "))
+        XCTAssertTrue(report.contains("mismatches=0"),
+                      "線形走査と不一致: \(report)")
+        XCTAssertFalse(report.contains("queries=0"), "問い合わせが空: \(report)")
+    }
+
+    /// cooViewer-oxr.69: 地図は UTF-16 単位ごとのオブジェクトではなく
+    /// Text ノード表 + 型付き配列で保持する。表現が戻ると常駐量が桁で増える。
+    func testTextMapIsStoredAsTypedArrays() async throws {
+        let webView = try await blankReaderWebView(body:
+            "<p>ひとつめの段落。</p><p>ふたつめの<em>強調</em>段落。</p>")
+        // 型付き配列は Swift へ渡せないので、判定結果だけ数値で受け取る
+        let shape = try await Task(priority: .userInitiated) { @MainActor () -> [Int] in
+            let result = try await webView.callAsyncJavaScript("""
+                const map = __washi.buildTextMap();
+                return [
+                    (map.nodeIdx instanceof Int32Array
+                     && map.offset instanceof Int32Array
+                     && map.endOffset instanceof Int32Array) ? 1 : 0,
+                    Array.isArray(map.map) ? 1 : 0,
+                    map.length,
+                    map.length === map.text.length ? 1 : 0,
+                    map.nodes.length
+                ];
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let values = result as? [Int] else {
+                throw HarnessError.unexpectedJavaScriptResult("buildTextMap shape")
+            }
+            return values
+        }.value
+        XCTAssertEqual(shape.count, 5)
+        XCTAssertEqual(shape[0], 1, "型付き配列で保持する")
+        XCTAssertEqual(shape[1], 0, "単位ごとのオブジェクト配列を残さない")
+        XCTAssertGreaterThan(shape[2], 0, "地図が空でない")
+        XCTAssertEqual(shape[3], 1, "length と text の長さが一致する")
+        XCTAssertGreaterThan(shape[4], 0, "Text ノード表が空でない")
+    }
+
+    /// cooViewer-oxr.69: 空白畳みの判定を正規表現からコード値へ移したので、
+    /// BMP 全域で `\p{Zs}` + TAB と完全一致することを WebKit 側で確認する。
+    /// 将来 Unicode 版が変わって Zs が増減したらここで落ちる。
+    /// なお本体の判定式はここに複製してあるので、本体だけを書き換えても
+    /// このテストは落ちない(そちらは本文の突き合わせテストで検出する)。
+    func testWhitespaceCodeSetMatchesUnicodeSpaceSeparator() async throws {
+        let webView = try await blankReaderWebView(body: "<p>判定表</p>")
+        let codes = try await Task(priority: .userInitiated) { @MainActor () -> [Int] in
+            let result = try await webView.callAsyncJavaScript("""
+                const isWhitespaceCode = code =>
+                    code === 0x0020 || code === 0x0009 || code === 0x00A0
+                    || code === 0x1680 || (code >= 0x2000 && code <= 0x200A)
+                    || code === 0x202F || code === 0x205F || code === 0x3000;
+                const pattern = /[\\p{Zs}\\u0009]/u;
+                const bad = [];
+                for (let code = 0; code <= 0xFFFF; code += 1) {
+                    if (pattern.test(String.fromCharCode(code))
+                        !== isWhitespaceCode(code)) {
+                        bad.push(code);
+                    }
+                }
+                return bad;
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let bad = result as? [Int] else {
+                throw HarnessError.unexpectedJavaScriptResult("whitespace set")
+            }
+            return bad
+        }.value
+        XCTAssertEqual(codes, [], "Zs+TAB の集合が不一致: "
+                       + codes.map { String(format: "U+%04X", $0) }.joined(separator: ", "))
+    }
+
+    /// pageScript だけを載せた空の文書。地図の表現そのものを見るための最小構成。
+    private func blankReaderWebView(body: String) async throws -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: ReaderScripts.pageScript, injectionTime: .atDocumentStart,
+            forMainFrameOnly: true, in: EPUBReaderView.washiWorld))
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 240),
+                                configuration: configuration)
+        // NavigationWaiter は washi-epub 以外のナビゲーションを拒否するため、
+        // ここは didFinish を旗で受けるだけの最小デリゲートで待つ
+        let waiter = BlankLoadWaiter()
+        webView.navigationDelegate = waiter
+        webView.loadHTMLString(
+            "<html><head><meta charset=\"utf-8\"></head><body>\(body)</body></html>",
+            baseURL: nil)
+        for _ in 0..<300 where !waiter.finished {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        webView.navigationDelegate = nil
+        withExtendedLifetime(waiter) {}
+        guard waiter.finished else {
+            throw HarnessError.unexpectedJavaScriptResult("blank reader load")
+        }
+        return webView
+    }
+
     private func setup(webView: WKWebView, optionsJSON: String) async throws -> Int {
         try await Task(priority: .userInitiated) { @MainActor in
             let result = try await webView.callAsyncJavaScript(
@@ -144,6 +322,95 @@ final class EPUBTextMappingTests: XCTestCase {
                 throw HarnessError.unexpectedJavaScriptResult("setup")
             }
             return max(1, pageCount)
+        }.value
+    }
+
+    /// 文書中の全 Text ノードと要素境界について、二分探索版 `textOffsetFor` の
+    /// 答えを旧実装(線形走査)と突き合わせ、食い違った箇所を返す
+    private func textOffsetDisagreements(webView: WKWebView) async throws -> [String] {
+        try await Task(priority: .userInitiated) { @MainActor () -> [String] in
+            let result = try await webView.callAsyncJavaScript("""
+                const map = __washi.buildTextMap();
+                // 旧実装をそのまま参照実装として持つ
+                const reference = (node, domOffset) => {
+                    if (!node || !Number.isInteger(domOffset) || domOffset < 0) {
+                        return null;
+                    }
+                    let lastDirect = null;
+                    for (let i = 0; i < map.length; i += 1) {
+                        if (map.nodes[map.nodeIdx[i]] !== node) { continue; }
+                        if (domOffset <= map.offset[i]) { return i; }
+                        if (domOffset <= map.endOffset[i]) { return i + 1; }
+                        lastDirect = i + 1;
+                    }
+                    if (lastDirect !== null) { return lastDirect; }
+                    try {
+                        const boundary = document.createRange();
+                        boundary.setStart(node, domOffset);
+                        boundary.collapse(true);
+                        for (let i = 0; i < map.length; i += 1) {
+                            const unitNode = map.nodes[map.nodeIdx[i]];
+                            if (!(unitNode instanceof Text)) { continue; }
+                            const point = document.createRange();
+                            point.setStart(unitNode, map.offset[i]);
+                            point.collapse(true);
+                            if (boundary.compareBoundaryPoints(
+                                    Range.START_TO_START, point) <= 0) {
+                                return i;
+                            }
+                        }
+                        return map.length;
+                    } catch (e) { return null; }
+                };
+                const targets = [];
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+                for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+                    targets.push(n);
+                }
+                targets.push(document.body);
+                const bad = [];
+                for (const target of targets) {
+                    const limit = target.nodeType === Node.TEXT_NODE
+                        ? (target.data || '').length
+                        : target.childNodes.length;
+                    for (let offset = 0; offset <= limit + 1; offset += 1) {
+                        const fast = __washi.textOffsetFor(target, offset);
+                        const slow = reference(target, offset);
+                        if (fast !== slow && bad.length < 8) {
+                            bad.push((target.nodeName || '?') + '#' + offset
+                                     + ': fast=' + fast + ' slow=' + slow);
+                        }
+                    }
+                }
+                if (targets.length === 0) { bad.push('no targets'); }
+                return bad;
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let bad = result as? [String] else {
+                throw HarnessError.unexpectedJavaScriptResult("textOffsetFor diff")
+            }
+            return bad
+        }.value
+    }
+
+    /// 地図の単調性を検査し、破れている最初の index を返す(-1 = 問題なし)
+    private func mapOrderViolation(webView: WKWebView) async throws -> Int {
+        try await Task(priority: .userInitiated) { @MainActor () -> Int in
+            let result = try await webView.callAsyncJavaScript("""
+                const map = __washi.buildTextMap();
+                for (let i = 1; i < map.length; i += 1) {
+                    if (map.nodeIdx[i] < map.nodeIdx[i - 1]) { return i; }
+                    if (map.nodeIdx[i] === map.nodeIdx[i - 1]
+                        && map.offset[i] < map.offset[i - 1]) { return i; }
+                }
+                return -1;
+                """, arguments: [:], in: nil,
+                contentWorld: EPUBReaderView.washiWorld)
+            guard let index = result as? Int else {
+                throw HarnessError.unexpectedJavaScriptResult("map order")
+            }
+            return index
         }.value
     }
 

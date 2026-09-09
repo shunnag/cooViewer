@@ -41,11 +41,13 @@ enum PageFileInfo {
     ///   - pageNumber: 表示用ページ番号(1 始まり)
     ///   - imageData: ページの元データ(取れないソースは nil)
     ///   - fallbackPixelSize: データが無いときの寸法(PDF のポイントサイズ等)
+    ///   - archiveEngineName: 現在の書庫を実際に開いたエンジン名
     static func details(entryName: String, pathInBook: String, containerURL: URL,
                         pageNumber: Int, pageCount: Int,
                         imageData: Data?, fallbackPixelSize: CGSize?,
                         comicInfo: ComicInfo? = nil,
-                        epubAccessibility: EPUBAccessibility? = nil) -> Details {
+                        epubAccessibility: EPUBAccessibility? = nil,
+                        archiveEngineName: String? = nil) -> Details {
         var sections: [Section] = []
 
         var pageRows: [Row] = [
@@ -85,8 +87,13 @@ enum PageFileInfo {
                            value: "\(Int(size.width)) × \(Int(size.height))")]))
         }
 
-        sections.append(Section(title: String(localized: "File"),
-                                rows: containerRows(url: containerURL)))
+        var fileRows: [Row] = []
+        if let archiveEngineName {
+            fileRows.append(Row(label: String(localized: "Archive Engine"),
+                                value: archiveEngineName))
+        }
+        fileRows.append(contentsOf: containerRows(url: containerURL))
+        sections.append(Section(title: String(localized: "File"), rows: fileRows))
         // ComicInfo.xml の本メタデータ(あれば。cooViewer-4fi.5)
         if let comicInfo {
             let rows = comicRows(comicInfo)

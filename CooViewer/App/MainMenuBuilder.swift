@@ -13,6 +13,9 @@ enum MainMenuBuilder {
         mainMenu.addItem(makeViewMenu())
         mainMenu.addItem(makeBrowseMenu())
         mainMenu.addItem(makeWindowMenu())
+#if DEBUG
+        mainMenu.addItem(makeDebugMenu())
+#endif
         mainMenu.addItem(makeHelpMenu())
         return mainMenu
     }
@@ -345,6 +348,21 @@ enum MainMenuBuilder {
         item.submenu = menu
         return item
     }
+
+#if DEBUG
+    /// 実装移行中の診断項目。Release には比較用の内部状態を露出させない。
+    private static func makeDebugMenu() -> NSMenuItem {
+        let menu = NSMenu(title: String(localized: "Debug"))
+        menu.addItem(
+            withTitle: String(localized: "Archive Engine Status…"),
+            action: #selector(AppDelegate.showArchiveEngineStatus(_:)),
+            keyEquivalent: "")
+
+        let item = NSMenuItem()
+        item.submenu = menu
+        return item
+    }
+#endif
 
     private static func makeHelpMenu() -> NSMenuItem {
         let menu = NSMenu(title: String(localized: "Help"))

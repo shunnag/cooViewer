@@ -163,7 +163,7 @@ final class EPUBScreenThumbnailRenderer {
             let waiter = NavigationWaiter()
             pendingNavigationWaiter = waiter
             webView.navigationDelegate = waiter
-            webView.load(URLRequest(url: url))
+            waiter.expect(webView.load(URLRequest(url: url)))
             do {
                 try await waiter.wait(timeout: .seconds(15))
             } catch {

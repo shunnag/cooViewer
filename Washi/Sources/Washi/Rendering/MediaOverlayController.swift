@@ -15,7 +15,11 @@ final class MediaOverlayController {
     private var overlay: MediaOverlay?
     /// 再生中の spine 項目(ホストが現在項目と突き合わせて古い章の再開を防ぐ)
     private(set) var spineIndex = 0
+    /// 再生中の spine 項目(テストの観測点)
+    var currentSpineIndex: Int { spineIndex }
     private var parIndex = 0
+    /// 再生中の par 番号(テストの観測点)
+    var currentParIndex: Int { parIndex }
     private var player: AVAudioPlayer?
     private var loadedAudioPath: String?
     private var ticker: Timer?
@@ -23,6 +27,14 @@ final class MediaOverlayController {
     private var playbackGeneration: UInt = 0
     /// 項目末尾で次項目のオーバーレイへ連続再生するか(既定 true)
     var continuesToNextItem = true
+    /// 再生速度(1.0 = 収録速度)。0.5〜3.0 へ丸める
+    var playbackRate: Double = 1.0 {
+        didSet { applyPlaybackRate() }
+    }
+    /// cooViewer-oxr.46 C26 / RS 3.3 §9.4.1: 読み飛ばす epub:type。
+    var skippedTypes: Set<String> = []
+    /// 再生位置(ホストが保存して次回復元するため)
+    var position: (spineIndex: Int, parIndex: Int) { (spineIndex, parIndex) }
 
     init(reader: EPUBReaderView, publication: EPUBPublication,
          activeClass: String) {
@@ -32,16 +44,17 @@ final class MediaOverlayController {
     }
 
     /// 指定 spine 項目のオーバーレイを先頭から再生する(既に再生中なら停止して開始)
-    func play(fromSpineIndex index: Int) {
+    func play(fromSpineIndex index: Int, parIndex startPar: Int = 0) {
         playbackGeneration &+= 1
         stopAudio()
         spineIndex = index
-        parIndex = 0
+        parIndex = max(0, startPar)
         overlay = publication.mediaOverlay(forSpineIndex: index)
         guard let overlay, !overlay.parallels.isEmpty else {
             finish()
             return
         }
+        if parIndex >= overlay.parallels.count { parIndex = 0 }
         _ = overlay
         startCurrentPar(seek: true)
         setPlaying(true)
@@ -94,6 +107,11 @@ final class MediaOverlayController {
             finish()
             return
         }
+        // cooViewer-oxr.46 C26: 読み飛ばし指定(ページ番号・注など)の区間は鳴らさない
+        if Self.isSkipped(overlay.parallels[parIndex], types: skippedTypes) {
+            advancePar()
+            return
+        }
         let par = overlay.parallels[parIndex]
         if let audioHref = par.audioHref,
            let audioPath = ContainerPath.resolve(base: overlay.basePath,
@@ -103,10 +121,15 @@ final class MediaOverlayController {
             }
             if let player {
                 if seek { player.currentTime = par.clipBegin }
-                player.play()
-                highlight(par: par)
-                startTicker()
-                return
+                // cooViewer-oxr.46 C08: play() の失敗を無視すると、tick が
+                // !isPlaying を見て即座に次の par へ進み、25ms 間隔で本の
+                // 終わりまで駆け抜ける。失敗したら音声の無い par と同じ扱いにする。
+                applyPlaybackRate()
+                if player.play() {
+                    highlight(par: par)
+                    startTicker()
+                    return
+                }
             }
         }
         // 音声を用意できない par: ハイライトだけして一定時間後に次へ
@@ -117,14 +140,52 @@ final class MediaOverlayController {
 
     /// 音声の無い/失敗した par を、決まった短い間ののち次へ送る一発タイマー
     private func scheduleSilentAdvance() {
-        ticker?.invalidate()
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) {
-            [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isPlaying else { return }
-                self.advancePar()
-            }
+        scheduleTicker(interval: 0.4, repeats: false) { controller in
+            guard controller.isPlaying else { return }
+            controller.advancePar()
         }
+    }
+
+    /// cooViewer-oxr.46 C08: Timer.scheduledTimer は .default モードにしか
+    /// 入らないため、ライブリサイズやメニュー追跡の間 tick が止まる。その間に
+    /// 音声だけ進むと clipEnd を跨いでしまい、復帰後の連続判定が外れて
+    /// clipBegin へ巻き戻る。.common モードへ入れて止まらないようにする。
+    private func scheduleTicker(
+        interval: TimeInterval, repeats: Bool,
+        _ body: @escaping @Sendable @MainActor (MediaOverlayController) -> Void
+    ) {
+        ticker?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: repeats) { [weak self] timer in
+            // 繰り返しタイマーは実行ループが保持するので、所有者が消えても
+            // invalidate するまで 25ms ごとに起き続ける。空振りに気づいた
+            // 時点で自分を止める(所有者側の stop() が最初の防衛線)。
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            MainActor.assumeIsolated { body(self) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        ticker = timer
+    }
+
+    /// epub:type は空白区切りの複数値。1 つでも該当すれば読み飛ばす。
+    static func isSkipped(_ par: MediaOverlay.Parallel,
+                          types: Set<String>) -> Bool {
+        guard !types.isEmpty, let epubType = par.epubType else { return false }
+        for value in epubType.split(separator: " ") {
+            // "frontmatter:pagebreak" のような接頭辞付きも末尾で判定する
+            let bare = value.split(separator: ":").last.map(String.init) ?? String(value)
+            if types.contains(bare) || types.contains(String(value)) { return true }
+        }
+        return false
+    }
+
+    private func applyPlaybackRate() {
+        guard let player else { return }
+        let clamped = min(max(playbackRate, 0.5), 3.0)
+        player.enableRate = true
+        player.rate = Float(clamped)
     }
 
     private func loadAudio(path: String) {
@@ -140,12 +201,8 @@ final class MediaOverlayController {
     }
 
     private func startTicker() {
-        ticker?.invalidate()
         // 25ms 間隔で clipEnd 到達を監視して par を進める
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) {
-            [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
+        scheduleTicker(interval: 0.025, repeats: true) { $0.tick() }
     }
 
     private func tick() {
@@ -183,6 +240,12 @@ final class MediaOverlayController {
     /// 現在項目のオーバーレイ終了。連続再生なら次の該当項目へ
     private func finishItem() {
         stopAudio()
+        // cooViewer-oxr.46 C07: 再生中に利用者が別の章へ移っていたら、
+        // そこから連続再生の続きへ引き戻さない(そのまま止める)。
+        if let displayed = reader?.currentSpineIndex, displayed != spineIndex {
+            finish()
+            return
+        }
         guard continuesToNextItem,
               let nextIndex = nextSpineIndexWithOverlay(after: spineIndex) else {
             finish()
@@ -212,22 +275,54 @@ final class MediaOverlayController {
         reader?.mediaOverlayDidFinish()
     }
 
+    /// 次に再生すべき spine 項目。cooViewer-oxr.46 C07: 1 つの SMIL が
+    /// 複数の XHTML を束ねる本では隣の項目も同じ SMIL を指すため、同じ
+    /// SMIL の項目は飛ばす(飛ばさないと同じ音声を par 0 から鳴らし直す)。
     private func nextSpineIndexWithOverlay(after index: Int) -> Int? {
         let order = publication.readingOrder
+        let currentOverlayPath = publication.mediaOverlayPath(forSpineIndex: index)
         var i = index + 1
         while i < order.count {
-            if order[i].item.mediaOverlay != nil { return i }
+            if order[i].item.mediaOverlay != nil,
+               publication.mediaOverlayPath(forSpineIndex: i) != currentOverlayPath {
+                return i
+            }
             i += 1
         }
         return nil
     }
 
     private func highlight(par: MediaOverlay.Parallel) {
-        let fragment = par.textHref.flatMap {
-            $0.split(separator: "#", maxSplits: 1).count == 2
-                ? String($0.split(separator: "#", maxSplits: 1)[1]) : nil
+        // cooViewer-oxr.46 C07: 1 つの SMIL が複数の XHTML を束ねる本では、
+        // par の textHref が別の文書を指すことがある。文書部分を捨てると
+        // その par のハイライトが空振りするので、必要なら先に移動する。
+        if let target = spineIndex(forPar: par), target != spineIndex {
+            let generation = playbackGeneration
+            reader?.navigateForMediaOverlay(toSpineIndex: target)
+            guard generation == playbackGeneration,
+                  reader?.mediaOverlayController === self else { return }
+            spineIndex = target
         }
-        reader?.mediaOverlayHighlight(fragmentID: fragment, cssClass: activeClass)
+        reader?.mediaOverlayHighlight(fragmentID: Self.fragment(of: par.textHref),
+                                      cssClass: activeClass)
+    }
+
+    /// par の text が指す spine 項目(同じ文書内なら nil ではなく現在値を返す)
+    private func spineIndex(forPar par: MediaOverlay.Parallel) -> Int? {
+        guard let overlay, let href = par.textHref else { return nil }
+        let withoutFragment = href.split(separator: "#", maxSplits: 1,
+                                         omittingEmptySubsequences: false)[0]
+        guard !withoutFragment.isEmpty,
+              let path = ContainerPath.resolve(base: overlay.basePath,
+                                               href: String(withoutFragment))
+        else { return nil }
+        return publication.spineIndex(forContainerPath: path)
+    }
+
+    private static func fragment(of href: String?) -> String? {
+        guard let href else { return nil }
+        let parts = href.split(separator: "#", maxSplits: 1)
+        return parts.count == 2 ? String(parts[1]) : nil
     }
 
     private func clearHighlight() {

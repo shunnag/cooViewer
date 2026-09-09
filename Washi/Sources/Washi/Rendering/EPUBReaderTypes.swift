@@ -293,6 +293,14 @@ public struct EPUBReaderSettings: Sendable, Equatable {
     /// Applies only while this reader or its embedded web content has keyboard
     /// focus. Each event is delivered once, including events resent by WebKit.
     public var forwardsKeyEventsNatively = false
+    /// Playback rate for media-overlay narration (1.0 = the recorded speed).
+    /// Clamped to 0.5…3.0, the range AVAudioPlayer reproduces intelligibly.
+    public var mediaOverlayPlaybackRate: Double = 1.0
+    /// `epub:type` values whose media-overlay clips are skipped during playback
+    /// (EPUB Reading Systems 3.3 §9.4.1 skippability). Typical values are
+    /// "pagebreak", "footnote", "noteref" and "annotation". Empty by default,
+    /// which plays everything.
+    public var mediaOverlaySkippedTypes: Set<String> = []
     /// Whether to allow scripted content (the book's JavaScript). Default
     /// false.
     public var allowsScriptedContent = false
@@ -658,6 +666,22 @@ public protocol EPUBReaderViewDelegate: AnyObject {
                     shouldFollowInternalLink link: EPUBInternalLink) -> Bool
     /// Key forwarding, used when handlesKeyboardNavigation is false.
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent)
+    /// Asks whether the key just delivered to `didReceiveKey` stops at the
+    /// reader view. Return false to let the original event continue up the
+    /// responder chain, so keys the host does not handle (`-`, Esc, `+`, …)
+    /// still reach the window and the menu bar. Default: true, which keeps the
+    /// behaviour of Washi 1.16.x and earlier (the key stops here).
+    ///
+    /// Called right after `didReceiveKey` for the same key, so a host can
+    /// record what it handled there and simply report it back:
+    /// `didReceiveKey` sets a flag, this method returns it.
+    ///
+    /// Only consulted for keys the reader view itself receives. Keys typed
+    /// while the web view holds first responder are resent to the responder
+    /// chain by WebKit when the page leaves them unhandled, so they propagate
+    /// regardless of what this method returns.
+    func readerView(_ view: EPUBReaderView,
+                    shouldConsumeKey event: EPUBKeyEvent) -> Bool
     /// A native key-down event, delivered only when
     /// `EPUBReaderSettings.forwardsKeyEventsNatively` is true. Return true to
     /// consume the event (the web view never sees it); return false to let it
@@ -731,6 +755,8 @@ public extension EPUBReaderViewDelegate {
     func readerView(_ view: EPUBReaderView,
                     shouldFollowInternalLink link: EPUBInternalLink) -> Bool { true }
     func readerView(_ view: EPUBReaderView, didReceiveKey event: EPUBKeyEvent) {}
+    func readerView(_ view: EPUBReaderView,
+                    shouldConsumeKey event: EPUBKeyEvent) -> Bool { true }
     func readerView(_ view: EPUBReaderView,
                     didReceiveNativeKey event: NSEvent) -> Bool { false }
     func readerView(_ view: EPUBReaderView,

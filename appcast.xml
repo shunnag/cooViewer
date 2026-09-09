@@ -10,6 +10,36 @@
         <language>en</language>
         <!-- make-appcast.sh inserts new items below -->
         <item>
+            <title>cooViewer 2.0b36</title>
+            <pubDate>Wed, 09 Sep 2026 14:03:55 +0000</pubDate>
+            <sparkle:version>2036</sparkle:version>
+            <sparkle:shortVersionString>2.0b36</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b36</link>
+            <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b36</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b36/cooViewer-2.0b36.zip" sparkle:edSignature="JIHNqT31bf7QUPsqcqiqFSokUtn6iuHYSH73MGJVN9kLwRXmA37wfEKQKNxBLgfOyG7pxj2L3lSfjrlHMEaPCA==" length="9331518" type="application/octet-stream"/>
+        </item>
+        <item>
+            <title>cooViewer 2.0b35</title>
+            <pubDate>Tue, 08 Sep 2026 22:38:15 +0000</pubDate>
+            <sparkle:version>2035</sparkle:version>
+            <sparkle:shortVersionString>2.0b35</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b35</link>
+            <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b35</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b35/cooViewer-2.0b35.zip" sparkle:edSignature="wKfbRbZBJHmyjJTb/CQTT1gIoNmk4Zqd6cMofraSwsEdeSJpOoYaTcO+bSmtkBJcDy1tP8dETWC6YcnJCEuQBg==" length="8946040" type="application/octet-stream"/>
+        </item>
+        <item>
+            <title>cooViewer 2.0b34</title>
+            <pubDate>Tue, 08 Sep 2026 12:58:15 +0000</pubDate>
+            <sparkle:version>2034</sparkle:version>
+            <sparkle:shortVersionString>2.0b34</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b34</link>
+            <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b34</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b34/cooViewer-2.0b34.zip" sparkle:edSignature="ZPe62bJvWnSCURPe/OLr4TaLZ1VobLDlypZedWX0NYXt9FYYKeOshKnckbVXCuqYCpIq9J72az1DpgSJcR+MDg==" length="8939024" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>cooViewer 2.0b33</title>
             <pubDate>Tue, 08 Sep 2026 02:44:51 +0000</pubDate>
             <sparkle:version>2033</sparkle:version>

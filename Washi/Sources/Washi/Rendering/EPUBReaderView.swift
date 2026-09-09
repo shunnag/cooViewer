@@ -231,6 +231,16 @@ public final class EPUBReaderView: NSView {
     /// 送りで古いセットアップが新しい文書の状態(pendingTarget・
     /// isLoadingSpineItem・復元位置)を消費・破壊しないようにする
     private var spineLoadGeneration = 0
+    /// cooViewer-oxr.46 C35: setup ごとに更新する文書の印。JS からの通知に
+    /// 同じ値が付いていなければ、差し替え前の文書からの遅配とみなして捨てる。
+    /// (isLoadingSpineItem のガードは「読み込み中」しか見ないため、新文書が
+    /// 確定した後に届く旧文書の report を弾けない)
+    private var currentDocumentToken: String { "g\(spineLoadGeneration)" }
+    /// 印を持たない通知(古い注入・ラスタライザ経路)は従来どおり受け入れる
+    func isFromCurrentDocument(_ dict: [String: Any]) -> Bool {
+        guard let token = dict["token"] as? String else { return true }
+        return token == currentDocumentToken
+    }
     // delegate 通知中の load/go は新しい要求。外側の旧要求を続行させない。
     private var navigationRequestGeneration: UInt = 0
 
@@ -335,13 +345,20 @@ public final class EPUBReaderView: NSView {
         }
         let modifiers = event.modifierFlags
         let (key, code) = Self.webKeyIdentity(for: event)
-        delegate?.readerView(self, didReceiveKey: EPUBKeyEvent(
+        let forwarded = EPUBKeyEvent(
             key: key,
             code: code,
             shift: modifiers.contains(.shift),
             option: modifiers.contains(.option),
             control: modifiers.contains(.control),
-            command: modifiers.contains(.command)))
+            command: modifiers.contains(.command))
+        delegate?.readerView(self, didReceiveKey: forwarded)
+        // Washi #3(コメント): ホストが扱わなかったキーをここで消さず
+        // responder チェーンへ返す。既定は true(1.16.x までと同じ握り潰し)で、
+        // delegate 未設定も同じ扱い。WebKit を経由しないため #3 の往復は起きない。
+        if delegate?.readerView(self, shouldConsumeKey: forwarded) == false {
+            super.keyDown(with: event)
+        }
     }
 
     private static func webKeyIdentity(for event: NSEvent) -> (String, String) {
@@ -1067,6 +1084,88 @@ public final class EPUBReaderView: NSView {
         publication?.effectiveReadingDirection == .rtl
     }
 
+    /// washi world で式を評価して結果を受け取る(内部・テスト共用)。
+    /// 拡張側からは webView が見えないのでここに置く。
+    func callWashiReturning(_ body: String,
+                            arguments: [String: Any] = [:]) async -> Any? {
+        guard let webView else { return nil }
+        return try? await webView.callAsyncJavaScript(
+            body, arguments: arguments, in: nil, contentWorld: Self.washiWorld)
+    }
+
+    /// テスト用: washi world で任意の式を評価する
+    func evaluateForTest(_ body: String) async throws -> Any? {
+        await callWashiReturning(body)
+    }
+
+    /// The flow the publication asks for (`rendition:flow`), and whether it
+    /// wants one continuous scroll (`rendition:layout="roll"`, or the
+    /// `pre-paginated` + `scrolled-continuous` pair Japanese publishers used
+    /// before `roll` existed).
+    ///
+    /// The reader paginates with CSS multi-column in every case today, so this
+    /// is reported rather than obeyed: a host can use it to pick its own
+    /// presentation. A dedicated scrolled mode is separate work
+    /// (cooViewer-gse.8 / cooViewer-oxr.46 C27).
+    public var requestedFlow: RenditionFlow {
+        publication?.package.metadata.rendition.flow ?? .auto
+    }
+
+    /// Whether the publication asks to be shown as one continuous scroll.
+    public var requestsContinuousScroll: Bool {
+        publication?.package.isScrollLike ?? false
+    }
+
+    /// Saved highlights (and notes) to draw over the book.
+    ///
+    /// Only the ones whose `spineIndex` (or `idref`) matches the item on screen
+    /// are drawn; the rest are kept so a page turn shows them without another
+    /// round trip. Drawing uses the CSS Custom Highlight API, so the book's DOM
+    /// is never modified and overlapping ranges do not nest elements.
+    /// Anchors are extracted-text UTF-16 ranges, so they survive font-size,
+    /// viewport and theme changes (cooViewer-oxr.46 C40).
+    public var highlights: [EPUBHighlight] = [] {
+        didSet {
+            guard highlights != oldValue else { return }
+            applyHighlights()
+        }
+    }
+
+    /// Draws the highlights for the item currently on screen. Called on every
+    /// change and after each spine load / repagination.
+    func applyHighlights() {
+        guard webView != nil, !isLoadingSpineItem else { return }
+        let idref = publication?.readingOrder.indices.contains(currentSpineIndex) == true
+            ? publication?.readingOrder[currentSpineIndex].itemRef.idref : nil
+        let payload = highlights
+            .filter { $0.spineIndex == currentSpineIndex
+                || ($0.idref != nil && $0.idref == idref) }
+            .map { ["offset": $0.utf16Offset, "length": $0.utf16Length,
+                    "style": $0.style.rawValue] as [String: Any] }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        evaluate("__washi.setHighlights(\(json));")
+    }
+
+    /// The current position with a text anchor attached (cooViewer-oxr.46 C52).
+    /// `progression` alone is re-quantized on restore, so a saved position
+    /// drifts by a few pages after a font-size or viewport change; the anchor
+    /// records which character is at the top of the page so the reader can land
+    /// on the same sentence. Ask for it when persisting a position (bookmarks,
+    /// last-read); it costs one round trip to the web view. Falls back to the
+    /// plain locator when the position cannot be resolved (images, empty pages).
+    public func currentLocatorWithTextAnchor() async -> EPUBLocator {
+        var locator = currentLocator
+        guard !isLoadingSpineItem, let webView else { return locator }
+        let result = try? await webView.callAsyncJavaScript(
+            "return __washi.visibleTextOffset();",
+            arguments: [:], in: nil, contentWorld: Self.washiWorld)
+        if let offset = result as? Int, offset >= 0 {
+            locator.textOffset = offset
+        }
+        return locator
+    }
+
     public var currentLocator: EPUBLocator {
         // cooViewer-oxr.23: 読み込み中は旧文書由来のページカウンタでなく、
         // load/go が最後に予約した target を現在位置として答える。
@@ -1409,7 +1508,16 @@ public final class EPUBReaderView: NSView {
               // cooViewer-oxr.72: idref があれば index より優先して改版追跡する。
               let resolved = publication.resolve(locator) else { return }
         let request = beginNavigationRequest()
-        let target = PendingTarget.progression(resolved.progression)
+        // cooViewer-oxr.46 C52: テキストアンカーがあれば、進行率の再量子化で
+        // 数ページずれる代わりに、保存したときと同じ文へ厳密に着地させる。
+        // 見つからなければ進行率へ落ちる(textRange の fallback がその役目)。
+        let target: PendingTarget
+        if let textOffset = resolved.textOffset {
+            target = .textRange(utf16Offset: textOffset, utf16Length: 1,
+                                fallbackProgression: resolved.progression)
+        } else {
+            target = .progression(resolved.progression)
+        }
         if recordsHistory { recordCurrentLocatorInHistory() }
         guard request == navigationRequestGeneration else { return }
         if resolved.spineIndex == currentSpineIndex {
@@ -1850,6 +1958,8 @@ public final class EPUBReaderView: NSView {
             "gutter": Double(spreadGutter(forContentWidth: frame.width)),
             "fixedLayout": isFixedLayoutItem,
             "keysEnabled": settings.handlesKeyboardNavigation,
+            // cooViewer-oxr.46 C35: 通知が今の文書のものかを判別する印。
+            "documentToken": currentDocumentToken,
             // cooViewer-oxr.27: 既定は即時。明示 opt-in 時だけ click を保留する。
             "deferTaps": settings.defersTapsForDoubleClick,
             "fontScale": settings.fontScale,
@@ -1901,6 +2011,9 @@ public final class EPUBReaderView: NSView {
             if let dict = result as? [String: Any] {
                 applySetupResult(dict)
             }
+            // cooViewer-oxr.46 C40: ページ割りが決まった後に描き直す
+            // (Range は文書に紐づくので、再ページ割りでも作り直す必要がある)
+            applyHighlights()
             if !preserveProgression {
                 // cooViewer-oxr.23: 新文書の target が発行する pageChanged は
                 // 受けつつ、それ以前の旧文書通知だけを loading gate で捨てる。
@@ -2554,7 +2667,9 @@ public final class EPUBReaderView: NSView {
         case "pageChanged":
             // cooViewer-oxr.19/23: 旧文書から遅配された位置通知で、新しい
             // pending target / 復元位置とホストの保存位置を上書きしない。
-            guard !isLoadingSpineItem else { break }
+            // cooViewer-oxr.46 C35: 読み込みが済んだ後に届く旧文書の通知も、
+            // setup で渡した印が違うので同じく捨てる。
+            guard !isLoadingSpineItem, isFromCurrentDocument(dict) else { break }
             let request = navigationRequestGeneration
             let generation = spineLoadGeneration
             pageInItem = dict["page"] as? Int ?? 0

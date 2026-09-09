@@ -195,14 +195,28 @@ public final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
     private func reply(to task: any WKURLSchemeTask, url: URL,
                        data: Data, mediaType: String, rangeHeader: String?) {
         let scriptSource = allowsScripts ? "'self' 'unsafe-inline'" : "'none'"
+        // cooViewer-oxr.46 C30: Cache-Control を付けない。非 HTTP スキームの
+        // サブリソースへ WebKit が与える無期限鮮度を no-store が打ち消しており、
+        // 章送り・census 全項目・サムネイルのたびに同じ CSS/フォントを再 inflate
+        // していた。ホスト名は本ごとの UUID なので別の本と取り違えることはなく、
+        // データストアは nonPersistent なのでディスクにも残らない。
         var headers: [String: String] = [
-            "Cache-Control": "no-store",
             "Content-Security-Policy":
                 "default-src 'self'; img-src 'self' data:; media-src 'self' data:; "
                 + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
-                + "script-src \(scriptSource); connect-src 'none'; frame-src 'none'",
+                // cooViewer-oxr.46 C50: frame-src は 'self'。'none' だと同じ
+                // コンテナ内の iframe(EPUB 3.3 が認める非スクリプトのものを
+                // 含む)まで空枠になる。外部への埋め込みは default-src 'self' と
+                // オリジン分離(ホスト名が本ごとの UUID)で塞がったまま。
+                + "script-src \(scriptSource); connect-src 'none'; frame-src 'self'",
         ]
         headers["Content-Type"] = Self.contentType(for: mediaType, data: data)
+        // cooViewer-oxr.46 C42: WebKit に別名の無い -epub- 接頭辞 CSS を補う
+        // (縦中横の -epub-text-combine-horizontal など。実測で 6 つ)。
+        var data = data
+        if mediaType.hasPrefix("text/css") {
+            data = EPUBPrefixedCSS.polyfilledStylesheet(data)
+        }
 
         // Range 要求(audio/video のシーク)には 206 で応える
         if let rangeHeader, rangeHeader.hasPrefix("bytes="),

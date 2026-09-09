@@ -16,17 +16,27 @@ public struct EPUBLocator: Sendable, Equatable, Codable {
     /// added/removed items) (EPUBPublication.resolve). Decode-compatible with
     /// the old saved format (which stored only {spineIndex, progression}).
     public var idref: String?
+    /// UTF-16 offset, in the item's extracted plain text, of the first character
+    /// visible at this position. `progression` alone is re-quantized on restore,
+    /// so a saved position drifts by a few pages once the font size or the
+    /// viewport changes; the anchor lets the reader land on the same sentence.
+    /// Optional and additive: locators saved before this existed decode as nil
+    /// and keep using `progression` (cooViewer-oxr.46 C52).
+    public var textOffset: Int?
 
-    public init(spineIndex: Int, progression: Double = 0, idref: String? = nil) {
+    public init(spineIndex: Int, progression: Double = 0, idref: String? = nil,
+                textOffset: Int? = nil) {
         self.spineIndex = spineIndex
         self.storedProgression = Self.clampedProgression(progression)
         self.idref = idref
+        self.textOffset = textOffset.flatMap { $0 >= 0 ? $0 : nil }
     }
 
     private enum CodingKeys: String, CodingKey {
         case spineIndex
         case progression
         case idref
+        case textOffset
     }
 
     /// Decodes a persisted locator while enforcing the same progression bounds
@@ -39,6 +49,9 @@ public struct EPUBLocator: Sendable, Equatable, Codable {
         // 永続化データから巨大値や NaN を持ち込ませない。
         storedProgression = Self.clampedProgression(decoded)
         idref = try values.decodeIfPresent(String.self, forKey: .idref)
+        // 負値や壊れた保存データはアンカー無しとして扱う(progression へ戻る)
+        textOffset = try values.decodeIfPresent(Int.self, forKey: .textOffset)
+            .flatMap { $0 >= 0 ? $0 : nil }
     }
 
     /// Encodes the stable, public locator representation.
@@ -47,6 +60,7 @@ public struct EPUBLocator: Sendable, Equatable, Codable {
         try values.encode(spineIndex, forKey: .spineIndex)
         try values.encode(storedProgression, forKey: .progression)
         try values.encodeIfPresent(idref, forKey: .idref)
+        try values.encodeIfPresent(textOffset, forKey: .textOffset)
     }
 
     private static func clampedProgression(_ value: Double) -> Double {

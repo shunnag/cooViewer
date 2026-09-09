@@ -4,7 +4,7 @@ import Foundation
 /// 再生・一時停止・停止と、テキストのハイライト/ページ追従を仲介する
 extension EPUBReaderView {
     /// media:active-class の既定(本が宣言していないとき)
-    private static let defaultActiveClass = "-epub-media-overlay-active"
+    static let defaultActiveClass = "-epub-media-overlay-active"
 
     /// 現在の spine 項目がメディアオーバーレイ(音声同期)を持つか
     public var hasMediaOverlayForCurrentItem: Bool {
@@ -40,8 +40,59 @@ extension EPUBReaderView {
             ?? Self.defaultActiveClass
         let controller = MediaOverlayController(
             reader: self, publication: publication, activeClass: activeClass)
+        controller.playbackRate = settings.mediaOverlayPlaybackRate
+        controller.skippedTypes = settings.mediaOverlaySkippedTypes
         mediaOverlayController = controller
         controller.play(fromSpineIndex: currentSpineIndex)
+    }
+
+    /// Starts narration at the clip whose text is visible on the current page,
+    /// instead of at the start of the chapter (cooViewer-oxr.46 C26).
+    /// Falls back to the chapter start when nothing on the page is narrated.
+    public func playMediaOverlayFromCurrentPage() async {
+        guard let publication,
+              let overlay = publication.mediaOverlay(forSpineIndex: currentSpineIndex)
+        else { return }
+        let identifiers = overlay.parallels.map { par -> String in
+            guard let href = par.textHref else { return "" }
+            let parts = href.split(separator: "#", maxSplits: 1)
+            return parts.count == 2 ? String(parts[1]) : ""
+        }
+        var parIndex = 0
+        let candidates = identifiers.filter { !$0.isEmpty }
+        if !candidates.isEmpty,
+           let result = await callWashiReturning(
+               "return __washi.firstVisibleIdentifier(ids);",
+               arguments: ["ids": candidates]),
+           let visible = result as? String,
+           let index = identifiers.firstIndex(of: visible) {
+            parIndex = index
+        }
+        playMediaOverlay(atSpineIndex: currentSpineIndex, parIndex: parIndex)
+    }
+
+    /// The media-overlay playback position (spine item + clip index), for a host
+    /// that persists where the reader stopped listening. `nil` when idle.
+    public var mediaOverlayPosition: (spineIndex: Int, parIndex: Int)? {
+        mediaOverlayController.map(\.position)
+    }
+
+    /// Resumes narration at a saved position (see ``mediaOverlayPosition``).
+    /// Returns false when the book has no overlay at that spine item.
+    @discardableResult
+    public func playMediaOverlay(atSpineIndex index: Int, parIndex: Int) -> Bool {
+        guard let publication,
+              publication.mediaOverlay(forSpineIndex: index) != nil else { return false }
+        let activeClass = publication.metadata.mediaOverlayActiveClass
+            ?? Self.defaultActiveClass
+        let controller = mediaOverlayController
+            ?? MediaOverlayController(reader: self, publication: publication,
+                                      activeClass: activeClass)
+        controller.playbackRate = settings.mediaOverlayPlaybackRate
+        controller.skippedTypes = settings.mediaOverlaySkippedTypes
+        mediaOverlayController = controller
+        controller.play(fromSpineIndex: index, parIndex: parIndex)
+        return true
     }
 
     /// 一時停止(ハイライトは残す)
