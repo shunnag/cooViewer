@@ -121,11 +121,14 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 - Every logic-level module (sources, sorting, layout, bindings, persistence) has XCTest
   coverage in `CooViewerTests/`; keep it that way for new logic.
 
-Washi リポジトリを変更するときの申し送り: **公開 API の doc コメントは英語**
-(独立パッケージの利用者向けに 2026-08-25 決定、cooViewer-gse.11 参照)。
-これは Washi 側の規約であり、このリポジトリの例外ではない。DocC と外部利用者に
-向けた `public` シンボルの `///` は英語、`private`/`internal` のコメントと
-全ての `// …` インラインコメントは日本語にする。
+Washi リポジトリを変更するときの申し送り: **公開 API の `///` doc コメント、
+DocC カタログ記事、README は日本語を主、英語を併記**する。
+これは Washi 側の規約であり、cooViewer 側の規約の例外ではない。
+段落単位で「日本語→空行→英語」の順に並べ、日本語を先頭段落に置く
+(DocC / Quick Help は最初の段落を要約として扱うため、要約が日本語になる)。
+`private`/`internal` のコメントと全ての `// …` インラインコメントは従来どおり日本語のみ。
+2026-08-25 に英語のみと決定 (cooViewer-gse.11)、
+2026-09-10 に日英併記へ変更 (cooViewer-mdsx)。
 
 ## Architecture (new app)
 
