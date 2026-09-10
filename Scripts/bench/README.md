@@ -154,7 +154,7 @@ patch して作る(makemutants.py と同様の struct.pack_into)。
 実行しない。
 
 ```zsh
-cd /Users/nagash/cooViewer
+cd ~/Github/cooViewer
 export BENCH_WORK=/tmp/cooviewer-bench
 export DEVELOPER_DIR=/Applications/Xcode.app
 
