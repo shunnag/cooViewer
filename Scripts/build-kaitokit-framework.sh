@@ -1,5 +1,5 @@
 #!/bin/zsh
-# KaitoKit の兄弟チェックアウトが組み立てるユニバーサルフレームワークを
+# KaitoKit の兄弟チェックアウトが組み立てるフレームワークを
 # cooViewer の Frameworks/ へ配置する。SwiftPM 参照にせず、設計書 §1.4 の
 # 動的フレームワーク構成に合わせて書庫エンジン差し替えを検証するため。
 #
@@ -39,6 +39,11 @@ STAMP_FILE="$REPOSITORY_DIR/Frameworks/.KaitoKit-framework-stamp"
 CALLER_HOME="${HOME:-/var/empty}"
 CALLER_DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app}"
 
+# cooViewer は arm64 専用で macOS 26+ が要件。実行されない x86_64 を
+# 出荷物と Sparkle の自動更新に含めないため、既定は arm64 のみとする。
+# 呼び出し元は KAITOKIT_ARCHS="arm64 x86_64" で universal に上書きできる。
+KAITOKIT_ARCHS="${KAITOKIT_ARCHS:-arm64}"
+
 # ネストした SwiftPM ビルドと同じ最小環境でバージョンを調べ、Xcode から
 # 継承したビルド設定を誤ってツールチェーン判定へ混ぜない。
 SWIFT_VERSION="$(env -i \
@@ -50,10 +55,10 @@ if [[ -z "$SWIFT_VERSION" ]]; then
     echo "error: Swift compiler version could not be determined" >&2
     exit 1
 fi
-STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"
+STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${KAITOKIT_ARCHS}"
 
-# 配置済みバイナリがソースとラッパーより新しく、同じコンパイラで作られて
-# いれば何もしない。設計書 §1.4 の反復ビルド最適化を維持するため。
+# 配置済みバイナリがソースとラッパーより新しく、同じコンパイラと
+# アーキテクチャ指定で作られていれば何もしない。設計書 §1.4 の反復ビルド最適化を維持するため。
 if [[ -f "$DESTINATION_EXECUTABLE" && \
       -d "$DESTINATION_MODULES/KaitoKit.swiftmodule" && \
       -d "$DESTINATION_MODULES/KaitoKitCompat.swiftmodule" && \
@@ -68,7 +73,7 @@ fi
 
 # KaitoKit 側をフレームワーク構成の唯一の正とし、同梱スクリプトへ組み立てを
 # 委譲する。cooViewer 側ではバイナリとモジュールを改変せず、埋め込み用に複製する。
-"$SOURCE_BUILD_SCRIPT"
+KAITOKIT_ARCHS="$KAITOKIT_ARCHS" "$SOURCE_BUILD_SCRIPT"
 
 if [[ ! -f "$SOURCE_FRAMEWORK/Versions/A/KaitoKit" || \
       ! -d "$SOURCE_FRAMEWORK/Versions/A/Modules/KaitoKit.swiftmodule" || \
