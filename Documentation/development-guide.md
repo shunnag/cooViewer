@@ -22,12 +22,15 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   ビルドする(成果物があればスキップ)。サブモジュール更新後は
   `rm -rf Frameworks` で作り直しを強制し、その後
   `Scripts/sign-sparkle-nested.sh` を再実行する(Sparkle の再取得時)。
-- **Washi(EPUB 3 ツールキット)**は `Washi/` の独立 SwiftPM パッケージで、
+- **Washi(EPUB 3 ツールキット)**は兄弟チェックアウト `../Washi` の独立 SwiftPM
+  リポジトリ(https://github.com/shunnag/Washi、MIT)で、`WASHI_SOURCE_DIR` に
+  Package.swift のあるディレクトリを指定して上書きできる。
+  チェックアウトは**必須**で、無いとビルドは失敗する。
   Run Script フェーズ(`Scripts/build-washi-framework.sh`)が
   `Frameworks/Washi.framework` を組み立てて埋め込む(SwiftPM 参照でないのは
   Xcode が legacy build location とパッケージ参照を併用できないため)。
   **Washi のソースを変更したら `rm -rf Frameworks/Washi.framework`** で
-  再ビルドを強制する。パッケージ単体のテストは `cd Washi && swift test`。
+  再ビルドを強制する。パッケージ単体のテストは `cd ../Washi && swift test`。
   **注意(実害あり)**: まれにアプリへの**埋め込みコピーがスキップ**され、
   `build/Debug/cooViewer.app/Contents/Frameworks/Washi.framework` が旧版の
   まま残ることがある(Frameworks/ 側だけ新しくなる)。挙動が変わらない
@@ -36,8 +39,9 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
 - **Washi と複数バージョンの Xcode**: バイナリ `.swiftmodule` はコンパイラの
   バージョンに固定されるため、フレームワークには library evolution の
   **`.swiftinterface` を同梱**している(別バージョンの Xcode/CLI はこれへ
-  フォールバックして import できる)。スクリプトは Swift バージョンを
-  スタンプし、ツールチェーンが変わると自動で作り直す。
+  フォールバックして import できる)。スクリプトは Swift バージョンと
+  ソースディレクトリをスタンプし、ツールチェーンやチェックアウトが変わると
+  自動で作り直す。
   「Module compiled with Swift X cannot be imported by Y」が出たら
   `rm -rf Frameworks/Washi.framework` してビルドし直せば確実に直る。
   なお SwiftPM の出力レイアウトはバージョンで異なる(6.3 系:
@@ -169,33 +173,33 @@ XADMaster/UniversalDetector の性能に触る変更は `Scripts/bench/` の
 `Scripts/bench/README.md` 参照。2026-08-27 監査(MODERNIZATION.md 51–56、
 stored cbz 2.5×/RAR 3×/暗号化 7z 30× 等)の生データも同ディレクトリに同梱。
 
-## 3.5 Washi の公開ミラー(https://github.com/shunnag/Washi)
+## 3.5 Washi の組み込み
 
-Washi は本リポジトリ(モノレポ)内 `Washi/` で開発し、公開リポジトリへは
-`git subtree split` による**片方向ミラー**で反映する(0.1.0 として公開済み。
-初回手順もこの形で検証済み)。公開更新のたびに:
+Washi は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リポジトリ
+(https://github.com/shunnag/Washi、MIT)で、サブモジュールではない。既定では
+`../Washi` を使い、別の配置を試す場合は `WASHI_SOURCE_DIR` に Package.swift の
+あるディレクトリを指定する。相対パスは cooViewer リポジトリを基準に解決する。
+チェックアウトは**必須**で、無いとビルドは失敗する。
 
-通常は `Scripts/release-washi.sh <version>` を使う(`--dry-run` で検証と
-実行予定の表示のみ)。スクリプトは公開側のタグを `sort -V` で比較し、最新タグ
-以下の版を拒否する。push が拒否されても強制更新は行わないため、履歴を確認して
-必要な場合だけ下記の手順で手動対応する。
+`Scripts/build-washi-framework.sh` が `Frameworks/Washi.framework` を組み立て、
+通常は CooViewer.xcodeproj の Run Script フェーズから自動実行される。
+開発は Washi リポジトリ側で行い、単体テストは cooViewer のルートから
+`cd ../Washi && swift test` で実行する。ソース更新後は cooViewer 側の
+`rm -rf Frameworks/Washi.framework` で再ビルドを強制する。
 
-```bash
-# Washi/ に触れたコミットを済ませたブランチ上で
-git subtree split --prefix=Washi -b washi-public   # 冪等・増分(再実行で更新)
-git ls-tree --name-only washi-public                # Package.swift がルートにあること
-git push https://github.com/shunnag/Washi.git washi-public:main
-git tag X.Y.Z washi-public                          # SwiftPM は semver タグで解決
-git push https://github.com/shunnag/Washi.git X.Y.Z
+Washi のリリースは Washi リポジトリで行う。CHANGELOG.md の
+`## [X.Y.Z] - YYYY-MM-DD` 見出しを確定させ、変更をコミットしてから次を実行する。
+SwiftPM は semver タグで解決する。
+
+```sh
+cd ../Washi
+git tag X.Y.Z && git push origin main X.Y.Z
 ```
 
-- **コミットメッセージは公開される**: `Washi/` を触るコミットはそのまま
-  ミラーの履歴になるため、公開されて困る文面を書かない。
-- 別ブランチ系列から split し直すと SHA が変わり non-fast-forward で
-  拒否されることがある。ミラーは片方向なので、その場合は
-  `git push --force` で上書きしてよい(マージはしない)。
-- 公開側で受けた PR はモノレポへ手で取り込んでからミラーに反映する
-  (`Washi/README.md` の「開発体制」に明記済み)。
+cooViewer の **Release ビルド前には `../Washi` が push 済みのタグの状態であること**
+(`WASHI_SOURCE_DIR` 指定時も参照先で同様)。cooViewer 側の履歴には Washi の版が
+記録されないため、配布する実装を公開済みのタグで特定できる状態にしておく。
+XADMaster サブモジュールを Release 前に push 済みにしておくのと同じ趣旨。
 
 ## 3.6 KaitoKit の組み込み
 

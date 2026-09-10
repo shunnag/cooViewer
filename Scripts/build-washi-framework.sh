@@ -1,8 +1,10 @@
 #!/bin/zsh
-# Washi(EPUB 3 ツールキット、Washi/ の SwiftPM パッケージ)を Washi.framework
-# として Frameworks/ へ組み立てる。CooViewer.xcodeproj の Run Script phase から
-# 呼ばれる(outputs 宣言済みのため、成果物がある間は phase 自体がスキップされる)。
-# Washi/ のソース更新後に再ビルドしたいときは `rm -rf Frameworks/Washi.framework`。
+# Washi(EPUB 3 ツールキット)は兄弟チェックアウトの独立リポジトリで開発する。
+# その SwiftPM パッケージを Washi.framework として Frameworks/ へ組み立てる。
+# CooViewer.xcodeproj の Run Script フェーズから呼ばれ、更新判定は本スクリプトで行う。
+# WASHI_SOURCE_DIR には Washi の Package.swift があるディレクトリを指定する。
+# 未指定時は、このリポジトリを基準に ../Washi を使う。
+# ソース更新後に再ビルドしたいときは `rm -rf Frameworks/Washi.framework`。
 #
 # SwiftPM のローカルパッケージ参照を使わないのは、Xcode が legacy build location
 # (このプロジェクトの build/ 直下方式)とパッケージ参照を併用できないため。
@@ -11,19 +13,31 @@
 # ツールチェーン互換: バイナリ .swiftmodule はコンパイラのバージョンに固定される
 # ため、library evolution を有効にしてテキストの .swiftinterface も同梱する
 # (別バージョンの Xcode/CLI は swiftmodule が読めないとき interface へ
-# フォールバックする)。さらにビルド時の Swift バージョンをスタンプし、
-# ツールチェーンが変わったら成果物が新しくても作り直す。
+# フォールバックする)。さらにビルド時の Swift バージョンとソースディレクトリを
+# スタンプし、ツールチェーンやチェックアウトが変わったら成果物が新しくても作り直す。
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-FW_DIR="$PWD/Frameworks"
-FW="$FW_DIR/Washi.framework"
-BIN="$PWD/Washi/.build/release"
+SCRIPT_PATH="${0:A}"
+REPOSITORY_DIR="${SCRIPT_PATH:h:h}"
+SOURCE_DIR="${WASHI_SOURCE_DIR:-$REPOSITORY_DIR/../Washi}"
+if [[ "$SOURCE_DIR" != /* ]]; then
+    SOURCE_DIR="$REPOSITORY_DIR/$SOURCE_DIR"
+fi
 
-if [[ ! -e Washi/Package.swift ]]; then
-    echo "error: Washi package is missing (Washi/Package.swift)" >&2
+if [[ ! -d "$SOURCE_DIR" ]]; then
+    echo "error: Washi のソースディレクトリがありません ($SOURCE_DIR)" >&2
     exit 1
 fi
+SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd -P)"
+
+if [[ ! -f "$SOURCE_DIR/Package.swift" ]]; then
+    echo "error: Washi の Package.swift がありません ($SOURCE_DIR/Package.swift)" >&2
+    exit 1
+fi
+
+FW_DIR="$REPOSITORY_DIR/Frameworks"
+FW="$FW_DIR/Washi.framework"
+BIN="$SOURCE_DIR/.build/release"
 
 # Xcode の script phase から起動された場合、継承したビルド環境変数が
 # ネストしたビルドを壊すため、環境を最小構成にして実行する
@@ -36,12 +50,16 @@ run_swift() {
 }
 
 SWIFT_VERSION="$(run_swift --version 2>/dev/null | head -1)"
-STAMP_FILE="$FW/Versions/A/Resources/.swift-version"
+# スタンプをバンドル内に置くと Embed でアプリへコピーされ、開発機のパスが
+# 配布物に入るため、バンドル外で管理する。
+STAMP_FILE="$REPOSITORY_DIR/Frameworks/.Washi-framework-stamp"
+STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"
 
-# 成果物がソースより新しく、かつ同じツールチェーンで作られていればスキップ
+# 成果物がソースより新しく、かつ同じツールチェーン・ソースディレクトリで
+# 作られていればスキップ
 if [[ -e "$FW/Versions/A/Washi" && \
-      "$(cat "$STAMP_FILE" 2>/dev/null)" == "$SWIFT_VERSION" ]]; then
-    if [[ -z "$(find Washi/Sources Washi/Package.swift Scripts/build-washi-framework.sh \
+      "$(cat "$STAMP_FILE" 2>/dev/null)" == "$STAMP_VALUE" ]]; then
+    if [[ -z "$(find "$SOURCE_DIR/Sources" "$SOURCE_DIR/Package.swift" "$SCRIPT_PATH" \
             -type f -newer "$FW/Versions/A/Washi" -print -quit)" ]]; then
         echo "Washi.framework is up to date."
         exit 0
@@ -51,11 +69,12 @@ fi
 # library evolution + module interface 付きでビルドする(unsafeFlags を
 # Package.swift に書くと依存パッケージとして使えなくなるため、フラグは
 # ここで -Xswiftc として渡す)
-run_swift build --package-path Washi -c release --product WashiDynamic \
+run_swift build --package-path "$SOURCE_DIR" -c release --product WashiDynamic \
     -Xswiftc -enable-library-evolution \
     -Xswiftc -emit-module-interface
 
 # dylib + swiftmodule + swiftinterface からフレームワークバンドルを手組みする
+rm -f "$STAMP_FILE"
 rm -rf "$FW"
 MODULES_DIR="$FW/Versions/A/Modules"
 mkdir -p "$MODULES_DIR" "$FW/Versions/A/Resources"
@@ -93,7 +112,7 @@ install_module() {
     local existing_interfaces=("$dest"/*.swiftinterface(N))
     if (( ${#existing_interfaces[@]} == 0 )); then
         local interface
-        interface="$(find "$PWD/Washi/.build" -name "$name.swiftinterface" \
+        interface="$(find "$SOURCE_DIR/.build" -name "$name.swiftinterface" \
             -not -path '*ModuleCache*' -print0 2>/dev/null \
             | xargs -0 ls -t 2>/dev/null | head -1)"
         if [[ -z "$interface" ]]; then
@@ -143,7 +162,7 @@ cat > "$FW/Versions/A/Resources/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-echo "$SWIFT_VERSION" > "$STAMP_FILE"
+printf '%s\n' "$STAMP_VALUE" > "$STAMP_FILE"
 
 ln -s A "$FW/Versions/Current"
 ln -s Versions/Current/Washi "$FW/Washi"
