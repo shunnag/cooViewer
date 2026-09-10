@@ -42,14 +42,15 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   by the `ArchiveEngine` default (`kaitokit` since 2.0b34) or `--engine xadmaster` on the
   snapshot CLI; see development-guide §3.6. XADMaster stays bundled as the automatic
   fallback for archives KaitoKit cannot open.
-- EPUB support lives in `Washi/` — an independent, MIT-licensed, zero-dependency SwiftPM
-  package (see `Washi/README.md`), published as a one-way subtree mirror at
-  https://github.com/shunnag/Washi (procedure: development-guide §3.5; commits
-  touching `Washi/` become public history there). A second run-script phase
-  (`Scripts/build-washi-framework.sh`) assembles it into `Frameworks/Washi.framework`
-  because Xcode cannot combine SwiftPM package references with this project's legacy
-  build locations. After editing `Washi/` sources, `rm -rf Frameworks/Washi.framework`
-  to force a rebuild. Washi's own tests run with `cd Washi && swift test`.
+- **Washi(EPUB 3 ツールキット)**: 兄弟チェックアウト `../Washi`
+  (`WASHI_SOURCE_DIR` で上書き可)から `Scripts/build-washi-framework.sh` が
+  `Frameworks/Washi.framework` を組み立てる。チェックアウトは**必須**で、
+  無いとビルドは失敗する(公開リポジトリ github.com/shunnag/Washi、MIT、
+  依存パッケージなし。`../Washi/README.md` と development-guide §3.5 参照)。
+  Run Script フェーズを使うのは、Xcode がこのプロジェクトの legacy build location と
+  SwiftPM パッケージ参照を併用できないため。Washi のソース更新後は
+  `rm -rf Frameworks/Washi.framework` で再ビルドを強制する。
+  Washi 単体のテストは `cd ../Washi && swift test`。
   - Washi is **two SwiftPM targets** (since 1.2.0): `WashiCore` (parse layer,
     Foundation-family only, headless) and `Washi` (rendering layer, adds
     AppKit/WebKit) which `@_exported import`s WashiCore. The `WashiDynamic`
@@ -107,11 +108,6 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   or design doc (`設計書 §n`) for any behavior that mirrors or deliberately deviates
   from the legacy app. Prefer explaining *why* (spec, avoided bug, performance)
   over *what*.
-  - **Exception — `Washi/` public API doc comments are English** (decided
-    2026-08-25 for the standalone-package audience; see cooViewer-gse.11).
-    `///` doc comments on `public` symbols are written in English so DocC and
-    external consumers read naturally. Internal (`private`/`internal`) comments
-    and all `// …` inline comments in `Washi/` stay Japanese per the rule above.
 - Persisted-data compatibility (updated for 2.0b5): the UserDefaults domain
   `jp.coo.cooViewer` and the binding array schema (`KeyArray*`/`MouseArray*`) remain
   legacy-compatible (§13.2) — never change those without a migration mapping (§13.5).
@@ -125,6 +121,15 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 - Every logic-level module (sources, sorting, layout, bindings, persistence) has XCTest
   coverage in `CooViewerTests/`; keep it that way for new logic.
 
+Washi リポジトリを変更するときの申し送り: **公開 API の `///` doc コメント、
+DocC カタログ記事、README は日本語を主、英語を併記**する。
+これは Washi 側の規約であり、cooViewer 側の規約の例外ではない。
+段落単位で「日本語→空行→英語」の順に並べ、日本語を先頭段落に置く
+(DocC / Quick Help は最初の段落を要約として扱うため、要約が日本語になる)。
+`private`/`internal` のコメントと全ての `// …` インラインコメントは従来どおり日本語のみ。
+2026-08-25 に英語のみと決定 (cooViewer-gse.11)、
+2026-09-10 に日英併記へ変更 (cooViewer-mdsx)。
+
 ## Architecture (new app)
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
@@ -133,7 +138,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   XADMaster+UniversalDetector), `PDFSource` (actor over PDFKit, point-size rendering),
   `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
   extraction for single-image pages, WebKit rasterization fallback).
-- `Washi/` — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
+- Washi(`../Washi`、別リポジトリ) — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
   DRM detection, reflowable WKWebView renderer with vertical-writing pagination,
   paper-book page furniture (folio / page number in the bottom margin), light/dark theming,
   fixed-layout support). Reflowable EPUBs display **in the same reader window** as an
