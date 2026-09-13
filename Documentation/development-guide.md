@@ -269,8 +269,14 @@ KaitoKit main(slice 1〜8、`../KaitoKit`)から `rm -rf Frameworks/KaitoKit.fra
 | `testfile.stuffit7_dlx.mac9.sitx.hqx`(BinHex の中の StuffIt X) | 1/2 (testfile.jpg) が表示 |
 | `jp-pages.sit`(日本語名、フォルダ 1 段、1 ページ目に resource fork) | 1/5 (第１巻/ページ01.png) が表示 |
 
-`--engine kaitokit` の 4 本は XADMaster へのフォールバックが起きていない(`.sitx` の JPEG ページが表示されること自体が
-KaitoKit で開いた証拠。フォールバックしていれば XADMaster と同じエラー表示になる)。
+`.sitx` と `.hqx` の 2 本は、XADMaster が出せない内容(method 7 の JPEG、BinHex の内側)が表示されたことで
+KaitoKit で開いたと確定する。classic の 2 本は `kaito` CLI で開けるためフォールバック条件に当たらないが、
+XADMaster でも同じ画面になるので画面からは区別できない(os_log の `.error` は `log show` で採れなかった)。
+
+暗号化 catalog の StuffIt X(`testfile.stuffit_deluxe_2009.win.password.des.sitx`)と RAR5 `-hp` は、両エンジンとも
+パスワードを求めずに黒画面のまま終了する(`KaitoArchive(file:)` が `passwordRequired` を nil に潰し、
+XADMaster 側も delegate なしでは開けない)。StuffIt 由来ではない既存の欠陥として cooViewer-p2r1 に記録した。
+entry だけ暗号化された書庫(2010 AES 等)はプロンプトが出る。
 
 `.bin` / `.exe` は拡張子を宣言しないため、ドロップ／`--open` では `BookSourceFactory.make` の拡張子判定で
 `unsupportedFormat` になる(KaitoKit 自体は内容判定で開ける)。この振り分けと `ArchiveSource` のフォールバック経路は
