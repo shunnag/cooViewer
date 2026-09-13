@@ -421,8 +421,16 @@ final class PageEntryDisplayTitleTests: XCTestCase {
     }
 }
 
-/// 分割書庫の拡張子判定(仕様書 §2.3 の番号系列)
-final class SplitVolumeExtensionTests: XCTestCase {
+/// 書庫の拡張子判定(仕様書 §2.1 の archiveTypes、§2.3 の番号系列、設計書 §2.4)
+final class ArchiveExtensionTests: XCTestCase {
+    func testStuffItArchives() {
+        for ext in ["sit", "sitx", "sea", "hqx"] {
+            XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.\(ext)")))
+            XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.\(ext.uppercased())")))
+        }
+        XCTAssertFalse(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.bin")))
+    }
+
     func testSplitVolumesAreArchives() {
         XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.r00")))
         XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.z01")))

@@ -94,6 +94,42 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>StuffIt Archive</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>coo_alt</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.stuffit.archive.sit</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>StuffIt X Archive</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>coo_alt</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.stuffit.archive.sitx</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>BinHex Archive</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>coo_alt</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.apple.binhex-archive</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>PDF Document</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
