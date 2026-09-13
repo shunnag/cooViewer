@@ -44,7 +44,7 @@ struct MediaProfile: Sendable, Equatable {
 
     /// 書庫をローカル一時展開(スプール)するか。
     /// 高速ローカルではランダムアクセスが安い zip 系のスプールをやめて
-    /// 二重書き込みを避ける。solid 圧縮になり得る形式(rar/7z/lha/sit)は
+    /// 二重書き込みを避ける。solid 圧縮になり得る形式(rar/7z/lha/sit/sitx/sea)は
     /// 逐次展開の恩恵が大きいので常にスプールする
     /// independentEntries: 書庫の実構造が「全エントリ独立」(非 solid の 7z/rar 等。
     /// ArchiveSource が solid グループ情報から判定)なら true。構造は拡張子に勝ち、
@@ -62,7 +62,7 @@ struct MediaProfile: Sendable, Equatable {
             let ext = fileExtension.lowercased()
             if SupportedTypes.isSplitVolumeExtension(ext) { return true }
             if independentEntries { return false }
-            let solidProne: Set<String> = ["rar", "cbr", "7z", "lha", "lzh", "sit"]
+            let solidProne: Set<String> = ["rar", "cbr", "7z", "lha", "lzh", "sit", "sitx", "sea"]
             return solidProne.contains(ext)
         case .slowLocal, .network, .unknown:
             return true
