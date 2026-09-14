@@ -134,8 +134,10 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
   `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit by default, automatic one-shot
-  fallback to XADMaster; filename encoding auto-detection comes from
-  XADMaster+UniversalDetector), `PDFSource` (actor over PDFKit, point-size rendering),
+  fallback to XADMaster; filename encoding auto-detection is KaitoKit's own
+  `EncodingPolicy.automatic` (39 languages / 54 legacy code pages, no delegate override)
+  and only the XADMaster fallback still goes through UniversalDetector),
+  `PDFSource` (actor over PDFKit, point-size rendering),
   `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
   extraction for single-image pages, WebKit rasterization fallback).
 - Washi(`../Washi`、別リポジトリ) — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
