@@ -213,6 +213,13 @@ KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リ
 記録する)。設定の「詳細」で切り替えられ、スナップショット CLI では `--engine xadmaster`
 でその起動だけ上書きできる。
 
+ファイル名の文字コード判定は KaitoKit 自身の `EncodingPolicy.automatic`
+(既定 `likelyLanguage: "ja"`、2026-09-15 の KaitoKit PR #24 で 39 言語・54 legacy
+候補)で行い、cooViewer は `KaitoArchiveDelegate` の名前判定フックを実装しない。
+UniversalDetector を使うのは XADMaster へフォールバックした場合だけである。
+判定精度の測定値と残差は KaitoKit の
+`Documentation/verification/2026-09-14-name-encoding-languages.md` を参照。
+
 KaitoKit は StuffIt にも対応する(classic/5/X、`.sea`、MacBinary/AppleSingle/BinHex の
 透過 unwrap、`.exe` SFX)。XADMaster は StuffIt X の JPEG(method 7)・StuffIt 7 Mac の
 `.sitx`・wrapper 内側・暗号化 SITX を開けないが、KaitoKit は開ける。
