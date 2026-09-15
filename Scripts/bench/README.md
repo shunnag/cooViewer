@@ -1,173 +1,87 @@
-# Scripts/bench — XADMaster 書庫ベンチマーク基盤
+# Scripts/bench — 書庫コーパスと計測
 
-2026-08-27 の性能監査(XADMaster/MODERNIZATION.md 変更 51–56)で使った計測一式。
-性能に触る変更をしたら、ここで**必ず実測してから**採否を判断する
-(フラグや実装の優劣を推測で決めない — このバッチの教訓)。
+書庫エンジンに依存しない入力生成・計測ツールを置く。
+削除したオラクル・旧エンジンのベンチ群は **git 履歴 8b726c1 の `Scripts/bench/` にあり、
+bd cooViewer-6lrc.9 で別リポジトリへ移設予定**。この PR では履歴に残す。
+削除・維持の判定は [PR 2 検証記録](../../Documentation/verification/2026-09-15-xadmaster-framework-removal.md)を参照。
 
-## 前提ツール
+## 残したツール
 
-- Xcode(`DEVELOPER_DIR` 既定 `/Applications/Xcode.app`)
-- `brew install sevenzip`(7zz)
-- LHA コーパスを作る場合のみ書庫作成対応の正統 LHa(`LHA=/path/to/lha` で指定可)
-- RAR4/RAR5 コーパスを作る場合のみ rar **6.x**(7.x は `-ma4` 削除済み。
-  RARLab の rarmacos-arm-624.tar.gz を展開し quarantine を外して使う)
-- microbench の libdeflate 比較のみ `brew install libdeflate`
+| ファイル | 用途・依存 |
+|---|---|
+| `make-archives.sh` | 画像から CBZ / ZIP / 7z / LHA / RAR のコーパスを生成。zip、7zz、sips、Swift。LHa / rar は任意 |
+| `makecorpus.swift` | 決定論的な漫画風 JPEG / PNG と小型 JPEG の生成。Foundation / CoreGraphics / ImageIO |
+| `makesjiszip.py` | cp932 名・UTF-8 フラグなしの ZIP を生成し、全ローカルヘッダ・中央ディレクトリの名前とフラグを検証。Python 標準ライブラリ |
+| `makemutants.py` | シード書庫ごとに切詰め 12 件・ビット反転 20 件を決定論的に生成。Python 標準ライブラリ |
+| `microbench.c` | CRC-32(テーブル / ARM 命令 / zlib)と inflate(zlib / libcompression / libdeflate)の独立比較 |
+| `lzma2walk.c` | 単一フォルダ・単一 LZMA2 コーダの 7z のチャンクヘッダと辞書リセット位置を調査。標準 C のみ、復号はしない |
+| `coldopen.sh` | ディスクイメージの detach/attach 後、指定コマンドを cold / warm の順で実行。hdiutil / time |
+| `purge-cold.sh` | `sudo -n purge` 後に指定コマンドを一度実行。sudo / purge / time |
 
-## 使い方
+## コーパス生成
 
-作業領域は環境変数 `BENCH_WORK`(既定 `/tmp/cooviewer-bench`)。コーパスは
-合計 ~3GB 生成される。
+Xcode と `7zz`(Homebrew の sevenzip)が必要。LHA を作る場合は書庫作成対応の
+LHa(`LHA=/path/to/lha`)、RAR4 は rar 6.x が必要(rar 7.x には `-ma4` がない)。
+Lhasa は展開専用なので LHA 生成には使わない。任意ツールがなければ該当形式をスキップする。
 
 ```zsh
-cd Scripts/bench
 export BENCH_WORK=/tmp/cooviewer-bench
-
-# 1) コーパス生成(画像は決定論的。書庫は存在すればスキップ)
-./make-archives.sh
-
-# 2) ハーネスをビルド(リンク先ヘッダはリポジトリの Frameworks/ を使う)
-clang -O2 -fobjc-arc xadbench.m -o $BENCH_WORK/bin/xadbench \
-    -F ../../Frameworks -framework XADMaster -framework Foundation \
-    -Wl,-rpath,@executable_path/../Frameworks
-swiftc -O xadbench-swift.swift -o $BENCH_WORK/bin/xadbench-swift \
-    -F ../../Frameworks -Xlinker -rpath -Xlinker @executable_path/../Frameworks
-
-# 3) バリアントをビルドして計測(結果は $BENCH_WORK/results/all.tsv に追記)
-./build-variant.sh baseline GCC_OPTIMIZATION_LEVEL=2 LLVM_LTO=YES_THIN
-./run-variant.sh baseline full
-#   (XADMaster を変更 → 別名でビルド → 交互に実行して比較)
-./build-variant.sh mychange GCC_OPTIMIZATION_LEVEL=2 LLVM_LTO=YES_THIN
-./run-variant.sh mychange full
-./run-variant.sh baseline full
-./run-variant.sh mychange full
-
-# 4) 集計(初回 rep 除外の中央値、baseline 比、SHA-256 相互検証)
-python3 summarize.py $BENCH_WORK/results/all.tsv
+Scripts/bench/make-archives.sh
+python3 Scripts/bench/makemutants.py "$BENCH_WORK/corpus/archives/book-deflate.cbz" "$BENCH_WORK/mutants"
 ```
 
-`full` は JPEG/TIFF の lh5・lh6・lh7 も各 3 reps で計測する。LHA や
-RAR の任意ツールが無く対応書庫を作れなかった場合、`run-variant.sh` は
-欠落したケースをログへ出してスキップし、残りのスイートを続行する。
+既定の作業領域は `/tmp/cooviewer-bench`、全コーパスは約 3 GB。
+生成済みの画像・書庫はスキップする。LHA は JPEG 200 ページと TIFF 100 ページを
+それぞれ lh5 / lh6 / lh7 で固める。`lha v` / `lha t` で形式・内容と CRC を確認できる。
 
-## Shift-JIS 名 ZIP コーパス
+`sjis2000.zip` は cp932 名・UTF-8 フラグなしの文字コード判定用資産。
+2026-08-31 以前の生成物は UTF-8 フラグ付きの文字化け名だったため、測定値を
+新版と直接比較しない。`make-archives.sh` は旧フラグを検出すると作り直す。
+単独生成は `python3 Scripts/bench/makesjiszip.py <画像ディレクトリ> <出力.zip>`。
 
-`sjis2000.zip` は、エントリ名が Shift-JIS(cp932)・UTF-8 フラグなしで、
-文字コード判定経路を通すための資産。2026-08-31 以前に生成した資産は
-実態が異なり、UTF-8 フラグ付きのモジバケ名だったため、それ以前の
-`sjis2000.zip` の測定値は「判定あり」の測定になっていない。過去の測定値と
-新しい測定値を直接比較しないこと。`make-archives.sh` は旧版の UTF-8 フラグを
-検出し、`sjis2000.zip` を自動で作り直す。
+## 独立マイクロベンチ・ヘッダ調査
 
-## 計測の作法(実測で確認済みの罠)
-
-- **比較は時間的に隣接した交互実行ペアで**。時間の離れたスイート間は熱・
-  Spotlight 等で最大 ±10% ドリフトする。直後比較のノイズは ±2–5%。
-- ハーネスは全バリアントで**同一バイナリ**(`build-variant.sh` が
-  `$BENCH_WORK/bin` からコピーする)。`@rpath` なので差し替えだけで効く。
-- 正しさは summarize.py の SHA-256 相互検証で担保(全バリアント一致が前提)。
-- マイクロベンチは**実データで**(乱数は deflate が stored ブロック化して
-  memcpy を測ってしまう)。純関数は呼び出しを前結果に連鎖させないと
-  ループ不変で畳まれて偽の GB/s が出る。
-
-## その他のツール
+`microbench.c` のみ libdeflate が必要(Homebrew の libdeflate)。Apple Silicon 向け:
 
 ```zsh
-# CRC / inflate 実装比較(テーブル vs HW vs Apple zlib、zlib vs libcompression vs libdeflate)
-clang -O2 -march=armv8-a+crc microbench.c -o $BENCH_WORK/bin/microbench \
-    -lz -lcompression -I/opt/homebrew/opt/libdeflate/include \
-    /opt/homebrew/opt/libdeflate/lib/libdeflate.a
-$BENCH_WORK/bin/microbench $BENCH_WORK/corpus/jpeg64.bin $BENCH_WORK/corpus/tiff64.bin
-
-# 破損入力バッテリー(ASan+UBSan バリアントに対して回す)
-./build-variant.sh asan GCC_OPTIMIZATION_LEVEL=1 LLVM_LTO=NO \
-    "OTHER_CFLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined" \
-    "OTHER_CPLUSPLUSFLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined" \
-    "OTHER_LDFLAGS=-fsanitize=address,undefined"
-python3 makemutants.py <シード書庫...> $BENCH_WORK/mutants
-#   → 各ミュータントを xadbench(ASan リンク版)extract で回し、シグナル/サニタイザ報告ゼロを確認
+mkdir -p "$BENCH_WORK/bin"
+clang -O2 -march=armv8-a+crc Scripts/bench/microbench.c -o "$BENCH_WORK/bin/microbench" \
+  -lz -lcompression -I/opt/homebrew/opt/libdeflate/include \
+  /opt/homebrew/opt/libdeflate/lib/libdeflate.a
+"$BENCH_WORK/bin/microbench" "$BENCH_WORK/corpus/jpeg64.bin" "$BENCH_WORK/corpus/tiff64.bin"
+clang -O2 Scripts/bench/lzma2walk.c -o "$BENCH_WORK/bin/lzma2walk"
+"$BENCH_WORK/bin/lzma2walk" "$BENCH_WORK/corpus/archives/book-solid.7z"
 ```
 
-## results-2026-08-27/
+CRC / inflate は実データで測る。乱数だけでは deflate が stored ブロックになり
+コピー速度を測ってしまう。`lzma2walk` は packed ストリームがオフセット `0x20` に
+ある前提の調査用で、汎用の 7z 検証器ではない。
 
-監査時の生データ。`clean-ab.tsv` = baseline↔final 交互 2 巡+暗号化/open 追試
-(レポートの累積表の出典)、`experiments.tsv` = フラグ行列と実験系列。
-要約はレポート artifact「XADMaster 性能監査 2026-08」参照。
+## cold / warm 計測
 
-## pextract(group-aware 並列展開モード)
-
-第 2 ラウンドで追加。`xadbench pextract <archive> <reps> [workers]` は
-`solidGroupOfEntry` でエントリをグループ化し、グループ単位でワーカー
-(独立 XADArchive)へ配分する(グループ内は前進ストリーミング)。
-ダイジェストは extract モードと同一定義なので SHA で相互検証できる。
-実測(M4 Max・6 並列): 非 solid 7z 192→37ms(5.2 倍)、64MB ブロック
-solid 7z 6.41→1.20s(5.3 倍)。
-
-## CooViewerTests/Fixtures/*.7z の出自
-
-nonsolid/solid/blocks.7z は「PNG(4x6)+8KB 乱数パディング」×4 ページを
-7zz で固めたもの(blocks は -ms=20k で 2 ブロック化)。再生成手順:
-ページ生成の python スクリプトはレポート artifact のセッション記録参照、
-または同等の PNG+パディングを用意して
-`7zz a -t7z -m0=lzma2 -ms=off|on|20k fixture.7z *.png`。
-
-## LHA(lh4-7)コーパスと fixture
-
-`make-archives.sh` は JPEG 200 ページから `book-lh5/6/7.lzh`、圧縮が効く
-TIFF 100 ページから `book-tiff-lh5/6/7.lzh` を作る。入力ディレクトリへ
-移動して basename を決定論的な順序で渡し、`-w` で一時ファイルも
-`$BENCH_WORK/corpus/archives` 内に固定する。書庫は他形式と同じく既存なら
-スキップする。`LHA` 未指定時は `PATH` 上の `lha` を使う。
-
-Lhasa(brew の lha)は展開専用なので、作成には正統 LHa が要る:
-`brew install automake` 後に jca02266/lha をソースから
-`autoreconf -i && ./configure && make`(バイナリは src/lha)。
-`lha a -o5|o6|o7 out.lzh *.jpg` で lh5/6/7 を作成。
-正統 LHa が無い、または `lha` が Lhasa の場合、警告を出して LHA 系だけを
-スキップする。生成物は `lha v book-lh5.lzh` 等でメソッドとファイル一覧を、
-`lha t book-lh5.lzh` 等で CRC を確認できる。
-CooViewerTests/Fixtures/book.lzh は PNG×4 を lha -o5 で固めた lh5 fixture
-(FastLZSS 移植のデコード正当性テスト testLZH5ArchiveExtractsCorrectly 用)。
-
-## cold cache 計測
-
-xadbench は open/data-open で rusage の物理 read バイト(diskread)とページイン
-(pageins)も JSON に出す。cold の測り方は 2 通り:
-- `coldopen.sh <variant> <archive>`: disk image(cold.sparseimage)を
-  detach/attach してキャッシュを落とす。ただしスパースイメージ APFS は
-  全ファイル readahead するため物理 read の差は出にくい(時間は測れる)。
-- `sudo zsh purge-cold.sh`: 内蔵 SSD で `sudo purge` して真の cold を測る
-  (認証が要る)。2026-08 の計測では zip open は cold でも全ファイルを
-  readahead するため物理 read は不変・時間だけ −16〜18%(変更 63)。
-
-zip の嘘 centralsize テスト書庫は EOCD の centralsize フィールドを過大/過小に
-patch して作る(makemutants.py と同様の struct.pack_into)。
-
-## ZIP open のローカルヘッダ省略上限(計測専用)
-
-`zip-open-ceiling.patch` は、ZIP open 時の CD 走査からエントリごとの
-ローカルヘッダ seek + read を完全に除いた場合の性能上限(改善幅の上限)を
-測るための使い捨てパッチ。CD 側の名前を使い、data offset はローカル extra
-長を無視して近似する。
-
-**警告: このパッチ適用中の展開結果は INVALID。製品コードへ絶対に merge
-しないこと。** `xadbench open` によるエントリ列挙だけを計測し、`extract` は
-実行しない。
+ラッパーには**計測したいコマンドと引数**を渡す。特定のベンチの配置や JSON 出力には
+依存しない。stdout は対象コマンドの出力、stderr は `time -p` の経過時間などを含む。
+対象コマンドの失敗はその終了コードで中断する。
 
 ```zsh
-cd ~/Github/cooViewer
-export BENCH_WORK=/tmp/cooviewer-bench
-export DEVELOPER_DIR=/Applications/Xcode.app
+# 事前に書庫入りのディスクイメージを用意する。再マウント先は /Volumes/BenchCold。
+Scripts/bench/coldopen.sh "$BENCH_WORK/cold.sparseimage" \
+  /path/to/kaito list --raw /Volumes/BenchCold/book-deflate.cbz
 
-# コーパスが未生成の場合だけ、既存の生成スクリプトを使う
-[[ -e "$BENCH_WORK/corpus/archives/ascii2000.zip" ]] || ./Scripts/bench/make-archives.sh
-
-git -C XADMaster apply --check ../Scripts/bench/zip-open-ceiling.patch
-git -C XADMaster apply ../Scripts/bench/zip-open-ceiling.patch
-./Scripts/bench/build-variant.sh ceiling GCC_OPTIMIZATION_LEVEL=2 LLVM_LTO=YES_THIN
-$BENCH_WORK/variants/ceiling/MacOS/xadbench open \
-    $BENCH_WORK/corpus/archives/ascii2000.zip 3
-
-# 成否にかかわらず必ず復元する
-git -C XADMaster checkout -- .
-git -C XADMaster status --short
+# 事前にターミナルで sudo 認証を済ませる。対象コマンドは通常ユーザーで動く。
+Scripts/bench/purge-cold.sh /path/to/kaito list --raw "$BENCH_WORK/corpus/archives/book-deflate.cbz"
 ```
+
+`coldopen.sh` は専用ボリューム `BenchCold` を detach/attach する。APFS の先読みが
+入るため、物理 read の差が出るとは限らない。物理 read バイトなどが必要なら、対象
+コマンド側で記録する。`purge-cold.sh` の認証がない場合は待たずに失敗する。
+比較は同じ入力・同じ条件で時間的に隣接した交互実行にし、他の重負荷と並走させない。
+時間だけでなく、展開内容の SHA-256 も別途照合する。
+
+## CooViewerTests/Fixtures の出自
+
+`nonsolid/solid/blocks.7z` は PNG(4×6)+8 KB 乱数パディングを 4 ページ固めたもの。
+同等の PNG+パディングを用意して
+`7zz a -t7z -m0=lzma2 -ms=off|on|20k fixture.7z *.png` で再生成する。
+`book.lzh` は PNG 4 ページを LHa `-o5` で固めた lh5 fixture。
+固定ゴールデンの扱いは開発ガイド §3.6 を参照する。

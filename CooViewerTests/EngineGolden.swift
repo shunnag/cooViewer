@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 
-/// XADMaster 撤去後も書庫エンジンの観測契約を保持する(設計書 §2.4)。
+/// 旧エンジン撤去後も書庫エンジンの観測契約を保持する(設計書 §2.4)。
 struct EngineGolden: Decodable, Equatable {
     struct Provenance: Decodable, Equatable {
         let capturedOn: String
@@ -41,7 +41,7 @@ struct EngineGolden: Decodable, Equatable {
         let url = try XCTUnwrap(
             Bundle(for: ArchiveEngineTests.self).url(
                 forResource: "engine-golden", withExtension: "json"),
-            "engine-golden.json がテストバンドルにない。固定資産。XADMaster 撤去後は再採取不可")
+            "engine-golden.json がテストバンドルにない。固定資産。旧エンジン撤去後は再採取不可")
         return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
     }
 }

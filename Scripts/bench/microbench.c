@@ -1,5 +1,5 @@
 // CRC-32 と inflate の実装比較マイクロベンチマーク(フレームワーク非依存)。
-// 対象: (a) XADMaster のテーブル CRC(1 バイト/8 バイトスライス)を模した実装
+// 対象: (a) テーブル CRC(1 バイト/16 バイトスライス)の独立した比較実装
 //       (b) ARMv8 ハードウェア crc32 命令
 //       (c) Apple システム zlib の crc32()
 //       (d) inflate: zlib ストリーム(16KB/256KB チャンク) vs libcompression vs libdeflate
@@ -15,7 +15,7 @@
 
 static double now_ms(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6; }
 
-// ---- XADMaster と同じ構成のテーブル CRC(edb88320) ----
+// ---- CRC-32 の反転多項式(edb88320)によるテーブル実装 ----
 static uint32_t table1[256];
 static uint32_t table16[16][256];
 static void build_tables(void) {
@@ -34,7 +34,7 @@ static uint32_t crc_table1(uint32_t crc, const uint8_t *p, size_t len) {
     for (size_t i = 0; i < len; i++) crc = (crc >> 8) ^ table1[(crc ^ p[i]) & 0xff];
     return crc;
 }
-// XADCalculateCRCFast 相当(sliced-by-16)
+// 16 バイト単位のスライス処理(sliced-by-16)
 static uint32_t crc_sliced16(uint32_t crc, const uint8_t *p, size_t len) {
     while (len && ((uintptr_t)p & 15)) { crc = (crc >> 8) ^ table1[(crc ^ *p++) & 0xff]; len--; }
     while (len >= 16) {

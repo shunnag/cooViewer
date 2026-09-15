@@ -1,8 +1,7 @@
 # Build products
+.build/
 Frameworks/
 cooViewer_build/
-XADMaster.framework/
-UniversalDetector.framework/
 
 # Xcode
 #
