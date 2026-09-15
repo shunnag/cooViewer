@@ -68,7 +68,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 - Signing: Debug is ad-hoc (`CODE_SIGN_IDENTITY = "-"`), Release is manual Developer ID
   (team FQTM2788K5) with hardened runtime for notarized distribution.
 - Release & notarization (procedure verified for 2.0b1): bump `MARKETING_VERSION` /
-  `CURRENT_PROJECT_VERSION` in the pbxproj, then build with
+  `CURRENT_PROJECT_VERSION` in the pbxproj, run `rm -rf build/Release`, then build with
   `xcodebuild -configuration Release build CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
   OTHER_CODE_SIGN_FLAGS="--timestamp"` — a plain Release build FAILS notarization
   (no secure timestamp + leftover `get-task-allow` entitlement). Then:
