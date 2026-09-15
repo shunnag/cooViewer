@@ -203,6 +203,19 @@ XADMaster サブモジュールを Release 前に push 済みにしておくの�
 
 ## 3.6 KaitoKit の組み込み
 
+エンジン契約のゴールデンは `CooViewerTests/Fixtures/engine-golden.json` に保存し、
+KaitoKit の file/data 両入口の列挙値・内容 SHA-256・solidGroup・暗号化挙動を照合する。
+XADMaster がリンクされている間の再採取は、リポジトリ直下で
+`DEVELOPER_DIR=/Applications/Xcode.app TEST_RUNNER_COOVIEWER_CAPTURE_ENGINE_GOLDEN=/tmp/golden-a.json xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug test -only-testing:CooViewerTests/ArchiveEngineTests/testCaptureEngineGolden`
+を実行する。`TEST_RUNNER_` はテストホストへの転送時に外れ、テスト内では
+`COOVIEWER_CAPTURE_ENGINE_GOLDEN` として読む(未指定時は採取テストをスキップ)。
+出力ファイルが実際に生成されたことを確認し、別パス `/tmp/golden-b.json` でも実行して
+`diff /tmp/golden-a.json /tmp/golden-b.json` と保存済み JSON との差分がないことを確認する。
+初回は生成物を上記 Fixtures へコピーして再ビルドする(テストバンドルへ自動収録)。
+再現確認では既存 JSON の初回採取日(UTC)・各コミット SHA を維持し、採取時の
+XADMaster／UniversalDetector の SHA が異なる場合は失敗させる。観測元や fixture を
+意図的に更新する場合は既存 JSON を退避して新規採取し、出自を含めて差分をレビューする。
+
 KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リポジトリ
 (https://github.com/shunnag/KaitoKit、MIT)で、サブモジュールではない。既定では
 `../KaitoKit` を使い、別の配置を試す場合は `KAITOKIT_SOURCE_DIR` に Package.swift の
