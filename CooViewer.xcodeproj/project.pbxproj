@@ -7,10 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C0000000000000000000000D /* XADMaster.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000B /* XADMaster.framework */; };
-		C0000000000000000000000E /* UniversalDetector.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000C /* UniversalDetector.framework */; };
-		C0000000000000000000000F /* XADMaster.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000B /* XADMaster.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		C00000000000000000000010 /* UniversalDetector.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000C /* UniversalDetector.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C00000000000000000000032 /* Sparkle.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000034 /* Sparkle.framework */; };
 		C00000000000000000000033 /* Sparkle.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000034 /* Sparkle.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C00000000000000000000037 /* Washi.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000038 /* Washi.framework */; };
@@ -38,8 +34,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				C0000000000000000000000F /* XADMaster.framework in Embed Frameworks */,
-				C00000000000000000000010 /* UniversalDetector.framework in Embed Frameworks */,
 				C00000000000000000000033 /* Sparkle.framework in Embed Frameworks */,
 				C00000000000000000000039 /* Washi.framework in Embed Frameworks */,
 				C00000000000000000000041 /* KaitoKit.framework in Embed Frameworks */,
@@ -52,8 +46,6 @@
 /* Begin PBXFileReference section */
 		C00000000000000000000009 /* cooViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = cooViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0000000000000000000000A /* CooViewerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CooViewerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		C0000000000000000000000B /* XADMaster.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XADMaster.framework; path = Frameworks/XADMaster.framework; sourceTree = "<group>"; };
-		C0000000000000000000000C /* UniversalDetector.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniversalDetector.framework; path = Frameworks/UniversalDetector.framework; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Sparkle.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Sparkle.framework; path = Frameworks/Sparkle.framework; sourceTree = "<group>"; };
 		C00000000000000000000038 /* Washi.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Washi.framework; path = Frameworks/Washi.framework; sourceTree = "<group>"; };
 		C00000000000000000000043 /* KaitoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = KaitoKit.framework; path = Frameworks/KaitoKit.framework; sourceTree = "<group>"; };
@@ -90,8 +82,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C0000000000000000000000D /* XADMaster.framework in Frameworks */,
-				C0000000000000000000000E /* UniversalDetector.framework in Frameworks */,
 				C00000000000000000000032 /* Sparkle.framework in Frameworks */,
 				C00000000000000000000037 /* Washi.framework in Frameworks */,
 				C00000000000000000000040 /* KaitoKit.framework in Frameworks */,
@@ -132,11 +122,9 @@
 		C00000000000000000000003 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				C0000000000000000000000B /* XADMaster.framework */,
 				C00000000000000000000043 /* KaitoKit.framework */,
 				C00000000000000000000034 /* Sparkle.framework */,
 				C00000000000000000000038 /* Washi.framework */,
-				C0000000000000000000000C /* UniversalDetector.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -148,7 +136,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = C0000000000000000000001A /* Build configuration list for PBXNativeTarget "cooViewer" */;
 			buildPhases = (
-				C00000000000000000000015 /* Build XADMaster frameworks */,
+				C00000000000000000000015 /* Fetch Sparkle */,
 				C0000000000000000000003A /* Build Washi framework */,
 				C00000000000000000000044 /* Build KaitoKit framework */,
 				C00000000000000000000011 /* Sources */,
@@ -246,22 +234,20 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		C00000000000000000000015 /* Build XADMaster frameworks */ = {
+		C00000000000000000000015 /* Fetch Sparkle */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputPaths = (
 			);
-			name = "Build XADMaster frameworks";
+			name = "Fetch Sparkle";
 			outputPaths = (
-				"$(PROJECT_DIR)/Frameworks/XADMaster.framework/Versions/A/XADMaster",
-				"$(PROJECT_DIR)/Frameworks/UniversalDetector.framework/Versions/A/UniversalDetector",
 				"$(PROJECT_DIR)/Frameworks/Sparkle.framework/Versions/B/Sparkle",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "exec \"${PROJECT_DIR}/Scripts/build-frameworks.sh\"\n";
+			shellScript = "exec \"${PROJECT_DIR}/Scripts/fetch-sparkle.sh\"\n";
 		};
 		C0000000000000000000003A /* Build Washi framework */ = {
 			isa = PBXShellScriptBuildPhase;

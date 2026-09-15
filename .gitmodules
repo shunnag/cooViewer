@@ -1,6 +1,0 @@
-[submodule "XADMaster"]
-	path = XADMaster
-	url = https://github.com/shunnag/XADMaster.git
-[submodule "UniversalDetector"]
-	path = UniversalDetector
-	url = https://github.com/shunnag/universal-detector.git
