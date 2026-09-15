@@ -10,7 +10,7 @@ extension ArchiveSource {
     /// アプリ本体では persistenceKey を必須にして一時パス由来のキー混入を
     /// コンパイル時に防いでいるため、省略形はテストにのみ置く
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
-         preferredEngine: ArchiveEngineKind = .xadmaster,
+         preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live) throws {
         try self.init(url: url, nestingDepth: nestingDepth, unlocker: unlocker,
                       persistenceKey: .file(path: url.path),

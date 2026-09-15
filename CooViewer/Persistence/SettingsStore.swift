@@ -343,8 +343,8 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "AdaptiveMediaTuning") }
     }
 
-    /// 新しく開く書庫に使うエンジン。未知値は既定の XADMaster へ戻し、
-    /// 旧版や手編集した defaults からも確実に書庫を開けるようにする。
+    /// 新しく開く書庫に使うエンジン。未知値は既定の KaitoKit へ写像する。
+    /// 旧版との往復で選択が残るよう、保存値は書き戻さない(設計書 §2.4)。
     var archiveEngine: ArchiveEngineKind {
         get {
             defaults.string(forKey: "ArchiveEngine")
@@ -364,7 +364,7 @@ final class SettingsStore {
     }
 
     /// ZIP のローカルヘッダをデータ取得時まで遅延する(既定 ON)。
-    /// 両エンジンとも初期化中に解析方針を固定するため、保存と同時にクラス
+    /// KaitoKit は初期化中に解析方針を固定するため、保存と同時にクラス
     /// 既定値へ反映し、次に生成されるパーサから切り替える。
     var zipLazyLocalHeaders: Bool {
         get {
@@ -373,14 +373,12 @@ final class SettingsStore {
         }
         set {
             defaults.set(newValue, forKey: "ZipLazyLocalHeaders")
-            XADMasterEngine.setDefaultZipLazyLocalHeaders(newValue)
             KaitoKitEngine.setDefaultZipLazyLocalHeaders(newValue)
         }
     }
 
-    /// 起動時、書庫生成より先に保存値(未設定なら ON)を両エンジンへ渡す。
+    /// 起動時、書庫生成より先に保存値(未設定なら ON)を KaitoKit へ渡す。
     func applyArchiveParserSettings() {
-        XADMasterEngine.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
     }
 
