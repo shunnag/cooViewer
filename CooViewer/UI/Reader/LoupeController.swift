@@ -135,6 +135,7 @@ extension ReaderWindowController {
         guard book != nil else { return }
         let view = readerViewForInput
         if view.isLoupeEnabled {
+            cancelLoupeHighResolution()
             view.disableLoupe()
         } else {
             view.enableLoupe(size: settings.loupeSize, rate: settings.loupeRate)
@@ -144,25 +145,48 @@ extension ReaderWindowController {
 
     /// 表示中ページのルーペ用高解像度画像を非同期取得して差し込む。
     /// 実効倍率=表示 2 倍 × ルーペ倍率(上限 6 倍)。
-    func requestLoupeHighResolution() {
-        guard let book, readerViewForInput.isLoupeEnabled else { return }
+    @discardableResult
+    func requestLoupeHighResolution() -> Task<Void, Never>? {
+        cancelLoupeHighResolution()
+        guard let book, readerViewForInput.isLoupeEnabled else { return nil }
         let scale = min(6.0, 2.0 * max(1.0, settings.loupeRate))
-        Task {
+        let rate = CGFloat(max(1.0, settings.loupeRate))
+        let reduction = settings.noiseReductionScope.includesLoupe
+            ? settings.noiseReductionLevel : .none
+        let encrypted = currentBookIsEncrypted
+        let generation = loupeImageGeneration
+        let display = displayGeneration
+        let checkpoint = book.navigationCheckpoint
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                // 旧要求の完了で新しい Task のハンドルを消さない。
+                if generation == loupeImageGeneration { loupeImageTask = nil }
+            }
+            @MainActor func isCurrentRequest() -> Bool {
+                !Task.isCancelled && generation == loupeImageGeneration
+                    && display == displayGeneration && book === self.book
+                    && book.isAtNavigationCheckpoint(checkpoint)
+                    && readerViewForInput.isLoupeEnabled
+            }
+            guard isCurrentRequest() else { return }
             let spread = await book.currentSpread()
+            guard isCurrentRequest() else { return }
             for (position, index) in spread.indices.enumerated() {
-                guard book.entries.indices.contains(index),
-                      readerViewForInput.isLoupeEnabled else { return }
+                guard isCurrentRequest(), book.entries.indices.contains(index) else { return }
+                let entry = book.entries[index]
                 guard var image = try? await book.source.loupeImage(
-                    for: book.entries[index], pixelScale: scale) else { continue }
+                    for: entry, pixelScale: scale) else { continue }
+                guard isCurrentRequest() else { return }
                 // ML 高画質化(適用範囲がルーペを含むとき。全ページ対象)。
                 // 超解像で拡大する前に掛けてノイズの増幅を防ぐ
-                if settings.noiseReductionScope.includesLoupe {
+                if reduction != .none {
                     image = await ImageResampler.shared.reduceNoise(
-                        image, level: settings.noiseReductionLevel)
+                        image, level: reduction)
+                    guard isCurrentRequest() else { return }
                 }
                 // 元解像度が必要量に足りないラスタ画像は MetalFX 超解像で補う
                 if let frame = readerViewForInput.pageFramePixelSize(at: position) {
-                    let rate = CGFloat(max(1.0, settings.loupeRate))
                     let neededLong = min(8192, max(frame.width, frame.height) * rate)
                     let imageLong = CGFloat(max(image.width, image.height))
                     if imageLong < neededLong {
@@ -172,18 +196,28 @@ extension ReaderWindowController {
                             height: (CGFloat(image.height) * factor).rounded())
                         if let upscaled = await ImageResampler.shared.resample(
                             image, to: target,
-                            cacheKey: "loupe-sr-\(book.cacheKey)-\(book.entries[index].id)",
+                            // 前段のノイズ低減も画像の内容を変えるためキーに含める。
+                            cacheKey: "loupe-sr-\(book.cacheKey)-\(entry.id)-nr\(reduction.rawValue)",
                             upscaleWithMetalFX: true,
                             // パスワード付き書庫の復号済みページを平文で残さない(CWE-312)
-                            superResEncrypted: currentBookIsEncrypted) {
+                            superResEncrypted: encrypted) {
                             image = upscaled
                         }
+                        guard isCurrentRequest() else { return }
                     }
                 }
                 readerViewForInput.setLoupeHighResImage(
-                    image, forPageAt: position, entryID: book.entries[index].id)
+                    image, forPageAt: position, entryID: entry.id)
             }
         }
+        loupeImageTask = task
+        return task
+    }
+
+    func cancelLoupeHighResolution() {
+        loupeImageGeneration &+= 1
+        loupeImageTask?.cancel()
+        loupeImageTask = nil
     }
 
     /// 倍率 ±delta(下限 1.0)。旧実装同様 defaults へ直接保存する(仕様書 §4.10)。

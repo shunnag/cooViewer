@@ -255,6 +255,12 @@ final class NoiseReductionTests: XCTestCase {
         let stats = await resampler.stats()
         XCTAssertEqual(stats.computeCount, 2, "target が違うので最終リサンプルは2回")
         XCTAssertEqual(stats.reducedSourceCount, 1, "ノイズ低減中間は再利用され1回")
+        // モデル回復時は再利用された CI 中間から派生した別サイズも捨てる。
+        await resampler.removeMLFallbackEntries()
+        let resizedFallback = await resampler.cached(
+            source, to: CGSize(width: 64, height: 64), cacheKey: "nr-reuse",
+            upscaleWithMetalFX: false, noiseReduction: .strong)
+        XCTAssertNil(resizedFallback, "中間キャッシュ命中を本物の ML 結果と誤認しない")
     }
 
     /// 同一キーの並行 resample は1本の計算へ合流し、ML/CI を二重実行しない

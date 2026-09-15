@@ -251,6 +251,22 @@ final class NestedFolderSourceTests: XCTestCase {
         XCTAssertEqual(events.map(\.done), events.map(\.done).sorted(),
                        "完了数は単調増加")
     }
+
+    func testAssemblyProgressCountsUnreadableChildrenAsProcessed() async throws {
+        try zipData([("p1.png", png(width: 40))])
+            .write(to: tempDir.appendingPathComponent("a.zip"))
+        try Data("broken archive".utf8).write(to: tempDir.appendingPathComponent("b.zip"))
+        try Data("broken PDF".utf8).write(to: tempDir.appendingPathComponent("c.pdf"))
+        let source = try await BookSourceFactory.make(for: tempDir, readSubFolders: false)
+        let collector = ProgressCollector()
+        await source.setAssemblyProgressHandler { done, total in
+            collector.append(done: done, total: total)
+        }
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.count, 1, "読めた子のページは残す")
+        XCTAssertEqual(collector.events.map(\.done), [0, 1, 2, 3])
+        XCTAssertTrue(collector.events.allSatisfy { $0.total == 3 })
+    }
 }
 
 /// 進捗コールバックの記録(actor 外から呼ばれるためロックで保護)

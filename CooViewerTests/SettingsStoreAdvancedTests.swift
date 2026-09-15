@@ -6,20 +6,25 @@ import XCTest
 final class SettingsStoreAdvancedTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: SettingsStore!
+    private var suiteName: String!
     private var originalKaitoZipLazyLocalHeaders = true
 
-    override func setUp() {
-        super.setUp()
-        originalKaitoZipLazyLocalHeaders = KaitoKitEngine.defaultZipLazyLocalHeaders
-        defaults = UserDefaults(suiteName: "advanced-test-\(UUID().uuidString)")!
-        store = SettingsStore(defaults: defaults)
+    override func setUp() async throws {
+        await MainActor.run {
+            originalKaitoZipLazyLocalHeaders = KaitoKitEngine.defaultZipLazyLocalHeaders
+            suiteName = "advanced-test-\(UUID().uuidString)"
+            defaults = UserDefaults(suiteName: suiteName)!
+            store = SettingsStore(defaults: defaults)
+        }
     }
 
-    override func tearDown() {
-        KaitoKitEngine.setDefaultZipLazyLocalHeaders(originalKaitoZipLazyLocalHeaders)
-        store = nil
-        defaults = nil
-        super.tearDown()
+    override func tearDown() async throws {
+        await MainActor.run {
+            KaitoKitEngine.setDefaultZipLazyLocalHeaders(originalKaitoZipLazyLocalHeaders)
+            defaults.removePersistentDomain(forName: suiteName)
+            store = nil
+            defaults = nil
+        }
     }
 
     func testZipLazyLocalHeadersDefaultsToOnWhenUnset() {

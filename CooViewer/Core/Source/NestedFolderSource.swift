@@ -92,6 +92,7 @@ actor NestedFolderSource: BookSource {
         }
         await withTaskGroup(of: (Int, (any BookSource, [PageEntry])?).self) { group in
             var next = 0
+            var completed = 0
             func addTask() {
                 guard next < candidates.count else { return }
                 let ordinal = next
@@ -106,7 +107,10 @@ actor NestedFolderSource: BookSource {
             for _ in 0..<4 { addTask() }
             while let (ordinal, result) = await group.next() {
                 prepared[ordinal] = result
-                assemblyProgress?(prepared.count, candidates.count)
+                // 読めなかった子も処理は完了している。成功件数を使うと
+                // スキップがある合本の進捗が総数まで届かない。
+                completed += 1
+                assemblyProgress?(completed, candidates.count)
                 addTask()
             }
         }

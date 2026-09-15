@@ -188,7 +188,7 @@ final class ActivityMonitor: ObservableObject {
                 limitBytes: settings.archiveSpoolSizeLimit, active: s.active)
         }
 
-        let cacheStats = await book.pageCacheStats()
+        let cacheStats = book.pageCacheStats()
         let memory = ActivitySnapshot.Memory(
             physical: physical,
             resident: MemoryFootprint.residentBytes(),

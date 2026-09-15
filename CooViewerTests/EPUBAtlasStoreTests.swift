@@ -9,6 +9,10 @@ import XCTest
 @MainActor
 final class EPUBAtlasStoreTests: XCTestCase {
     @MainActor
+    private final class TestClock {
+        var value: TimeInterval = 100
+    }
+    @MainActor
     private final class AtlasStub: EPUBScreenAtlasing {
         let publication: EPUBPublication
         private(set) var invalidateCount = 0
@@ -116,7 +120,7 @@ final class EPUBAtlasStoreTests: XCTestCase {
         try Self.epubData(identifier: "first", body: "短い本文").write(to: url)
         let stalePublication = try EPUBPublication(
             url: url, readStrategy: .alwaysCopy)
-        var clock: TimeInterval = 100
+        let clock = TestClock()
         var atlases: [AtlasStub] = []
         let store = EPUBAtlasStore(
             makeAtlas: {
@@ -124,7 +128,7 @@ final class EPUBAtlasStoreTests: XCTestCase {
                 atlases.append(atlas)
                 return atlas
             },
-            now: { clock })
+            now: { clock.value })
 
         _ = await store.screenPlan(
             for: url, metrics: metrics, preparsed: stalePublication)
@@ -135,13 +139,13 @@ final class EPUBAtlasStoreTests: XCTestCase {
             identifier: "second",
             body: String(repeating: "差替え後の長い本文。", count: 50)
         ).write(to: url, options: .atomic)
-        clock = 104.9
+        clock.value = 104.9
         _ = await store.screenPlan(
             for: url, metrics: metrics, preparsed: stalePublication)
         XCTAssertEqual(atlases.count, 1, "5 秒未満では NAS の file identity を再検査しない")
         XCTAssertEqual(atlases[0].invalidateCount, 0)
 
-        clock = 105
+        clock.value = 105
         _ = await store.screenPlan(
             for: url, metrics: metrics, preparsed: stalePublication)
         XCTAssertEqual(atlases.count, 2,
@@ -151,7 +155,7 @@ final class EPUBAtlasStoreTests: XCTestCase {
         XCTAssertFalse(atlases[1].publication === stalePublication,
                        "差替え検出後は古い preparsed publication を再利用しない")
 
-        clock = 110
+        clock.value = 110
         _ = await store.screenPlan(
             for: url, metrics: metrics, preparsed: stalePublication)
         XCTAssertEqual(atlases.count, 2, "file identity が同じなら再検査後も再利用する")

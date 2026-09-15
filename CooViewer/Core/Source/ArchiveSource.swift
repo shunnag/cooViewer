@@ -65,7 +65,13 @@ actor ArchiveSource: BookSource {
     private var spoolEncrypted = false
     /// スプール暗号鍵(メモリのみの使い捨て。CWE-312 対策のプロセス限定鍵)
     private let spoolKey = SymmetricKey(size: .bits256)
-    private var spoolTask: Task<Void, Never>?
+    /// 完了済みと未開始を区別し、完了 Task を稼働中と数えたり再実行したりしない。
+    private enum SpoolState: Sendable {
+        case idle
+        case running(Task<Void, Never>)
+        case finished
+    }
+    private var spoolState: SpoolState = .idle
 
     private static let logger = Logger(
         subsystem: "jp.coo.cooViewer", category: "archive")
@@ -500,7 +506,7 @@ actor ArchiveSource: BookSource {
     }
 
     deinit {
-        spoolTask?.cancel()
+        if case .running(let task) = spoolState { task.cancel() }
         let directories = [spoolDirectory, nestedRoot].compactMap(\.self)
         if !directories.isEmpty {
             Task.detached(priority: .utility) {
@@ -1015,7 +1021,7 @@ actor ArchiveSource: BookSource {
                                               independentEntries: independent) else {
             return
         }
-        guard spoolTask == nil, !outerImages.isEmpty else { return }
+        guard case .idle = spoolState, !outerImages.isEmpty else { return }
         // 暗号化書庫の復号済みページを平文で temp に残さない(CWE-312。
         // 保存パスワードの自動解錠で無人でも展開が走るため)。スプールは
         // プロセス生存中しか読まれないので、鍵はメモリのみの使い捨て —
@@ -1047,19 +1053,25 @@ actor ArchiveSource: BookSource {
         spoolDirectory = directory
 
         let ids = outerImages.map(\.id)
-        spoolTask = Task { [weak self] in
+        let task = Task<Void, Never> { [weak self] in
             for id in ids {
-                if Task.isCancelled { return }
+                if Task.isCancelled { break }
                 await self?.spoolEntry(id)
                 // 表示中のページ要求が割り込めるよう 1 エントリごとに譲る
                 await Task.yield()
             }
+            await self?.finishSpooling()
         }
+        spoolState = .running(task)
+    }
+
+    private func finishSpooling() {
+        spoolState = .finished
     }
 
     /// スプール完了を待つ(テスト・診断用)
     func waitForSpoolCompletion() async {
-        await spoolTask?.value
+        if case .running(let task) = spoolState { await task.value }
     }
 
     var spooledEntryCount: Int { spooledIDs.count }
@@ -1074,8 +1086,9 @@ actor ArchiveSource: BookSource {
         let active: Bool
     }
     func spoolStats() -> SpoolStats {
-        SpoolStats(spooled: spooledIDs.count, total: outerImages.count,
-                   bytes: spooledBytes, active: spoolTask != nil)
+        let active = if case .running = spoolState { true } else { false }
+        return SpoolStats(spooled: spooledIDs.count, total: outerImages.count,
+                          bytes: spooledBytes, active: active)
     }
 
     private func spoolEntry(_ id: Int) {

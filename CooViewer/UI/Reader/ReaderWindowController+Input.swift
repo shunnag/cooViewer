@@ -172,8 +172,7 @@ extension ReaderWindowController {
                 return false
             }
             mouseCurlTracking = true
-            // 前回の端到達等で残った確定予約を持ち越さない(スワイプの .began と同型)
-            interactiveCurlEndDecision = nil
+            resetInteractiveCurl(preservingCommittedNavigation: true)
         }
         mouseCurlDelta = dx
         driveInteractiveCurl(delta: dx, modifiers: modifiers, startThreshold: 30,
@@ -328,8 +327,7 @@ extension ReaderWindowController {
             swipeTrackingActive =
                 abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
             swipeTrackingDeltaX = event.scrollingDeltaX
-            interactiveCurlPhase = nil
-            interactiveCurlEndDecision = nil
+            resetInteractiveCurl(preservingCommittedNavigation: true)
             return swipeTrackingActive
         case .changed:
             guard swipeTrackingActive else { return false }
@@ -343,6 +341,10 @@ extension ReaderWindowController {
             guard swipeTrackingActive else { return false }
             swipeTrackingActive = false
             swipeConsumeMomentum = true
+            if event.phase == .cancelled {
+                _ = settleInteractiveCurlOnGestureEnd(finalDelta: 0, cancelled: true)
+                return true
+            }
             if settleInteractiveCurlOnGestureEnd(finalDelta: swipeTrackingDeltaX) {
                 return true
             }
@@ -380,9 +382,8 @@ extension ReaderWindowController {
                 interactiveCurlPhase = .unavailable
                 return
             }
-            interactiveCurlPhase = .starting(forward: forward)
-            interactiveCurlProgress = InteractiveCurlRules.progress(for: delta)
-            Task { await self.startInteractiveCurl(forward: forward) }
+            beginInteractiveCurl(forward: forward,
+                                 progress: InteractiveCurlRules.progress(for: delta))
         case .starting:
             interactiveCurlProgress = InteractiveCurlRules.progress(for: delta)
         case .active:
@@ -408,98 +409,223 @@ extension ReaderWindowController {
         }
     }
 
-    /// モデルを先に進め、旧内容のスナップショットで追従用オーバーレイを組む。
-    /// 画面は progress=0 のオーバーレイ(旧内容)のまま=見た目は変わらない
-    private func startInteractiveCurl(forward: Bool) async {
-        guard let book, case .starting = interactiveCurlPhase else { return }
-        let oldContent = readerViewForInput.snapshotContent()
-        let moved = forward ? book.moveNext() : await book.movePrevious()
-        guard moved == .moved else {
-            // 端に達した: 従来動作(離した時の端処理=ループ/次の本)へ。
-            // ジェスチャが既に終わっていた(settle が従来動作を抑止済み)なら、
-            // ここで通常のページ送りへ委譲して端処理を発動させる — 放置すると
-            // 端で無反応+残留 decision が次のカールを即時誤確定させる
-            interactiveCurlPhase = .unavailable
-            if let decision = interactiveCurlEndDecision {
-                interactiveCurlEndDecision = nil
-                interactiveCurlPhase = nil
-                if decision {
-                    perform(forward ? .nextPage : .previousPage, value: nil, leftHalf: nil)
+    /// 次のジェスチャーへ移る際も、離して確定した前の移動は順番に完了させる。
+    /// 未確定の仮移動だけを取り消す。本切替・終了では待機列ごと打ち切る。
+    @discardableResult
+    func resetInteractiveCurl(preservingCommittedNavigation: Bool = false) -> Task<Void, Never>? {
+        let session = interactiveCurlSession
+        var restoredBook: Book?
+        let preceding = preservingCommittedNavigation
+            ? (session?.committed == true ? session : session?.preceding ?? pendingCommittedCurl)
+            : nil
+        if session !== preceding {
+            session?.task?.cancel()
+        }
+        if let session, !session.committed,
+           let origin = session.origin, let destination = session.destination {
+            if session.book.restoreNavigation(origin, ifUnchanged: destination) {
+                restoredBook = session.book
+            }
+        }
+        if !preservingCommittedNavigation {
+            var pending = session?.preceding ?? pendingCommittedCurl
+            while let current = pending {
+                current.task?.cancel()
+                pending = current.preceding
+            }
+            mouseCurlTracking = false
+            mouseCurlDelta = 0
+            mouseCurlConsumedGesture = false
+            swipeTrackingActive = false
+            swipeTrackingDeltaX = 0
+            swipeConsumeMomentum = false
+        }
+        interactiveCurlSession = nil
+        pendingCommittedCurl = preceding
+        interactiveCurlPhase = nil
+        interactiveCurlProgress = 0
+        readerViewForInput.pendingInteractiveCurl = nil
+        readerViewForInput.removeCurlOverlay()
+        invalidatePendingDisplay()
+        // 新しいジェスチャーが追従に入らない場合や、次の本を開く試みが
+        // 失敗した場合も、仮移動の画像だけが画面に残らないよう再表示する。
+        guard let restoredBook else { return nil }
+        let generation = displayGeneration
+        let position = restoredBook.navigationCheckpoint
+        return Task { @MainActor [weak self, weak book = restoredBook] in
+            guard let self, let book, self.book === book,
+                  self.displayGeneration == generation,
+                  book.isAtNavigationCheckpoint(position) else { return }
+            await self.refreshDisplay()
+        }
+    }
+
+    func ownsInteractiveCurlDestination(_ session: InteractiveCurlSession) -> Bool {
+        guard interactiveCurlSession === session, book === session.book,
+              let destination = session.destination else { return false }
+        return session.book.isAtNavigationCheckpoint(destination)
+    }
+
+    /// モデルを仮移動し、表示が確定する直前にこの操作のスナップショットを渡す。
+    func beginInteractiveCurl(forward: Bool, progress: CGFloat) {
+        resetInteractiveCurl(preservingCommittedNavigation: true)
+        guard let book else { return }
+        let preceding = pendingCommittedCurl
+        pendingCommittedCurl = nil
+        let session = InteractiveCurlSession(book: book, forward: forward, preceding: preceding)
+        // 前の確定操作は着地点の表示枚数まで確定してから続ける。
+        // 待つ必要がなければ Task 起動前に位置を固定し、直後のジャンプも検出する。
+        if preceding?.task == nil {
+            session.origin = book.navigationCheckpoint
+        }
+        interactiveCurlSession = session
+        interactiveCurlPhase = .starting
+        interactiveCurlProgress = progress
+        session.task = Task { [weak self] in
+            guard let self else { return }
+            await self.startInteractiveCurl(session)
+        }
+    }
+
+    private func startInteractiveCurl(_ session: InteractiveCurlSession) async {
+        defer {
+            session.task = nil
+            if pendingCommittedCurl === session { pendingCommittedCurl = nil }
+        }
+        let book = session.book
+        if session.origin == nil, let preceding = session.preceding {
+            await preceding.task?.value
+            if let destination = preceding.destination ?? preceding.origin,
+               book.isAtNavigationCheckpoint(destination) {
+                session.origin = book.navigationCheckpoint
+            }
+        }
+        guard !Task.isCancelled, book === self.book,
+              let origin = session.origin, book.isAtNavigationCheckpoint(origin),
+              interactiveCurlSession === session || session.committed else {
+            finishSupersededCurl(session)
+            return
+        }
+        if interactiveCurlSession === session {
+            session.oldContent = readerViewForInput.snapshotContent()
+        }
+        let moved = session.forward ? book.moveNext()
+            : await book.movePrevious(ifUnchanged: origin)
+        guard !Task.isCancelled, book === self.book else { return }
+        if moved == .moved { session.destination = book.navigationCheckpoint }
+        guard interactiveCurlSession === session else {
+            // 次の追従が待っていれば、その表示にまとめる。後続が取り消された
+            // 場合は、先に確定済みだったこの移動だけを表示する。
+            if session.committed, moved == .moved {
+                if interactiveCurlSession == nil {
+                    await refreshDisplay()
+                } else {
+                    _ = await book.currentSpread()
                 }
+            } else if session.committed, moved != .superseded, moved != .moved {
+                perform(session.forward ? .nextPage : .previousPage, value: nil, leftHalf: nil)
+            }
+            return
+        }
+        guard moved != .superseded else {
+            finishSupersededCurl(session)
+            return
+        }
+        guard moved == .moved else {
+            interactiveCurlSession = nil
+            interactiveCurlPhase = .unavailable
+            if session.committed {
+                interactiveCurlPhase = nil
+                perform(session.forward ? .nextPage : .previousPage, value: nil, leftHalf: nil)
             }
             return
         }
         pendingTurnForward = nil
-        if let oldContent {
-            readerViewForInput.pendingInteractiveCurl = (oldContent, forward)
+        await refreshDisplay(interactiveCurl: session)
+        guard !Task.isCancelled, ownsInteractiveCurlDestination(session) else {
+            // 準備中に後の追従が始まり、その後に取り消された場合も、
+            // 先に確定した移動の表示を落とさない。
+            if !Task.isCancelled, session.committed, book === self.book,
+               interactiveCurlSession == nil, let destination = session.destination,
+               book.isAtNavigationCheckpoint(destination) {
+                await refreshDisplay()
+            }
+            finishSupersededCurl(session)
+            return
         }
-        await refreshDisplay()
-        if readerViewForInput.hasInteractiveCurl {
-            interactiveCurlPhase = .active(forward: forward)
-            readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
-        } else {
-            // オーバーレイを組めない状態(回転・ルーペ等): 即時切替済み
-            interactiveCurlPhase = .finished
-        }
+        interactiveCurlPhase = readerViewForInput.hasInteractiveCurl
+            ? .active : .finished
+        readerViewForInput.updateInteractiveCurl(progress: interactiveCurlProgress)
         settleInteractiveCurlIfGestureEnded()
     }
 
-    /// ジェスチャ終了時の確定/取消。追従に入っていたら true(従来動作を抑止)
-    private func settleInteractiveCurlOnGestureEnd(finalDelta: CGFloat) -> Bool {
+    private func finishSupersededCurl(_ session: InteractiveCurlSession) {
+        guard interactiveCurlSession === session else { return }
+        interactiveCurlSession = nil
+        interactiveCurlPhase = session.committed ? nil : .finished
+    }
+
+    /// ジェスチャ終了時の確定/取消。追従に入っていたら true(従来動作を抑止)。
+    /// OS の cancelled は距離にかかわらず取消として扱う。
+    func settleInteractiveCurlOnGestureEnd(finalDelta: CGFloat, cancelled: Bool = false) -> Bool {
         switch interactiveCurlPhase {
         case nil, .unavailable:
             interactiveCurlPhase = nil
             return false
-        case .finished:
-            interactiveCurlPhase = nil
-            return true
-        case .starting:
-            // 準備完了時(startInteractiveCurl の末尾)に判定を適用する
-            interactiveCurlEndDecision = InteractiveCurlRules.completes(
-                finalDelta: finalDelta, progress: 0)
-            return true
-        case .active(let forward):
-            let complete = InteractiveCurlRules.completes(
+        case .starting, .active, .finished:
+            let complete = !cancelled && InteractiveCurlRules.completes(
                 finalDelta: finalDelta, progress: interactiveCurlProgress)
-            resolveActiveCurl(forward: forward, complete: complete)
+            guard let session = interactiveCurlSession else {
+                interactiveCurlPhase = nil
+                return true
+            }
+            if !complete {
+                cancelInteractiveCurl(session)
+            } else {
+                session.committed = true
+                if interactiveCurlPhase != .starting {
+                    interactiveCurlSession = nil
+                    interactiveCurlPhase = nil
+                    readerViewForInput.finishInteractiveCurl()
+                }
+            }
             return true
         }
     }
 
-    /// 準備完了前にジェスチャが終わっていた場合の後始末
     private func settleInteractiveCurlIfGestureEnded() {
-        guard let decision = interactiveCurlEndDecision else { return }
-        interactiveCurlEndDecision = nil
-        if case .active(let forward) = interactiveCurlPhase {
-            resolveActiveCurl(forward: forward, complete: decision)
-        } else {
-            interactiveCurlPhase = nil
-        }
+        guard interactiveCurlSession?.committed == true else { return }
+        interactiveCurlSession = nil
+        interactiveCurlPhase = nil
+        readerViewForInput.finishInteractiveCurl()
     }
 
-    /// 追従中カールの確定(残り再生)または取消(巻き戻し+モデルを戻す)
-    private func resolveActiveCurl(forward: Bool, complete: Bool) {
-        interactiveCurlPhase = nil
-        if complete {
-            readerViewForInput.finishInteractiveCurl()
+    private func cancelInteractiveCurl(_ session: InteractiveCurlSession) {
+        session.task?.cancel()
+        let restored: Bool
+        if let origin = session.origin, let destination = session.destination {
+            restored = session.book.restoreNavigation(origin, ifUnchanged: destination)
         } else {
-            // モデルの巻き戻しはキャンセル時点で即座に行う(巻き戻しアニメの完了に
-            // 遅延させない)。旧実装はロールバックをアニメ完了 completion に載せて
-            // いたため、50-200ms の巻き戻し中に次ページキー等が setPages で
-            // オーバーレイを消すと completion が呼ばれずロールバックが落ち、
-            // モデルが二重前進してページ飛びになっていた(cooViewer-uwq)。即時
-            // ロールバックは後続キー処理より前に MainActor へ載る。ここでは
-            // refreshDisplay を呼ばない — setPages が巻き戻しオーバーレイを消して
-            // アニメを潰すため。表示更新は下の completion(表示のみ・冪等)に任せる
-            Task { [weak self] in
-                guard let self, let book = self.book else { return }
-                if forward { _ = await book.movePrevious() } else { _ = book.moveNext() }
+            restored = false  // ヘッダ待機中はまだモデルを動かしていない
+        }
+        interactiveCurlSession = nil
+        pendingCommittedCurl = session.preceding
+        interactiveCurlPhase = nil
+        readerViewForInput.pendingInteractiveCurl = nil
+        invalidatePendingDisplay()
+        let generation = displayGeneration
+        let position = session.book.navigationCheckpoint
+        if restored || session.origin.map(session.book.isAtNavigationCheckpoint) == true {
+            readerViewForInput.cancelInteractiveCurl { [weak self, weak book = session.book] in
+                Task { @MainActor in
+                    guard let self, let book, self.book === book,
+                          self.displayGeneration == generation,
+                          book.isAtNavigationCheckpoint(position) else { return }
+                    await self.refreshDisplay()
+                }
             }
-            readerViewForInput.cancelInteractiveCurl { [weak self] in
-                // 表示のみ更新(モデルは上で巻き戻し済み)。オーバーレイが差し替え等で
-                // 消えても安全に呼べる=遅延/重複しても正しいモデルから再描画するだけ
-                Task { await self?.refreshDisplay() }
-            }
+        } else {
+            readerViewForInput.removeCurlOverlay()
         }
     }
 
@@ -674,8 +800,9 @@ extension ReaderWindowController {
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn,
+              book === self.book,
               let page = Int(field.stringValue) else { return }
-        book.goTo(index: page - 1)
+        book.goTo(index: max(1, page) - 1)
         refreshAfterJump()
     }
 
