@@ -60,7 +60,7 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   挿入だけ**で編集する(全体の再シリアライズはしない)。キー追加時は
   4 段インデント・`" : "` 区切りの既存書式に合わせる。
 
-## 2. 動作検証(スナップショット CLI)
+## 2. 動作検証(スナップショット・監査 CLI)
 
 画面収録の権限なしで実描画を確認できる隠し引数がある(AppDelegate.swift の
 `handleDebugArguments`)。Debug ビルドの実行ファイルを直接起動して使う:
@@ -74,6 +74,12 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 |---|---|
 | `--open <path>` | 指定の本を開く(`--at-page <1 始まり>` で開始ページ指定。リフロー EPUB では spine 項目の指定になる) |
 | `--engine <kaitokit\|xadmaster>` | この起動で後から開く書庫のエンジンを一時的に上書きする。defaults の設定値は変更しない |
+| `--audit-archives <folder>` | フォルダ以下の書庫を GUI なしで直列監査し、TSV を stdout へ出す。全件成功・比較一致なら終了コード 0、失敗・不一致なら 1 |
+| `--audit-output <tsv>` | 書庫 × エンジンの監査結果を指定ファイルへ保存 |
+| `--audit-entries <tsv>` | エントリ単位の名前・サイズ・SHA-256 を別 TSV へ保存 |
+| `--audit-engines kaitokit,xadmaster` | 監査するエンジン。既定は両方、`kaitokit` または `xadmaster` のみも可。`--engine` とは独立 |
+| `--audit-hash` | 非暗号化書庫の内容 SHA-256 も計算。省略時は open・列挙・名前のみ監査 |
+| `--audit-progress <N>` | stderr へ進捗を出す書庫数の間隔(正の整数、既定 20)。開始・最終件も表示 |
 | `--snapshot <png>` | `--then` の完了と表示整定を待ち、さらに 2 秒後に contentView を PNG 出力して終了 |
 | `--show-thumbnails` | サムネイルオーバーレイを開いて撮る(EPUB モードでは census 一致の画面単位一覧。生成は逐次なのでセルが埋まるまで `--then-goto-percent` 等でステップを足して撮影を遅らせる)。行列はウインドウサイズとセルサイズから自動算出されるため、`-ThumbnailCellSize <pt>`(80–400)の注入でズーム水準を変えて撮れる |
 | `--show-bookmark-editor` | しおり編集をウインドウ表示(シートは撮れないため) |
@@ -155,6 +161,77 @@ swift Scripts/make-sample-pages.swift /tmp/pages 6          # 番号入りペー
 python3 Scripts/make-sample-epub.py /tmp /tmp/pages          # 2 冊の .epub を出力
 python3 Scripts/make-jp-epub-fixtures.py /tmp/washi-fixtures # 日本語 EPUB の検証セット
 ```
+
+### 2.1 実コレクションの監査手順
+
+`--audit-archives` は手元の書庫を外部へ送らず、KaitoKit 単独で開けるか、
+名前と内容が XADMaster と一致するかを確認する。通常のアプリ起動より先に実行し、
+ウインドウ・復元・履歴移行/書き込み・キャッシュ掃除・Sparkle・パスワード保管庫を起動しない。
+パーサー設定はアプリと共通。フォールバックは一切行わず、各エンジンを直接開く。
+
+```sh
+APP=build/Debug/cooViewer.app/Contents/MacOS/cooViewer
+"$APP" --audit-archives "$HOME/Comics" --audit-hash \
+  --audit-output /tmp/audit.tsv --audit-entries /tmp/audit-entries.tsv
+echo $?
+
+# 別バージョン・別マシンでの KaitoKit 単独監査にも使える
+"$APP" --audit-archives "$HOME/Comics" --audit-engines kaitokit \
+  --audit-hash --audit-output /tmp/kaitokit-new.tsv
+python3 Scripts/audit-compare.py /tmp/kaitokit-old.tsv /tmp/kaitokit-new.tsv
+
+# 両エンジン入りの TSV では比較対象を指定する
+python3 Scripts/audit-compare.py old.tsv new.tsv --engine kaitokit
+```
+
+監査対象は `SupportedTypes.isArchive` に該当する通常ファイルで、ルート以下を再帰する。
+隠し項目・パッケージ内・シンボリックリンク・続き巻(`.z01` / `.r00` / `.002` 等)を除外し、
+先頭巻 `.001` は含める。UTF-8 パス順で処理し、書庫内はエンジンの列挙順を保つ。
+読み取れないフォルダがあれば未走査範囲を成功扱いせず、stderr にエラーを出して終了コード 1 にする。
+
+**監査 TSV の読み方**(ヘッダー付き、1 行 = 書庫 × エンジン):
+
+| 列 | 意味 |
+|---|---|
+| `path` / `engine` | 監査ルートからの相対パス / `kaitokit` または `xadmaster` |
+| `entrypoint` | `data` は `ArchiveSource.shouldMemoryMap` に従う `.mappedIfSafe` 読み込み、`file` はファイル入口。ネットワーク・リムーバブル・RAR・`.z01` の兄弟がある ZIP 等は `file` |
+| `status` | `ok` / `open-failed`(例外・nil・ファイル読み取り失敗) / `enumeration-failed`(負の件数・名前 nil・列挙例外) / `entry-unreadable`(内容 nil・展開例外)。失敗後も次のエンジン・書庫を処理する |
+| `entries` / `files` | エンジンが返した件数(取得不能なら空欄) / 列挙できた非ディレクトリ件数。列挙失敗時の `files` は途中までの件数 |
+| `encrypted` | 書庫または一つでもエントリが暗号化されていれば `true`。暗号化書庫は open と列挙だけを確認し、混在書庫でも内容は読まない |
+| `elapsed_ms` | 当該エンジンでの読み込み・列挙・ハッシュ計算の経過ミリ秒 |
+| `names_sha256` | 全 entry の比較名を LF で連結(末尾 LF なし)した UTF-8 バイトの SHA-256。**ディレクトリと判定された名前だけ末尾の `/` と `\` を全て除く**。XADMaster と KaitoKit 互換層の既知差(cooViewer-vwey.8)を監査ノイズにしないため。他の名前は変更しない |
+| `contents_sha256` | `--audit-hash` 時、各 entry の小文字16進 SHA-256 文字列を列挙順に区切りなしで連結し、その UTF-8 バイトを SHA-256 にした値。ディレクトリは空データの digest を使う。`kaito sha` / `xadsha` の `total` と同じ定義 |
+| `error` | 失敗の理由。内容を読めない場合は該当 entry の 0 始まり index も含む |
+| `match` | 2 エンジンの指定時のみ付く。`ok` または不一致項目の `names,hashes,status` の組(この順、必要な項目だけ)。ハッシュ未指定なら `hashes` は比較しない |
+
+ハッシュ未指定・暗号化・open/列挙失敗による未計算は空欄。
+内容読み取り失敗は該当 entry と `contents_sha256` を `unreadable` にする
+(欠落した digest を空データとして補わない)。空書庫の二つのハッシュは空データの SHA-256。
+`match=ok` は観測値の一致を表し、**壊れた書庫が両方 `open-failed` でも `ok`**。
+この場合、監査全体は失敗を含むため終了コード 1。
+暗号化書庫の `ok` は内容の同値性を確認した意味ではない。
+
+entry TSV は `path, engine, index, name, size, sha256` のタブ区切り。
+`name` は正規化前のエンジンの保存名、`size` はサイズ不明なら空欄。
+内容が読める書庫では `sha256` を `kaito sha <archive>` の同じ index と照合できる。
+両 TSV とも UTF-8・LF、セル内の `\` / タブ / LF / CR はそれぞれ
+`\\` / `\t` / `\n` / `\r` に可逆エスケープする(引用符による CSV quoting は使わない)。
+ファイル出力は同じディレクトリの一時ファイルへ書き、完了時に置き換える。
+stdout 指定は書庫ごとに逐次出力する。
+
+stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-progress 1` なら毎書庫)。
+最後の集計は `total`(書庫数)、`kaitokit_only_failed`(XADMaster は成功し KaitoKit だけ失敗)、
+`names` / `hashes`(不一致の書庫数)、`failed`(一方でも失敗)、`mismatched`(一項目でも不一致)。
+内容を読むため、大きな書庫一つの処理には時間がかかる。
+
+`audit-compare.py` は `path` で突合し、追加・削除と `status` / `names_sha256` /
+`contents_sha256` の差を列挙する。終了コードは同一 0、差あり 1、入力不正 2。
+両エンジン入り TSV を `--engine` なしで渡して path が重複した場合はエラーにする。
+
+**差分が出たときに送ってほしい情報**: 両エンジンの該当 TSV 行、必要なら該当 entry 行、
+`kaito list --raw <該当書庫>` の出力、cooViewer / KaitoKit のバージョン、macOS のバージョン、
+ローカル/ネットワーク等の配置条件。書庫本体は不要。共有前にパスやファイル名の非公開情報を確認する。
+コアの記録は `Codable` 値型なので、別の検証ツールからも利用できる。
 
 ## 3. テスト
 
