@@ -369,13 +369,19 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 2. ブランチをコミット・push → `master` 向けの PR をマージ。
 3. `./Scripts/sign-sparkle-nested.sh`(Sparkle 内部の実行体を Developer ID +
    timestamp + hardened runtime で再署名。これを飛ばすと**公証が Invalid**)。
-4. Release ビルド:
+4. Release ビルド前に `rm -rf build/Release` で前回の成果物を消す。
+   legacy build location は、pbxproj から外した Embed framework もバンドル内に保持する。
+   2.0b37 の初回提出では XADMaster / UniversalDetector が残ったまま署名・公証まで
+   通ってしまい、その提出を破棄した。削除後に Release ビルド:
    ```sh
    DEVELOPER_DIR=/Applications/Xcode.app xcodebuild -configuration Release build \
      CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO OTHER_CODE_SIGN_FLAGS="--timestamp"
    ```
    素の Release ビルドは公証に落ちる(get-task-allow が残る+タイムスタンプ無し)。
-5. `ditto -c -k --keepParent cooViewer.app out.zip` →
+5. zip 前に `ls build/Release/cooViewer.app/Contents/Frameworks` が
+   `KaitoKit.framework` / `Sparkle.framework` / `Washi.framework` の 3 つだけであることと、
+   `build/Release/cooViewer.app/Contents/Resources` に不要なライセンス文書が無いことを確認する。
+   確認後に `ditto -c -k --keepParent cooViewer.app out.zip` →
    `xcrun notarytool submit out.zip --keychain-profile cooviewer --wait` →
    `xcrun stapler staple cooViewer.app` → **ステープル済みアプリを再 zip**
    (資産名は `cooViewer-<version>.zip` 固定。appcast の URL が名前から決まる)。
@@ -423,6 +429,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 | `ReadPhotoshopImageResource: ERROR: Corrupt 8BIM data` で Xcode 実行が止まる | 開いた画像の埋め込み Photoshop メタデータ(APP13 の 8BIM リソースブロック)が壊れているときに **ImageIO(システム)**が出すログ。8BIM/Photoshop 参照は cooViewer のコードにもフレームワークにも無く、デコード経路は guard/throws で壊れたメタデータを無視して**画素は正常に復号**する(2026-08 確認: 壊れた 8BIM を仕込んだ JPEG を開いても exit 0・正常な描画・クラッシュ痕跡なし)。アプリはクラッシュしないので「実行が止まった」のは**デバッガ側の一時停止**——ImageIO がメタデータ解析中に内部で raise→catch する例外を Xcode の「All Exceptions / Objective-C Exceptions」ブレークポイントが拾っているのが典型。対処: ▶ Continue で再開できる。恒久的には Breakpoint Navigator(⌘8)の All Exceptions ブレークポイントを削除/無効化するか、例外種別を C++ のみに絞る(ImageIO のは Objective-C なので止まらなくなる)。※もし例外ブレークポイントではなく本当のクラッシュスタックで止まっているなら、その停止箇所(コールスタック)を控えて別途調査 |
 | CodeSign 失敗 / 起動が古いバイナリ / 保存状態が勝手に変わる | このプロジェクトは **legacy build location**(`BuildLocationStyle = UseTargetSettings`、成果物は DerivedData でなくプロジェクト直下 `build/Debug/cooViewer.app`)。**エージェントの `xcodebuild`/スナップショットと手元の Xcode ▶ Run は同じ `build/Debug` を書き換え・再署名する**ため同時に走らせると衝突する(実行中プロセスが .app を掴んで CodeSign が失敗、半分書きかけのバンドルを起動、等)。さらに両者は同じ bundle id `jp.coo.cooViewer` で UserDefaults・BookStates・キャッシュ・Keychain を共有し、**後勝ちでウインドウ位置や最終ページを上書き**し合う。回避: ビルド/実行を時間的にすみ分ける(エージェント作業中は Run を止める・Run 中はエージェントのビルドを控える)、作業前後に残プロセスを `pkill -f "cooViewer/build/Debug"`。完全分離が要るなら bundle id を変えたクローン(ウインドウ位置調査の隔離手法)を使う。※ソース編集は「すでに起動中」のプロセスには影響しないが、次に Run するとその時点の最新ソースから再ビルドされる(編集途中の中途半端な状態でビルドし得る) |
 | KaitoKit / Washi framework のリンクエラー | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
+| バンドルに削除したはずの framework が残る | legacy build location は差分ビルドで古い Embed 成果物を消さない。`rm -rf build/Release`(Debug なら `build/Debug`)してから再ビルド。2.0b37 で実測 |
 | 公証が Invalid | Sparkle 内部の再署名漏れ(sign-sparkle-nested.sh)か、素の Release ビルド |
 | 自動更新が来ない | appcast.xml の `length=` 不一致・資産名が `cooViewer-<ver>.zip` でない |
 | xcstrings が巨大 diff | 再シリアライズしてしまった。テキストブロック挿入だけに戻す |
