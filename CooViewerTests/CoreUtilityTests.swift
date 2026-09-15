@@ -21,6 +21,7 @@ final class ImageDecodingTests: XCTestCase {
     }
 }
 
+@MainActor
 final class PageCacheTests: XCTestCase {
     /// 16x16 RGBA ≈ 1KB のテスト画像
     private func image() -> CGImage {
@@ -32,60 +33,60 @@ final class PageCacheTests: XCTestCase {
         return sample.bytesPerRow * sample.height
     }
 
-    func testEvictsOldestWhenOverByteLimit() async {
+    func testEvictsOldestWhenOverByteLimit() {
         let cache = PageCache(byteLimit: oneCost * 2)  // 2 枚分
-        await cache.insert(image(), for: 1)
-        await cache.insert(image(), for: 2)
-        await cache.insert(image(), for: 3)
-        let first = await cache.image(for: 1)
-        let second = await cache.image(for: 2)
-        let third = await cache.image(for: 3)
+        cache.insert(image(), for: 1)
+        cache.insert(image(), for: 2)
+        cache.insert(image(), for: 3)
+        let first = cache.image(for: 1)
+        let second = cache.image(for: 2)
+        let third = cache.image(for: 3)
         XCTAssertNil(first)
         XCTAssertNotNil(second)
         XCTAssertNotNil(third)
     }
 
-    func testAccessMovesEntryToMostRecentlyUsed() async {
+    func testAccessMovesEntryToMostRecentlyUsed() {
         let cache = PageCache(byteLimit: oneCost * 2)
-        await cache.insert(image(), for: 1)
-        await cache.insert(image(), for: 2)
-        _ = await cache.image(for: 1)          // 1 を MRU に
-        await cache.insert(image(), for: 3)    // 2 が追い出される
-        let first = await cache.image(for: 1)
-        let second = await cache.image(for: 2)
+        cache.insert(image(), for: 1)
+        cache.insert(image(), for: 2)
+        _ = cache.image(for: 1)          // 1 を MRU に
+        cache.insert(image(), for: 3)    // 2 が追い出される
+        let first = cache.image(for: 1)
+        let second = cache.image(for: 2)
         XCTAssertNotNil(first)
         XCTAssertNil(second)
     }
 
-    func testByteLimitReductionEvicts() async {
+    func testByteLimitReductionEvicts() {
         let cache = PageCache(byteLimit: oneCost * 3)
-        await cache.insert(image(), for: 1)
-        await cache.insert(image(), for: 2)
-        await cache.insert(image(), for: 3)
-        await cache.setByteLimit(oneCost)
-        let count = await cache.count
+        cache.insert(image(), for: 1)
+        cache.insert(image(), for: 2)
+        cache.insert(image(), for: 3)
+        cache.setByteLimit(oneCost)
+        let count = cache.count
         XCTAssertEqual(count, 1)
-        let third = await cache.image(for: 3)  // 最新のみ残る
+        let third = cache.image(for: 3)  // 最新のみ残る
         XCTAssertNotNil(third)
     }
 
-    func testSingleOversizedImageIsKept() async {
+    func testSingleOversizedImageIsKept() {
         // 上限を超える 1 枚でも保持する(再デコードの繰り返し防止)
         let cache = PageCache(byteLimit: 1)
-        await cache.insert(image(), for: 1)
-        let first = await cache.image(for: 1)
+        cache.insert(image(), for: 1)
+        let first = cache.image(for: 1)
         XCTAssertNotNil(first)
     }
 
-    func testTrimToHalfDropsOldEntries() async {
+    func testTrimToHalfDropsOldEntries() {
         let cache = PageCache(byteLimit: oneCost * 4)
         for id in 1...4 {
-            await cache.insert(image(), for: id)
+            cache.insert(image(), for: id)
         }
-        await cache.trimToHalf()
-        let count = await cache.count
+        cache.trimToHalf()
+        let count = cache.count
         XCTAssertEqual(count, 2)
-        let newest = await cache.image(for: 4)
+        let newest = cache.image(for: 4)
         XCTAssertNotNil(newest)
     }
 }

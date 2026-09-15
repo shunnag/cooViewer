@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 @testable import cooViewer
@@ -11,18 +12,22 @@ final class BookHistoryStoreTests: XCTestCase {
     private var tempDir: URL!
     private var stateDir: URL!
 
-    override func setUpWithError() throws {
-        defaults = UserDefaults(suiteName: "test.cooViewer.history")
-        defaults.removePersistentDomain(forName: "test.cooViewer.history")
-        defaults.set(10, forKey: "OpenRecentLimit")
-        tempDir = try TestFixtures.makeTempDir()
-        stateDir = tempDir.appendingPathComponent("BookStates")
-        store = BookHistoryStore(defaults: defaults, directory: stateDir)
+    override func setUp() async throws {
+        try await MainActor.run {
+            defaults = UserDefaults(suiteName: "test.cooViewer.history")
+            defaults.removePersistentDomain(forName: "test.cooViewer.history")
+            defaults.set(10, forKey: "OpenRecentLimit")
+            tempDir = try TestFixtures.makeTempDir()
+            stateDir = tempDir.appendingPathComponent("BookStates")
+            store = BookHistoryStore(defaults: defaults, directory: stateDir)
+        }
     }
 
-    override func tearDownWithError() throws {
-        defaults.removePersistentDomain(forName: "test.cooViewer.history")
-        try FileManager.default.removeItem(at: tempDir)
+    override func tearDown() async throws {
+        try await MainActor.run {
+            defaults.removePersistentDomain(forName: "test.cooViewer.history")
+            try FileManager.default.removeItem(at: tempDir)
+        }
     }
 
     private func makeBookFile(_ name: String) throws -> String {
@@ -135,6 +140,45 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(settings?.bookmarks.first?.pageIndex, 2, "状態が追跡されること")
         XCTAssertEqual(fresh.recentBookPaths(), [newPath], "一覧も付け替わること")
         XCTAssertEqual(fresh.savedPage(forPath: newPath)?.page, 5)
+    }
+
+    func testFailedRelocationPreservesOriginalAndRetriesWhenWritable() throws {
+        let oldPath = try makeBookFile("relocation.zip")
+        store.noteClosed(path: oldPath, pageIndex: 5)
+        store.save(displayName: "relocation.zip", path: oldPath,
+                   settings: .init(readMode: nil, sortMode: nil, marks: PageMarks(),
+                                   bookmarks: [.init(name: "keep", pageIndex: 2)]))
+        let oldStateURL = try stateFileURL()
+        let original = try Data(contentsOf: oldStateURL)
+        let newDir = tempDir.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: newDir, withIntermediateDirectories: true)
+        let newPath = newDir.appendingPathComponent("relocation.zip").resolvingSymlinksInPath().path
+        try FileManager.default.moveItem(atPath: oldPath, toPath: newPath)
+
+        // 0バイトは PersistedFile が absent と扱う。所有者の immutable flag で
+        // 新規書込だけを失敗させ、旧ファイルの削除は可能な状態を作る。
+        let digest = SHA256.hash(data: Data(newPath.utf8)).map { String(format: "%02x", $0) }.joined()
+        let destination = stateDir.appendingPathComponent("\(digest).json")
+        try Data().write(to: destination)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: destination.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: destination.path) }
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        let restored = fresh.settings(displayName: "relocation.zip", path: newPath)
+        XCTAssertEqual(restored?.bookmarks.first?.name, "keep")
+        XCTAssertEqual(fresh.savedPage(forPath: newPath)?.page, 5)
+        XCTAssertEqual(try? Data(contentsOf: oldStateURL), original,
+                       "新しい状態を書けなかったら旧バイトを削除しない")
+        XCTAssertEqual(try Data(contentsOf: destination).count, 0)
+
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: destination.path)
+        _ = fresh.settings(displayName: "relocation.zip", path: newPath)
+        let reopened = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(reopened.settings(displayName: "relocation.zip", path: newPath)?
+            .bookmarks.first?.name, "keep", "同じセッションで再試行し、再起動後も残る")
+        XCTAssertEqual(reopened.savedPage(forPath: newPath)?.page, 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldStateURL.path),
+                       "新しい状態を保存できてから旧ファイルを削除する")
     }
 
     /// 新規の本(既存状態と同名でない)の初回オープンは、再配置の高コスト全走査を

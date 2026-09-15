@@ -287,6 +287,26 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(image.width, 4)
     }
 
+    func testSpoolStatusFinishesAndRepeatedStartDoesNotRestart() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let url = try writeZip(named: "status.zip", entries: [
+            (Array("a.png".utf8), png), (Array("b.png".utf8), png),
+        ])
+        let source = try ArchiveSource(url: url)
+        let initial = await source.spoolStats()
+        XCTAssertFalse(initial.active)
+        let started = await source.startSpoolingAndReadStats()
+        XCTAssertTrue(started.active)
+        await source.waitForSpoolCompletion()
+        let finished = await source.spoolStats()
+        XCTAssertFalse(finished.active, "完了後は実行中と報告しない")
+        XCTAssertEqual(finished.spooled, 2)
+        XCTAssertEqual(finished.bytes, Int64(png.count * 2))
+        let repeated = await source.startSpoolingAndReadStats()
+        XCTAssertFalse(repeated.active, "完了済みの準備を再実行しない")
+        XCTAssertEqual(repeated, finished)
+    }
+
     func testGarbageArchiveDoesNotCrash() async throws {
         let url = tempDir.appendingPathComponent("garbage.zip")
         try Data((0..<256).map { _ in UInt8.random(in: 0...255) }).write(to: url)
@@ -545,5 +565,13 @@ final class NestedArchiveTests: XCTestCase {
         XCTAssertEqual(entries.count, 2)
         let image = try await source.image(for: entries[1], maxPixelSize: nil)
         XCTAssertEqual(image.width, 10)
+    }
+}
+
+private extension ArchiveSource {
+    /// 開始直後の観測を同じ actor 呼出し内で行い、短い ZIP の完了競合を避ける。
+    func startSpoolingAndReadStats() -> SpoolStats {
+        beginSpooling(sizeLimit: 1 << 30)
+        return spoolStats()
     }
 }

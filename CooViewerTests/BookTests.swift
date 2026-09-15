@@ -56,6 +56,26 @@ final class StubSource: BookSource, @unchecked Sendable {
 @MainActor
 final class BookTests: XCTestCase {
     private let portrait = CGSize(width: 70, height: 100)   // 0.7 <= 0.74 → 見開き候補
+
+    func testSkipClampsExtremeOffsetsBeforeAdding() async throws {
+        let book = try await Book.open(source: StubSource(sizes: Array(repeating: portrait, count: 5)))
+        book.goTo(index: 2)
+        book.skip(by: Int.max)
+        XCTAssertEqual(book.currentIndex, 4)
+        book.skip(by: Int.min)
+        XCTAssertEqual(book.currentIndex, 0)
+        book.skip(by: 3)
+        XCTAssertEqual(book.currentIndex, 3)
+        book.skip(by: -1)
+        XCTAssertEqual(book.currentIndex, 2)
+    }
+
+    func testSkippingEmptyBookKeepsZeroIndex() async throws {
+        let book = try await Book.open(source: StubSource(sizes: []))
+        book.skip(by: Int.max)
+        book.skip(by: Int.min)
+        XCTAssertEqual(book.currentIndex, 0)
+    }
     private let landscape = CGSize(width: 150, height: 100) // 1.5 > 0.74 → 単ページ
 
     private func makeBook(_ sizes: [CGSize], readMode: ReadMode = .rightToLeftSpread) async throws -> Book {
@@ -423,7 +443,7 @@ final class BookTests: XCTestCase {
 
     func testDisplayPixelCapDownsamplesButFullResolutionBypasses() async throws {
         let book = try await makeBook([CGSize(width: 70, height: 100)])
-        book.displayPixelCap = 50
+        _ = book.updateDisplayPixelCap(50)
         let display = await book.image(at: 0)
         XCTAssertEqual(display?.height, 50)   // 長辺 100 → 50
         XCTAssertEqual(display?.width, 35)

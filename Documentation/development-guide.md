@@ -40,8 +40,9 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   Run Script フェーズ(`Scripts/build-washi-framework.sh`)が
   `Frameworks/Washi.framework` を組み立てて埋め込む(SwiftPM 参照でないのは
   Xcode が legacy build location とパッケージ参照を併用できないため)。
-  **Washi のソースを変更したら `rm -rf Frameworks/Washi.framework`** で
-  再ビルドを強制する。パッケージ単体のテストは `cd ../Washi && swift test`。
+  ソースの内容とファイル名を SHA-256 で照合して自動再生成する。ファイルの削除や
+  古い更新日時で復元したソースも検出する。パッケージ単体のテストは
+  `cd ../Washi && swift test`。
   **注意(実害あり)**: まれにアプリへの**埋め込みコピーがスキップ**され、
   `build/Debug/cooViewer.app/Contents/Frameworks/Washi.framework` が旧版の
   まま残ることがある(Frameworks/ 側だけ新しくなる)。挙動が変わらない
@@ -51,13 +52,22 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   バージョンに固定されるため、フレームワークには library evolution の
   **`.swiftinterface` を同梱**している(別バージョンの Xcode/CLI はこれへ
   フォールバックして import できる)。スクリプトは Swift バージョンと
-  ソースディレクトリをスタンプし、ツールチェーンやチェックアウトが変わると
+  ソースディレクトリと内容をスタンプし、ツールチェーンやチェックアウトが変わると
   自動で作り直す。
   「Module compiled with Swift X cannot be imported by Y」が出たら
   `rm -rf Frameworks/Washi.framework` してビルドし直せば確実に直る。
   なお SwiftPM の出力レイアウトはバージョンで異なる(6.3 系:
   `Modules/` 平置き、6.4 の swiftbuild: トリプル別ディレクトリ+
   interface は Intermediates 配下)——スクリプトは両対応済み。
+
+framework の更新判定は `python3 Scripts/tests/framework-rebuild.py` で単独検証できる。
+3つの取得/生成フェーズは毎ビルド呼び出し、実際の更新要否をスクリプトに委ねる。
+Xcode が既存の出力だけでフェーズ全体を省略すると、兄弟ソースの変更を検出できない。
+コンパイラ・署名処理を小さな fixture に差し替え、テスト用ディレクトリの中で
+変更なし・削除・時刻を保った内容変更・古いファイル追加を確認する。
+KaitoKit 側ビルダにも更新日時の省略判定があるため、内容変更時には兄弟側の
+生成済み `Frameworks/KaitoKit.framework` を外してから再生成する。
+兄弟のソースと SwiftPM キャッシュ、cooViewer 側の最後に成功した配置は保持する。
 
 ### プロジェクトファイルの約束
 

@@ -10,19 +10,29 @@ import Foundation
 final class Book {
     let source: any BookSource
     private(set) var entries: [PageEntry]
-    private(set) var currentIndex = 0
+    private(set) var currentIndex = 0 {
+        didSet { if currentIndex != oldValue { stateRevision &+= 1 } }
+    }
     private(set) var sortMode: SortMode
-    var readMode: ReadMode = .rightToLeftSpread
-    var marks = PageMarks()
-    var singleSetting = PageLayout.defaultSingleSetting
+    var readMode: ReadMode = .rightToLeftSpread {
+        didSet { if readMode != oldValue { invalidatePendingNavigation() } }
+    }
+    var marks = PageMarks() {
+        didSet { if marks != oldValue { invalidatePendingNavigation() } }
+    }
+    var singleSetting = PageLayout.defaultSingleSetting {
+        didSet { if singleSetting != oldValue { invalidatePendingNavigation() } }
+    }
     /// 見開きモードで先頭ページ(表紙)を単ページにする(新機能・既定オフ)。
     /// marks の強制ペア指定(§4.2.1)はこれより優先される
-    var coverSingleFirst = false
+    var coverSingleFirst = false {
+        didSet { if coverSingleFirst != oldValue { invalidatePendingNavigation() } }
+    }
     var bookmarks: [BookHistoryStore.Bookmark] = []
 
     /// 表示用デコードの長辺上限(px)。原寸表示は fullResolutionImage(at:) を使う
     /// (設計書「キャッシュ・先読み設計」)。nil で無制限。
-    var displayPixelCap: Int? = 4096
+    private(set) var displayPixelCap: Int? = 4096
 
     /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)
     let cacheKey: String
@@ -30,6 +40,11 @@ final class Book {
     private let cache: PageCache
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
+    /// 見開き取得は同じ位置・並び・配置条件で完了した結果だけを採用する。
+    /// ナビゲーション世代は後発のジャンプ/設定変更で旧判定を失効させる一方、
+    /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
+    private var stateRevision = 0
+    private var navigationGeneration = 0
     /// 直近の移動方向(先読み・事前リサンプルの向きの決定に使う)
     private(set) var lastMoveForward = true
 
@@ -55,6 +70,7 @@ final class Book {
         case moved
         case hitStart  // 巻頭超え(loopCheck 処理は呼び出し側)
         case hitEnd    // 巻末超え(同上)
+        case superseded  // 待機中のジャンプ/設定変更により失効。端の処理を行わない
     }
 
     init(source: any BookSource, entries: [PageEntry],
@@ -138,7 +154,9 @@ final class Book {
     /// FrontCover)と、ソースの規範的な単ページ指定を実ページへ写像した集合。
     /// ComicInfo は useLayoutHints オプトイン時だけ、EPUB page-spread は無条件で
     /// 構築する(cooViewer-bt1/oxr.40、仕様書 §4.2.1)。isSmall の判定に渡す
-    private(set) var comicSingleIndices: Set<Int> = []
+    private(set) var comicSingleIndices: Set<Int> = [] {
+        didSet { if comicSingleIndices != oldValue { invalidatePendingNavigation() } }
+    }
 
     /// open 時に ComicInfo 由来の状態(章メニュー・見開き補助)をまとめて構築する。
     /// image は 0 始まりページとして実ページへ写像し、範囲外は捨てる
@@ -175,8 +193,8 @@ final class Book {
     /// 表示中スプレッドの枚数(1 か 2)
     var displayedPageCount: Int { lastDisplayCount }
     /// デコード用ページキャッシュの件数・使用バイト(実態)
-    func pageCacheStats() async -> (count: Int, cost: Int) {
-        (await cache.count, await cache.currentCost)
+    func pageCacheStats() -> (count: Int, cost: Int) {
+        (cache.count, cache.currentCost)
     }
 
     // MARK: - 画像ロード
@@ -188,34 +206,30 @@ final class Book {
 
     func image(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
-        let key = entries[index].id
-        if let hit = await cache.image(for: key) { return hit }
+        let entry = entries[index]
+        let key = entry.id
+        if let hit = cache.image(for: key) { return hit }
         if let running = inFlightLoads[key] {
             return await running.task.value
         }
         // detached: 先読みのキャンセルが、合流している表示要求まで
         // 巻き込まないように独立タスクで走らせる
         let source = source
-        let entry = entries[index]
         let cap = displayPixelCap
-        let cache = cache
         let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
             try? await source.image(for: entry, maxPixelSize: cap)
         }
-        inFlightToken += 1
+        inFlightToken &+= 1
         let token = inFlightToken
         inFlightLoads[key] = (token, task)
         let image = await task.value
-        if inFlightLoads[key]?.token == token {
-            inFlightLoads[key] = nil
-        }
+        // 上限の値が一周しても旧要求は復活させない。失効と登録を同じ
+        // MainActor で完結させ、古い小画像が新しい大画像を上書きするのを防ぐ。
+        guard inFlightLoads[key]?.token == token else { return image }
+        inFlightLoads[key] = nil
         if let image {
-            // キャッシュへの登録はキャップが変わっていない場合のみ
-            // (拡大後に旧キャップの低解像度が居座るのを防ぐ。表示自体は返し、
-            //  直後の再表示が新キャップで再デコードする)
-            if cap == displayPixelCap {
-                await cache.insert(image, for: key)
-            }
+            // 上限を下げただけなら大画像を活かす。上げた場合は上の世代照合で除外される。
+            cache.insert(image, for: key)
             if pageSizeCache[key] == nil {
                 // キャップ付きデコードでも縦横比は保たれるため判定に使える
                 pageSizeCache[key] = CGSize(width: image.width, height: image.height)
@@ -236,14 +250,15 @@ final class Book {
 
     private func pageSize(at index: Int) async -> CGSize? {
         guard entries.indices.contains(index) else { return nil }
-        let key = entries[index].id
+        let entry = entries[index]
+        let key = entry.id
         if let cached = pageSizeCache[key] { return cached }
-        if let hit = await cache.image(for: key) {
+        if let hit = cache.image(for: key) {
             let size = CGSize(width: hit.width, height: hit.height)
             pageSizeCache[key] = size
             return size
         }
-        if let size = await source.imageSize(for: entries[index]) {
+        if let size = await source.imageSize(for: entry) {
             pageSizeCache[key] = size
             return size
         }
@@ -266,14 +281,15 @@ final class Book {
 
     /// 表示デコード上限の更新。上げた場合は低解像度の既存キャッシュを破棄する
     /// (ウインドウ拡大・原寸表示切替時。下げた場合は大きい画像を使い続ける)
-    func updateDisplayPixelCap(_ cap: Int) async -> Bool {
+    func updateDisplayPixelCap(_ cap: Int?) -> Bool {
         guard cap != displayPixelCap else { return false }
-        let raised = cap > (displayPixelCap ?? Int.max)
+        let raised = (cap ?? Int.max) > (displayPixelCap ?? Int.max)
         displayPixelCap = cap
         if raised {
-            await cache.removeAll()
+            stateRevision &+= 1
+            cache.removeAll()
             // 旧キャップで進行中のデコードには合流させない(新規要求は
-            // 新キャップで作り直す。旧タスクの結果はキャップ照合で捨てられる)
+            // 新キャップで作り直す。旧タスクの結果は登録世代の照合で捨てられる)
             inFlightLoads.removeAll()
         }
         return raised
@@ -295,62 +311,97 @@ final class Book {
 
     /// 現在位置のスプレッドを確定する(仕様書 §4.2.4 の見開き判定を再現)。
     func currentSpread() async -> Spread {
-        guard !entries.isEmpty else { return Spread(indices: [], images: []) }
-        currentIndex = min(max(0, currentIndex), entries.count - 1)
+        while !entries.isEmpty, !Task.isCancelled {
+            let revision = stateRevision
+            let spread = await loadSpread(at: currentIndex)
+            // 旧ページの取得中に位置/ソート/見開き条件が変わったら再計算する。
+            // 画像と番号の対応、次ページの送り幅を同じ状態で確定するため。
+            guard revision == stateRevision else { continue }
+            lastDisplayCount = spread.indices.count
+            schedulePrefetch()
+            return spread
+        }
+        return Spread(indices: [], images: [])
+    }
 
+    private func loadSpread(at index: Int) async -> Spread {
         // サイズ索引(ヘッダ寸法)でペアが確定するなら、両ページを並列取得する
         // (従来はまず 1 枚目をデコードしないと 2 枚目に着手できなかった)。
         // 壊れページ(デコード失敗)は従来どおり単ページへ落とす
-        if readMode.isSpread, currentIndex + 1 < entries.count,
-           let firstSmall = await isSmallFromIndex(at: currentIndex),
+        if readMode.isSpread, index + 1 < entries.count,
+           let firstSmall = await isSmallFromIndex(at: index),
            firstSmall,
-           let secondSmall = await isSmallFromIndex(at: currentIndex + 1) {
+           let secondSmall = await isSmallFromIndex(at: index + 1) {
             if secondSmall {
-                async let firstTask = image(at: currentIndex)
-                async let secondTask = image(at: currentIndex + 1)
+                async let firstTask = image(at: index)
+                async let secondTask = image(at: index + 1)
                 let (first, second) = await (firstTask, secondTask)
                 if first != nil, second != nil {
-                    lastDisplayCount = 2
-                    schedulePrefetch()
-                    return Spread(indices: [currentIndex, currentIndex + 1],
+                    return Spread(indices: [index, index + 1],
                                   images: [first, second])
                 }
                 // 片方が壊れていたら従来規則(単ページ)へ
-                lastDisplayCount = 1
-                schedulePrefetch()
-                return Spread(indices: [currentIndex], images: [first])
+                return Spread(indices: [index], images: [first])
             } else {
                 // ヘッダで 2 枚目が非小(ワイド)と確定 → 単ページ。表示用に必要な
                 // 1 枚目だけをデコードし、ワイドな 2 枚目はデコードしない
                 // (negative なヘッダ判定は movePrevious/goToLast も同様に信頼する。
                 // 従来はここで slow path へ落ちて 2 枚目を直列デコードし表示遅延を
                 // 倍化していた。cooViewer-utz)
-                let first = await image(at: currentIndex)
-                lastDisplayCount = 1
-                schedulePrefetch()
-                return Spread(indices: [currentIndex], images: [first])
+                let first = await image(at: index)
+                return Spread(indices: [index], images: [first])
             }
         }
 
-        let first = await image(at: currentIndex)
-        var indices = [currentIndex]
+        let first = await image(at: index)
+        var indices = [index]
         var images: [CGImage?] = [first]
 
-        if readMode.isSpread, currentIndex + 1 < entries.count, isSmall(first, at: currentIndex) {
-            let second = await image(at: currentIndex + 1)
-            if isSmall(second, at: currentIndex + 1) {
-                indices.append(currentIndex + 1)
+        if readMode.isSpread, index + 1 < entries.count, isSmall(first, at: index) {
+            let second = await image(at: index + 1)
+            if isSmall(second, at: index + 1) {
+                indices.append(index + 1)
                 images.append(second)
             }
         }
-        lastDisplayCount = indices.count
-        schedulePrefetch()
+
         return Spread(indices: indices, images: images)
     }
 
     // MARK: - ナビゲーション(仕様書 §4.3)
 
+    /// 指追従の仮移動を取り消すための復元点。同じ番号への再ジャンプも
+    /// 別操作なので、位置とナビゲーション世代を組にして照合する。
+    struct NavigationCheckpoint {
+        fileprivate let index: Int
+        fileprivate let generation: Int
+        fileprivate let displayCount: Int
+        fileprivate let forward: Bool
+    }
+
+    var navigationCheckpoint: NavigationCheckpoint {
+        NavigationCheckpoint(index: currentIndex, generation: navigationGeneration,
+                             displayCount: lastDisplayCount, forward: lastMoveForward)
+    }
+
+    func isAtNavigationCheckpoint(_ checkpoint: NavigationCheckpoint) -> Bool {
+        currentIndex == checkpoint.index && navigationGeneration == checkpoint.generation
+    }
+
+    /// 仮移動の後に別操作がなければ、表示枚数・先読み方向も同期で復元する。
+    /// 逆方向へ再判定すると I/O 待機を挟み、後続入力を巻き戻すおそれがある。
+    @discardableResult
+    func restoreNavigation(_ origin: NavigationCheckpoint,
+                           ifUnchanged destination: NavigationCheckpoint) -> Bool {
+        guard isAtNavigationCheckpoint(destination) else { return false }
+        goTo(index: origin.index)
+        lastDisplayCount = origin.displayCount
+        lastMoveForward = origin.forward
+        return true
+    }
+
     func moveNext() -> MoveResult {
+        invalidatePendingNavigation()
         guard !entries.isEmpty else { return .hitEnd }
         guard currentIndex + lastDisplayCount < entries.count else { return .hitEnd }
         currentIndex += lastDisplayCount
@@ -358,34 +409,54 @@ final class Book {
         return .moved
     }
 
-    func movePrevious() async -> MoveResult {
-        guard !entries.isEmpty, currentIndex > 0 else { return .hitStart }
-        lastMoveForward = false
-        if readMode.isSpread, currentIndex >= 2 {
-            // サイズ索引が両ページ分あればデコードなしで判定(後方めくりの
-            // 逐次 2 デコード待ちを解消)。無ければ従来のデコード判定
-            if let firstSmall = await isSmallFromIndex(at: currentIndex - 2),
-               let secondSmall = await isSmallFromIndex(at: currentIndex - 1) {
-                if firstSmall, secondSmall {
-                    currentIndex -= 2
-                    return .moved
-                }
-            } else {
-                let first = await image(at: currentIndex - 2)
-                let second = await image(at: currentIndex - 1)
-                if isSmall(first, at: currentIndex - 2),
-                   isSmall(second, at: currentIndex - 1) {
-                    currentIndex -= 2
-                    return .moved
-                }
+    func movePrevious(ifUnchanged checkpoint: NavigationCheckpoint? = nil) async -> MoveResult {
+        let generation = navigationGeneration
+        while generation == navigationGeneration, !Task.isCancelled {
+            if let checkpoint, !isAtNavigationCheckpoint(checkpoint) { return .superseded }
+            let anchor = currentIndex
+            guard !entries.isEmpty, anchor > 0 else { return .hitStart }
+            guard let start = await precedingSpreadStart(before: anchor,
+                                                         generation: generation) else {
+                return .superseded
             }
+            guard generation == navigationGeneration, !Task.isCancelled else {
+                return .superseded
+            }
+            if let checkpoint, !isAtNavigationCheckpoint(checkpoint) { return .superseded }
+            // 別の後退が先に完了した場合は、その位置からもう一度戻る。
+            // ヘッダ待機中のキー連打を落とさず、負の位置への減算も防ぐ。
+            guard anchor == currentIndex else { continue }
+            currentIndex = start
+            lastMoveForward = false
+            return .moved
         }
-        currentIndex -= 1
-        return .moved
+        return .superseded
+    }
+
+    /// 後退と巻末ジャンプは同じ「直前の最大2枚」の規則で判定する。
+    /// 位置は引数で固定し、各 await 後に後発のジャンプ/設定変更を照合する。
+    private func precedingSpreadStart(before end: Int, generation: Int) async -> Int? {
+        guard generation == navigationGeneration, !Task.isCancelled else { return nil }
+        guard readMode.isSpread, end >= 2 else { return end - 1 }
+        let firstSmall = await isSmallFromIndex(at: end - 2)
+        guard generation == navigationGeneration, !Task.isCancelled else { return nil }
+        if firstSmall == false { return end - 1 }
+        if let firstSmall {
+            let secondSmall = await isSmallFromIndex(at: end - 1)
+            guard generation == navigationGeneration, !Task.isCancelled else { return nil }
+            if let secondSmall { return firstSmall && secondSmall ? end - 2 : end - 1 }
+        }
+        let first = await image(at: end - 2)
+        guard generation == navigationGeneration, !Task.isCancelled else { return nil }
+        let second = await image(at: end - 1)
+        guard generation == navigationGeneration, !Task.isCancelled else { return nil }
+        return isSmall(first, at: end - 2) && isSmall(second, at: end - 1)
+            ? end - 2 : end - 1
     }
 
     /// 見開きから 1 ページだけ進む/戻る(仕様書 §5.5 action 2/3)
     func moveHalfNext() -> MoveResult {
+        invalidatePendingNavigation()
         guard currentIndex + 1 < entries.count else { return .hitEnd }
         currentIndex += 1
         lastMoveForward = true
@@ -393,6 +464,7 @@ final class Book {
     }
 
     func moveHalfPrevious() -> MoveResult {
+        invalidatePendingNavigation()
         guard currentIndex > 0 else { return .hitStart }
         currentIndex -= 1
         lastMoveForward = false
@@ -400,37 +472,31 @@ final class Book {
     }
 
     func goTo(index: Int) {
+        invalidatePendingNavigation()
         guard !entries.isEmpty else { return }
         currentIndex = min(max(0, index), entries.count - 1)
     }
 
     func goToFirst() {
+        invalidatePendingNavigation()
         currentIndex = 0
         lastMoveForward = true
     }
 
     /// 末尾へ。見開きなら最終 2 枚がペアになる場合 count-2 に着地(仕様書 §4.3.3)。
-    func goToLast() async {
-        guard !entries.isEmpty else { return }
-        lastMoveForward = true
-        if readMode.isSpread, entries.count >= 2 {
-            if let firstSmall = await isSmallFromIndex(at: entries.count - 2),
-               let secondSmall = await isSmallFromIndex(at: entries.count - 1) {
-                if firstSmall, secondSmall {
-                    currentIndex = entries.count - 2
-                    return
-                }
-            } else {
-                let first = await image(at: entries.count - 2)
-                let second = await image(at: entries.count - 1)
-                if isSmall(first, at: entries.count - 2),
-                   isSmall(second, at: entries.count - 1) {
-                    currentIndex = entries.count - 2
-                    return
-                }
-            }
+    @discardableResult
+    func goToLast() async -> Bool {
+        invalidatePendingNavigation()
+        let generation = navigationGeneration
+        guard !entries.isEmpty,
+              let start = await precedingSpreadStart(before: entries.count,
+                                                      generation: generation),
+              generation == navigationGeneration, !Task.isCancelled else {
+            return false
         }
-        currentIndex = entries.count - 1
+        currentIndex = start
+        lastMoveForward = true
+        return true
     }
 
     /// 現在位置を「先頭から組み直した見開き区分」に整列させる。
@@ -440,8 +506,12 @@ final class Book {
     /// 歩き直し、現在ページを含むスプレッドの先頭に着地させる。
     /// サイズ未取得のページは縦長(ペア可)とみなす(サムネイル一覧と
     /// 同じ収束方針)。強制指定(marks)は isSmall 側で常に優先される。
-    func reanchorToLeadingPartition() async {
-        guard readMode.isSpread, currentIndex > 0 else { return }
+    @discardableResult
+    func reanchorToLeadingPartition() async -> Bool {
+        invalidatePendingNavigation()
+        guard readMode.isSpread, currentIndex > 0 else { return true }
+        let generation = navigationGeneration
+        let target = currentIndex
         // サイズ未取得でも marks・表紙単ページの規則は適用したいので、
         // 不明なページは縦長サイズを仮定して通常判定に流す
         func assumedSmall(at index: Int) async -> Bool {
@@ -459,17 +529,19 @@ final class Book {
                                       comicSingleIndices: comicSingleIndices)
         }
         var start = 0
-        while start < currentIndex {
+        while start < target {
             var length = 1
             if start + 1 < entries.count,
                await assumedSmall(at: start),
                await assumedSmall(at: start + 1) {
                 length = 2
             }
-            guard start + length <= currentIndex else { break }
+            guard generation == navigationGeneration, !Task.isCancelled else { return false }
+            guard start + length <= target else { break }
             start += length
         }
         currentIndex = start
+        return true
     }
 
     /// 次(forward)または前の方向へ、隣接するスプレッド列を予測する
@@ -529,11 +601,14 @@ final class Book {
 
     /// スキップ(仕様書 §4.3.6 相当。value ページ分移動)
     func skip(by value: Int) {
-        goTo(index: currentIndex + value)
+        // 足す前に移動可能な範囲へ絞る。Int 全域の入力でも加算が溢れない。
+        let delta = min(max(value, -currentIndex), max(0, pageCount - 1 - currentIndex))
+        goTo(index: currentIndex + delta)
     }
 
     /// ソート変更。旧仕様通り先頭ページへ戻る(仕様書 §13.3 で「維持」判断)。
     func setSortMode(_ mode: SortMode) {
+        invalidatePendingNavigation()
         sortMode = mode
         entries = PageSorter.sorted(entries, mode: mode)
         currentIndex = 0
@@ -543,6 +618,12 @@ final class Book {
     func cancelPrefetch() {
         prefetchTask?.cancel()
         prefetchTask = nil
+    }
+
+    private func invalidatePendingNavigation() {
+        navigationGeneration &+= 1
+        stateRevision &+= 1
+        cancelPrefetch()
     }
 
     // MARK: - サブフォルダ移動(仕様書 §4.3.5: containerPath 単位で巡回)
