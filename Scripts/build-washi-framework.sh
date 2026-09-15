@@ -53,17 +53,21 @@ SWIFT_VERSION="$(run_swift --version 2>/dev/null | head -1)"
 # スタンプをバンドル内に置くと Embed でアプリへコピーされ、開発機のパスが
 # 配布物に入るため、バンドル外で管理する。
 STAMP_FILE="$REPOSITORY_DIR/Frameworks/.Washi-framework-stamp"
-STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"
+FINGERPRINT_SCRIPT="$REPOSITORY_DIR/Scripts/framework-source-fingerprint.sh"
+SOURCE_INPUTS=("$SOURCE_DIR/Sources" "$SOURCE_DIR/Package.swift"
+               "$SCRIPT_PATH" "$FINGERPRINT_SCRIPT")
+if [[ -f "$SOURCE_DIR/Package.resolved" ]]; then
+    SOURCE_INPUTS+=("$SOURCE_DIR/Package.resolved")
+fi
+SOURCE_FINGERPRINT="$(/bin/zsh "$FINGERPRINT_SCRIPT" "${SOURCE_INPUTS[@]}")"
+STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${SOURCE_FINGERPRINT}"
 
-# 成果物がソースより新しく、かつ同じツールチェーン・ソースディレクトリで
-# 作られていればスキップ
+# 同じソース内容・ツールチェーン・ディレクトリで作られていればスキップ。
+# -newer だけでは、削除やバックアップから古い時刻で戻した変更を見逃す。
 if [[ -e "$FW/Versions/A/Washi" && \
       "$(cat "$STAMP_FILE" 2>/dev/null)" == "$STAMP_VALUE" ]]; then
-    if [[ -z "$(find "$SOURCE_DIR/Sources" "$SOURCE_DIR/Package.swift" "$SCRIPT_PATH" \
-            -type f -newer "$FW/Versions/A/Washi" -print -quit)" ]]; then
-        echo "Washi.framework is up to date."
-        exit 0
-    fi
+    echo "Washi.framework is up to date."
+    exit 0
 fi
 
 # library evolution + module interface 付きでビルドする(unsafeFlags を
@@ -162,8 +166,6 @@ cat > "$FW/Versions/A/Resources/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-printf '%s\n' "$STAMP_VALUE" > "$STAMP_FILE"
-
 ln -s A "$FW/Versions/Current"
 ln -s Versions/Current/Washi "$FW/Washi"
 ln -s Versions/Current/Modules "$FW/Modules"
@@ -175,4 +177,5 @@ install_name_tool -id "@rpath/Washi.framework/Versions/A/Washi" \
 # Developer ID で再署名する(ネスト実行体を持たないので Sparkle のような
 # 追加処置は不要)
 codesign --force --sign - "$FW"
+printf '%s\n' "$STAMP_VALUE" > "$STAMP_FILE"
 echo "Built $FW ($SWIFT_VERSION)"

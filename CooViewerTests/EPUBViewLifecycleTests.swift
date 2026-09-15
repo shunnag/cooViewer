@@ -7,6 +7,18 @@ import XCTest
 /// EPUB 表示を離れた後のビュー寿命を検証する(cooViewer-oxr.79、設計書 §2.4)。
 @MainActor
 final class EPUBViewLifecycleTests: XCTestCase {
+    func testNonFinitePercentageDoesNotChangeEPUBPosition() throws {
+        let controller = ReaderWindowController(window: nil)
+        let view = EPUBReaderView()
+        controller.epubView = view
+        controller.epubPublication = try makePublication()
+        let initial = view.currentLocator
+        for value in [Double.nan, .infinity, -.infinity] {
+            controller.epubJump(toBookFraction: value)
+            XCTAssertEqual(view.currentLocator, initial)
+        }
+    }
+
     func testDismissEPUBModeDetachesViewButRetainsInstance() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),

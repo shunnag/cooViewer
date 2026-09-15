@@ -18,6 +18,23 @@ git 履歴 **8b726c1** の `Scripts/bench/` にも残している。
 | `lzma2walk.c` | 単一フォルダ・単一 LZMA2 コーダの 7z のチャンクヘッダと辞書リセット位置を調査。標準 C のみ、復号はしない |
 | `coldopen.sh` | ディスクイメージの detach/attach 後、指定コマンドを cold / warm の順で実行。hdiutil / time |
 | `purge-cold.sh` | `sudo -n purge` 後に指定コマンドを一度実行。sudo / purge / time |
+| `page-cache.swift` | 実際の PageCache を使うメモリキャッシュ命中ベンチ。CoreGraphics / Foundation |
+
+## ページキャッシュの命中計測
+
+```zsh
+swiftc -swift-version 6 -target arm64-apple-macos26.0 \
+  -module-cache-path /tmp/cooviewer-review-module-cache -O -parse-as-library \
+  CooViewer/Core/Cache/PageCache.swift Scripts/bench/page-cache.swift \
+  -o /tmp/cooviewer-page-cache
+/tmp/cooviewer-page-cache
+```
+
+128 件のキャッシュを MainActor から 20,000 回参照する。先頭ラウンドはウォームアップ。
+変更前の actor 版 PageCache と比較するときは、そのソースと `-D PAGE_CACHE_ACTOR`
+を指定して別バイナリを作る。チェックサムは各回 160,000。
+小さな同一画像を使う索引操作の計測であり、実画像のデコード・解放やアプリ全体の
+表示時間を表すものではない。
 
 ## コーパス生成
 

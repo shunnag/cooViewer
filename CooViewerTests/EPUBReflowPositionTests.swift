@@ -10,19 +10,23 @@ final class EPUBReflowPositionTests: XCTestCase {
     private var store: BookHistoryStore!
     private var tempDir: URL!
 
-    override func setUpWithError() throws {
-        defaults = UserDefaults(suiteName: "test.cooViewer.reflow")
-        defaults.removePersistentDomain(forName: "test.cooViewer.reflow")
-        defaults.set(10, forKey: "OpenRecentLimit")
-        tempDir = try TestFixtures.makeTempDir()
-        store = BookHistoryStore(
-            defaults: defaults,
-            directory: tempDir.appendingPathComponent("BookStates"))
+    override func setUp() async throws {
+        try await MainActor.run {
+            defaults = UserDefaults(suiteName: "test.cooViewer.reflow")
+            defaults.removePersistentDomain(forName: "test.cooViewer.reflow")
+            defaults.set(10, forKey: "OpenRecentLimit")
+            tempDir = try TestFixtures.makeTempDir()
+            store = BookHistoryStore(
+                defaults: defaults,
+                directory: tempDir.appendingPathComponent("BookStates"))
+        }
     }
 
-    override func tearDownWithError() throws {
-        defaults.removePersistentDomain(forName: "test.cooViewer.reflow")
-        try FileManager.default.removeItem(at: tempDir)
+    override func tearDown() async throws {
+        try await MainActor.run {
+            defaults.removePersistentDomain(forName: "test.cooViewer.reflow")
+            try FileManager.default.removeItem(at: tempDir)
+        }
     }
 
     private func makeBookFile(_ name: String) throws -> String {

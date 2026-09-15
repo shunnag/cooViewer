@@ -7,11 +7,22 @@ import XCTest
 final class SettingsStorePageIndicatorTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: SettingsStore!
+    private var suiteName: String!
 
-    override func setUp() {
-        super.setUp()
-        defaults = UserDefaults(suiteName: "indicator-test-\(UUID().uuidString)")!
-        store = SettingsStore(defaults: defaults)
+    override func setUp() async throws {
+        await MainActor.run {
+            suiteName = "indicator-test-\(UUID().uuidString)"
+            defaults = UserDefaults(suiteName: suiteName)!
+            store = SettingsStore(defaults: defaults)
+        }
+    }
+
+    override func tearDown() async throws {
+        await MainActor.run {
+            defaults.removePersistentDomain(forName: suiteName)
+            store = nil
+            defaults = nil
+        }
     }
 
     func testPositionsDefaultToTopLeftAndClamp() {
