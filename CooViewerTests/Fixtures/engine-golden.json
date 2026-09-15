@@ -1,0 +1,279 @@
+{
+  "provenance" : {
+    "capturedOn" : "2026-09-15",
+    "cooViewerCommit" : "8bcca8ae3b634b4d86e05ac0721a9f57088dc867",
+    "universalDetectorCommit" : "a857fc6b83c7e7449a80f760375d4289a0c8dada",
+    "xadMasterCommit" : "2a3fedc0e0d23eb38817d37804cde46b32a9765f"
+  },
+  "fixtures" : [
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : true,
+          "isEncrypted" : false,
+          "name" : "folder",
+          "sha256" : null,
+          "size" : 0,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "folder/page.bin",
+          "sha256" : "53c145c16c9a03f8f7dcb6547e094195fd9596a5804f5e5bc140b1d7ec4b4197",
+          "size" : 11,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "root.bin",
+          "sha256" : "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d",
+          "size" : 5,
+          "solidGroup" : -1
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "zip"
+    },
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "cover.png",
+          "sha256" : "3261d0380f711833718a9bbc7b8e76fb2e13f8ddd11fb64c15354433ccd11592",
+          "size" : 172,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "pages/002.png",
+          "sha256" : "63dc3d1e7588b56a63d9efbf54f0b4b9d11b37e95e5b6c617ddde46a95819ba5",
+          "size" : 173,
+          "solidGroup" : -1
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "cbz"
+    },
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p0.png",
+          "sha256" : "4663ea0466f962dd7cbb751ee242e45ec466febf1f5fa0079a198c319cd358a2",
+          "size" : 8276,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p1.png",
+          "sha256" : "fea94cbc21b3944be2fac98a147ec42c6ae2e4b920b16125b7799f9637246bb3",
+          "size" : 8276,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p2.png",
+          "sha256" : "8c2f7e6db442bfc93d7cebca52ff147c085efd0ca35008a7e1e1058f84faa80b",
+          "size" : 8276,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p3.png",
+          "sha256" : "62cea3f26b1267b5b47050a99d5f29b9636a9c7eb2a01dcff96d29f63b752a00",
+          "size" : 8276,
+          "solidGroup" : -1
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "7z-nonsolid"
+    },
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p0.png",
+          "sha256" : "4663ea0466f962dd7cbb751ee242e45ec466febf1f5fa0079a198c319cd358a2",
+          "size" : 8276,
+          "solidGroup" : 0
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p1.png",
+          "sha256" : "fea94cbc21b3944be2fac98a147ec42c6ae2e4b920b16125b7799f9637246bb3",
+          "size" : 8276,
+          "solidGroup" : 0
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p2.png",
+          "sha256" : "8c2f7e6db442bfc93d7cebca52ff147c085efd0ca35008a7e1e1058f84faa80b",
+          "size" : 8276,
+          "solidGroup" : 0
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p3.png",
+          "sha256" : "62cea3f26b1267b5b47050a99d5f29b9636a9c7eb2a01dcff96d29f63b752a00",
+          "size" : 8276,
+          "solidGroup" : 0
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "7z-solid"
+    },
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p0.png",
+          "sha256" : "4663ea0466f962dd7cbb751ee242e45ec466febf1f5fa0079a198c319cd358a2",
+          "size" : 8276,
+          "solidGroup" : 0
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p1.png",
+          "sha256" : "fea94cbc21b3944be2fac98a147ec42c6ae2e4b920b16125b7799f9637246bb3",
+          "size" : 8276,
+          "solidGroup" : 0
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p2.png",
+          "sha256" : "8c2f7e6db442bfc93d7cebca52ff147c085efd0ca35008a7e1e1058f84faa80b",
+          "size" : 8276,
+          "solidGroup" : 1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p3.png",
+          "sha256" : "62cea3f26b1267b5b47050a99d5f29b9636a9c7eb2a01dcff96d29f63b752a00",
+          "size" : 8276,
+          "solidGroup" : 1
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "7z-blocks"
+    },
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "hello.txt",
+          "sha256" : "71c66fb47aa972a496cce5ea8be77f28ceb6733a7687d3247472350dec3b0120",
+          "size" : 30,
+          "solidGroup" : 0
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "tiny.txt",
+          "sha256" : "62de6306211cb0e6bd25c6fa452659e65f759b01fce630d027f5b781b14bd858",
+          "size" : 9,
+          "solidGroup" : 0
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "rar4-solid"
+    },
+    {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p0.png",
+          "sha256" : "4663ea0466f962dd7cbb751ee242e45ec466febf1f5fa0079a198c319cd358a2",
+          "size" : 8276,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p1.png",
+          "sha256" : "fea94cbc21b3944be2fac98a147ec42c6ae2e4b920b16125b7799f9637246bb3",
+          "size" : 8276,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p2.png",
+          "sha256" : "8c2f7e6db442bfc93d7cebca52ff147c085efd0ca35008a7e1e1058f84faa80b",
+          "size" : 8276,
+          "solidGroup" : -1
+        },
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : false,
+          "name" : "p3.png",
+          "sha256" : "62cea3f26b1267b5b47050a99d5f29b9636a9c7eb2a01dcff96d29f63b752a00",
+          "size" : 8276,
+          "solidGroup" : -1
+        }
+      ],
+      "isEncrypted" : false,
+      "name" : "lzh"
+    }
+  ],
+  "zipCrypto" : {
+    "archive" : {
+      "entries" : [
+        {
+          "hasSize" : true,
+          "isDirectory" : false,
+          "isEncrypted" : true,
+          "name" : "secret.txt",
+          "sha256" : "589282b4a6a4b98e05b4944b50ddc151b493a2dd28029ae4d97d90fdfc875bef",
+          "size" : 32768,
+          "solidGroup" : -1
+        }
+      ],
+      "isEncrypted" : true,
+      "name" : "zipcrypto"
+    },
+    "correctPasswordMatchesPayload" : true,
+    "payloadSHA256" : "589282b4a6a4b98e05b4944b50ddc151b493a2dd28029ae4d97d90fdfc875bef",
+    "wrongPasswordReturnsEmptyOrNil" : true
+  }
+}
