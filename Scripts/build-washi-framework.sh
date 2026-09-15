@@ -8,7 +8,7 @@
 #
 # SwiftPM のローカルパッケージ参照を使わないのは、Xcode が legacy build location
 # (このプロジェクトの build/ 直下方式)とパッケージ参照を併用できないため。
-# XADMaster と同じ「スクリプトで Frameworks/ に生成して埋め込む」方式をとる。
+# KaitoKit と同じ「スクリプトで Frameworks/ に生成して埋め込む」方式をとる。
 #
 # ツールチェーン互換: バイナリ .swiftmodule はコンパイラのバージョンに固定される
 # ため、library evolution を有効にしてテキストの .swiftinterface も同梱する

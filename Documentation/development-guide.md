@@ -10,18 +10,29 @@
 
 ## 1. セットアップとビルド
 
+サブモジュールは不要。通常の clone と KaitoKit / Washi の兄弟チェックアウトでビルドする。
+
 ```sh
-git submodule update --init --recursive   # XADMaster / UniversalDetector が必須
+git clone https://github.com/shunnag/cooViewer.git
+git clone https://github.com/shunnag/KaitoKit.git
+git clone https://github.com/shunnag/Washi.git
+cd cooViewer
 xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug build
 xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug test
 ```
 
 - `xcode-select` がコマンドラインツールを指している環境では、各コマンドに
   `DEVELOPER_DIR=/Applications/Xcode.app` を前置する。
-- Run Script フェーズが XADMaster/UniversalDetector を `Frameworks/` に
-  ビルドする(成果物があればスキップ)。サブモジュール更新後は
-  `rm -rf Frameworks` で作り直しを強制し、その後
+- Run Script フェーズは KaitoKit / Washi を兄弟チェックアウトから `Frameworks/` に
+  ビルドし、**Fetch Sparkle** が `Scripts/fetch-sparkle.sh` で Sparkle を自動取得する
+  (バージョン・SHA-256 固定、スクリプト単独で `Frameworks/` も作成する)。
+  全て作り直す場合は `rm -rf Frameworks` の後にビルドし、Release 前には
   `Scripts/sign-sparkle-nested.sh` を再実行する(Sparkle の再取得時)。
+- 既存 checkout の旧生成物は次で片付ける(新規 clone では不要):
+  `rm -rf Frameworks/XADMaster.framework Frameworks/UniversalDetector.framework Frameworks/.buildflags`。
+  旧版のビルド済みアプリへの残留を避けるため、PR 2 の同梱確認には新規ビルドを使う。
+- **KaitoKit** は兄弟チェックアウト `../KaitoKit` が必須。`KAITOKIT_SOURCE_DIR` で
+  Package.swift のあるディレクトリを指定できる。再生成の詳細は §3.6 を参照。
 - **Washi(EPUB 3 ツールキット)**は兄弟チェックアウト `../Washi` の独立 SwiftPM
   リポジトリ(https://github.com/shunnag/Washi、MIT)で、`WASHI_SOURCE_DIR` に
   Package.swift のあるディレクトリを指定して上書きできる。
@@ -55,7 +66,7 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   ターゲットに入る。**ファイル単位のエントリを pbxproj に足さない**。
 - ターゲットは **arm64 固定**(プロジェクト設定 `ARCHS = arm64`)。
   Xcode の Signing 画面が `ARCHS = $(ARCHS_STANDARD)` を勝手に注入することが
-  ある(x86_64 の XADMaster リンクエラーになる)。見つけたら削除する。
+  ある(x86_64 と KaitoKit / Washi framework のアーキテクチャ不一致でリンクエラーになる)。見つけたら削除する。
 - `Localizable.xcstrings` は Xcode の生成形式を保ったまま**テキストブロックの
   挿入だけ**で編集する(全体の再シリアライズはしない)。キー追加時は
   4 段インデント・`" : "` 区切りの既存書式に合わせる。
@@ -242,17 +253,16 @@ stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-pro
   ガードにより「前回の本を開く」等でユーザーの実データに触れない。
 - テスト出力に CGImageSource のエラーが混ざるのは壊れ画像の意図的テスト。
 
-## 3.2 XADMaster の性能計測(Scripts/bench/)
+## 3.2 書庫コーパスと計測(Scripts/bench/)
 
-このベンチ基盤は PR 2 で移設予定。PR 1 ではスクリプトと framework を維持するが、
-アプリの書庫エンジンとしては XADMaster を使用しない。
+`Scripts/bench/` にはエンジンに依存しない画像・書庫・破損入力の生成器、CRC/inflate の
+マイクロベンチ、LZMA2 ヘッダ調査、cold/warm 計測ラッパーを残す。
+使い方と前提ツールは [Scripts/bench/README.md](../Scripts/bench/README.md) を参照。
+性能は同じ入力・同じ条件の交互実行で測り、内容の SHA-256 も比較する。
 
-XADMaster/UniversalDetector の性能に触る変更は `Scripts/bench/` の
-ベンチマーク基盤で**実測してから**採否を判断する(コーパス生成→ハーネス→
-バリアント別ビルド→交互実行→SHA-256 相互検証つき集計)。使い方・計測の
-作法(交互実行ペア必須、±10% ドリフトの罠、破損入力バッテリー)は
-`Scripts/bench/README.md` 参照。2026-08-27 監査(MODERNIZATION.md 51–56、
-stored cbz 2.5×/RAR 3×/暗号化 7z 30× 等)の生データも同ディレクトリに同梱。
+削除したオラクル・旧エンジンのベンチ・専用集計・生データは、git 履歴 **8b726c1** の
+`Scripts/bench/` にあり、**bd cooViewer-6lrc.9** で別リポジトリへ移設予定。
+通常の clone には含めず、この PR では履歴に残す。
 
 ## 3.5 Washi の組み込み
 
@@ -280,13 +290,12 @@ git tag X.Y.Z && git push origin main X.Y.Z
 cooViewer の **Release ビルド前には `../Washi` が push 済みのタグの状態であること**
 (`WASHI_SOURCE_DIR` 指定時も参照先で同様)。cooViewer 側の履歴には Washi の版が
 記録されないため、配布する実装を公開済みのタグで特定できる状態にしておく。
-XADMaster サブモジュールを Release 前に push 済みにしておくのと同じ趣旨。
 
 ## 3.6 KaitoKit の組み込み
 
 エンジン契約のゴールデンは `CooViewerTests/Fixtures/engine-golden.json` に保存し、
 KaitoKit の file/data 両入口の列挙値・内容 SHA-256・solidGroup・暗号化挙動を照合する。
-**XADMaster 撤去済みのため再採取不可。ゴールデンは固定資産。**
+**旧エンジン撤去済みのため再採取不可。ゴールデンは固定資産。**
 採取用テストと provenance 生成処理は撤去した。保存済み JSON とその出自を維持し、
 KaitoKit の実装変更に合わせて期待値を作り直さない。JSON がない場合は既存の固定資産を復元する。
 
@@ -295,9 +304,9 @@ KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リ
 `../KaitoKit` を使い、別の配置を試す場合は `KAITOKIT_SOURCE_DIR` に Package.swift の
 あるディレクトリを指定する。
 
-**書庫エンジンは KaitoKit 単独である。** XADMaster エンジンと自動フォールバックは
-撤去済み。XADMaster / UniversalDetector の framework は PR 2 までビルド・リンク・
-同梱を続けるが、本体・テストからは参照しない。設定のエンジン Picker も撤去した。
+**書庫エンジンは KaitoKit 単独である。** 旧エンジンと自動フォールバックは
+撤去済み。PR 2 で旧 framework のビルド・リンク・同梱、submodule とライセンス資産も
+撤去した。設定のエンジン Picker も撤去した。
 `ArchiveEngine` キーは保持し、旧 `"xadmaster"` 等の未知値は KaitoKit に写像する。
 保存値は書き戻さず、旧版に戻した場合の選択を残す。`--engine` の扱いは §2 を参照。
 
@@ -309,13 +318,12 @@ KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リ
 ファイル名の文字コード判定は KaitoKit 自身の `EncodingPolicy.automatic`
 (既定 `likelyLanguage: "ja"`、2026-09-15 の KaitoKit PR #24 で 39 言語・54 legacy
 候補)で行い、cooViewer は `KaitoArchiveDelegate` の名前判定フックを実装しない。
-UniversalDetector は使用しない。
 判定精度の測定値と残差は KaitoKit の
 `Documentation/verification/2026-09-14-name-encoding-languages.md` を参照。
 
 KaitoKit は StuffIt にも対応する(classic/5/X、`.sea`、MacBinary/AppleSingle/BinHex の
-透過 unwrap、`.exe` SFX)。XADMaster は StuffIt X の JPEG(method 7)・StuffIt 7 Mac の
-`.sitx`・wrapper 内側・暗号化 SITX を開けないが、KaitoKit は開ける。
+透過 unwrap、`.exe` SFX)。StuffIt X の JPEG(method 7)・StuffIt 7 Mac の
+`.sitx`・wrapper 内側・暗号化 SITX も KaitoKit で処理する。
 cooViewer の拡張子判定には `.sit` に加えて `.sitx`・`.sea`・`.hqx` を含める
 (仕様書 §2.1 の archiveTypes、設計書 §2.4)。`.bin` は汎用拡張子のため宣言しない。
 現在のドロップ／`--open` は `BookSourceFactory.make` の拡張子判定を通るため、
@@ -352,35 +360,8 @@ git -C ../KaitoKit pull --ff-only
 rm -rf Frameworks/KaitoKit.framework
 ```
 
-**StuffIt 統合の検証記録(2026-09-13、cooViewer-40b6)**
-
-KaitoKit main(slice 1〜8、`../KaitoKit`)から `rm -rf Frameworks/KaitoKit.framework` の上で
-通常の Debug ビルドを行い(Run Script が再生成)、`nm Frameworks/KaitoKit.framework/Versions/Current/KaitoKit | grep -c StuffIt`
-が 1,764。`xcodebuild … test` は全件成功。
-
-スナップショット CLI(`--engine kaitokit --open <書庫> --snapshot <png>`)で次の 4 本を開き、PNG を確認した
-(fixture は git 管理外の `inbox/stuffit-fixtures/`。前 3 本は CC0 の ssokolow/stuffit-test-files、
-`jp-pages.sit` は `Scripts/make-sample-pages.swift` の 5 ページを Shift_JIS 名で classic StuffIt に詰めたもの):
-
-| 入力 | 結果 |
-|---|---|
-| `testfile.stuffit651_dlx.mac9.sit`(classic method 13) | 1/2 (testfile.jpg) が表示 |
-| `testfile.stuffit_deluxe_2010.win.sitx`(StuffIt X、JPEG method 7) | 1/2 (sources/testfile.jpg) が表示。**同じ書庫を `--engine xadmaster` で開くと「このページを読み込めませんでした。」**(XADMaster は method 7 を復号できない) |
-| `testfile.stuffit7_dlx.mac9.sitx.hqx`(BinHex の中の StuffIt X) | 1/2 (testfile.jpg) が表示 |
-| `jp-pages.sit`(日本語名、フォルダ 1 段、1 ページ目に resource fork) | 1/5 (第１巻/ページ01.png) が表示 |
-
-`.sitx` と `.hqx` の 2 本は、XADMaster が出せない内容(method 7 の JPEG、BinHex の内側)が表示されたことで
-KaitoKit で開いたと確定する。classic の 2 本は `kaito` CLI で開けるためフォールバック条件に当たらないが、
-XADMaster でも同じ画面になるので画面からは区別できない(os_log の `.error` は `log show` で採れなかった)。
-
-暗号化 catalog の StuffIt X(`testfile.stuffit_deluxe_2009.win.password.des.sitx`)と RAR5 `-hp` は、両エンジンとも
-パスワードを求めずに黒画面のまま終了する(`KaitoArchive(file:)` が `passwordRequired` を nil に潰し、
-XADMaster 側も delegate なしでは開けない)。StuffIt 由来ではない既存の欠陥として cooViewer-p2r1 に記録した。
-entry だけ暗号化された書庫(2010 AES 等)はプロンプトが出る。
-
-`.bin` / `.exe` は拡張子を宣言しないため、ドロップ／`--open` では `BookSourceFactory.make` の拡張子判定で
-`unsupportedFormat` になる(KaitoKit 自体は内容判定で開ける)。この振り分けと `ArchiveSource` のフォールバック経路は
-本対応では変更していない(フォールバック撤去は cooViewer-6lrc)。
+StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
+[PR 2 検証記録の付録](verification/2026-09-15-xadmaster-framework-removal.md#付録-stuffit-統合時の検証記録)へ移した。
 
 ## 4. リリース手順(2.0b14 まで検証済み)
 
@@ -438,10 +419,10 @@ entry だけ暗号化された書庫(2010 AES 等)はプロンプトが出る。
 |---|---|
 | SR 結果にタイル境界の帯・線 | GAN は平坦部のトーンがタイル毎に Δ1-2 階調揺れる。マージン捨てだけでは不十分で、フェザー合成+Bayer ディザ(MLSuperResolver.writeTile)を外さないこと |
 | Xcode コンソールに linkd / appintents のエラー | `Unable to get synchronousRemoteObjectProxy … com.apple.linkd.autoShortcut` 等は AppKit の App Intents 自動登録が **ad-hoc 署名の Debug ビルド**で弾かれる macOS 側のノイズ(XCTest 実行にも出る)。アプリのコードとは無関係で、Developer ID 署名の Release ビルドでは出ない(2026-08 監査: Release はエラー級・fault 級ともゼロ、stdout/stderr もゼロを確認)。アプリ自身のログは MediaSpeedProbe の Logger.info(ボリューム毎 1 回)のみ、という状態を保つ |
-| Xcode コンソールに `mdb_txn_commit error: MDB_MAP_FULL` | LMDB(メモリマップ DB)がマップ上限に達したという macOS 側サブシステム(Siri/知識・Spotlight ドネーション・AppIntents 系など)のノイズ。**cooViewer 本体も同梱フレームワーク(Sparkle/UniversalDetector/XADMaster)も LMDB を一切使わない**(2026-08 確認: 実行バイナリ・フレームワーク・リンク dylib に MDB 文字列ゼロ)ため、アプリの動作・保存データへの影響なし。上の linkd/appintents と同じ ad-hoc Debug ビルドのシステムノイズで、OS が自動で圧縮・再構成する。beads とも無関係(bd は Dolt=noms 方式で LMDB 非使用)。気になればコンソールで `MDB` を除外フィルタ |
+| Xcode コンソールに `mdb_txn_commit error: MDB_MAP_FULL` | LMDB(メモリマップ DB)がマップ上限に達したという macOS 側サブシステム(Siri/知識・Spotlight ドネーション・AppIntents 系など)のノイズ。**2026-08 の検証時点で cooViewer 本体・当時の同梱フレームワークは LMDB を一切使っていなかった**(2026-08 確認: 実行バイナリ・フレームワーク・リンク dylib に MDB 文字列ゼロ)ため、アプリの動作・保存データへの影響なし。上の linkd/appintents と同じ ad-hoc Debug ビルドのシステムノイズで、OS が自動で圧縮・再構成する。beads とも無関係(bd は Dolt=noms 方式で LMDB 非使用)。気になればコンソールで `MDB` を除外フィルタ |
 | `ReadPhotoshopImageResource: ERROR: Corrupt 8BIM data` で Xcode 実行が止まる | 開いた画像の埋め込み Photoshop メタデータ(APP13 の 8BIM リソースブロック)が壊れているときに **ImageIO(システム)**が出すログ。8BIM/Photoshop 参照は cooViewer のコードにもフレームワークにも無く、デコード経路は guard/throws で壊れたメタデータを無視して**画素は正常に復号**する(2026-08 確認: 壊れた 8BIM を仕込んだ JPEG を開いても exit 0・正常な描画・クラッシュ痕跡なし)。アプリはクラッシュしないので「実行が止まった」のは**デバッガ側の一時停止**——ImageIO がメタデータ解析中に内部で raise→catch する例外を Xcode の「All Exceptions / Objective-C Exceptions」ブレークポイントが拾っているのが典型。対処: ▶ Continue で再開できる。恒久的には Breakpoint Navigator(⌘8)の All Exceptions ブレークポイントを削除/無効化するか、例外種別を C++ のみに絞る(ImageIO のは Objective-C なので止まらなくなる)。※もし例外ブレークポイントではなく本当のクラッシュスタックで止まっているなら、その停止箇所(コールスタック)を控えて別途調査 |
 | CodeSign 失敗 / 起動が古いバイナリ / 保存状態が勝手に変わる | このプロジェクトは **legacy build location**(`BuildLocationStyle = UseTargetSettings`、成果物は DerivedData でなくプロジェクト直下 `build/Debug/cooViewer.app`)。**エージェントの `xcodebuild`/スナップショットと手元の Xcode ▶ Run は同じ `build/Debug` を書き換え・再署名する**ため同時に走らせると衝突する(実行中プロセスが .app を掴んで CodeSign が失敗、半分書きかけのバンドルを起動、等)。さらに両者は同じ bundle id `jp.coo.cooViewer` で UserDefaults・BookStates・キャッシュ・Keychain を共有し、**後勝ちでウインドウ位置や最終ページを上書き**し合う。回避: ビルド/実行を時間的にすみ分ける(エージェント作業中は Run を止める・Run 中はエージェントのビルドを控える)、作業前後に残プロセスを `pkill -f "cooViewer/build/Debug"`。完全分離が要るなら bundle id を変えたクローン(ウインドウ位置調査の隔離手法)を使う。※ソース編集は「すでに起動中」のプロセスには影響しないが、次に Run するとその時点の最新ソースから再ビルドされる(編集途中の中途半端な状態でビルドし得る) |
-| XADMaster が undefined symbol | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
+| KaitoKit / Washi framework のリンクエラー | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
 | 公証が Invalid | Sparkle 内部の再署名漏れ(sign-sparkle-nested.sh)か、素の Release ビルド |
 | 自動更新が来ない | appcast.xml の `length=` 不一致・資産名が `cooViewer-<ver>.zip` でない |
 | xcstrings が巨大 diff | 再シリアライズしてしまった。テキストブロック挿入だけに戻す |
