@@ -29,8 +29,8 @@ enum SupportedTypes {
     }
 
     /// 分割書庫の「続き」ボリュームか(先頭巻 .001 以外の番号系列)。
-    /// フォルダ統合では先頭巻だけを本として扱い、続き巻は XADMaster の
-    /// スパン処理に任せる(続き巻を別の本として数えない)
+    /// フォルダ統合では続き巻を別の本として数えず、KaitoKit の分割巻処理へ渡す。
+    /// .z01…zip、.r00/.partN、.001 系の兄弟探索は file 入口で行う(設計書 §2.4)。
     static func isSplitVolumeContinuation(_ ext: String) -> Bool {
         guard isSplitVolumeExtension(ext) else { return false }
         return ext != "001"

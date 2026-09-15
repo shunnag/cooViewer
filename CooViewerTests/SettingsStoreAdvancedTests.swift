@@ -6,19 +6,16 @@ import XCTest
 final class SettingsStoreAdvancedTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: SettingsStore!
-    private var originalXADZipLazyLocalHeaders = true
     private var originalKaitoZipLazyLocalHeaders = true
 
     override func setUp() {
         super.setUp()
-        originalXADZipLazyLocalHeaders = XADMasterEngine.defaultZipLazyLocalHeaders
         originalKaitoZipLazyLocalHeaders = KaitoKitEngine.defaultZipLazyLocalHeaders
         defaults = UserDefaults(suiteName: "advanced-test-\(UUID().uuidString)")!
         store = SettingsStore(defaults: defaults)
     }
 
     override func tearDown() {
-        XADMasterEngine.setDefaultZipLazyLocalHeaders(originalXADZipLazyLocalHeaders)
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(originalKaitoZipLazyLocalHeaders)
         store = nil
         defaults = nil
@@ -27,13 +24,11 @@ final class SettingsStoreAdvancedTests: XCTestCase {
 
     func testZipLazyLocalHeadersDefaultsToOnWhenUnset() {
         XCTAssertNil(defaults.object(forKey: "ZipLazyLocalHeaders"))
-        XADMasterEngine.setDefaultZipLazyLocalHeaders(false)
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(false)
 
         store.applyArchiveParserSettings()
 
         XCTAssertTrue(store.zipLazyLocalHeaders)
-        XCTAssertTrue(XADMasterEngine.defaultZipLazyLocalHeaders)
         XCTAssertTrue(KaitoKitEngine.defaultZipLazyLocalHeaders)
     }
 
@@ -41,44 +36,44 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         store.zipLazyLocalHeaders = false
 
         XCTAssertFalse(defaults.bool(forKey: "ZipLazyLocalHeaders"))
-        XCTAssertFalse(XADMasterEngine.defaultZipLazyLocalHeaders)
         XCTAssertFalse(KaitoKitEngine.defaultZipLazyLocalHeaders)
     }
 
     func testZipLazyLocalHeadersOnReachesParserClassDefault() {
-        XADMasterEngine.setDefaultZipLazyLocalHeaders(false)
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(false)
 
         store.zipLazyLocalHeaders = true
 
         XCTAssertTrue(defaults.bool(forKey: "ZipLazyLocalHeaders"))
-        XCTAssertTrue(XADMasterEngine.defaultZipLazyLocalHeaders)
         XCTAssertTrue(KaitoKitEngine.defaultZipLazyLocalHeaders)
     }
 
-    /// 書庫エンジンは KaitoKit 既定で文字列往復し、CLI 上書きは保存値を
-    /// 変更せず当該プロセスだけに効く(設計書 §2.4 段階的な置き換え)。
+    /// KaitoKit の文字列往復と、保存しない CLI 上書きの契約(設計書 §2.4)。
     func testArchiveEngineRoundTripAndRuntimeOverride() {
-        // registerDefaults で "kaitokit" が登録されるため object(forKey:) は nil にならない。
-        // 登録既定値が KaitoKit であることを確認する
-        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), ArchiveEngineKind.kaitokit.rawValue)
+        store.registerDefaults()
+        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), "kaitokit")
         XCTAssertEqual(store.archiveEngine, .kaitokit)
-        XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
-
-        store.archiveEngine = .xadmaster
-        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), "xadmaster")
-        XCTAssertEqual(store.archiveEngine, .xadmaster)
-        XCTAssertEqual(store.effectiveArchiveEngine, .xadmaster)
-
+        store.archiveEngine = .kaitokit
+        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), "kaitokit")
         store.overrideArchiveEngineForCurrentRun(.kaitokit)
         XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
-        XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), "xadmaster")
         store.overrideArchiveEngineForCurrentRun(nil)
-        XCTAssertEqual(store.effectiveArchiveEngine, .xadmaster)
+        XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
+    }
 
-        // 未知の保存値は KaitoKit へ落とす。
-        defaults.set("unknown", forKey: "ArchiveEngine")
-        XCTAssertEqual(store.archiveEngine, .kaitokit)
+    /// 旧版の保存値を解釈しても書き戻さず、旧版へ戻したときの選択を保つ。
+    func testLegacyAndUnknownArchiveEngineValuesRemainStored() {
+        for savedValue in ["xadmaster", "unknown"] {
+            defaults.set(savedValue, forKey: "ArchiveEngine")
+            XCTAssertEqual(store.archiveEngine, .kaitokit)
+            XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
+            store.overrideArchiveEngineForCurrentRun(.kaitokit)
+            XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
+            XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), savedValue)
+            store.overrideArchiveEngineForCurrentRun(nil)
+            XCTAssertEqual(store.effectiveArchiveEngine, .kaitokit)
+            XCTAssertEqual(defaults.string(forKey: "ArchiveEngine"), savedValue)
+        }
     }
 
     /// 表示モード(FitMode)と表紙単ページ(SpreadCoverSingle)の既定と往復

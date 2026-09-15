@@ -124,7 +124,7 @@ final class ArchiveSourceTests: XCTestCase {
 
     func testShiftJISEntryNamesAreAutoDetected() async throws {
         // UTF-8 フラグなしの DOS ホスト ZIP に Shift-JIS 名を入れると、
-        // XADMaster + UniversalDetector が自動判定する(仕様書 §4.17)
+        // KaitoKit が文字コードを自動判定する(仕様書 §4.17、設計書 §2.4)
         let png = TestFixtures.pngData(width: 2, height: 2)
         let sjis = { (s: String) in [UInt8](s.data(using: .shiftJIS)!) }
         let url = try writeZip(named: "sjis.zip", entries: [
@@ -139,10 +139,8 @@ final class ArchiveSourceTests: XCTestCase {
 
     func testUnflaggedUTF8Names() async throws {
         // UTF-8 フラグ(汎用ビット 11)を立てずに UTF-8 バイトの CJK 名を格納した ZIP。
-        // universalchardet は短い CJK 名を統計推定で外しやすいが、XADMaster フォークの
-        // 「確信 UTF-8」fast path(3 バイト以上の列を含む厳密妥当 UTF-8 は UTF-8 と確定。
-        // XADString.m IsDataConfidentlyUTF8)が正しく復号する。1 文字名・日中韓・4 バイトの
-        // 絵文字(サロゲート)まで含めて検証する
+        // KaitoKit の文字コード自動判定で、短い CJK 名も正しく復号することを確認する。
+        // 1 文字名・日中韓・4 バイトの絵文字まで含める(設計書 §2.4)。
         let png = TestFixtures.pngData(width: 2, height: 2)
         let u8 = { (s: String) in [UInt8](s.utf8) }
         let url = try writeZip(named: "utf8noflag.zip", entries: [

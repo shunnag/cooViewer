@@ -23,6 +23,13 @@ bd close <id>         # Complete work
 bd dolt push          # Push beads data to remote
 ```
 
+## 書庫エンジン(PR 1、bd cooViewer-6lrc)
+
+- 書庫の読み込み・名前の文字コード判定は KaitoKit のみ。エンジンの自動フォールバックは撤去済み。
+- mmap の open 失敗時は file 入口で一度再試行し、列挙失敗は unreadable とする。
+- XADMaster / UniversalDetector は PR 2 までビルド・同梱を継続するため、ライセンス関連の制約を維持する。
+- ビルド・設計・ライセンスの詳細は `CLAUDE.md` と `Documentation/development-guide.md` §3.6 を参照。
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.

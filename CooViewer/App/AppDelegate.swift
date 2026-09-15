@@ -1,4 +1,5 @@
 import AppKit
+import os
 import Sparkle
 import SwiftUI
 import Washi
@@ -507,13 +508,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// A/B 指定を UserDefaults へ保存せず、このプロセスで今後開く本だけに
+    /// 互換用の CLI 指定を UserDefaults へ保存せず、このプロセスで今後開く本だけに
     /// 適用する。起動時の文書イベントより先に固定する(設計書 §2.4)。
     private func applyArchiveEngineArgumentOverride() {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--engine"),
-              index + 1 < arguments.count,
-              let engine = ArchiveEngineKind(rawValue: arguments[index + 1]) else {
+              index + 1 < arguments.count else { return }
+        let name = arguments[index + 1]
+        guard let engine = ArchiveEngineKind(rawValue: name) else {
+            Logger(subsystem: "jp.coo.cooViewer", category: "ArchiveEngine").warning(
+                "Ignoring unsupported archive engine: \(name, privacy: .public); this version uses KaitoKit only")
             return
         }
         SettingsStore.shared.overrideArchiveEngineForCurrentRun(engine)
@@ -647,9 +651,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         readerWindowController?.openBook(at: URL(fileURLWithPath: path))
     }
 
-    /// Debug メニューから現在の書庫バックエンドとフォールバック履歴を表示する。
-    /// 実本比較中だけ必要な診断面で、通常 UI へ実装詳細を露出させない
-    /// (設計書 §2.4 段階的な置き換え)。
+    /// Debug メニューから現在の書庫エンジンと mmap→file 再試行履歴を表示する。
+    /// 読み込み調査用の診断面で、通常 UI へ実装詳細を露出させない
+    /// (設計書 §2.4)。
     @objc func showArchiveEngineStatus(_ sender: Any?) {
         let currentBook = readerWindowController?.book
         Task { @MainActor in
@@ -669,8 +673,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.informativeText = [
                 String(format: String(localized:
                     "Engine in use for the current book: %@"), engine),
-                String(format: String(localized: "Fallback count: %lld"),
-                       Int64(diagnostics.fallbackCount)),
+                String(format: String(localized: "Memory-map retries: %lld"),
+                       Int64(diagnostics.mmapRetryCount)),
                 String(format: String(localized: "Last error: %@"), error),
             ].joined(separator: "\n")
             alert.addButton(withTitle: String(localized: "OK"))

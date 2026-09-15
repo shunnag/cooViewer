@@ -33,15 +33,15 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 
 - A run-script phase builds XADMaster/UniversalDetector into `Frameworks/` (skipped while
   outputs exist). After updating the submodules, `rm -rf Frameworks` to force a rebuild.
-- **KaitoKit (since 9153ef2, 2026-09-08)**: a second archive engine, built from a sibling
+- **KaitoKit (since 9153ef2, 2026-09-08)**: the sole archive engine, built from a sibling
   checkout `../KaitoKit` (override with `KAITOKIT_SOURCE_DIR`) by
   `Scripts/build-kaitokit-framework.sh` into `Frameworks/KaitoKit.framework`. The checkout is
   **required** — the build fails without it (the repo is public at
   github.com/shunnag/KaitoKit, MIT). After editing KaitoKit
-  sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. The engine is selected
-  by the `ArchiveEngine` default (`kaitokit` since 2.0b34) or `--engine xadmaster` on the
-  snapshot CLI; see development-guide §3.6. XADMaster stays bundled as the automatic
-  fallback for archives KaitoKit cannot open.
+  sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. Archive loading and
+  filename encoding detection use KaitoKit only; see development-guide §3.6.
+  XADMaster / UniversalDetector frameworks are still built and embedded until PR 2 but
+  no longer referenced by the app or tests.
 - **Washi(EPUB 3 ツールキット)**: 兄弟チェックアウト `../Washi`
   (`WASHI_SOURCE_DIR` で上書き可)から `Scripts/build-washi-framework.sh` が
   `Frameworks/Washi.framework` を組み立てる。チェックアウトは**必須**で、
@@ -103,7 +103,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 ## Code conventions
 
 - Swift 6 language mode with strict concurrency; UI is `@MainActor`, sources that wrap
-  non-thread-safe libraries (XADArchive, PDFDocument) are actors.
+  non-thread-safe libraries (KaitoArchive, PDFDocument) are actors.
 - Comments in Japanese **only** (no English duplicates), citing the spec (`仕様書 §n`)
   or design doc (`設計書 §n`) for any behavior that mirrors or deliberately deviates
   from the legacy app. Prefer explaining *why* (spec, avoided bug, performance)
@@ -133,10 +133,10 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
 ## Architecture (new app)
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
-  `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit by default, automatic one-shot
-  fallback to XADMaster; filename encoding auto-detection is KaitoKit's own
-  `EncodingPolicy.automatic` (39 languages / 54 legacy code pages, no delegate override)
-  and only the XADMaster fallback still goes through UniversalDetector),
+  `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit only, no engine fallback;
+  filename encoding auto-detection uses KaitoKit's `EncodingPolicy.automatic`
+  (39 languages / 54 legacy code pages, no delegate override); failed memory-map opens
+  retry the file entrypoint once, while enumeration failures remain unreadable),
   `PDFSource` (actor over PDFKit, point-size rendering),
   `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
   extraction for single-image pages, WebKit rasterization fallback).
@@ -186,6 +186,8 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
 - `Scripts/build-frameworks.sh` — nested xcodebuild for the XADMaster submodule.
 
 ## Licensing constraints
+
+The XADMaster / UniversalDetector frameworks are scheduled for removal in PR 2.
 
 XADMaster and UniversalDetector are LGPL 2.1: keep them dynamically linked (embedded
 frameworks), keep the About-panel credits in `Credits.rtf` (the original libxad credit,

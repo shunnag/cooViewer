@@ -33,12 +33,12 @@ enum ArchiveAuditCommand {
             guard let folder = values["--audit-archives"], !folder.isEmpty else {
                 throw ArchiveAuditException.Failure(message: "--audit-archives <folder> が必要です")
             }
-            let names = (values["--audit-engines"] ?? "kaitokit,xadmaster")
+            let names = (values["--audit-engines"] ?? "kaitokit")
                 .split(separator: ",", omittingEmptySubsequences: false).map(String.init)
             let engines = names.compactMap(ArchiveEngineKind.init(rawValue:))
             guard !engines.isEmpty, engines.count == names.count,
                   Set(engines).count == engines.count else {
-                throw ArchiveAuditException.Failure(message: "--audit-engines は kaitokit,xadmaster から重複なしで指定してください")
+                throw ArchiveAuditException.Failure(message: "この版では KaitoKit のみ監査できます。--audit-engines kaitokit を指定してください")
             }
             guard let interval = Int(values["--audit-progress"] ?? "20"), interval > 0 else {
                 throw ArchiveAuditException.Failure(message: "--audit-progress は正の整数を指定してください")
@@ -71,8 +71,7 @@ enum ArchiveAuditCommand {
             defer { output.cleanUp() }
             let entries = try options.entriesOutput.map { try Output(destination: $0) }
             defer { entries?.cleanUp() }
-            try output.write(ArchiveAuditRecord.tsvHeader
-                + (options.engines.count == 2 ? "\tmatch" : "") + "\n")
+            try output.write(ArchiveAuditRecord.tsvHeader + "\n")
             try entries?.write(ArchiveAuditRecord.entriesTSVHeader + "\n")
             let summary = try ArchiveAudit().run(
                 root: options.root, engines: options.engines, includeHashes: options.includeHashes,
