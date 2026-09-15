@@ -5,7 +5,10 @@ import Foundation
 /// デコード済みページ画像の LRU キャッシュ(仕様書 §4.5.1 の cacheArray に相当)。
 /// 旧実装の「枚数基準(設定値+4)」を廃し、バイト基準で管理する
 /// (設計書「キャッシュ・先読み設計」)。メモリ圧迫通知で自動トリムする。
-actor PageCache {
+/// Book が単独所有するメモリ索引なので同じ MainActor に置く。
+/// 取得・失効・読み込み登録の間に await を挟まず、設定変更との競合を防ぐ(設計書 §7.3)。
+@MainActor
+final class PageCache {
     private var storage: [Int: CGImage] = [:]
     private var order: [Int] = []  // 末尾が最新(MRU)
     private var costs: [Int: Int] = [:]
@@ -22,7 +25,7 @@ actor PageCache {
         // 非 Sendable な setEventHandler に actor 隔離のクロージャを渡すと utility キューでの
         // 発火時に隔離アサートで SIGTRAP する。macOS 26.6 のクラッシュ)。
         source.setEventHandler { @Sendable [weak self] in
-            Task { await self?.trimToHalf() }
+            Task { @MainActor in self?.trimToHalf() }
         }
         source.activate()
     }

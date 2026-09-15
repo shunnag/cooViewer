@@ -178,10 +178,14 @@ extension ReaderWindowController {
     }
 
     /// 単ページ⇔見開きの強制切替(仕様書 §5.5 action 11、marks 更新)
-    func switchSingleSpread() {
-        guard let book else { return }
-        Task {
+    @discardableResult
+    func switchSingleSpread() -> Task<Void, Never>? {
+        guard let book else { return nil }
+        let checkpoint = book.navigationCheckpoint
+        return Task {
             let spread = await book.currentSpread()
+            guard book === self.book, book.isAtNavigationCheckpoint(checkpoint),
+                  !Task.isCancelled else { return }
             if spread.indices.count == 2 {
                 book.marks.setForcedSingle(spread.indices[0])
             } else if let first = spread.indices.first, first + 1 < book.pageCount {
@@ -315,9 +319,11 @@ extension ReaderWindowController {
     /// 表示中ページをゴミ箱へ。side は画面の左右(readMode で実ページに解決)。
     func trashDisplayedPage(leftSide: Bool) {
         guard let book else { return }
+        let checkpoint = book.navigationCheckpoint
         Task {
             let spread = await book.currentSpread()
-            guard !spread.indices.isEmpty else { return }
+            guard book === self.book, book.isAtNavigationCheckpoint(checkpoint),
+                  !spread.indices.isEmpty else { return }
             let index: Int
             if spread.indices.count == 2 {
                 // 読み順先頭ページは、右→左読みなら右側(§4.2.5)
@@ -335,7 +341,8 @@ extension ReaderWindowController {
                 localized: "Move \"\(fileURL.lastPathComponent)\" to Trash?")
             alert.addButton(withTitle: String(localized: "Move to Trash"))
             alert.addButton(withTitle: String(localized: "Cancel"))
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard alert.runModal() == .alertFirstButtonReturn,
+                  book === self.book, book.isAtNavigationCheckpoint(checkpoint) else { return }
             do {
                 try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
             } catch {
@@ -352,12 +359,14 @@ extension ReaderWindowController {
 
     func showInFinder(leftSide: Bool?) {
         guard let book else { return }
+        let checkpoint = book.navigationCheckpoint
         Task {
             let spread = await book.currentSpread()
+            guard book === self.book, book.isAtNavigationCheckpoint(checkpoint) else { return }
             // ページの実体ファイルを選択表示: 単体画像はその画像、
             // 書庫/PDF 内のページは書庫/PDF 本体(仕様書 §4.13)
             let url: URL
-            if let index = displayedIndex(in: spread, leftSide: leftSide) {
+            if let index = displayedIndex(in: spread, book: book, leftSide: leftSide) {
                 url = await book.source.containerFileURL(for: book.entries[index])
             } else {
                 url = book.source.url
@@ -371,8 +380,10 @@ extension ReaderWindowController {
     /// 「もう一方」が無いのでビープ)
     func showOtherPageInFinder() {
         guard let book else { return }
+        let checkpoint = book.navigationCheckpoint
         Task {
             let spread = await book.currentSpread()
+            guard book === self.book, book.isAtNavigationCheckpoint(checkpoint) else { return }
             guard spread.indices.count >= 2,
                   book.entries.indices.contains(spread.indices[1]) else {
                 NSSound.beep()
@@ -388,6 +399,8 @@ extension ReaderWindowController {
     /// 内容を現在ページで更新する)。見開き時は両ページ分を用意し、
     /// パネル上部のセグメントで左右を切り替える(既定は読み順の先頭)
     func showFileInfo() {
+        fileInfoGeneration &+= 1
+        let generation = fileInfoGeneration
         // リフロー EPUB は画像 Book を降ろしているため、Washi の現在
         // publication から直接構成する(cooViewer-oxr.37、設計書 §2.4)。
         if let publication = epubPublication, let url = epubBookURL {
@@ -396,8 +409,11 @@ extension ReaderWindowController {
             return
         }
         guard let book else { return }
+        let checkpoint = book.navigationCheckpoint
         Task {
             let spread = await book.currentSpread()
+            guard generation == fileInfoGeneration, book === self.book,
+                  book.isAtNavigationCheckpoint(checkpoint) else { return }
             let readingOrder = spread.indices.filter {
                 book.entries.indices.contains($0)
             }
@@ -412,7 +428,10 @@ extension ReaderWindowController {
             let sideLabels = ordered.count == 2
                 ? [String(localized: "Left Page"), String(localized: "Right Page")]
                 : [""]
+            // 以降の I/O 中にソートが変わっても全ページを同じ並びから収集する。
+            let entries = ordered.map { book.entries[$0] }
             let comicInfo = await book.comicInfo()  // 本メタデータ(4fi.5)
+            guard generation == fileInfoGeneration else { return }
             // FXL EPUB は EPUBSource が publication を保持する。各ページの
             // 情報へ出版物全体のメタデータを付ける(cooViewer-oxr.37、
             // 設計書 §2.4)。
@@ -421,9 +440,11 @@ extension ReaderWindowController {
             var pages: [FileInfoPage] = []
             for (position, index) in ordered.enumerated() {
                 pages.append(await fileInfoPage(
-                    for: index, in: book, sideLabel: sideLabels[position],
+                    for: entries[position], index: index, in: book,
+                    sideLabel: sideLabels[position],
                     comicInfo: comicInfo,
                     epubAccessibility: epubAccessibility))
+                guard generation == fileInfoGeneration else { return }
             }
             presentFileInfoPanel(pages: pages, initialIndex: initialPosition)
         }
@@ -453,12 +474,11 @@ extension ReaderWindowController {
     }
 
     /// 1 ページ分のファイル情報を収集する
-    private func fileInfoPage(for index: Int, in book: Book,
+    private func fileInfoPage(for entry: PageEntry, index: Int, in book: Book,
                               sideLabel: String,
                               comicInfo: ComicInfo?,
                               epubAccessibility: EPUBAccessibility?) async
         -> FileInfoPage {
-        let entry = book.entries[index]
         let containerURL = await book.source.containerFileURL(for: entry)
         let data = await book.source.imageData(for: entry)
         let fallback = data == nil ? await book.source.imageSize(for: entry) : nil
@@ -521,27 +541,34 @@ extension ReaderWindowController {
 
     func viewOriginal(leftSide: Bool?) {
         guard let book else { return }
+        let checkpoint = book.navigationCheckpoint
+        let reduction = settings.noiseReductionScope.includesOriginalSize
+            ? settings.noiseReductionLevel : .none
+        let relativePath = settings.showRelativePaths
         Task {
             let spread = await book.currentSpread()
-            guard let index = displayedIndex(in: spread, leftSide: leftSide),
-                  // 原寸表示は表示上限(displayPixelCap)を介さないフル解像度で
-                  var image = await book.fullResolutionImage(at: index) else { return }
+            guard book === self.book, book.isAtNavigationCheckpoint(checkpoint),
+                  let index = displayedIndex(in: spread, book: book, leftSide: leftSide)
+            else { return }
+            let entry = book.entries[index]
+            // 原寸画像とタイトルを同じ Entry に固定し、ソート後の index を読み直さない。
+            guard var image = try? await book.source.image(for: entry, maxPixelSize: nil)
+            else { return }
             // ML 高画質化(適用範囲が原寸表示を含むとき。全ページ対象)
-            if settings.noiseReductionScope.includesOriginalSize {
+            if reduction != .none {
                 image = await ImageResampler.shared.reduceNoise(
-                    image, level: settings.noiseReductionLevel)
+                    image, level: reduction)
             }
             presentOriginalSizePanel(
                 image: image,
-                title: book.entries[index].displayTitle(
-                    relativePath: settings.showRelativePaths))
+                title: entry.displayTitle(relativePath: relativePath))
         }
     }
 
-    private func displayedIndex(in spread: Book.Spread, leftSide: Bool?) -> Int? {
+    private func displayedIndex(in spread: Book.Spread, book: Book, leftSide: Bool?) -> Int? {
         guard let first = spread.indices.first else { return nil }
         guard spread.indices.count == 2, let leftSide else { return first }
-        let readsFromLeft = book?.readMode.readsFromLeft ?? false
+        let readsFromLeft = book.readMode.readsFromLeft
         return leftSide == readsFromLeft ? spread.indices[0] : spread.indices[1]
     }
 

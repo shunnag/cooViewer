@@ -38,19 +38,22 @@ struct PageMarks: Sendable, Equatable {
     }
 
     mutating func setForcedSingle(_ index: Int) {
+        guard index >= 0, index < Int.max else { return }
         raw.insert(String(index + 1))
         rebuildDerived()
     }
 
     mutating func setForcedPair(firstIndex: Int) {
+        guard firstIndex >= 0, firstIndex < Int.max - 1 else { return }
         raw.insert("\(firstIndex + 1)-\(firstIndex + 2)")
         rebuildDerived()
     }
 
     mutating func removeMark(containing index: Int) {
+        guard index >= 0, index < Int.max else { return }
         raw.remove(String(index + 1))
-        raw.remove("\(index + 1)-\(index + 2)")
-        raw.remove("\(index)-\(index + 1)")
+        if index < Int.max - 1 { raw.remove("\(index + 1)-\(index + 2)") }
+        if index > 0 { raw.remove("\(index)-\(index + 1)") }
         rebuildDerived()
     }
 
@@ -60,18 +63,21 @@ struct PageMarks: Sendable, Equatable {
     /// 強制ペアに含まれる index 一覧(0 始まり、両片)
     var forcedPairMemberIndices: [Int] { Array(pairMemberIndices) }
 
-    /// raw(1 始まり文字列)から Int 集合を組み直す。marks は高々数十個
+    /// raw(1 始まり文字列)から Int 集合を組み直す。旧実装の文字列照合と同じ
+    /// 正の標準表記・隣接ペアだけを解釈する。不正値も保存用 raw には保持する。
     private mutating func rebuildDerived() {
         singleIndices = []
         pairMemberIndices = []
         for mark in raw {
-            if let single = Int(mark) {
+            if let single = Int(mark), single > 0, String(single) == mark {
                 singleIndices.insert(single - 1)
                 continue
             }
-            let parts = mark.split(separator: "-")
+            let parts = mark.split(separator: "-", omittingEmptySubsequences: false)
             if parts.count == 2,
-               let first = Int(parts[0]), let second = Int(parts[1]) {
+               let first = Int(parts[0]), let second = Int(parts[1]),
+               first > 0, first < Int.max, second == first + 1,
+               String(first) == parts[0], String(second) == parts[1] {
                 pairMemberIndices.insert(first - 1)
                 pairMemberIndices.insert(second - 1)
             }

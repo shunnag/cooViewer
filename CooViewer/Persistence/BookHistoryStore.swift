@@ -351,10 +351,17 @@ final class BookHistoryStore {
                 normalize(resolved.path) == path else { continue }
             let oldPath = state.path
             state.path = path
-            try? FileManager.default.removeItem(at: file)
-            stateCache[oldPath] = nil
-            missCache.insert(oldPath)
-            writeState(state, forNormalizedPath: path)
+            // 新しい状態を永続化できてから旧ファイルを外す。先に削除すると、
+            // 書込不能・容量不足等で唯一のしおり/最終ページを失ってしまう。
+            if writeState(state, forNormalizedPath: path) {
+                try? FileManager.default.removeItem(at: file)
+                stateCache[oldPath] = nil
+                missCache.insert(oldPath)
+            } else {
+                // writeState は表示用キャッシュも更新する。失敗した再配置を
+                // キャッシュ命中にすると、復旧後も永続化を再試行できない。
+                stateCache[path] = nil
+            }
             // 最近の一覧も新しいパスへ付け替える(最終ページ復元の一覧内判定と
             // 「最近使った本」メニューが移動後も機能するように)
             let recents = loadRecents().map { entry in

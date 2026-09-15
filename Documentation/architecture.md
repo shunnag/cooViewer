@@ -65,6 +65,8 @@ LGPL 表記も PR 2 で撤去し、通常の clone に旧エンジンを含め�
 - `Scripts/build-washi-framework.sh`: 兄弟チェックアウト `../Washi` を使い `Frameworks/Washi.framework` を生成する(`WASHI_SOURCE_DIR` で変更可)。
 - `Scripts/fetch-sparkle.sh`: **Fetch Sparkle** フェーズから単独で呼び、バージョンと SHA-256 を固定した公式配布を取得する。出力は `Frameworks/Sparkle.framework/Versions/B/Sparkle`。
 - 3 framework をリンクし、**Embed & Sign** で同梱する。KaitoKit / Washi の Run Script は各スクリプトがソース・ツールチェーンの更新を判定する。Xcode の legacy build location と SwiftPM 参照が併用できないため、この方式を使う。
+- ソースのファイル名と内容の SHA-256 をスタンプへ含める。更新日時だけでは
+  見えない削除・復元も検出し、署名・配置の成功後にスタンプを確定する。
 
 ---
 
@@ -87,7 +89,7 @@ LGPL 表記も PR 2 で撤去し、通常の clone に旧エンジンを含め�
 - GoToLastPage 復元(0=確認/1=自動/2=無効、page==0 は復帰なし §7.3)、RecentItems/LastPages/BookSettings の互換移行(キー基数 0/1 始まりを厳守 §13.2)。
 - パスワード書庫(NSSecureTextField 化)、ゴミ箱(`trashItemAtURL` + 削除後のローダ再構築)、原寸表示、Finder 表示、ドラッグ&ドロップ。
 - フルスクリーン: ネイティブ全画面へ移行しつつ「上端ホバーでメニューバー」「カーソル 3 秒自動隠し」を再現(§3.3)。
-- 日英ローカライズ、About パネルの XAD クレジット表記(§14.2)。
+- 日英ローカライズ、About パネルの KaitoKit / Washi / Sparkle / ML モデルの第三者表記。
 
 ### 2.2 削除(§13.1 準拠)
 
@@ -379,7 +381,7 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
 ### 7.3 並行性
 
 - UI と Book は `@MainActor`。スレッド安全でないライブラリを包むソース
-  (XADArchive、PDFDocument)は actor で直列化する。
+  (KaitoKit、PDFDocument)は actor で直列化する。
 - 非同期の競合は**世代番号**で守るのが本アプリの定石:
   `openGeneration`(開くフローの連打)、`displayGeneration`(表示更新)、
   `resampleGeneration`(リサンプルの遅延書込)、`ThumbnailOverlayModel.presentationEpoch`
@@ -390,8 +392,27 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   EPUBScreenAtlas.measuring・`EPUBParseCoalescer`(同一 URL の EPUB 解析)の
   「単一飛行+合流」パターンを踏襲する(合流エントリの自己退去はタスク同一性/
   世代 ID で照合し、完了済みタスクへ後続要求が居座らないようにする)。
+- Book 専用の PageCache は MainActor 上で同期操作する。メモリ索引の照会・
+  読み込み登録・表示上限変更による失効を await で分断しないため。
+  デコードは従来どおり独立タスクで行い、完了時は登録世代を照合してから格納する。
+- Book の見開き取得は位置・並び・見開き条件の変更を検出したら再計算する。
+  後退・巻末移動・見開き再調整の待機中にジャンプや設定変更が入った場合は
+  旧操作を失効させる。同方向の後退どうしは新しい位置から再判定して両方を反映する。
+- 指追従のページカールは操作ごとのセッションが開始位置・着地点・準備 Task を持つ。
+  取消は後発操作がない場合だけ開始位置と表示枚数へ同期復元する。確定済みの
+  連続操作は前の着地点の表示枚数まで待ち、未確定の操作は次のジェスチャーで失効する。
+  旧本/旧操作の準備完了は新しいカール状態に触れない。オーバーレイの予約と
+  表示用の一回消費フラグは、リサンプルキャッシュ照会後の世代照合を通ってから渡す。
+- ルーペの画像取得も要求世代・Book 同一性・位置と表示世代を await 後に照合する。
+  ソース内でしか一意でないページ ID だけで別の本へ結果を差し込まない。
+  倍率・ノイズ低減・保護コンテンツの設定と PageEntry は要求中に固定する。
 - 読み取り I/O は SourceReadGate(メディア速度別の同時数)で絞る。
   ゲートは I/O だけを覆い、CPU デコードはゲート外で並列に行う。
+- 複雑な FXL EPUB の WebKit ラスタライズは専用の2枠を使い、レンダラの
+  保持も2個までに制限する。同じ出版物の要求は同じ枠へ合流し、別冊の枠を
+  待機ページで埋めない。使用中/待機中の要求があるレンダラは追い出さず、
+  空きができてからアイドルの LRU を入れ替える。破棄時はソースごとの所有者 ID を
+  外し、他ソースや進行中の描画が使わなくなってから `invalidate()` する。
 
 ### 7.4 エラーの扱い
 

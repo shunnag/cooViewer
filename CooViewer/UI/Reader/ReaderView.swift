@@ -229,6 +229,7 @@ final class ReaderView: NSView {
         // 強参照で保持されるため放置すると [weak self] の空撃ちが永久に続く
         // (deinit は nonisolated で Timer に触れないためここで畳む)
         if window == nil {
+            removeCurlOverlay()
             zoomSettleTimer?.invalidate()
             zoomSettleTimer = nil
             zoomSettleCompletion = nil
@@ -258,7 +259,7 @@ final class ReaderView: NSView {
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
                   preResampled: [(size: CGSize, image: CGImage)?] = [],
                   turn: PageTurn? = nil) {
-        // スワイプ追従カールの予約(refreshDisplay 前にコントローラが設定)。
+        // スワイプ追従カールの予約(表示確定直前にコントローラが設定)。
         // 自動再生の turn より優先する
         let interactive = pendingInteractiveCurl
         pendingInteractiveCurl = nil
@@ -387,6 +388,7 @@ final class ReaderView: NSView {
     }
 
     func removeCurlOverlay() {
+        curlRewindGeneration &+= 1
         curlScrubTimer?.invalidate()
         curlScrubTimer = nil
         curlOverlay?.removeFromSuperlayer()
@@ -401,6 +403,7 @@ final class ReaderView: NSView {
     var pendingInteractiveCurl: (oldContent: CGImage, forward: Bool)?
     private var interactiveCurlDuration: CFTimeInterval = 0.45
     private var curlScrubTimer: Timer?
+    private var curlRewindGeneration = 0
 
     /// スワイプ追従カールが有効か(オーバーレイが停止状態で存在する)
     var hasInteractiveCurl: Bool {
@@ -446,8 +449,8 @@ final class ReaderView: NSView {
         }
     }
 
-    /// 指を離した後、巻き戻して取りやめる。巻き戻し完了時に completion
-    /// (呼び出し側がモデルを元のページへ戻し、その再表示でオーバーレイが畳まれる)
+    /// 指を離した後、巻き戻して取りやめる。モデルは呼び出し側で復元済み。
+    /// 同じオーバーレイの巻き戻しが完了したときだけ、再表示を依頼する。
     func cancelInteractiveCurl(completion: @escaping @MainActor () -> Void) {
         guard let overlay = curlOverlay, overlay.speed == 0,
               overlay.timeOffset > 0.01 else {
@@ -455,26 +458,29 @@ final class ReaderView: NSView {
             return
         }
         curlScrubTimer?.invalidate()
+        curlRewindGeneration &+= 1
+        let generation = curlRewindGeneration
+        let overlayID = ObjectIdentifier(overlay)
         let start = overlay.timeOffset
         let rewindDuration = 0.05 + 0.15 * start / interactiveCurlDuration
         let startTime = CACurrentMediaTime()
         curlScrubTimer = Timer.scheduledTimer(
             withTimeInterval: 1.0 / 120, repeats: true
-        ) { [weak self] _ in
+        ) { [weak self] timer in
+            guard self != nil else {
+                timer.invalidate()
+                return
+            }
             Task { @MainActor in
-                guard let self else { return }
-                // オーバーレイが差し替え等で消えていたら巻き戻しをやめる。ただし
-                // completion は必ず呼ぶ — モデルは呼び出し側が即時に巻き戻し済みで、
-                // completion は表示更新のみ(冪等)。呼ばないと中断時に再描画が抜け、
-                // 表示が巻き戻し前のまま残りうる(cooViewer-uwq)
-                guard let overlay = self.curlOverlay, overlay.speed == 0 else {
-                    self.curlScrubTimer?.invalidate()
-                    self.curlScrubTimer = nil
-                    completion()
-                    return
-                }
+                // Timer の無効化前に積まれた Task は後から届く。新しい
+                // 巻き戻し/オーバーレイの進行度やタイマーへ触れさせない。
+                guard let self, let overlay = self.curlOverlay,
+                      ObjectIdentifier(overlay) == overlayID,
+                      self.curlRewindGeneration == generation,
+                      overlay.speed == 0 else { return }
                 let progress = (CACurrentMediaTime() - startTime) / rewindDuration
                 if progress >= 1 {
+                    self.curlRewindGeneration &+= 1
                     self.curlScrubTimer?.invalidate()
                     self.curlScrubTimer = nil
                     overlay.timeOffset = 0

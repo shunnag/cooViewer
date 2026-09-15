@@ -20,6 +20,8 @@ actor EPUBSource: BookSource {
     nonisolated let publication: EPUBPublication
     nonisolated var supportsDateSort: Bool { false }
     nonisolated var supportsParallelPageLoads: Bool { true }
+    /// 同じ publication を別ソースと共有しても、破棄通知は自分の所有分だけを外す。
+    nonisolated private let rasterizerOwnerID = UUID()
 
     /// spine index → 解析済みページ情報のキャッシュ
     private var pageInfoCache: [Int: FixedLayoutPageInfo] = [:]
@@ -30,7 +32,8 @@ actor EPUBSource: BookSource {
         // ラスタライザプールの強参照を切る(cooViewer-o6e)。ObjectIdentifier は
         // Sendable なのでアクタ外の deinit から MainActor へ渡せる
         let key = ObjectIdentifier(publication)
-        Task { @MainActor in FXLRasterizerPool.release(key) }
+        let owner = rasterizerOwnerID
+        Task { @MainActor in FXLRasterizerPool.release(key, owner: owner) }
     }
 
     init(url: URL) throws {
@@ -124,6 +127,8 @@ actor EPUBSource: BookSource {
     }
 
     nonisolated func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        // ゲート待機中もソースの所有権を保ち、登録前に破棄通知が先行しないようにする。
+        defer { withExtendedLifetime(self) {} }
         try Task.checkCancellation()
         guard let info = await pageInfo(at: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
@@ -134,7 +139,7 @@ actor EPUBSource: BookSource {
         }
         // 複雑ページ(テキスト・SVG 合成)は WebKit でラスタライズ
         return try await FXLRasterizerPool.render(
-            publication: publication, spineIndex: entry.id,
+            publication: publication, owner: rasterizerOwnerID, spineIndex: entry.id,
             maxPixelSize: maxPixelSize)
     }
 
@@ -211,38 +216,104 @@ extension ComicInfo {
 }
 
 /// 複雑 FXL ページ用ラスタライザの MainActor プール。
-/// WKWebView を抱えるため、直近の本以外は捨てて溜め込まない
+/// WKWebView を抱えるため、保持・同時描画は2個まで。使用中は追い出さず、
+/// 新しい本は空きを待ってからアイドルの最も古いものを入れ替える。
 /// 参照を捨てるだけでは Washi の破棄契約を満たさないため、削除前に必ず
 /// invalidate() を呼び、不可視の NSWindow と WebContent プロセスを畳む(cooViewer-oxr.43)。
 @MainActor
 private enum FXLRasterizerPool {
-    private static var rasterizers: [ObjectIdentifier: EPUBPageRasterizer] = [:]
+    private final class Entry {
+        let rasterizer: EPUBPageRasterizer
+        var owners: Set<UUID> = []
+        /// Washi 内で順番待ちしている要求も含む。この間は追い出せない。
+        var active = 0
+
+        init(rasterizer: EPUBPageRasterizer) { self.rasterizer = rasterizer }
+    }
+    private static let capacity = 2
+    private static let gate = SourceReadGate(limit: capacity)
+    private static var rasterizers: [ObjectIdentifier: Entry] = [:]
+    private static var order: [ObjectIdentifier] = []  // 末尾が最後に利用された本
 
     /// ソース破棄時にラスタライザ(publication を強参照)を捨てる。in-memory で
     /// 開いた復号済み EPUB(暗号化祖先下、最大 256MiB)が書庫の寿命を越えて
     /// 常駐しないようにする(cooViewer-o6e)
-    static func release(_ key: ObjectIdentifier) {
-        rasterizers[key]?.invalidate()
-        rasterizers[key] = nil
+    static func release(_ key: ObjectIdentifier, owner: UUID) {
+        guard let entry = rasterizers[key], entry.owners.remove(owner) != nil else { return }
+        if entry.owners.isEmpty, entry.active == 0 { remove(key) }
     }
 
-    static func render(publication: EPUBPublication, spineIndex: Int,
+    static func render(publication: EPUBPublication, owner: UUID, spineIndex: Int,
                        maxPixelSize: Int?) async throws -> CGImage {
+        try Task.checkCancellation()
         let key = ObjectIdentifier(publication)
-        let rasterizer: EPUBPageRasterizer
-        if let existing = rasterizers[key] {
-            rasterizer = existing
-        } else {
-            if rasterizers.count >= 2 {
-                for rasterizer in rasterizers.values {
-                    rasterizer.invalidate()
-                }
-                rasterizers.removeAll()
-            }
-            rasterizer = EPUBPageRasterizer(publication: publication)
-            rasterizers[key] = rasterizer
+        let entry = try await acquire(publication: publication, owner: owner)
+        do {
+            try Task.checkCancellation()
+            let image = try await entry.rasterizer.renderPage(atSpineIndex: spineIndex,
+                                                              maxPixelSize: maxPixelSize)
+            await finishRender(key, entry: entry)
+            return image
+        } catch {
+            await finishRender(key, entry: entry)
+            throw error
         }
-        return try await rasterizer.renderPage(atSpineIndex: spineIndex,
-                                               maxPixelSize: maxPixelSize)
+    }
+
+    private static func acquire(publication: EPUBPublication, owner: UUID) async throws -> Entry {
+        let key = ObjectIdentifier(publication)
+        // 同じ本の FIFO は Washi が担う。要求ごとに枠を取ると、1冊の待機
+        // ページが2枠とも塞ぎ、別冊用のアイドル WebView を活かせなくなる。
+        if let entry = rasterizers[key], entry.active > 0 {
+            pin(key, entry: entry, owner: owner)
+            return entry
+        }
+        // レンダラをアイドルから使用中にする間だけ1枠。表示要求は先読みより
+        // 先に許可する(SourceReadGate と共通の2レーン)。
+        await gate.acquire()
+        if Task.isCancelled {
+            await gate.release()
+            throw CancellationError()
+        }
+        if let entry = rasterizers[key] {
+            // ゲート待機中に同じ本が稼働を始めたなら、その枠へ合流する。
+            let alreadyActive = entry.active > 0
+            pin(key, entry: entry, owner: owner)
+            if alreadyActive { await gate.release() }
+            return entry
+        }
+        if rasterizers.count >= capacity,
+           let idle = order.first(where: { rasterizers[$0]?.active == 0 }) {
+            remove(idle)
+        }
+        // 許可は2枠。自分はまだ未登録なので、他の使用中レンダラは高々1個。
+        // 保持上限に達していれば必ずアイドルを1個以上選べる。
+        assert(rasterizers.count < capacity)
+        let entry = Entry(rasterizer: EPUBPageRasterizer(publication: publication))
+        rasterizers[key] = entry
+        pin(key, entry: entry, owner: owner)
+        return entry
+    }
+
+    private static func pin(_ key: ObjectIdentifier, entry: Entry, owner: UUID) {
+        entry.owners.insert(owner)
+        entry.active += 1
+        order.removeAll { $0 == key }
+        order.append(key)
+    }
+
+    private static func finishRender(_ key: ObjectIdentifier, entry: Entry) async {
+        entry.active -= 1
+        guard entry.active == 0 else { return }
+        if entry.owners.isEmpty { remove(key) }
+        // 成功・失敗・取消のどれでも、最後の利用が終わってから枠を解放する。
+        await gate.release()
+    }
+
+    private static func remove(_ key: ObjectIdentifier) {
+        guard let entry = rasterizers.removeValue(forKey: key) else { return }
+        assert(entry.active == 0)
+        entry.rasterizer.invalidate()
+        order.removeAll { $0 == key }
     }
 }
