@@ -107,6 +107,7 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 
 | 変更 | 内容 |
 |---|---|
+| 書庫監査 CLI | 旧実装には無い新規。`--audit-archives` で GUI・フォールバック・パスワード保管庫を介さず各エンジンの open・名前・任意の内容 SHA-256 を直列に比較する。入口は `ArchiveSource.shouldMemoryMap` に従う。結果を相対パスの TSV として保存し、ディレクトリ名末尾の区切りだけ比較時に正規化する。実行手順・失敗分類は development-guide §2.1。監査コアは同期処理内にエンジンを閉じ込め、書庫単位で記録を出力する |
 | 設定ウインドウ | Cancel 全ロールバック(§6.3)→ **即時反映**(SwiftUI Settings 標準)。「デフォルトに戻す」は「高度」タブの高度な設定に対して提供 |
 | フルスクリーン | 疑似(hidesOnDeactivate)→ ネイティブ。esc で解除、3 勘所(§13.2)は再現 |
 | マウスクリックのモード解決 | fitScreenMode 3 のとき Mode2 参照(§5.3)→ キーと同じ Mode3 参照に統一 |

@@ -178,8 +178,8 @@ actor PasswordVault {
         let key: SymmetricKey
         if let injectedKey {
             key = injectedKey
-        } else if AutomatedRun.isXCTest || AutomatedRun.isSnapshot {
-            // テスト・スナップショット検証では Keychain に一切触れない
+        } else if AutomatedRun.isXCTest || AutomatedRun.isSnapshot || AutomatedRun.isArchiveAudit {
+            // テスト・スナップショット検証・書庫監査では Keychain に一切触れない
             // (検証は COOVIEWER_TEST_VAULT_KEY の注入鍵で行う)
             return .unavailable
         } else if let loaded = VaultKeyStore.loadOrCreateKey() {
