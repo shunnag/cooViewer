@@ -227,7 +227,7 @@ actor ArchiveSource: BookSource {
         // cooViewer-01h)。sourceData に載せることで展開プールも同じマップを共有し
         // 再オープンの I/O も消える。マップ中の切り詰めは SIGBUS になり得る残余
         // リスク(mappedIfSafe+ローカル限定が緩和策。エントリ数一致検証は従来通り)。
-        // 失敗時(マップ不可・パース不能)は従来のファイル経路へ黙って戻す
+        // マップ不可ならファイル経路を使い、解析不能なら診断を記録して一度再試行する
         let opened = try Self.open(
             url: url, nestingDepth: nestingDepth,
             preferredEngine: preferredEngine, factory: engineFactory)
@@ -391,9 +391,12 @@ actor ArchiveSource: BookSource {
                 archive = try open(data: mappedData, kind: kind, factory: factory)
                 retainedData = mappedData
             } catch {
-                // XADMaster の従来動作だけは mmap 解析不能時に file: へ戻す。
-                // KaitoKit の失敗は比較結果として記録して XADMaster へ退避する。
-                guard kind == .xadmaster else { throw error }
+                // エンジンに関係なく mmap の解析失敗だけを file: で一度再試行する。
+                // 列挙はこの catch の外で行い、列挙失敗では再試行しない(設計書 §2.4)。
+                let message = "\(url.path): \(String(describing: error))"
+                ArchiveEngineDiagnostics.recordRetry(message: message)
+                logger.info(
+                    "\(kind.displayName, privacy: .public) mmap open failed; retrying file once: \(message, privacy: .public)")
                 archive = try open(file: url.path, kind: kind, factory: factory)
                 retainedData = nil
             }

@@ -153,15 +153,25 @@ struct ArchiveEngineFactory: Sendable {
 enum ArchiveEngineDiagnostics {
     struct Snapshot: Sendable, Equatable {
         let fallbackCount: Int
+        let mmapRetryCount: Int
         let lastError: String?
     }
 
     private struct State {
         var fallbackCount = 0
+        var mmapRetryCount = 0
         var lastError: String?
     }
 
     private static let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// mmap の解析失敗から file 入口を再試行した回数と理由を記録する。
+    static func recordRetry(message: String) {
+        state.withLock {
+            $0.mmapRetryCount += 1
+            $0.lastError = message
+        }
+    }
 
     static func recordFallback(_ error: Error) {
         recordFallback(message: String(describing: error))
@@ -176,7 +186,8 @@ enum ArchiveEngineDiagnostics {
 
     static func snapshot() -> Snapshot {
         state.withLock {
-            Snapshot(fallbackCount: $0.fallbackCount, lastError: $0.lastError)
+            Snapshot(fallbackCount: $0.fallbackCount, mmapRetryCount: $0.mmapRetryCount,
+                     lastError: $0.lastError)
         }
     }
 
