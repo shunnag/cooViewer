@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import XCTest
 @testable import cooViewer
 
@@ -212,6 +213,78 @@ final class ArchiveEngineTests: XCTestCase {
         try await assertFallbackWorks(for: fixture, factory: factory)
     }
 
+    /// mmap 解析不能なら、同じエンジンの file 入口で一度だけ救済する(設計書 §2.4)。
+    func testMappedDataNilOpenRetriesFileOnce() async throws {
+        try await assertMappedOpenRetriesFile(throwsOnData: false)
+    }
+
+    func testMappedDataThrownOpenRetriesFileOnce() async throws {
+        try await assertMappedOpenRetriesFile(throwsOnData: true)
+    }
+
+    /// 両入口が失敗した書庫は、既存の黒画面経路へ渡す。
+    func testMappedDataAndFileOpenFailuresAreUnreadable() throws {
+        let fixture = try makeCBZFixture()
+        try XCTSkipUnless(ArchiveSource.shouldMemoryMap(url: fixture), "mmap 対象のローカルボリュームが必要")
+        for throwsOnOpen in [false, true] {
+            let factory = ArchiveEngineFactory(
+                openFile: { _, _ in
+                    if throwsOnOpen { throw StubOpenError.rejected }
+                    return nil
+                },
+                openData: { _, _ in
+                    if throwsOnOpen { throw StubOpenError.rejected }
+                    return nil
+                })
+            XCTAssertThrowsError(try ArchiveSource(
+                url: fixture, preferredEngine: .kaitokit, engineFactory: factory)) { error in
+                guard case BookSourceError.unreadable(let url) = error else {
+                    return XCTFail("unreadable が必要: \(error)")
+                }
+                XCTAssertEqual(url, fixture)
+            }
+        }
+    }
+
+    private func assertMappedOpenRetriesFile(throwsOnData: Bool) async throws {
+        // 入口の再試行を単独で検証するため、型データベース不要の画像拡張子を使う。
+        // 内容は PNG のままで、デコーダはマジックから形式を判別する。
+        let fixture = try makeCBZFixture(imageExtension: "avifs")
+        try XCTSkipUnless(ArchiveSource.shouldMemoryMap(url: fixture), "mmap 対象のローカルボリュームが必要")
+        for kind in ArchiveEngineKind.allCases {
+            ArchiveEngineDiagnostics.resetForTesting()
+            let routes = OSAllocatedUnfairLock(initialState: [String]())
+            let factory = ArchiveEngineFactory(
+                openFile: { actualKind, path in
+                    XCTAssertEqual(actualKind, kind)
+                    routes.withLock { $0.append("file") }
+                    return try ArchiveEngineFactory.live.openFile(actualKind, path)
+                },
+                openData: { actualKind, _ in
+                    XCTAssertEqual(actualKind, kind)
+                    routes.withLock { $0.append("data") }
+                    if throwsOnData { throw StubOpenError.rejected }
+                    return nil
+                })
+            let source = try ArchiveSource(
+                url: fixture, preferredEngine: kind, engineFactory: factory)
+            XCTAssertEqual(source.archiveEngineKind, kind)
+            let entries = try await source.entries()
+            XCTAssertEqual(entries.count, 2)
+            let isMemoryMapped = await source.isMemoryMapped
+            XCTAssertFalse(isMemoryMapped, "file 再試行後は sourceData を保持しない")
+            XCTAssertEqual(routes.withLock { $0 }, ["data", "file"])
+            let diagnostics = ArchiveEngineDiagnostics.snapshot()
+            XCTAssertEqual(diagnostics.mmapRetryCount, 1)
+            XCTAssertTrue(diagnostics.lastError?.contains(kind.displayName) == true)
+
+            // 再試行後の展開係も file 入口を使い、失敗した data 入口へ戻らない。
+            let image = try await source.image(for: XCTUnwrap(entries.first), maxPixelSize: nil)
+            XCTAssertEqual(image.width, 3)
+            XCTAssertEqual(routes.withLock { $0 }, ["data", "file", "file"])
+        }
+    }
+
     /// KaitoKit が報告する 7z folder の solidGroup を ArchiveSource の純粋な
     /// 並列粒度判定へ通し、独立・単一 solid・分割 solid を識別する(cooViewer-7ni)。
     func testKaitoKitSolidGroupsDriveParallelMode() async throws {
@@ -264,11 +337,11 @@ final class ArchiveEngineTests: XCTestCase {
         ]
     }
 
-    private func makeCBZFixture() throws -> URL {
+    private func makeCBZFixture(imageExtension: String = "png") throws -> URL {
         let url = tempDir.appendingPathComponent("contract.cbz")
         let data = TestFixtures.storedZip(entries: [
-            (Array("cover.png".utf8), TestFixtures.pngData(width: 3, height: 5)),
-            (Array("pages/002.png".utf8), TestFixtures.pngData(
+            (Array("cover.\(imageExtension)".utf8), TestFixtures.pngData(width: 3, height: 5)),
+            (Array("pages/002.\(imageExtension)".utf8), TestFixtures.pngData(
                 width: 4, height: 6, red: 0.2, green: 0.4, blue: 0.8)),
         ])
         try data.write(to: url)
