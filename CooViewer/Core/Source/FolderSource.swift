@@ -89,7 +89,7 @@ final class FolderSource: BookSource {
         for fileURL in fileURLs {
             let isImage = SupportedTypes.isImageFile(fileURL.lastPathComponent)
             // 分割書庫の続き巻(.002/.r00 等)は候補にしない(先頭巻から
-            // XADMaster がスパンする。続き巻を別の本として数えない)
+            // KaitoKit が .z01…zip、.r00/.partN、.001 系の分割巻を処理する。設計書 §2.4)
             let isBook = SupportedTypes.isBookFile(fileURL)
                 && !SupportedTypes.isSplitVolumeContinuation(
                     fileURL.pathExtension.lowercased())

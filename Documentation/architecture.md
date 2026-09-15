@@ -26,7 +26,7 @@
 | 読書ビュー | **AppKit カスタム NSView(layer-backed、CALayer 合成)** | ページ配置計算・スクロール端判定・カーソル管理・ルーペ等(§3-5)はピクセル単位の制御が必要。旧 BufferingMode=New の「ビュー側 2 枚並置描画」(§13.1)を踏襲 |
 | 補助 UI | **SwiftUI**(設定・サムネイル・しおり編集) | フォーム/グリッド UI は SwiftUI が最も読みやすく、Tahoe の Liquid Glass 外観が自動で得られる |
 | PDF | **PDFKit**(ページ毎独立レンダリング) | 旧 COPDFImageRep の共有 rep+setCurrentPage はスレッド不安全(§4.14)。白背景・ポイント原寸の描画特性は維持 |
-| 書庫 | **XADMaster + UniversalDetector(サブモジュール継続、LGPL 2.1)** → 2.0b34 以降は **KaitoKit(MIT)が既定**で、XADMaster は一度限りのフォールバック。ファイル名エンコーディング判定も KaitoKit 自身が行う(2026-09-15、39 言語・54 候補)。UniversalDetector はフォールバック時のみ | rar/rar5/7z 対応とファイル名エンコーディング自動判定(§4.17)は本アプリの生命線。libarchive 案(ヘッダ非公開・エンコーディング検出なし)、ZIPFoundation 案(zip のみ)は機能後退のため却下。modulemap 付き .framework のため Swift から直接 `import XADMaster` 可能(確認済み) |
+| 書庫 | **KaitoKit 単独**。XADMaster + UniversalDetector の利用と自動フォールバックは撤去済み(framework の除去は PR 2)。ファイル名判定は `EncodingPolicy.automatic` | rar/rar5/7z 対応とファイル名エンコーディング自動判定(§4.17)を維持する。libarchive 案(ヘッダ非公開・エンコーディング検出なし)、ZIPFoundation 案(zip のみ)は機能後退のため却下 |
 | ローカライズ | **String Catalog(.xcstrings)**、ja/en | 旧 Localizable.strings 6 世代連結(§10.1)はユニーク 136 キーへ正規化 |
 | テスト | **XCTest ユニットテストターゲットを新設** | 旧アプリにはテストが皆無。ロジック層(ソート・合成判定・バインディング解決・移行)を重点的にテストする。「正しく動作」最優先の担保 |
 
@@ -58,7 +58,10 @@
 - 孤児ファイル(COImageLoader_temp.m、info copy.plist、MainMenu~.nib、Controller.m_1.xcclassmodel、up.tiff 等 §11.4)は legacy/ にも持ち込まず削除。
 - アイコン(icon.icns、coo_*.icns)・Credits.rtf・ライセンス文書は新アプリへ引き継ぐ。
 
-### 1.4 XADMaster のビルド統合
+### 1.4 書庫エンジンと旧 framework のビルド統合
+
+書庫エンジンは KaitoKit 単独。XADMaster / UniversalDetector のアプリ・テストからの利用は
+撤去済み(framework の除去は PR 2)。以下のビルド・リンク・同梱設定とライセンス資産は PR 2 まで維持する。
 
 - `Scripts/build-frameworks.sh`: XADMaster の xcodeproj を `xcodebuild -scheme XADMaster -configuration Release ARCHS=arm64` でビルドし `Frameworks/` へ配置。**成果物が新しければスキップ**(旧実装の毎回 clean build §11.2 を排除)。
 - 新ターゲットの Run Script phase(input/output 宣言付き)から呼び、`Frameworks/XADMaster.framework` と `UniversalDetector.framework` をリンク+**Embed & Sign**(LGPL 2.1 の差し替え可能性要件を動的リンクで充足 §14)。
@@ -107,7 +110,8 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 
 | 変更 | 内容 |
 |---|---|
-| 書庫監査 CLI | 旧実装には無い新規。`--audit-archives` で GUI・フォールバック・パスワード保管庫を介さず各エンジンの open・名前・任意の内容 SHA-256 を直列に比較する。入口は `ArchiveSource.shouldMemoryMap` に従う。結果を相対パスの TSV として保存し、ディレクトリ名末尾の区切りだけ比較時に正規化する。実行手順・失敗分類は development-guide §2.1。監査コアは同期処理内にエンジンを閉じ込め、書庫単位で記録を出力する |
+| 書庫エンジン | XADMaster + UniversalDetector → KaitoKit 単独。自動フォールバック撤去、文字コード判定は KaitoKit の `EncodingPolicy.automatic`(bd cooViewer-6lrc)。mmap の open が失敗したら file 入口で一度再試行し診断へ記録する。列挙失敗は unreadable、名前 nil のエントリはログ付きで除外して残りを表示する。旧設定値は書き戻さず KaitoKit へ写像し、旧 `--engine` 引数は警告して無視する。framework の除去は PR 2 |
+| 書庫監査 CLI | 旧実装には無い新規。`--audit-archives` で GUI・フォールバック・パスワード保管庫を介さず KaitoKit の open・名前・任意の内容 SHA-256 を直列に記録する。入口は `ArchiveSource.shouldMemoryMap` に従う。結果を相対パスの TSV として保存し、ディレクトリ名末尾の区切りだけ比較時に正規化する。TSV は単一エンジン行のみで `match` 列は持たず、過去の TSV との比較は `Scripts/audit-compare.py` を使う。実行手順・失敗分類は development-guide §2.1。監査コアは同期処理内にエンジンを閉じ込め、書庫単位で記録を出力する |
 | 設定ウインドウ | Cancel 全ロールバック(§6.3)→ **即時反映**(SwiftUI Settings 標準)。「デフォルトに戻す」は「高度」タブの高度な設定に対して提供 |
 | フルスクリーン | 疑似(hidesOnDeactivate)→ ネイティブ。esc で解除、3 勘所(§13.2)は再現 |
 | マウスクリックのモード解決 | fitScreenMode 3 のとき Mode2 参照(§5.3)→ キーと同じ Mode3 参照に統一 |
@@ -164,7 +168,7 @@ CooViewer/
 │   ├── Source/
 │   │   ├── BookSource.swift        — プロトコル+既定実装+BookSourceFactory
 │   │   ├── FolderSource.swift      — 不変・並列。フォルダ走査(readSubFolder §4.1)
-│   │   ├── ArchiveSource.swift     — actor。XADMaster ラッパ+ローカルスプール+
+│   │   ├── ArchiveSource.swift     — actor。KaitoKit ラッパ+ローカルスプール+
 │   │   │                             書庫内書庫/PDF のネスト統合(§5)
 │   │   ├── PDFSource.swift         — actor。PDFKit(ページ毎独立レンダリング+
 │   │   │                             レンダラープールで並列化)
@@ -260,7 +264,7 @@ Icon Composer の AppIcon.icon。
   冪等で、表示経路は先読み結果に依存しない)。表示の一貫性は
   ReaderWindowController の世代番号(displayGeneration)で守る。
   NSLock+ビジーウェイト+threadStop は持ち込まない。
-- 書庫展開(XADMaster)は ObjC 同期 API のため、専用 actor(`ArchiveSource` 内)で直列化。solid rar の逐次展開特性を前提にシーケンシャルな先読みを優先する(§13.4)。
+- 書庫展開(KaitoKit)は非スレッド安全な同期 API のため、専用 actor(`ArchiveSource` 内)で直列化。solid rar の逐次展開特性を前提にシーケンシャルな先読みを優先する(§13.4)。
 
 ### 3.2 描画設計(旧 §4.9-4.11 の置換)
 
@@ -341,7 +345,7 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
 | リスク | 対策 |
 |---|---|
 | 入力バインディング移行の取りこぼし(6 配列×modifier 符号化) | 旧スキーマの実データ(§5.7 既定+§7.6 の各版追記)をフィクスチャにした移行ユニットテストを先に書く |
-| XADMaster の Swift 連携で未知の穴(例外・スレッド) | ArchiveSource actor で直列化+ObjC 例外を NSException キャッチのブリッジで吸収 |
+| 書庫エンジンの失敗・スレッド安全性 | ArchiveSource actor で KaitoKit を直列化し、open・列挙の失敗は unreadable へ変換する。監査は例外境界と段階別の失敗分類を維持 |
 | 見開き合成・ナビゲーションのエッジケース(§4.2-4.3 の複雑な相互作用) | PageLayout/Navigator を純粋ロジックとして切り出しテーブル駆動テスト |
 | 「Tahoe らしさ」と挙動互換の衝突(全画面・設定即時反映) | §2.4 の仕様変更表で明示管理。迷ったら挙動互換を優先 |
 | 旧 NSArchiver データ(色/フォント)の読替 | 読めなければ既定値へフォールバック(§13.5 が許容) |

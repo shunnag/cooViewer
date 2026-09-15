@@ -4,7 +4,7 @@ import os
 import XCTest
 @testable import cooViewer
 
-/// XADMaster の観測値をゴールデンに固定し、撤去後も KaitoKit の
+/// 旧実装の観測値をゴールデンに固定し、KaitoKit の
 /// 書庫エンジン契約を同じ基準で検証する(設計書 §2.4)。
 final class ArchiveEngineTests: XCTestCase {
     private enum StubOpenError: Error {
@@ -37,6 +37,26 @@ final class ArchiveEngineTests: XCTestCase {
         static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
     }
 
+    /// 契約上の名前欠落を再現し、後続の正規ページまで列挙する。
+    private final class MissingNameEngine: ArchiveEngine {
+        init() {}
+        init?(file path: String) {}
+        init?(data: Data) {}
+        func numberOfEntries() -> Int32 { 3 }
+        func name(ofEntry index: Int32) -> String? { index == 1 ? nil : "page-\(index).avifs" }
+        func contents(ofEntry index: Int32) -> Data? { TestFixtures.pngData(width: 2, height: 3) }
+        func uncompressedSize(ofEntry index: Int32) -> Int64 { 1 }
+        func entryHasSize(_ index: Int32) -> Bool { true }
+        func entryIsDirectory(_ index: Int32) -> Bool { false }
+        func entryIsEncrypted(_ index: Int32) -> Bool { false }
+        func isEncrypted() -> Bool { false }
+        func setPassword(_ password: String) {}
+        func solidGroup(ofEntry index: Int32) -> Int32 { -1 }
+        func extractEntry(_ index: Int32, to directory: String) -> Bool { false }
+        static var defaultZipLazyLocalHeaders: Bool { true }
+        static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
+    }
+
     private var tempDir: URL!
 
     override func setUpWithError() throws {
@@ -55,162 +75,153 @@ final class ArchiveEngineTests: XCTestCase {
         try assertEngineMatchesGolden(.kaitokit)
     }
 
-    /// 採取元の file/data 両入口も完全一致させる一時的な検証。
-    /// PR 1 では XADMaster とともにこのテストと採取テストを削除する。
-    func testXADMasterMatchesEngineGolden() throws {
-        try assertEngineMatchesGolden(.xadmaster)
-    }
-
-    /// 明示した出力先がある場合だけ XADMaster の file 入口で採取する。
-    /// 通常のテスト実行では既存ゴールデンを書き換えない(設計書 §2.4)。
-    func testCaptureEngineGolden() throws {
-        let outputPath = ProcessInfo.processInfo.environment["COOVIEWER_CAPTURE_ENGINE_GOLDEN"]
-        guard let outputPath, !outputPath.isEmpty else {
-            throw XCTSkip("COOVIEWER_CAPTURE_ENGINE_GOLDEN が未指定のため採取しない")
-        }
-        let provenance = try EngineGolden.captureProvenance()
-        let captured = try fixtures().map { fixture in
-            let engine = try open(.xadmaster, file: fixture.url, context: fixture.name)
-            return try observation(of: engine, name: fixture.name)
-        }
-        let payload = encryptedZIPPayload()
-        let archiveURL = try makeEncryptedZIP(payload: payload)
-        let engine = try open(.xadmaster, file: archiveURL, context: "zipcrypto")
-        let index = try XCTUnwrap(firstFileIndex(in: engine), "暗号化 ZIP が空")
-        engine.setPassword("wrong")
-        let wrongReturnsEmptyOrNil = engine.contents(ofEntry: index)?.isEmpty ?? true
-        engine.setPassword("archive-engine-test")
-        let contents = try XCTUnwrap(engine.contents(ofEntry: index), "暗号化 ZIP を復号できない")
-        let matchesPayload = Self.sha256(contents) == Self.sha256(payload)
-        // 壊れた採取を新しい期待値として保存せず、その場で失敗させる。
-        _ = try XCTUnwrap(
-            wrongReturnsEmptyOrNil && matchesPayload ? true : nil,
-            "XADMaster のパスワード挙動が採取条件を満たさない")
-        let golden = EngineGolden(
-            provenance: provenance,
-            fixtures: captured,
-            zipCrypto: EngineGolden.ZipCrypto(
-                archive: try observation(of: engine, name: "zipcrypto"),
-                payloadSHA256: Self.sha256(contents),
-                wrongPasswordReturnsEmptyOrNil: wrongReturnsEmptyOrNil,
-                correctPasswordMatchesPayload: matchesPayload))
-        let json = try golden.encodedJSON()
-        let outputURL = URL(fileURLWithPath: outputPath)
-        try json.write(to: outputURL, options: .atomic)
-        XCTAssertEqual(try Data(contentsOf: outputURL), json, "採取 JSON の書き込み確認")
-        XCTAssertEqual(try JSONDecoder().decode(EngineGolden.self, from: json), golden)
-    }
-
     /// 暗号化フラグ・誤パスワード・復号 SHA をゴールデンに照合する
     /// (仕様書 §4.1.3、設計書 §2.4)。
-    func testBothEnginesShareZipCryptoPasswordBehavior() throws {
+    func testKaitoKitZipCryptoPasswordBehavior() throws {
         let expected = try EngineGolden.load().zipCrypto
         let archiveURL = try makeEncryptedZIP(payload: encryptedZIPPayload())
         let data = try Data(contentsOf: archiveURL)
-        for kind in ArchiveEngineKind.allCases {
-            let engines = [
-                ("file", try open(kind, file: archiveURL, context: "zipcrypto")),
-                ("data", try open(kind, data: data, context: "zipcrypto")),
-            ]
-            for (entrypoint, engine) in engines {
-                let context = "zipcrypto:\(kind.rawValue):\(entrypoint)"
-                let index = try XCTUnwrap(firstFileIndex(in: engine), context)
-                XCTAssertEqual(engine.isEncrypted(), expected.archive.isEncrypted,
-                               "\(context):archive encryption before password")
-                let expectedEntry = try XCTUnwrap(
-                    expected.archive.entries.first { !$0.isDirectory }, context)
-                XCTAssertEqual(engine.entryIsEncrypted(index), expectedEntry.isEncrypted,
-                               "\(context):entry encryption before password")
-                engine.setPassword("wrong")
-                XCTAssertEqual(
-                    engine.contents(ofEntry: index)?.isEmpty ?? true,
-                    expected.wrongPasswordReturnsEmptyOrNil,
-                    "\(context): 誤パスワードで空または nil")
-                engine.setPassword("archive-engine-test")
-                let contents = try XCTUnwrap(engine.contents(ofEntry: index), context)
-                let digest = Self.sha256(contents)
-                XCTAssertEqual(digest, expected.payloadSHA256, "\(context):payload SHA-256")
-                XCTAssertEqual(digest == expected.payloadSHA256,
-                               expected.correctPasswordMatchesPayload,
-                               "\(context): 正パスワードで本文一致")
-                try assertMatchesGolden(
-                    engine, expected: expected.archive,
-                    allowsDirectorySeparatorDifference: kind == .kaitokit,
-                    context: context)
-            }
+        let kind = ArchiveEngineKind.kaitokit
+        let engines = [
+            ("file", try open(kind, file: archiveURL, context: "zipcrypto")),
+            ("data", try open(kind, data: data, context: "zipcrypto")),
+        ]
+        for (entrypoint, engine) in engines {
+            let context = "zipcrypto:\(kind.rawValue):\(entrypoint)"
+            let index = try XCTUnwrap(firstFileIndex(in: engine), context)
+            XCTAssertEqual(engine.isEncrypted(), expected.archive.isEncrypted,
+                           "\(context):archive encryption before password")
+            let expectedEntry = try XCTUnwrap(
+                expected.archive.entries.first { !$0.isDirectory }, context)
+            XCTAssertEqual(engine.entryIsEncrypted(index), expectedEntry.isEncrypted,
+                           "\(context):entry encryption before password")
+            engine.setPassword("wrong")
+            XCTAssertEqual(
+                engine.contents(ofEntry: index)?.isEmpty ?? true,
+                expected.wrongPasswordReturnsEmptyOrNil,
+                "\(context): 誤パスワードで空または nil")
+            engine.setPassword("archive-engine-test")
+            let contents = try XCTUnwrap(engine.contents(ofEntry: index), context)
+            let digest = Self.sha256(contents)
+            XCTAssertEqual(digest, expected.payloadSHA256, "\(context):payload SHA-256")
+            XCTAssertEqual(digest == expected.payloadSHA256,
+                           expected.correctPasswordMatchesPayload,
+                           "\(context): 正パスワードで本文一致")
+            try assertMatchesGolden(
+                engine, expected: expected.archive,
+                allowsDirectorySeparatorDifference: kind == .kaitokit,
+                context: context)
         }
     }
 
-    /// 注入指定のない従来呼び出しは XADMaster のままにする(設計書 §2.4)。
-    func testArchiveSourceDefaultsToXADMaster() throws {
-        let source = try ArchiveSource(url: makeCBZFixture())
-        XCTAssertEqual(source.archiveEngineKind, .xadmaster)
+    /// 本体の既定引数で KaitoKit が選ばれる(設計書 §2.4)。
+    func testArchiveSourceDefaultsToKaitoKit() throws {
+        let url = try makeCBZFixture()
+        let source = try ArchiveSource(url: url, persistenceKey: .file(path: url.path))
+        XCTAssertEqual(source.archiveEngineKind, .kaitokit)
+        XCTAssertEqual(ArchiveEngineKind.allCases, [.kaitokit])
+        XCTAssertEqual(ArchiveEngineKind(rawValue: "kaitokit"), .kaitokit)
+        XCTAssertEqual(ArchiveEngineDiagnostics.snapshot().mmapRetryCount, 0)
     }
 
-    /// 失敗可能な初期化が返す nil も一度だけ XADMaster へ退避する。
-    func testKaitoKitNilOpenFallsBackOnce() async throws {
+    func testNilOpenIsUnreadableWithoutRetry() throws {
+        try assertOpenFailureIsUnreadable(throwsOnOpen: false)
+    }
+
+    func testThrownOpenIsUnreadableWithoutRetry() throws {
+        try assertOpenFailureIsUnreadable(throwsOnOpen: true)
+    }
+
+    /// data の生成に成功した後の列挙失敗では file を試さない(設計書 §2.4)。
+    func testEnumerationFailureIsUnreadableWithoutRetry() throws {
+        let fixture = try makeCBZFixture()
+        try XCTSkipUnless(ArchiveSource.shouldMemoryMap(url: fixture), "mmap 対象のローカルボリュームが必要")
+        let routes = OSAllocatedUnfairLock(initialState: [String]())
+        let factory = ArchiveEngineFactory(
+            openFile: { _, path in
+                routes.withLock { $0.append("file") }
+                return EnumerationFailureEngine(file: path)
+            },
+            openData: { _, data in
+                routes.withLock { $0.append("data") }
+                return EnumerationFailureEngine(data: data)
+            })
+        XCTAssertThrowsError(try ArchiveSource(url: fixture, engineFactory: factory)) { error in
+            self.assertUnreadable(error, url: fixture)
+        }
+        XCTAssertEqual(routes.withLock { $0 }, ["data"])
+        let fileURL = tempDir.appendingPathComponent("unmapped.rar")
+        XCTAssertThrowsError(try ArchiveSource(url: fileURL, engineFactory: factory)) { error in
+            self.assertUnreadable(error, url: fileURL)
+        }
+        XCTAssertThrowsError(try ArchiveSource(
+            data: Data(), name: fixture.path, nestingDepth: 0, unlocker: NestedUnlocker(),
+            persistenceKey: .file(path: fixture.path), engineFactory: factory)) { error in
+            self.assertUnreadable(error, url: fixture)
+        }
+        XCTAssertEqual(routes.withLock { $0 }, ["data", "file", "data"])
+        XCTAssertEqual(ArchiveEngineDiagnostics.snapshot().mmapRetryCount, 0)
+        XCTAssertNotNil(ArchiveEngineDiagnostics.snapshot().lastError)
+    }
+
+    /// 名前 nil は書庫全体の失敗にせず、そのエントリだけを除く(設計書 §2.4)。
+    func testMissingEntryNameKeepsRemainingPages() async throws {
         let fixture = try makeCBZFixture()
         let factory = ArchiveEngineFactory(
-            openFile: { kind, path in
-                switch kind {
-                case .xadmaster: XADMasterEngine(file: path)
-                case .kaitokit: nil
-                }
-            },
-            openData: { kind, data in
-                switch kind {
-                case .xadmaster: XADMasterEngine(data: data)
-                case .kaitokit: nil
-                }
-            }
-        )
-
-        try await assertFallbackWorks(for: fixture, factory: factory)
+            openFile: { _, _ in MissingNameEngine() },
+            openData: { _, _ in MissingNameEngine() })
+        let sources = [
+            try ArchiveSource(url: fixture, engineFactory: factory),
+            try ArchiveSource(
+                data: Data(), name: fixture.path, nestingDepth: 0, unlocker: NestedUnlocker(),
+                persistenceKey: .file(path: fixture.path), engineFactory: factory),
+        ]
+        for source in sources {
+            let entries = try await source.entries()
+            XCTAssertEqual(entries.map(\.id), [0, 2])
+            XCTAssertEqual(entries.map(\.name), ["page-0.avifs", "page-2.avifs"])
+            let image = try await source.image(for: XCTUnwrap(entries.last), maxPixelSize: nil)
+            XCTAssertEqual(image.width, 2)
+            XCTAssertEqual(source.archiveEngineKind, .kaitokit)
+        }
+        XCTAssertEqual(ArchiveEngineDiagnostics.snapshot().mmapRetryCount, 0)
+        XCTAssertNil(ArchiveEngineDiagnostics.snapshot().lastError)
     }
 
-    /// 互換層より詳細な将来の生成処理がエラーを返しても同じ退避規則を使う。
-    func testKaitoKitThrownOpenFallsBackOnce() async throws {
-        let cbz = try makeCBZFixture()
-        let fixture = tempDir.appendingPathComponent("thrown-open.cbr")
-        try Data(contentsOf: cbz).write(to: fixture)
+    private func assertOpenFailureIsUnreadable(throwsOnOpen: Bool) throws {
+        // 非 mmap の URL とメモリ専用の入口では、それぞれ一回だけ open する。
+        let fixture = tempDir.appendingPathComponent("failed.rar")
+        let routes = OSAllocatedUnfairLock(initialState: [String]())
         let factory = ArchiveEngineFactory(
-            openFile: { kind, path in
-                switch kind {
-                case .xadmaster: return XADMasterEngine(file: path)
-                case .kaitokit: throw StubOpenError.rejected
-                }
+            openFile: { _, _ in
+                routes.withLock { $0.append("file") }
+                if throwsOnOpen { throw StubOpenError.rejected }
+                return nil
             },
-            openData: { kind, data in
-                switch kind {
-                case .xadmaster: return XADMasterEngine(data: data)
-                case .kaitokit: throw StubOpenError.rejected
-                }
-            }
-        )
-
-        try await assertFallbackWorks(for: fixture, factory: factory)
+            openData: { _, _ in
+                routes.withLock { $0.append("data") }
+                if throwsOnOpen { throw StubOpenError.rejected }
+                return nil
+            })
+        XCTAssertThrowsError(try ArchiveSource(url: fixture, engineFactory: factory)) { error in
+            self.assertUnreadable(error, url: fixture)
+        }
+        XCTAssertThrowsError(try ArchiveSource(
+            data: Data(), name: fixture.path, nestingDepth: 0, unlocker: NestedUnlocker(),
+            persistenceKey: .file(path: fixture.path), engineFactory: factory)) { error in
+            self.assertUnreadable(error, url: fixture)
+        }
+        XCTAssertEqual(routes.withLock { $0 }, ["file", "data"])
+        XCTAssertEqual(ArchiveEngineDiagnostics.snapshot().mmapRetryCount, 0)
+        XCTAssertNotNil(ArchiveEngineDiagnostics.snapshot().lastError)
     }
 
-    /// KaitoKit が書庫生成後の列挙で失敗しても XADMaster を一度だけ開き直し、
-    /// 実際の使用エンジンと診断累積値を同じ退避として記録する(設計書 §2.4)。
-    func testKaitoKitEnumerationFailureFallsBackOnce() async throws {
-        let fixture = try makeCBZFixture()
-        let factory = ArchiveEngineFactory(
-            openFile: { kind, path in
-                switch kind {
-                case .xadmaster: XADMasterEngine(file: path)
-                case .kaitokit: EnumerationFailureEngine(file: path)
-                }
-            },
-            openData: { kind, data in
-                switch kind {
-                case .xadmaster: XADMasterEngine(data: data)
-                case .kaitokit: EnumerationFailureEngine(data: data)
-                }
-            }
-        )
-
-        try await assertFallbackWorks(for: fixture, factory: factory)
+    private func assertUnreadable(_ error: Error, url: URL,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        guard case BookSourceError.unreadable(let actualURL) = error else {
+            return XCTFail("unreadable が必要: \(error)", file: file, line: line)
+        }
+        XCTAssertEqual(actualURL, url, file: file, line: line)
     }
 
     /// mmap 解析不能なら、同じエンジンの file 入口で一度だけ救済する(設計書 §2.4)。
@@ -227,12 +238,16 @@ final class ArchiveEngineTests: XCTestCase {
         let fixture = try makeCBZFixture()
         try XCTSkipUnless(ArchiveSource.shouldMemoryMap(url: fixture), "mmap 対象のローカルボリュームが必要")
         for throwsOnOpen in [false, true] {
+            ArchiveEngineDiagnostics.resetForTesting()
+            let routes = OSAllocatedUnfairLock(initialState: [String]())
             let factory = ArchiveEngineFactory(
                 openFile: { _, _ in
+                    routes.withLock { $0.append("file") }
                     if throwsOnOpen { throw StubOpenError.rejected }
                     return nil
                 },
                 openData: { _, _ in
+                    routes.withLock { $0.append("data") }
                     if throwsOnOpen { throw StubOpenError.rejected }
                     return nil
                 })
@@ -243,6 +258,8 @@ final class ArchiveEngineTests: XCTestCase {
                 }
                 XCTAssertEqual(url, fixture)
             }
+            XCTAssertEqual(routes.withLock { $0 }, ["data", "file"])
+            XCTAssertEqual(ArchiveEngineDiagnostics.snapshot().mmapRetryCount, 1)
         }
     }
 
@@ -349,8 +366,8 @@ final class ArchiveEngineTests: XCTestCase {
     }
 
     private func encryptedZIPPayload() -> Data {
-        // XADMaster は stored や圧縮後が数十バイトだけの暗号化 ZIP を開けない
-        // (実測)。決定的な疑似乱数を 64 文字へ写像し、deflate 後も約 24 KiB にする。
+        // 旧実装のゴールデンと同じ本文を維持する。決定的な疑似乱数を
+        // 64 文字へ写像し、deflate 後も約 24 KiB にする。
         let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".utf8)
         var state: UInt32 = 0x1234_5678
         return Data((0..<32_768).map { _ -> UInt8 in
@@ -364,8 +381,7 @@ final class ArchiveEngineTests: XCTestCase {
         try XCTSkipUnless(
             FileManager.default.isExecutableFile(atPath: zipPath),
             "/usr/bin/zip が無いため ZipCrypto 互換テストをスキップします")
-        // 拡張子 .bin は XADMaster が MacBinary として中身を探るため、暗号化されていると
-        // 開けなくなる(実測)。プレーンな拡張子にする
+        // 旧実装で採取したゴールデンと同じファイル名を維持する。
         let inputURL = tempDir.appendingPathComponent("secret.txt")
         try payload.write(to: inputURL)
         let archiveURL = tempDir.appendingPathComponent("encrypted.zip")
@@ -382,20 +398,6 @@ final class ArchiveEngineTests: XCTestCase {
         return archiveURL
     }
 
-    private func assertFallbackWorks(for fixture: URL,
-                                     factory: ArchiveEngineFactory) async throws {
-        let source = try ArchiveSource(
-            url: fixture, preferredEngine: .kaitokit, engineFactory: factory)
-        XCTAssertEqual(source.archiveEngineKind, .xadmaster)
-        let entries = try await source.entries()
-        XCTAssertEqual(entries.count, 2)
-
-        let diagnostics = ArchiveEngineDiagnostics.snapshot()
-        XCTAssertEqual(diagnostics.fallbackCount, 1)
-        XCTAssertNotNil(diagnostics.lastError)
-        XCTAssertTrue(diagnostics.lastError?.contains("KaitoKit") == true)
-    }
-
     private func bundledFixture(_ name: String, _ ext: String) throws -> URL {
         try XCTUnwrap(
             Bundle(for: ArchiveEngineTests.self).url(
@@ -407,7 +409,6 @@ final class ArchiveEngineTests: XCTestCase {
     private func open(_ kind: ArchiveEngineKind, file url: URL,
                       context: String) throws -> any ArchiveEngine {
         let engine: (any ArchiveEngine)? = switch kind {
-        case .xadmaster: XADMasterEngine(file: url.path)
         case .kaitokit: KaitoKitEngine(file: url.path)
         }
         return try XCTUnwrap(engine, "\(context):\(kind.rawValue) file open")
@@ -416,7 +417,6 @@ final class ArchiveEngineTests: XCTestCase {
     private func open(_ kind: ArchiveEngineKind, data: Data,
                       context: String) throws -> any ArchiveEngine {
         let engine: (any ArchiveEngine)? = switch kind {
-        case .xadmaster: XADMasterEngine(data: data)
         case .kaitokit: KaitoKitEngine(data: data)
         }
         return try XCTUnwrap(engine, "\(context):\(kind.rawValue) data open")
@@ -536,7 +536,7 @@ final class ArchiveEngineTests: XCTestCase {
     private func normalizedSolidGroups(in engine: any ArchiveEngine) -> [Int32] {
         let count = engine.numberOfEntries()
         guard count > 0 else { return [] }
-        // グループ番号自体は XADMaster が先頭エントリ番号、KaitoKit が 7z folder
+        // グループ番号自体は旧実装が先頭エントリ番号、KaitoKit が 7z folder
         // 番号を使い得る。単独グループは独立(-1)へ、複数グループは最初に現れた
         // 順へ正規化し、ArchiveSource が使う依存関係だけを比較する。
         let rawGroups = (0..<count).map { engine.solidGroup(ofEntry: $0) }

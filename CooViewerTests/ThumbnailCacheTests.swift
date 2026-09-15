@@ -614,7 +614,7 @@ private actor MultiPageCountingSourceForCancel: BookSource {
         try Task.checkCancellation()  // 実ソースと同じ脱落点
         loadedIDs.insert(entry.id)
         if entry.id == 0 {
-            // 実書庫(XADMaster)と同様に actor を同期ブロックで占有する
+            // 実書庫(KaitoKit)と同様に actor を同期ブロックで占有する
             // (Task.sleep だと再入可能になり後続がすぐ実行されてしまう)
             usleep(200_000)
         }

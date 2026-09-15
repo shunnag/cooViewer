@@ -65,7 +65,6 @@ struct ArchiveAuditRecord: Codable, Sendable, Equatable {
     var namesSHA256: String?
     var contentsSHA256: String?
     var error: String?
-    var match: String?
 
     var files: Int { entries.filter { !$0.isDirectory }.count }
 
@@ -73,11 +72,10 @@ struct ArchiveAuditRecord: Codable, Sendable, Equatable {
     static let entriesTSVHeader = "path\tengine\tindex\tname\tsize\tsha256"
 
     var tsvRow: String {
-        var fields = [path, engine, entrypoint.rawValue, status.rawValue,
+        let fields = [path, engine, entrypoint.rawValue, status.rawValue,
                       numberOfEntries.map(String.init) ?? "", String(files),
                       encrypted ? "true" : "false", String(elapsedMilliseconds),
                       namesSHA256 ?? "", contentsSHA256 ?? "", error ?? ""]
-        if let match { fields.append(match) }
         return fields.map(Self.escapeTSV).joined(separator: "\t") + "\n"
     }
 
@@ -100,38 +98,21 @@ struct ArchiveAuditRecord: Codable, Sendable, Equatable {
 
 struct ArchiveAuditSummary: Codable, Sendable, Equatable {
     var total = 0
-    var kaitoKitOnlyFailures = 0
-    var nameMismatches = 0
-    var contentMismatches = 0
     var failedArchives = 0
-    var mismatchedArchives = 0
 
-    var succeeded: Bool { failedArchives == 0 && mismatchedArchives == 0 }
+    var succeeded: Bool { failedArchives == 0 }
 
     var diagnostic: String {
-        "audit: total=\(total) kaitokit_only_failed=\(kaitoKitOnlyFailures) "
-            + "names=\(nameMismatches) hashes=\(contentMismatches) "
-            + "failed=\(failedArchives) mismatched=\(mismatchedArchives)"
+        "audit: total=\(total) failed=\(failedArchives)"
     }
 
     mutating func include(_ records: [ArchiveAuditRecord]) {
         total += 1
         if records.contains(where: { $0.status != .ok }) { failedArchives += 1 }
-        if records.contains(where: { $0.match != nil && $0.match != "ok" }) {
-            mismatchedArchives += 1
-        }
-        let differences = records.first?.match?.split(separator: ",") ?? []
-        if differences.contains("names") { nameMismatches += 1 }
-        if differences.contains("hashes") { contentMismatches += 1 }
-        if records.first(where: { $0.engine == "kaitokit" })?.status != .ok,
-           records.contains(where: { $0.engine == "kaitokit" }),
-           records.first(where: { $0.engine == "xadmaster" })?.status == .ok {
-            kaitoKitOnlyFailures += 1
-        }
     }
 }
 
-/// GUI・フォールバック・保管庫を介さず、同時に一つのエンジンだけを所有する同期監査。
+/// GUI・再試行・保管庫を介さず、KaitoKit だけを所有する同期監査。
 /// 生成したエンジンはこの呼び出し内から出さない(設計書 §7.3、開発ガイド §2.1)。
 struct ArchiveAudit: Sendable {
     let engineFactory: ArchiveEngineFactory
@@ -165,15 +146,11 @@ struct ArchiveAudit: Sendable {
                 .joined(separator: "/")
             let entrypoint: ArchiveAuditEntrypoint = ArchiveSource.shouldMemoryMap(url: url)
                 ? .data : .file
-            var records = engines.map { kind in
+            let records = engines.map { kind in
                 autoreleasepool {
                     inspect(url: url, path: path, kind: kind,
                             entrypoint: entrypoint, includeHashes: includeHashes)
                 }
-            }
-            if records.count == 2 {
-                let match = Self.compare(records[0], records[1], includeHashes: includeHashes)
-                for index in records.indices { records[index].match = match }
             }
             try onArchive(records)
             summary.include(records)
@@ -222,7 +199,7 @@ struct ArchiveAudit: Sendable {
         var record = ArchiveAuditRecord(path: path, engine: kind.rawValue, entrypoint: entrypoint)
         var failureStage: ArchiveAuditStatus = .openFailed
         do {
-            // data: の失敗時も file: へ退避しない。アプリと同じ入口の成否を観測する。
+            // アプリと同じ初回入口を選び、監査では file 再試行せず入口ごとの成否を残す。
             let sourceData = entrypoint == .data
                 ? try Data(contentsOf: url, options: .mappedIfSafe) : nil
             try withExtendedLifetime(sourceData) {
@@ -288,15 +265,6 @@ struct ArchiveAudit: Sendable {
         }
         record.elapsedMilliseconds = Int64((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         return record
-    }
-
-    static func compare(_ first: ArchiveAuditRecord, _ second: ArchiveAuditRecord,
-                        includeHashes: Bool) -> String {
-        var differences: [String] = []
-        if first.namesSHA256 != second.namesSHA256 { differences.append("names") }
-        if includeHashes, first.contentsSHA256 != second.contentsSHA256 { differences.append("hashes") }
-        if first.status != second.status { differences.append("status") }
-        return differences.isEmpty ? "ok" : differences.joined(separator: ",")
     }
 
     private static func sha256(_ data: Data) -> String { hex(SHA256.hash(data: data)) }
