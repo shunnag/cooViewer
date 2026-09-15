@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 @testable import cooViewer
 
-/// 実コレクション監査の列挙・比較・非対話契約を固定する(開発ガイド §2.1)。
+/// 実コレクション監査の列挙・単一エンジン出力・非対話契約を固定する(開発ガイド §2.1)。
 final class ArchiveAuditTests: XCTestCase {
     private var root: URL!
 
@@ -41,18 +41,17 @@ final class ArchiveAuditTests: XCTestCase {
         var records: [ArchiveAuditRecord] = []
         var progress: [Int] = []
         let summary = try ArchiveAudit().run(
-            root: root, engines: [.kaitokit, .xadmaster], includeHashes: true,
+            root: root, engines: [.kaitokit], includeHashes: true,
             progress: { progress.append($0.completed) },
             onArchive: { records.append(contentsOf: $0) })
         XCTAssertEqual(progress, [0, 1, 2, 3, 4])
-        XCTAssertEqual(records.count, 8)
+        XCTAssertEqual(records.count, 4)
         XCTAssertEqual(records.map(\.path),
-                       ["a-broken.zip", "c-book.zip", "nested/b.cbz", "z-encrypted.zip"]
-                        .flatMap { [$0, $0] })
-        XCTAssertTrue(records.allSatisfy { $0.match == "ok" })
-        XCTAssertEqual(records.prefix(2).map(\.status), [.openFailed, .openFailed])
-        XCTAssertTrue(records.prefix(2).allSatisfy { $0.numberOfEntries == nil })
-        for record in records[2..<6] {
+                       ["a-broken.zip", "c-book.zip", "nested/b.cbz", "z-encrypted.zip"])
+        XCTAssertTrue(records.allSatisfy { $0.engine == "kaitokit" })
+        XCTAssertEqual(records.prefix(1).map(\.status), [.openFailed])
+        XCTAssertTrue(records.prefix(1).allSatisfy { $0.numberOfEntries == nil })
+        for record in records[1..<3] {
             XCTAssertEqual(record.status, .ok)
             XCTAssertEqual(record.numberOfEntries, 3)
             XCTAssertEqual(record.files, 2)
@@ -65,9 +64,8 @@ final class ArchiveAuditTests: XCTestCase {
             XCTAssertEqual(record.entries[1].size, Int64(payload.count))
         }
         // .z01 の兄弟がある本はアプリ同様に file: を使う。
-        XCTAssertEqual(records[2].entrypoint, .file)
-        XCTAssertEqual(records[3].entrypoint, .file)
-        for record in records.suffix(2) {
+        XCTAssertEqual(records[1].entrypoint, .file)
+        for record in records.suffix(1) {
             XCTAssertEqual(record.status, .ok)
             XCTAssertTrue(record.encrypted)
             XCTAssertTrue(record.entries.contains { $0.isEncrypted })
@@ -76,11 +74,7 @@ final class ArchiveAuditTests: XCTestCase {
             XCTAssertTrue(record.entries.allSatisfy { $0.sha256 == nil })
         }
         XCTAssertEqual(summary.total, 4)
-        XCTAssertEqual(summary.kaitoKitOnlyFailures, 0)
-        XCTAssertEqual(summary.nameMismatches, 0)
-        XCTAssertEqual(summary.contentMismatches, 0)
         XCTAssertEqual(summary.failedArchives, 1)
-        XCTAssertEqual(summary.mismatchedArchives, 0)
         XCTAssertFalse(summary.succeeded)
     }
 
@@ -115,12 +109,12 @@ final class ArchiveAuditTests: XCTestCase {
             openData: { _, _ in nil })
         let failures = try collect(factory: failureFactory)
         XCTAssertTrue(failures.records.allSatisfy { $0.status == .openFailed })
-        XCTAssertTrue(failures.records.allSatisfy { $0.match == "ok" })
         XCTAssertFalse(failures.summary.succeeded)
     }
 
     func testFailureClassificationAndContinuation() throws {
         try write(Data(), "book.rar")
+        try write(Data(), "next.rar")
         let cases: [(StubEngine.Mode, ArchiveAuditStatus)] = [
             (.negativeCount, .enumerationFailed), (.nilName, .enumerationFailed),
             (.unreadable, .entryUnreadable), (.exceptionName, .enumerationFailed),
@@ -128,13 +122,16 @@ final class ArchiveAuditTests: XCTestCase {
         ]
         for (mode, status) in cases {
             let factory = ArchiveEngineFactory(
-                openFile: { kind, _ in StubEngine(mode: kind == .kaitokit ? mode : .file) },
+                openFile: { _, path in
+                    StubEngine(mode: path.hasSuffix("book.rar") ? mode : .file)
+                },
                 openData: { _, _ in nil })
             let result = try collect(factory: factory)
             XCTAssertEqual(result.records[0].status, status)
             XCTAssertEqual(result.records[1].status, .ok)
-            XCTAssertEqual(result.summary.kaitoKitOnlyFailures, 1)
-            XCTAssertEqual(result.summary.mismatchedArchives, 1)
+            XCTAssertEqual(result.summary.total, 2)
+            XCTAssertEqual(result.summary.failedArchives, 1)
+            XCTAssertFalse(result.summary.succeeded)
             if status == .entryUnreadable {
                 XCTAssertEqual(result.records[0].entries.map(\.sha256), ["unreadable", sha("payload")])
                 XCTAssertEqual(result.records[0].contentsSHA256, "unreadable")
@@ -165,25 +162,17 @@ final class ArchiveAuditTests: XCTestCase {
         XCTAssertTrue(result.records.allSatisfy { $0.contentsSHA256 == nil })
     }
 
-    func testComparisonSummaryAndDirectoryNormalization() throws {
-        var first = ArchiveAuditRecord(path: "book.zip", engine: "kaitokit", entrypoint: .data)
-        var second = ArchiveAuditRecord(path: "book.zip", engine: "xadmaster", entrypoint: .data)
-        first.namesSHA256 = "a"
-        first.contentsSHA256 = "b"
-        second.namesSHA256 = "x"
-        second.contentsSHA256 = "y"
-        XCTAssertEqual(ArchiveAudit.compare(first, second, includeHashes: true), "names,hashes")
-        XCTAssertEqual(ArchiveAudit.compare(first, second, includeHashes: false), "names")
-        first.status = .entryUnreadable
-        first.match = ArchiveAudit.compare(first, second, includeHashes: true)
-        second.match = first.match
-        XCTAssertEqual(first.match, "names,hashes,status")
+    func testSummaryAndDirectoryNormalization() throws {
+        var record = ArchiveAuditRecord(path: "book.zip", engine: "kaitokit", entrypoint: .data)
         var summary = ArchiveAuditSummary()
-        summary.include([first, second])
-        XCTAssertEqual(summary.total, 1)
-        XCTAssertEqual(summary.nameMismatches, 1)
-        XCTAssertEqual(summary.contentMismatches, 1)
-        XCTAssertEqual(summary.kaitoKitOnlyFailures, 1)
+        summary.include([record])
+        XCTAssertTrue(summary.succeeded)
+        record.status = .entryUnreadable
+        summary.include([record])
+        XCTAssertEqual(summary.total, 2)
+        XCTAssertEqual(summary.failedArchives, 1)
+        XCTAssertFalse(summary.succeeded)
+        XCTAssertEqual(summary.diagnostic, "audit: total=2 failed=1")
         for directory in [true, false] {
             let entry = ArchiveAuditEntry(index: 0, name: "a/\\/", isDirectory: directory,
                                           hasSize: true, size: 0, isEncrypted: false)
@@ -202,7 +191,6 @@ final class ArchiveAuditTests: XCTestCase {
         let record = try XCTUnwrap(records.first)
         XCTAssertEqual(record.namesSHA256, sha(""))
         XCTAssertEqual(record.contentsSHA256, sha(""))
-        XCTAssertNil(record.match)
         XCTAssertTrue(summary.succeeded)
         XCTAssertEqual(try JSONDecoder().decode(ArchiveAuditRecord.self,
                                                 from: JSONEncoder().encode(record)), record)
@@ -218,18 +206,17 @@ final class ArchiveAuditTests: XCTestCase {
         record.contentsSHA256 = "unreadable"
         record.status = .entryUnreadable
         record.error = "entry 0:\n失敗"
-        record.match = "hashes,status"
         record.entries = [.init(index: 0, name: "\"a\\b\r\n.txt", isDirectory: false,
                                 hasSize: false, size: .max, isEncrypted: false, sha256: "unreadable")]
-        XCTAssertEqual(ArchiveAuditRecord.tsvHeader + "\tmatch\n" + record.tsvRow,
-            "path\tengine\tentrypoint\tstatus\tentries\tfiles\tencrypted\telapsed_ms\tnames_sha256\tcontents_sha256\terror\tmatch\n"
-            + "dir/a\\t.zip\tkaitokit\tdata\tentry-unreadable\t1\t1\tfalse\t7\tnames\tunreadable\tentry 0:\\n失敗\thashes,status\n")
+        XCTAssertEqual(ArchiveAuditRecord.tsvHeader + "\n" + record.tsvRow,
+            "path\tengine\tentrypoint\tstatus\tentries\tfiles\tencrypted\telapsed_ms\tnames_sha256\tcontents_sha256\terror\n"
+            + "dir/a\\t.zip\tkaitokit\tdata\tentry-unreadable\t1\t1\tfalse\t7\tnames\tunreadable\tentry 0:\\n失敗\n")
         XCTAssertEqual(ArchiveAuditRecord.entriesTSVHeader + "\n" + record.entriesTSVRows,
             "path\tengine\tindex\tname\tsize\tsha256\n"
             + "dir/a\\t.zip\tkaitokit\t0\t\"a\\\\b\\r\\n.txt\t\tunreadable\n")
         let base = ["cooViewer", "--audit-archives", root.path]
         let defaults = try ArchiveAuditCommand.Options(arguments: base)
-        XCTAssertEqual(defaults.engines, [.kaitokit, .xadmaster])
+        XCTAssertEqual(defaults.engines, [.kaitokit])
         XCTAssertEqual(defaults.progressInterval, 20)
         XCTAssertNil(defaults.output)
         let single = try ArchiveAuditCommand.Options(arguments: base + [
@@ -237,6 +224,13 @@ final class ArchiveAuditTests: XCTestCase {
         XCTAssertEqual(single.engines, [.kaitokit])
         XCTAssertTrue(single.includeHashes)
         XCTAssertEqual(single.progressInterval, 3)
+        // 旧版のエンジン指定は、単一エンジン制約を明示して拒否する。
+        for name in ["xadmaster", "kaitokit,xadmaster"] {
+            XCTAssertThrowsError(try ArchiveAuditCommand.Options(
+                arguments: base + ["--audit-engines", name])) { error in
+                XCTAssertTrue(error.localizedDescription.contains("この版では KaitoKit のみ"))
+            }
+        }
         for extra in [["--audit-engines", "bad"], ["--audit-engines", "kaitokit,kaitokit"],
                       ["--audit-engines", "kaitokit,"], ["--audit-output"],
                       ["--audit-progress", "0"], ["--audit-output", "book.zip"],
@@ -255,10 +249,10 @@ final class ArchiveAuditTests: XCTestCase {
                          "--audit-hash"]
         XCTAssertEqual(ArchiveAuditCommand.run(arguments: arguments), 0)
         let text = try String(contentsOf: output, encoding: .utf8)
-        XCTAssertEqual(text.split(separator: "\n").count, 3)
+        XCTAssertEqual(text.split(separator: "\n").count, 2)
         XCTAssertTrue(text.contains("book.zip\tkaitokit\t"))
         XCTAssertEqual(try String(contentsOf: entries, encoding: .utf8)
-            .split(separator: "\n").count, 3)
+            .split(separator: "\n").count, 2)
         XCTAssertEqual(ArchiveAuditCommand.run(arguments: arguments + ["--audit-engines", "bad"]), 1)
         XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), text)
         try write(Data("broken".utf8), "broken.zip")
@@ -273,7 +267,7 @@ final class ArchiveAuditTests: XCTestCase {
         -> (records: [ArchiveAuditRecord], summary: ArchiveAuditSummary) {
         var records: [ArchiveAuditRecord] = []
         let summary = try ArchiveAudit(engineFactory: factory).run(
-            root: root, engines: [.kaitokit, .xadmaster], includeHashes: includeHashes,
+            root: root, engines: [.kaitokit], includeHashes: includeHashes,
             onArchive: { records += $0 })
         return (records, summary)
     }
@@ -287,7 +281,7 @@ final class ArchiveAuditTests: XCTestCase {
 
     private func makeEncryptedZIP() throws {
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/zip"))
-        // 既存 ArchiveEngineTests と同様、XADMaster が開ける十分な長さの deflate 本文。
+        // 既存 ArchiveEngineTests と同じ長さの deflate 本文で ZipCrypto を検証する。
         let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".utf8)
         var state: UInt32 = 0x1234_5678
         let payload = Data((0..<32_768).map { _ -> UInt8 in

@@ -320,7 +320,7 @@ final class NestedArchiveSourceTests: XCTestCase {
     }
 
     /// 暗号化親のネスト子は復号済み平文を temp に書かずメモリから開くこと
-    /// (cooViewer-6ax。XADMaster がパス直読みするため従来は平文 temp が残った)
+    /// (cooViewer-6ax。旧実装では書庫のパス直読みのため平文 temp が残った)
     func testEncryptedParentNestedChildOpensFromMemory() async throws {
         // 平文の inner 書庫(この幅の PNG は本テスト固有の内容マーカー)を、
         // "sesame" で暗号化した outer に内包する

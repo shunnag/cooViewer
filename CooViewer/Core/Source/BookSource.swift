@@ -174,7 +174,7 @@ enum BookSourceFactory {
                      nestedPasswordProvider: NestedPasswordProvider? = nil,
                      preparsedEPUB: EPUBPublication? = nil,
                      vault: PasswordVault? = PasswordVault.sharedIfEnabled(),
-                     archiveEngine: ArchiveEngineKind = .xadmaster)
+                     archiveEngine: ArchiveEngineKind = .kaitokit)
         async throws -> any BookSource {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {

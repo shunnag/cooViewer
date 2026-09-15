@@ -47,7 +47,7 @@ actor NestedFolderSource: BookSource {
     private static let nestedIDStride = 1_000_000
 
     init(folder: FolderSource, unlocker: NestedUnlocker? = nil,
-         preferredEngine: ArchiveEngineKind = .xadmaster,
+         preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live) {
         self.url = folder.url
         self.folder = folder

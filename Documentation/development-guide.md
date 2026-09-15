@@ -73,11 +73,11 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | 引数 | 内容 |
 |---|---|
 | `--open <path>` | 指定の本を開く(`--at-page <1 始まり>` で開始ページ指定。リフロー EPUB では spine 項目の指定になる) |
-| `--engine <kaitokit\|xadmaster>` | この起動で後から開く書庫のエンジンを一時的に上書きする。defaults の設定値は変更しない |
-| `--audit-archives <folder>` | フォルダ以下の書庫を GUI なしで直列監査し、TSV を stdout へ出す。全件成功・比較一致なら終了コード 0、失敗・不一致なら 1 |
-| `--audit-output <tsv>` | 書庫 × エンジンの監査結果を指定ファイルへ保存 |
+| `--engine <name>` | スクリプト互換のため受理する。`kaitokit` はこの起動だけに適用し、旧 `xadmaster` を含む未知値は os_log の warning を出して無視する。defaults の設定値は変更しない |
+| `--audit-archives <folder>` | フォルダ以下の書庫を GUI なしで直列監査し、TSV を stdout へ出す。全件成功なら終了コード 0、失敗があれば 1 |
+| `--audit-output <tsv>` | 書庫ごとの KaitoKit 監査結果を指定ファイルへ保存 |
 | `--audit-entries <tsv>` | エントリ単位の名前・サイズ・SHA-256 を別 TSV へ保存 |
-| `--audit-engines kaitokit,xadmaster` | 監査するエンジン。既定は両方、`kaitokit` または `xadmaster` のみも可。`--engine` とは独立 |
+| `--audit-engines kaitokit` | 監査エンジンは既定・指定とも `kaitokit` のみ。旧 `xadmaster` を指定すると「この版では KaitoKit のみ」のエラー。`--engine` とは独立 |
 | `--audit-hash` | 非暗号化書庫の内容 SHA-256 も計算。省略時は open・列挙・名前のみ監査 |
 | `--audit-progress <N>` | stderr へ進捗を出す書庫数の間隔(正の整数、既定 20)。開始・最終件も表示 |
 | `--snapshot <png>` | `--then` の完了と表示整定を待ち、さらに 2 秒後に contentView を PNG 出力して終了 |
@@ -114,15 +114,15 @@ EPUB 入場の完了)を待ってから逐次実行される。各整定待ち�
 `--open <フォルダ> --then-next-page --then-next-page --then-goto-percent 100 --then-next-page`
 (送りで代理ページへ→自動入場→EPUB 内 100%→巻末超えで合本の次エントリへ)。
 
-書庫エンジンの A/B 比較では同じ本・ページ・ウインドウ条件を使い、出力 PNG を
-画素比較する。KaitoKit が開けず XADMaster へフォールバックした場合は同一画像に
-なり得るため、「書庫エンジンの状態…」でも実際に使われたエンジンを確認する。
+書庫は KaitoKit のみで開く。「書庫エンジンの状態…」には使用中のエンジン、
+mmap→file 再試行の累積回数、最後のエラーを表示する。旧引数の互換確認は同じ本・
+ページ・ウインドウ条件で行う。保存設定の互換は引数ドメインで試し、実 defaults を書き換えない。
 
 ```sh
 build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
-  --engine kaitokit --open sample.cbz --at-page 3 --snapshot /tmp/kaitokit.png
+  --engine xadmaster --open sample.cbz --at-page 3 --show-file-info --snapshot /tmp/engine-compat.png
 build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
-  --engine xadmaster --open sample.cbz --at-page 3 --snapshot /tmp/xadmaster.png
+  -ArchiveEngine xadmaster --open sample.cbz --at-page 3 --show-file-info --snapshot /tmp/defaults-compat.png
 ```
 
 パスワードマネージャーの検証: テスト・`--snapshot` 実行では Keychain に触れない(保管庫は「利用できません」になる)。実際に保存・自動解錠を検証するときは、**Debug ビルド限定**の環境変数 `COOVIEWER_TEST_VAULT_KEY=<hex64桁>` と `COOVIEWER_TEST_VAULT_DIR=<一時ディレクトリ>`(必ず両方セットで指定)により使い捨ての鍵と保存先を注入して起動する(開発機の Keychain とプロンプトを汚さない。Release は環境変数を受け付けない)。
@@ -165,9 +165,12 @@ python3 Scripts/make-jp-epub-fixtures.py /tmp/washi-fixtures # 日本語 EPUB �
 ### 2.1 実コレクションの監査手順
 
 `--audit-archives` は手元の書庫を外部へ送らず、KaitoKit 単独で開けるか、
-名前と内容が XADMaster と一致するかを確認する。通常のアプリ起動より先に実行し、
+名前と内容の SHA-256 を記録する。通常のアプリ起動より先に実行し、
 ウインドウ・復元・履歴移行/書き込み・キャッシュ掃除・Sparkle・パスワード保管庫を起動しない。
-パーサー設定はアプリと共通。フォールバックは一切行わず、各エンジンを直接開く。
+パーサー設定はアプリと共通。監査は単一エンジンで、KaitoKit を直接開く。
+アプリと異なり mmap→file 再試行は行わず、選んだ入口の失敗をそのまま記録する。
+名前 nil も監査では列挙失敗にする(アプリはそのエントリだけを除外する)。
+別バージョンの結果との比較には 2 つの TSV と `Scripts/audit-compare.py` を使う。
 
 ```sh
 APP=build/Debug/cooViewer.app/Contents/MacOS/cooViewer
@@ -180,7 +183,7 @@ echo $?
   --audit-hash --audit-output /tmp/kaitokit-new.tsv
 python3 Scripts/audit-compare.py /tmp/kaitokit-old.tsv /tmp/kaitokit-new.tsv
 
-# 両エンジン入りの TSV では比較対象を指定する
+# 旧版で採取した両エンジン入りの TSV では比較対象を指定する
 python3 Scripts/audit-compare.py old.tsv new.tsv --engine kaitokit
 ```
 
@@ -189,26 +192,24 @@ python3 Scripts/audit-compare.py old.tsv new.tsv --engine kaitokit
 先頭巻 `.001` は含める。UTF-8 パス順で処理し、書庫内はエンジンの列挙順を保つ。
 読み取れないフォルダがあれば未走査範囲を成功扱いせず、stderr にエラーを出して終了コード 1 にする。
 
-**監査 TSV の読み方**(ヘッダー付き、1 行 = 書庫 × エンジン):
+**監査 TSV の読み方**(ヘッダー付き、1 行 = 書庫、エンジンは KaitoKit のみ):
 
 | 列 | 意味 |
 |---|---|
-| `path` / `engine` | 監査ルートからの相対パス / `kaitokit` または `xadmaster` |
+| `path` / `engine` | 監査ルートからの相対パス / `kaitokit` |
 | `entrypoint` | `data` は `ArchiveSource.shouldMemoryMap` に従う `.mappedIfSafe` 読み込み、`file` はファイル入口。ネットワーク・リムーバブル・RAR・`.z01` の兄弟がある ZIP 等は `file` |
-| `status` | `ok` / `open-failed`(例外・nil・ファイル読み取り失敗) / `enumeration-failed`(負の件数・名前 nil・列挙例外) / `entry-unreadable`(内容 nil・展開例外)。失敗後も次のエンジン・書庫を処理する |
+| `status` | `ok` / `open-failed`(例外・nil・ファイル読み取り失敗) / `enumeration-failed`(負の件数・名前 nil・列挙例外) / `entry-unreadable`(内容 nil・展開例外)。失敗後も次の書庫を処理する |
 | `entries` / `files` | エンジンが返した件数(取得不能なら空欄) / 列挙できた非ディレクトリ件数。列挙失敗時の `files` は途中までの件数 |
 | `encrypted` | 書庫または一つでもエントリが暗号化されていれば `true`。暗号化書庫は open と列挙だけを確認し、混在書庫でも内容は読まない |
 | `elapsed_ms` | 当該エンジンでの読み込み・列挙・ハッシュ計算の経過ミリ秒 |
-| `names_sha256` | 全 entry の比較名を LF で連結(末尾 LF なし)した UTF-8 バイトの SHA-256。**ディレクトリと判定された名前だけ末尾の `/` と `\` を全て除く**。XADMaster と KaitoKit 互換層の既知差(cooViewer-vwey.8)を監査ノイズにしないため。他の名前は変更しない |
+| `names_sha256` | 全 entry の比較名を LF で連結(末尾 LF なし)した UTF-8 バイトの SHA-256。**ディレクトリと判定された名前だけ末尾の `/` と `\` を全て除く**。旧版の監査結果との互換を維持するため(cooViewer-vwey.8)。他の名前は変更しない |
 | `contents_sha256` | `--audit-hash` 時、各 entry の小文字16進 SHA-256 文字列を列挙順に区切りなしで連結し、その UTF-8 バイトを SHA-256 にした値。ディレクトリは空データの digest を使う。`kaito sha` / `xadsha` の `total` と同じ定義 |
 | `error` | 失敗の理由。内容を読めない場合は該当 entry の 0 始まり index も含む |
-| `match` | 2 エンジンの指定時のみ付く。`ok` または不一致項目の `names,hashes,status` の組(この順、必要な項目だけ)。ハッシュ未指定なら `hashes` は比較しない |
 
 ハッシュ未指定・暗号化・open/列挙失敗による未計算は空欄。
 内容読み取り失敗は該当 entry と `contents_sha256` を `unreadable` にする
 (欠落した digest を空データとして補わない)。空書庫の二つのハッシュは空データの SHA-256。
-`match=ok` は観測値の一致を表し、**壊れた書庫が両方 `open-failed` でも `ok`**。
-この場合、監査全体は失敗を含むため終了コード 1。
+`match` 列は撤去済み。壊れた書庫の `open-failed` は終了コード 1 になる。
 暗号化書庫の `ok` は内容の同値性を確認した意味ではない。
 
 entry TSV は `path, engine, index, name, size, sha256` のタブ区切り。
@@ -220,15 +221,15 @@ entry TSV は `path, engine, index, name, size, sha256` のタブ区切り。
 stdout 指定は書庫ごとに逐次出力する。
 
 stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-progress 1` なら毎書庫)。
-最後の集計は `total`(書庫数)、`kaitokit_only_failed`(XADMaster は成功し KaitoKit だけ失敗)、
-`names` / `hashes`(不一致の書庫数)、`failed`(一方でも失敗)、`mismatched`(一項目でも不一致)。
+最後の集計は `total`(書庫数)と `failed`(失敗した書庫数)。
+2 エンジンの比較集計(`kaitokit_only_failed` 等)は撤去済み。
 内容を読むため、大きな書庫一つの処理には時間がかかる。
 
 `audit-compare.py` は `path` で突合し、追加・削除と `status` / `names_sha256` /
 `contents_sha256` の差を列挙する。終了コードは同一 0、差あり 1、入力不正 2。
-両エンジン入り TSV を `--engine` なしで渡して path が重複した場合はエラーにする。
+旧版の両エンジン入り TSV を `--engine` なしで渡して path が重複した場合はエラーにする。
 
-**差分が出たときに送ってほしい情報**: 両エンジンの該当 TSV 行、必要なら該当 entry 行、
+**差分が出たときに送ってほしい情報**: 比較した 2 つの TSV の該当行、必要なら該当 entry 行、
 `kaito list --raw <該当書庫>` の出力、cooViewer / KaitoKit のバージョン、macOS のバージョン、
 ローカル/ネットワーク等の配置条件。書庫本体は不要。共有前にパスやファイル名の非公開情報を確認する。
 コアの記録は `Codable` 値型なので、別の検証ツールからも利用できる。
@@ -242,6 +243,9 @@ stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-pro
 - テスト出力に CGImageSource のエラーが混ざるのは壊れ画像の意図的テスト。
 
 ## 3.2 XADMaster の性能計測(Scripts/bench/)
+
+このベンチ基盤は PR 2 で移設予定。PR 1 ではスクリプトと framework を維持するが、
+アプリの書庫エンジンとしては XADMaster を使用しない。
 
 XADMaster/UniversalDetector の性能に触る変更は `Scripts/bench/` の
 ベンチマーク基盤で**実測してから**採否を判断する(コーパス生成→ハーネス→
@@ -282,31 +286,30 @@ XADMaster サブモジュールを Release 前に push 済みにしておくの�
 
 エンジン契約のゴールデンは `CooViewerTests/Fixtures/engine-golden.json` に保存し、
 KaitoKit の file/data 両入口の列挙値・内容 SHA-256・solidGroup・暗号化挙動を照合する。
-XADMaster がリンクされている間の再採取は、リポジトリ直下で
-`DEVELOPER_DIR=/Applications/Xcode.app TEST_RUNNER_COOVIEWER_CAPTURE_ENGINE_GOLDEN=/tmp/golden-a.json xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug test -only-testing:CooViewerTests/ArchiveEngineTests/testCaptureEngineGolden`
-を実行する。`TEST_RUNNER_` はテストホストへの転送時に外れ、テスト内では
-`COOVIEWER_CAPTURE_ENGINE_GOLDEN` として読む(未指定時は採取テストをスキップ)。
-出力ファイルが実際に生成されたことを確認し、別パス `/tmp/golden-b.json` でも実行して
-`diff /tmp/golden-a.json /tmp/golden-b.json` と保存済み JSON との差分がないことを確認する。
-初回は生成物を上記 Fixtures へコピーして再ビルドする(テストバンドルへ自動収録)。
-再現確認では既存 JSON の初回採取日(UTC)・各コミット SHA を維持し、採取時の
-XADMaster／UniversalDetector の SHA が異なる場合は失敗させる。観測元や fixture を
-意図的に更新する場合は既存 JSON を退避して新規採取し、出自を含めて差分をレビューする。
+**XADMaster 撤去済みのため再採取不可。ゴールデンは固定資産。**
+採取用テストと provenance 生成処理は撤去した。保存済み JSON とその出自を維持し、
+KaitoKit の実装変更に合わせて期待値を作り直さない。JSON がない場合は既存の固定資産を復元する。
 
 KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リポジトリ
 (https://github.com/shunnag/KaitoKit、MIT)で、サブモジュールではない。既定では
 `../KaitoKit` を使い、別の配置を試す場合は `KAITOKIT_SOURCE_DIR` に Package.swift の
 あるディレクトリを指定する。
 
-**2.0b34 以降、書庫エンジンの既定は KaitoKit である。** XADMaster は自動フォールバック
-として同梱を続ける(KaitoKit が開けない・列挙できない書庫では一度だけ退避し os_log に
-記録する)。設定の「詳細」で切り替えられ、スナップショット CLI では `--engine xadmaster`
-でその起動だけ上書きできる。
+**書庫エンジンは KaitoKit 単独である。** XADMaster エンジンと自動フォールバックは
+撤去済み。XADMaster / UniversalDetector の framework は PR 2 までビルド・リンク・
+同梱を続けるが、本体・テストからは参照しない。設定のエンジン Picker も撤去した。
+`ArchiveEngine` キーは保持し、旧 `"xadmaster"` 等の未知値は KaitoKit に写像する。
+保存値は書き戻さず、旧版に戻した場合の選択を残す。`--engine` の扱いは §2 を参照。
+
+ローカル書庫の mmap データを解析できない場合は、KaitoKit の file 入口で一度再試行し、
+回数と理由を診断・os_log の info に記録する。列挙失敗は再試行せず unreadable。
+名前 nil のエントリはログ付きで除外し、残りのページを表示する。分割 ZIP の `.z01` 兄弟が
+ある場合や RAR は mmap せず、兄弟探索が働く file 入口を使う。
 
 ファイル名の文字コード判定は KaitoKit 自身の `EncodingPolicy.automatic`
 (既定 `likelyLanguage: "ja"`、2026-09-15 の KaitoKit PR #24 で 39 言語・54 legacy
 候補)で行い、cooViewer は `KaitoArchiveDelegate` の名前判定フックを実装しない。
-UniversalDetector を使うのは XADMaster へフォールバックした場合だけである。
+UniversalDetector は使用しない。
 判定精度の測定値と残差は KaitoKit の
 `Documentation/verification/2026-09-14-name-encoding-languages.md` を参照。
 
@@ -317,7 +320,7 @@ cooViewer の拡張子判定には `.sit` に加えて `.sitx`・`.sea`・`.hqx`
 (仕様書 §2.1 の archiveTypes、設計書 §2.4)。`.bin` は汎用拡張子のため宣言しない。
 現在のドロップ／`--open` は `BookSourceFactory.make` の拡張子判定を通るため、
 未宣言の `.bin`・`.exe` はエンジンの内容判定に到達せず `unsupportedFormat` になる。
-この振り分けと `ArchiveSource` のフォールバック経路は本対応では変更しない。
+この拡張子の振り分けは PR 1 でも維持する。
 
 `Scripts/build-kaitokit-framework.sh` はソース・Package.swift・ビルドスクリプトの
 mtime と Swift コンパイラのスタンプを調べ、更新時だけ KaitoKit 側の
