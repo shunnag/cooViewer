@@ -3,8 +3,8 @@ import Foundation
 import XCTest
 @testable import cooViewer
 
-/// XADMaster と KaitoKit の境界が、実際に閲覧する書庫形式で同じ観測結果を返すことを
-/// 固定する。試験移行中も既定エンジンの挙動を比較基準として保つ(設計書 §2.4)。
+/// XADMaster の観測値をゴールデンに固定し、撤去後も KaitoKit の
+/// 書庫エンジン契約を同じ基準で検証する(設計書 §2.4)。
 final class ArchiveEngineTests: XCTestCase {
     private enum StubOpenError: Error {
         case rejected
@@ -13,19 +13,6 @@ final class ArchiveEngineTests: XCTestCase {
     private struct Fixture {
         let name: String
         let url: URL
-        let expectedNames: [String]
-        let expectedDirectories: [Bool]
-        let expectedSolidGroups: [Int32]
-    }
-
-    private struct EntryObservation: Equatable {
-        let name: String?
-        let hasSize: Bool
-        let size: Int64
-        let isDirectory: Bool
-        let isEncrypted: Bool
-        let digest: String?
-        let solidGroupOrdinal: Int32
     }
 
     /// 列挙開始時に不正な件数を返し、KaitoKit 側の列挙失敗を再現する。
@@ -61,78 +48,96 @@ final class ArchiveEngineTests: XCTestCase {
         try FileManager.default.removeItem(at: tempDir)
     }
 
-    /// 7 形式・構造を file/data の両入口から開き、列挙面と内容 SHA-256 を比較する。
-    /// solidGroup は値が負なら独立、0 以上なら同じ依存ストリームという契約まで
-    /// 一致させ、ArchiveSource の並列判定をエンジン非依存に保つ(設計書 §2.4)。
-    func testBothEnginesMatchAcrossArchiveFixtures() throws {
-        for fixture in try fixtures() {
-            let fileXAD = try open(.xadmaster, file: fixture.url, context: fixture.name)
-            let fileKaito = try open(.kaitokit, file: fixture.url, context: fixture.name)
-            XCTAssertEqual(names(in: fileXAD), fixture.expectedNames, fixture.name)
-            // KaitoKit 互換層はディレクトリ名を保存形(末尾区切り付き)で
-            // 返す修正待ち。XADMaster 形式の期待値は保ち、その差だけを吸収する。
-            XCTAssertEqual(
-                comparableNames(in: fileKaito),
-                comparableNames(
-                    fixture.expectedNames,
-                    directoryFlags: fixture.expectedDirectories),
-                fixture.name)
-            XCTAssertEqual(directoryFlags(in: fileXAD), fixture.expectedDirectories,
-                           fixture.name)
-            XCTAssertEqual(directoryFlags(in: fileKaito), fixture.expectedDirectories,
-                           fixture.name)
-            XCTAssertEqual(normalizedSolidGroups(in: fileXAD), fixture.expectedSolidGroups,
-                           fixture.name)
-            XCTAssertEqual(normalizedSolidGroups(in: fileKaito), fixture.expectedSolidGroups,
-                           fixture.name)
-            assertEquivalent(fileXAD, fileKaito, context: "\(fixture.name):file")
-
-            let data = try Data(contentsOf: fixture.url)
-            let dataXAD = try open(.xadmaster, data: data, context: fixture.name)
-            let dataKaito = try open(.kaitokit, data: data, context: fixture.name)
-            assertEquivalent(dataXAD, dataKaito, context: "\(fixture.name):data")
-            assertEquivalent(fileXAD, dataXAD, context: "\(fixture.name):xad-entrypoint")
-            assertEquivalent(fileKaito, dataKaito,
-                             context: "\(fixture.name):kaito-entrypoint")
-        }
+    /// 7 形式・構造の file/data 両入口を保存済みの観測値と比較し、
+    /// 並列判定を含めた契約を XADMaster 撤去後も維持する(設計書 §2.4)。
+    func testKaitoKitMatchesEngineGoldenAcrossArchiveFixtures() throws {
+        try assertEngineMatchesGolden(.kaitokit)
     }
 
-    /// 暗号化フラグ・パスワード設定・復号結果も XADMaster 固有の前提にせず比較する
+    /// 採取元の file/data 両入口も完全一致させる一時的な検証。
+    /// PR 1 では XADMaster とともにこのテストと採取テストを削除する。
+    func testXADMasterMatchesEngineGolden() throws {
+        try assertEngineMatchesGolden(.xadmaster)
+    }
+
+    /// 明示した出力先がある場合だけ XADMaster の file 入口で採取する。
+    /// 通常のテスト実行では既存ゴールデンを書き換えない(設計書 §2.4)。
+    func testCaptureEngineGolden() throws {
+        let outputPath = ProcessInfo.processInfo.environment["COOVIEWER_CAPTURE_ENGINE_GOLDEN"]
+        guard let outputPath, !outputPath.isEmpty else {
+            throw XCTSkip("COOVIEWER_CAPTURE_ENGINE_GOLDEN が未指定のため採取しない")
+        }
+        let provenance = try EngineGolden.captureProvenance()
+        let captured = try fixtures().map { fixture in
+            let engine = try open(.xadmaster, file: fixture.url, context: fixture.name)
+            return try observation(of: engine, name: fixture.name)
+        }
+        let payload = encryptedZIPPayload()
+        let archiveURL = try makeEncryptedZIP(payload: payload)
+        let engine = try open(.xadmaster, file: archiveURL, context: "zipcrypto")
+        let index = try XCTUnwrap(firstFileIndex(in: engine), "暗号化 ZIP が空")
+        engine.setPassword("wrong")
+        let wrongReturnsEmptyOrNil = engine.contents(ofEntry: index)?.isEmpty ?? true
+        engine.setPassword("archive-engine-test")
+        let contents = try XCTUnwrap(engine.contents(ofEntry: index), "暗号化 ZIP を復号できない")
+        let matchesPayload = Self.sha256(contents) == Self.sha256(payload)
+        // 壊れた採取を新しい期待値として保存せず、その場で失敗させる。
+        _ = try XCTUnwrap(
+            wrongReturnsEmptyOrNil && matchesPayload ? true : nil,
+            "XADMaster のパスワード挙動が採取条件を満たさない")
+        let golden = EngineGolden(
+            provenance: provenance,
+            fixtures: captured,
+            zipCrypto: EngineGolden.ZipCrypto(
+                archive: try observation(of: engine, name: "zipcrypto"),
+                payloadSHA256: Self.sha256(contents),
+                wrongPasswordReturnsEmptyOrNil: wrongReturnsEmptyOrNil,
+                correctPasswordMatchesPayload: matchesPayload))
+        let json = try golden.encodedJSON()
+        let outputURL = URL(fileURLWithPath: outputPath)
+        try json.write(to: outputURL, options: .atomic)
+        XCTAssertEqual(try Data(contentsOf: outputURL), json, "採取 JSON の書き込み確認")
+        XCTAssertEqual(try JSONDecoder().decode(EngineGolden.self, from: json), golden)
+    }
+
+    /// 暗号化フラグ・誤パスワード・復号 SHA をゴールデンに照合する
     /// (仕様書 §4.1.3、設計書 §2.4)。
     func testBothEnginesShareZipCryptoPasswordBehavior() throws {
-        // XADMaster は stored の暗号化エントリや圧縮後が数十バイトのエントリしかない
-        // ZIP を開けない(実測)。zip が deflate を選び、かつ圧縮後も十分大きい本文にする:
-        // 決定的な疑似乱数を base64 風の 64 文字へ写像した 32 KiB(圧縮後 ~24 KiB)
-        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".utf8)
-        var state: UInt32 = 0x1234_5678
-        let payload = Data((0..<32_768).map { _ -> UInt8 in
-            state = state &* 1_664_525 &+ 1_013_904_223
-            return alphabet[Int(state >> 26)]
-        })
-        let archiveURL = try makeEncryptedZIP(payload: payload)
-        var decryptedContents: [Data] = []
-
+        let expected = try EngineGolden.load().zipCrypto
+        let archiveURL = try makeEncryptedZIP(payload: encryptedZIPPayload())
+        let data = try Data(contentsOf: archiveURL)
         for kind in ArchiveEngineKind.allCases {
-            let engine = try open(kind, file: archiveURL, context: kind.rawValue)
-            XCTAssertTrue(engine.isEncrypted(), kind.rawValue)
-            let index = try XCTUnwrap(firstFileIndex(in: engine), kind.rawValue)
-            XCTAssertTrue(engine.entryIsEncrypted(index), kind.rawValue)
-
-            engine.setPassword("wrong")
-            let wrongContents = engine.contents(ofEntry: index)
-            XCTAssertTrue(
-                wrongContents?.isEmpty ?? true,
-                "\(kind.rawValue): 誤ったパスワードで展開結果を返さない")
-            engine.setPassword("archive-engine-test")
-            let contents = try XCTUnwrap(
-                engine.contents(ofEntry: index),
-                "\(kind.rawValue): 正しいパスワードで展開できない")
-            XCTAssertEqual(contents, payload, kind.rawValue)
-            decryptedContents.append(contents)
+            let engines = [
+                ("file", try open(kind, file: archiveURL, context: "zipcrypto")),
+                ("data", try open(kind, data: data, context: "zipcrypto")),
+            ]
+            for (entrypoint, engine) in engines {
+                let context = "zipcrypto:\(kind.rawValue):\(entrypoint)"
+                let index = try XCTUnwrap(firstFileIndex(in: engine), context)
+                XCTAssertEqual(engine.isEncrypted(), expected.archive.isEncrypted,
+                               "\(context):archive encryption before password")
+                let expectedEntry = try XCTUnwrap(
+                    expected.archive.entries.first { !$0.isDirectory }, context)
+                XCTAssertEqual(engine.entryIsEncrypted(index), expectedEntry.isEncrypted,
+                               "\(context):entry encryption before password")
+                engine.setPassword("wrong")
+                XCTAssertEqual(
+                    engine.contents(ofEntry: index)?.isEmpty ?? true,
+                    expected.wrongPasswordReturnsEmptyOrNil,
+                    "\(context): 誤パスワードで空または nil")
+                engine.setPassword("archive-engine-test")
+                let contents = try XCTUnwrap(engine.contents(ofEntry: index), context)
+                let digest = Self.sha256(contents)
+                XCTAssertEqual(digest, expected.payloadSHA256, "\(context):payload SHA-256")
+                XCTAssertEqual(digest == expected.payloadSHA256,
+                               expected.correctPasswordMatchesPayload,
+                               "\(context): 正パスワードで本文一致")
+                try assertMatchesGolden(
+                    engine, expected: expected.archive,
+                    allowsDirectorySeparatorDifference: kind == .kaitokit,
+                    context: context)
+            }
         }
-        XCTAssertEqual(decryptedContents.count, ArchiveEngineKind.allCases.count)
-        XCTAssertEqual(decryptedContents.first, decryptedContents.last,
-                       "両エンジンの復号バイトが一致しない")
     }
 
     /// 注入指定のない従来呼び出しは XADMaster のままにする(設計書 §2.4)。
@@ -249,43 +254,13 @@ final class ArchiveEngineTests: XCTestCase {
         try rarData.write(to: rarURL)
 
         return [
-            Fixture(
-                name: "zip", url: zipURL,
-                // XADMaster はディレクトリエントリ名の末尾区切りを落として返す
-                // (実測)。KaitoKit 互換層も同じ形へ揃える(cooViewer-vwey.8)
-                expectedNames: ["folder", "folder/page.bin", "root.bin"],
-                expectedDirectories: [true, false, false],
-                expectedSolidGroups: [-1, -1, -1]),
-            Fixture(
-                name: "cbz", url: cbzURL,
-                expectedNames: ["cover.png", "pages/002.png"],
-                expectedDirectories: [false, false],
-                expectedSolidGroups: [-1, -1]),
-            Fixture(
-                name: "7z-nonsolid", url: try bundledFixture("nonsolid", "7z"),
-                expectedNames: ["p0.png", "p1.png", "p2.png", "p3.png"],
-                expectedDirectories: [false, false, false, false],
-                expectedSolidGroups: [-1, -1, -1, -1]),
-            Fixture(
-                name: "7z-solid", url: try bundledFixture("solid", "7z"),
-                expectedNames: ["p0.png", "p1.png", "p2.png", "p3.png"],
-                expectedDirectories: [false, false, false, false],
-                expectedSolidGroups: [0, 0, 0, 0]),
-            Fixture(
-                name: "7z-blocks", url: try bundledFixture("blocks", "7z"),
-                expectedNames: ["p0.png", "p1.png", "p2.png", "p3.png"],
-                expectedDirectories: [false, false, false, false],
-                expectedSolidGroups: [0, 0, 1, 1]),
-            Fixture(
-                name: "rar4-solid", url: rarURL,
-                expectedNames: ["hello.txt", "tiny.txt"],
-                expectedDirectories: [false, false],
-                expectedSolidGroups: [0, 0]),
-            Fixture(
-                name: "lzh", url: try bundledFixture("book", "lzh"),
-                expectedNames: ["p0.png", "p1.png", "p2.png", "p3.png"],
-                expectedDirectories: [false, false, false, false],
-                expectedSolidGroups: [-1, -1, -1, -1]),
+            Fixture(name: "zip", url: zipURL),
+            Fixture(name: "cbz", url: cbzURL),
+            Fixture(name: "7z-nonsolid", url: try bundledFixture("nonsolid", "7z")),
+            Fixture(name: "7z-solid", url: try bundledFixture("solid", "7z")),
+            Fixture(name: "7z-blocks", url: try bundledFixture("blocks", "7z")),
+            Fixture(name: "rar4-solid", url: rarURL),
+            Fixture(name: "lzh", url: try bundledFixture("book", "lzh")),
         ]
     }
 
@@ -298,6 +273,17 @@ final class ArchiveEngineTests: XCTestCase {
         ])
         try data.write(to: url)
         return url
+    }
+
+    private func encryptedZIPPayload() -> Data {
+        // XADMaster は stored や圧縮後が数十バイトだけの暗号化 ZIP を開けない
+        // (実測)。決定的な疑似乱数を 64 文字へ写像し、deflate 後も約 24 KiB にする。
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".utf8)
+        var state: UInt32 = 0x1234_5678
+        return Data((0..<32_768).map { _ -> UInt8 in
+            state = state &* 1_664_525 &+ 1_013_904_223
+            return alphabet[Int(state >> 26)]
+        })
     }
 
     private func makeEncryptedZIP(payload: Data) throws -> URL {
@@ -363,30 +349,56 @@ final class ArchiveEngineTests: XCTestCase {
         return try XCTUnwrap(engine, "\(context):\(kind.rawValue) data open")
     }
 
-    private func assertEquivalent(_ expected: any ArchiveEngine,
-                                  _ actual: any ArchiveEngine,
-                                  context: String,
-                                  file: StaticString = #filePath,
-                                  line: UInt = #line) {
-        XCTAssertEqual(actual.numberOfEntries(), expected.numberOfEntries(),
-                       "\(context):entry count", file: file, line: line)
-        XCTAssertEqual(actual.isEncrypted(), expected.isEncrypted(),
-                       "\(context):archive encryption", file: file, line: line)
+    private func assertEngineMatchesGolden(_ kind: ArchiveEngineKind) throws {
+        let golden = try EngineGolden.load()
+        let fixtures = try fixtures()
+        XCTAssertEqual(fixtures.map(\.name), golden.fixtures.map(\.name), "fixture 一覧と順序")
+        for fixture in fixtures {
+            let expected = try XCTUnwrap(
+                golden.fixtures.first { $0.name == fixture.name }, fixture.name)
+            let fileEngine = try open(kind, file: fixture.url, context: fixture.name)
+            try assertMatchesGolden(
+                fileEngine, expected: expected,
+                allowsDirectorySeparatorDifference: kind == .kaitokit,
+                context: "\(fixture.name):\(kind.rawValue):file")
+            let dataEngine = try open(
+                kind, data: Data(contentsOf: fixture.url), context: fixture.name)
+            try assertMatchesGolden(
+                dataEngine, expected: expected,
+                allowsDirectorySeparatorDifference: kind == .kaitokit,
+                context: "\(fixture.name):\(kind.rawValue):data")
+        }
+    }
 
-        let expectedEntries = observations(of: expected, context: context,
-                                           file: file, line: line)
-        let actualEntries = observations(of: actual, context: context,
-                                         file: file, line: line)
-        XCTAssertEqual(actualEntries.count, expectedEntries.count,
-                       "\(context):observed count", file: file, line: line)
-        for (index, pair) in zip(expectedEntries, actualEntries).enumerated() {
+    private func assertMatchesGolden(_ engine: any ArchiveEngine,
+                                     expected: EngineGolden.Fixture,
+                                     allowsDirectorySeparatorDifference: Bool,
+                                     context: String,
+                                     file: StaticString = #filePath,
+                                     line: UInt = #line) throws {
+        let actual = try observation(of: engine, name: expected.name, file: file, line: line)
+        XCTAssertEqual(actual.entries.count, expected.entries.count,
+                       "\(context):entry count", file: file, line: line)
+        XCTAssertEqual(actual.isEncrypted, expected.isEncrypted,
+                       "\(context):archive encryption", file: file, line: line)
+        for (index, pair) in zip(expected.entries, actual.entries).enumerated() {
             let (expectedEntry, actualEntry) = pair
-            XCTAssertEqual(
-                comparableName(actualEntry.name,
-                               isDirectory: actualEntry.isDirectory),
-                comparableName(expectedEntry.name,
-                               isDirectory: expectedEntry.isDirectory),
-                "\(context):\(index):name", file: file, line: line)
+            // cooViewer-vwey.8 の互換層修正待ちにつき、KaitoKit だけ
+            // ディレクトリ名の末尾区切り差を許す。それ以外は保存値と完全一致。
+            if allowsDirectorySeparatorDifference {
+                if actualEntry.name != expectedEntry.name {
+                    print("\(context):\(index):名前の保存形の差 "
+                          + "golden=\(String(reflecting: expectedEntry.name)) "
+                          + "KaitoKit=\(String(reflecting: actualEntry.name))")
+                }
+                XCTAssertEqual(
+                    comparableName(actualEntry.name, isDirectory: actualEntry.isDirectory),
+                    comparableName(expectedEntry.name, isDirectory: expectedEntry.isDirectory),
+                    "\(context):\(index):name", file: file, line: line)
+            } else {
+                XCTAssertEqual(actualEntry.name, expectedEntry.name,
+                               "\(context):\(index):name", file: file, line: line)
+            }
             XCTAssertEqual(actualEntry.hasSize, expectedEntry.hasSize,
                            "\(context):\(index):hasSize", file: file, line: line)
             XCTAssertEqual(actualEntry.size, expectedEntry.size,
@@ -395,54 +407,47 @@ final class ArchiveEngineTests: XCTestCase {
                            "\(context):\(index):directory", file: file, line: line)
             XCTAssertEqual(actualEntry.isEncrypted, expectedEntry.isEncrypted,
                            "\(context):\(index):encryption", file: file, line: line)
-            XCTAssertEqual(actualEntry.digest, expectedEntry.digest,
+            XCTAssertEqual(actualEntry.sha256, expectedEntry.sha256,
                            "\(context):\(index):SHA-256", file: file, line: line)
-            XCTAssertEqual(actualEntry.solidGroupOrdinal, expectedEntry.solidGroupOrdinal,
+            XCTAssertEqual(actualEntry.solidGroup, expectedEntry.solidGroup,
                            "\(context):\(index):solidGroup", file: file, line: line)
         }
     }
 
-    private func observations(of engine: any ArchiveEngine,
-                              context: String,
-                              file: StaticString,
-                              line: UInt) -> [EntryObservation] {
+    private func observation(of engine: any ArchiveEngine,
+                             name: String,
+                             file: StaticString = #filePath,
+                             line: UInt = #line) throws -> EngineGolden.Fixture {
         let count = engine.numberOfEntries()
-        XCTAssertGreaterThan(count, 0, "\(context):empty archive", file: file, line: line)
-        guard count > 0 else { return [] }
-
+        _ = try XCTUnwrap(count > 0 ? count : nil,
+                          "\(name):empty archive", file: file, line: line)
+        let isEncrypted = engine.isEncrypted()
         let solidGroups = normalizedSolidGroups(in: engine)
-        return (0..<count).map { index in
+        let entries = try (0..<count).map { index in
             let isDirectory = engine.entryIsDirectory(index)
-            let contents = isDirectory ? nil : engine.contents(ofEntry: index)
-            if !isDirectory {
-                XCTAssertTrue(engine.entryHasSize(index),
-                              "\(context):\(index):declared size",
-                              file: file, line: line)
-                XCTAssertNotNil(contents, "\(context):\(index):contents",
-                                file: file, line: line)
+            let contents: Data?
+            if isDirectory {
+                contents = nil
+            } else {
+                contents = try XCTUnwrap(engine.contents(ofEntry: index),
+                                         "\(name):\(index):contents", file: file, line: line)
             }
-            return EntryObservation(
+            return EngineGolden.Entry(
                 name: engine.name(ofEntry: index),
                 hasSize: engine.entryHasSize(index),
                 size: engine.uncompressedSize(ofEntry: index),
                 isDirectory: isDirectory,
                 isEncrypted: engine.entryIsEncrypted(index),
-                digest: contents.map(Self.sha256),
-                solidGroupOrdinal: solidGroups[Int(index)]
-            )
+                sha256: contents.map(Self.sha256),
+                solidGroup: solidGroups[Int(index)])
         }
+        return EngineGolden.Fixture(name: name, isEncrypted: isEncrypted, entries: entries)
     }
 
     private func firstFileIndex(in engine: any ArchiveEngine) -> Int32? {
         let count = engine.numberOfEntries()
         guard count > 0 else { return nil }
         return (0..<count).first { !engine.entryIsDirectory($0) }
-    }
-
-    private func names(in engine: any ArchiveEngine) -> [String] {
-        let count = engine.numberOfEntries()
-        guard count > 0 else { return [] }
-        return (0..<count).compactMap { engine.name(ofEntry: $0) }
     }
 
     /// 互換層の修正前後を許容する比較形。通常ファイル名は一切変更せず、
@@ -453,29 +458,6 @@ final class ArchiveEngineTests: XCTestCase {
             comparable.removeLast()
         }
         return comparable
-    }
-
-    private func comparableNames(in engine: any ArchiveEngine) -> [String?] {
-        let count = engine.numberOfEntries()
-        guard count > 0 else { return [] }
-        return (0..<count).map { index in
-            comparableName(
-                engine.name(ofEntry: index),
-                isDirectory: engine.entryIsDirectory(index))
-        }
-    }
-
-    private func comparableNames(_ names: [String],
-                                 directoryFlags: [Bool]) -> [String?] {
-        zip(names, directoryFlags).map { name, isDirectory in
-            comparableName(name, isDirectory: isDirectory)
-        }
-    }
-
-    private func directoryFlags(in engine: any ArchiveEngine) -> [Bool] {
-        let count = engine.numberOfEntries()
-        guard count > 0 else { return [] }
-        return (0..<count).map { engine.entryIsDirectory($0) }
     }
 
     private func normalizedSolidGroups(in engine: any ArchiveEngine) -> [Int32] {
