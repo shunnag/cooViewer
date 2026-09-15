@@ -260,9 +260,9 @@ stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-pro
 使い方と前提ツールは [Scripts/bench/README.md](../Scripts/bench/README.md) を参照。
 性能は同じ入力・同じ条件の交互実行で測り、内容の SHA-256 も比較する。
 
-削除したオラクル・旧エンジンのベンチ・専用集計・生データは、git 履歴 **8b726c1** の
-`Scripts/bench/` にあり、**bd cooViewer-6lrc.9** で別リポジトリへ移設予定。
-通常の clone には含めず、この PR では履歴に残す。
+削除したオラクル・旧エンジンのベンチ・専用集計・生データの移設先は
+[cooViewer-bench](https://github.com/shunnag/cooViewer-bench)。
+通常の clone には含めず、git 履歴 **8b726c1** の `Scripts/bench/` にも残している。
 
 ## 3.5 Washi の組み込み
 
@@ -366,7 +366,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 ## 4. リリース手順(2.0b14 まで検証済み)
 
 1. pbxproj の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` を bump(各 4 箇所)。
-2. ブランチをコミット・push → `master` へ `git merge --no-ff`。
+2. ブランチをコミット・push → `master` 向けの PR をマージ。
 3. `./Scripts/sign-sparkle-nested.sh`(Sparkle 内部の実行体を Developer ID +
    timestamp + hardened runtime で再署名。これを飛ばすと**公証が Invalid**)。
 4. Release ビルド:
