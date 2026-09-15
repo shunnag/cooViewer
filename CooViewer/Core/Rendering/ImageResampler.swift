@@ -145,8 +145,10 @@ actor ImageResampler {
         let usedMLFallback: Bool
         if let nrKey, let cached = cache[nrKey] {
             source = cached
-            usedMLFallback = false  // キャッシュ済み=下でキャッシュ可否を通した本物
-            touch(nrKey)
+            // 恒久失敗中は CI の中間結果も保持する。派生する別サイズにも
+            // 代替結果の印を引き継ぎ、モデル回復時にまとめて破棄する。
+            usedMLFallback = mlFallbackKeys.contains(nrKey)
+            _ = touch(nrKey)
         } else {
             reducedSourceCount += 1
             // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、

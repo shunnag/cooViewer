@@ -115,17 +115,17 @@ final class PageSizeIndexTests: XCTestCase {
         let big = CGSize(width: 3000, height: 4500)
         let source = SizedStubSource(sizes: [big])
         let book = try await Book.open(source: source)
-        book.displayPixelCap = 2048
+        _ = book.updateDisplayPixelCap(2048)
         let small = await book.image(at: 0)
         XCTAssertEqual(small?.height, 2048)
 
-        let raised = await book.updateDisplayPixelCap(4096)
+        let raised = book.updateDisplayPixelCap(4096)
         XCTAssertTrue(raised)
         let large = await book.image(at: 0)
         XCTAssertEqual(large?.height, 4096, "キャップ上昇後は高解像度で再デコード")
 
         // 下げてもキャッシュは維持(大きい画像をそのまま使う)
-        let lowered = await book.updateDisplayPixelCap(2048)
+        let lowered = book.updateDisplayPixelCap(2048)
         XCTAssertFalse(lowered)
         let kept = await book.image(at: 0)
         XCTAssertEqual(kept?.height, 4096)

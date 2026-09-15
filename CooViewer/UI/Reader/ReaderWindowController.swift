@@ -195,6 +195,8 @@ final class ReaderWindowController: NSWindowController {
     var originalSizePanel: NSPanel?
     /// ファイル情報パネル(File > ファイル情報を表示)
     var fileInfoPanel: NSPanel?
+    /// ファイル情報を再要求した場合、先の取得結果でパネルを上書きしない。
+    var fileInfoGeneration = 0
     /// 検証用: 最後に表示したファイル情報(--show-file-info のスナップショット。
     /// ヘッドレス実行ではパネルのレイヤーが描画されないため ImageRenderer で描く)
     var fileInfoDebugDetails: PageFileInfo.Details?
@@ -252,7 +254,7 @@ final class ReaderWindowController: NSWindowController {
     var swipeConsumeMomentum = false
 
     /// 表示更新の世代。連打時に古い await 結果が新しい表示を上書きしないための番号
-    private var displayGeneration = 0
+    private(set) var displayGeneration = 0
 
     /// 次の refreshDisplay に伝えるページ送りの向き(ページ送り系アクションが
     /// 設定し、消費されたら nil に戻る)。nil のままの再表示(ジャンプ・
@@ -260,16 +262,33 @@ final class ReaderWindowController: NSWindowController {
     var pendingTurnForward: Bool?
 
     /// スワイプ追従カールの状態(+Input.swift の状態機械)
-    enum InteractiveCurlPhase {
-        case starting(forward: Bool)  // モデル移動と準備が非同期進行中
-        case active(forward: Bool)    // オーバーレイを指に追従中
+    enum InteractiveCurlPhase: Equatable {
+        case starting  // モデル移動と準備が非同期進行中
+        case active    // オーバーレイを指に追従中
         case finished                 // オーバーレイなしで切替済み(以後何もしない)
         case unavailable              // この操作では従来動作(離した時に判定)
     }
     var interactiveCurlPhase: InteractiveCurlPhase?
     var interactiveCurlProgress: CGFloat = 0
-    /// 準備完了前にジェスチャが終わった場合の確定/取消の予約
-    var interactiveCurlEndDecision: Bool?
+    /// await をまたぐ準備・表示・取消は、このセッションを所有する間だけ行う。
+    final class InteractiveCurlSession {
+        let book: Book
+        let forward: Bool
+        var origin: Book.NavigationCheckpoint?
+        var destination: Book.NavigationCheckpoint?
+        var oldContent: CGImage?
+        var task: Task<Void, Never>?
+        let preceding: InteractiveCurlSession?
+        var committed = false
+
+        init(book: Book, forward: Bool, preceding: InteractiveCurlSession?) {
+            self.book = book
+            self.forward = forward
+            self.preceding = preceding
+        }
+    }
+    var interactiveCurlSession: InteractiveCurlSession?
+    var pendingCommittedCurl: InteractiveCurlSession?
     /// マウスドラッグ起点のカール追従(interactiveCurlPhase はスワイプと共有。
     /// 設計書 §2.4 の新規機能)
     var mouseCurlTracking = false
@@ -285,6 +304,9 @@ final class ReaderWindowController: NSWindowController {
     /// クイックルーペ(深押し中のみ表示)を保持中か。解放で畳む。
     /// ⌘L 等の常時表示トグルで出したルーペは対象外
     var forceClickLoupeHeld = false
+    /// ルーペの倍率・ページ・本の変更で旧画像取得を失効させる。
+    var loupeImageTask: Task<Void, Never>?
+    var loupeImageGeneration = 0
 
     /// ページ番号/ページバーの位置・寸法制約(設定変更で組み直す。仕様書 §3.4)
     private var indicatorConstraints: [NSLayoutConstraint] = []
@@ -472,7 +494,7 @@ final class ReaderWindowController: NSWindowController {
                 // ページの区切り(偶奇)も先頭起点で組み直してから再表示する
                 // (途中ページで切り替えても 3-4 → 2-3 のように即座に変わる)
                 Task {
-                    await book.reanchorToLeadingPartition()
+                    guard await book.reanchorToLeadingPartition(), book === self.book else { return }
                     await refreshDisplay()
                 }
             }
@@ -824,7 +846,7 @@ final class ReaderWindowController: NSWindowController {
     /// 低解像度キャッシュを捨てて現スプレッドを再デコードする
     func updateDisplayPixelCapIfNeeded() async {
         guard let book else { return }
-        _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
+        _ = book.updateDisplayPixelCap(currentDisplayPixelCap())
     }
 
     private func setUpContentViews(in window: NSWindow) {
@@ -1005,25 +1027,31 @@ final class ReaderWindowController: NSWindowController {
     /// 次/前の本ナビゲーションは false — フォルダ自身に着地して階層を保つ
     /// (潜ると以後の兄弟走査が別の深さで行われ、元の階層に戻れなくなる)
     /// fromSlideshow は巻末継続時だけ true とし、旧タイマーを本切替後も維持する
+    @discardableResult
     func openBook(at url: URL, atPage page: Int? = nil, atLastPage: Bool = false,
-                  allowCollectionDrill: Bool = true, fromSlideshow: Bool = false) {
-        Task {
+                  allowCollectionDrill: Bool = true, fromSlideshow: Bool = false)
+        -> Task<Void, Never> {
+        // Task の実行前に閉窓/次の要求が来ても、古い要求を開始しない。
+        openGeneration &+= 1
+        let generation = openGeneration
+        return Task {
             await openBookFlow(url: url, atPage: page, atLastPage: atLastPage,
+                               generation: generation,
                                allowCollectionDrill: allowCollectionDrill,
                                fromSlideshow: fromSlideshow)
         }
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
+                              generation: Int,
                               allowCollectionDrill: Bool = true,
                               autoOpenDepth: Int = 0,
                               fromSlideshow: Bool = false) async {
+        guard generation == openGeneration, !Task.isCancelled else { return }
         // ウインドウが閉じられた後の「最近使った本」「関連付けから開く」でも
         // 必ず再表示する(仕様書 §4.1.2 手順 1: window 前面化)
         showWindow(nil)
-        // 連打時は最後に要求された本だけを確定する(古いフローの巻き戻り防止)
-        openGeneration += 1
-        let generation = openGeneration
+        resetInteractiveCurl()
         isOpeningBook = true
         // 合本復帰フラグの不変条件=「復帰オープンが in-flight の間だけ true」。
         // このオープン試行が(成功・失敗・早期 return いずれでも)終わったら必ず
@@ -1174,7 +1202,11 @@ final class ReaderWindowController: NSWindowController {
             // 復号済みページの暗号化ディスクキャッシュ判定に使うため、ロック解除前に
             // 暗号化状態を控える(PDFSource は解除後 isEncrypted が false を返すため)
             let bookIsEncrypted = await source.isEncrypted()
-            switch await unlock(source) {
+            guard generation == openGeneration else { return }
+            let unlockResult = await unlock(source, generation: generation)
+            // 取消/試行超過も表示を変更するため、成功と同じ所有権で守る。
+            guard generation == openGeneration else { return }
+            switch unlockResult {
             case .unlocked:
                 break
             case .cancelled:
@@ -1200,6 +1232,7 @@ final class ReaderWindowController: NSWindowController {
                                               done: done, total: total)
                 }
             }
+            guard generation == openGeneration else { return }
 
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
             if !fromSlideshow { stopSlideshow() }
@@ -1239,7 +1272,9 @@ final class ReaderWindowController: NSWindowController {
                 if let inner {
                     // HUD は畳まない: 再帰側の beginOpeningProgress が
                     // 新しい世代で引き継ぐ(走査〜内側の本のオープンまで連続表示)
+                    openGeneration &+= 1
                     await openBookFlow(url: inner, atPage: nil, atLastPage: atLastPage,
+                                       generation: openGeneration,
                                        allowCollectionDrill: true,
                                        autoOpenDepth: autoOpenDepth + 1,
                                        fromSlideshow: fromSlideshow)
@@ -1272,7 +1307,7 @@ final class ReaderWindowController: NSWindowController {
             // cooViewer-oxr.45: 旧 Book を対象に完了済みの EPUB 先読みを、
             // 新しい Book の隣接巻として残さない。
             preparedNextEPUB = nil
-            self.book = book
+            replaceBook(book)
             loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
             // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
             readerView.resampleKeyPrefix = book.cacheKey
@@ -1440,9 +1475,10 @@ final class ReaderWindowController: NSWindowController {
     /// スライドショー起点の代理 EPUB 入場ではタイマーだけ維持する
     func unloadImageBookForEPUB(fromSlideshow: Bool = false) {
         if !fromSlideshow { stopSlideshow() }
+        resetInteractiveCurl()
         book?.cancelPrefetch()
         saveCurrentBookState()
-        book = nil
+        replaceBook(nil)
         // cooViewer-oxr.45: 旧 Book 由来の次巻 publication は EPUB 入場時にも
         // 解放する（設計書 §2.4）。
         preparedNextEPUB = nil
@@ -1458,10 +1494,11 @@ final class ReaderWindowController: NSWindowController {
     /// 飛ばして先へ進める。履歴・設定には記録しない。
     private func presentLockedPlaceholder(source: any BookSource, reason: String) {
         stopSlideshow()
+        resetInteractiveCurl()
         saveCurrentBookState()
         dismissEPUBMode()
         let placeholder = Book(source: source, entries: [])
-        book = placeholder
+        replaceBook(placeholder)
         hideThumbnailOverlay()
         thumbnailOverlayModel.clear()
         lockedBookReason = reason
@@ -1476,7 +1513,7 @@ final class ReaderWindowController: NSWindowController {
     func refreshDisplayIfCapRaised() {
         Task { [weak self] in
             guard let self, let book = self.book else { return }
-            if await book.updateDisplayPixelCap(self.currentDisplayPixelCap()) {
+            if book.updateDisplayPixelCap(self.currentDisplayPixelCap()) {
                 await self.refreshDisplay()  // 再表示がアニメも再デコードする
             } else {
                 // バケット内のリサイズでもアニメの表示枠は伸び得る
@@ -1517,6 +1554,14 @@ final class ReaderWindowController: NSWindowController {
             teardownEPUBSearch(closePanel: false)
             return
         }
+        // 閉じた窓を遅いオープン/EPUB 提示で再構成しない。未開始 Task も失効する。
+        openGeneration &+= 1
+        epubPresentEpoch &+= 1
+        isOpeningBook = false
+        epubCollectionReturnPending = false
+        fileInfoGeneration &+= 1
+        endAnyOpeningProgress()
+        resetInteractiveCurl()?.cancel()
         teardownEPUBSearch()
         dismissEPUBFootnote()
         stopSlideshow()
@@ -1539,6 +1584,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     func saveStateBeforeTermination() {
+        resetInteractiveCurl()?.cancel()
         saveCurrentBookState()
         saveEPUBState()
     }
@@ -1581,12 +1627,12 @@ final class ReaderWindowController: NSWindowController {
     /// ネスト書庫/PDF 用のパスワード入力コールバック(仕様書 §4.1.3 のネスト版)。
     /// 本を開くフロー(entries() 構築)中に呼ばれ、MainActor でダイアログを出す。
     func nestedPasswordProvider() -> NestedPasswordProvider {
-        // @Sendable クロージャに非 Sendable の self を捕まえないため、
-        // 有効判定は生成時に固定し、チェック状態の記憶はクロージャ内で
-        // defaults を直接読み書きする(SettingsStore と同じキー)
+        // ソースを組み立てている旧オープンが、後発要求/閉窓の後に尋ねない。
         let vaultEnabled = settings.passwordVaultEnabled
-        return { name, attempt in
+        let generation = openGeneration
+        return { [weak self] name, attempt in
             await MainActor.run {
+                guard let self, generation == self.openGeneration else { return nil }
                 // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱い)
                 if ProcessInfo.processInfo.environment[
                     "COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil || AutomatedRun.isXCTest {
@@ -1608,7 +1654,8 @@ final class ReaderWindowController: NSWindowController {
                     ? Self.passwordAccessory(field: field, checkbox: saveCheckbox)
                     : field
                 alert.window.initialFirstResponder = field
-                guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+                guard alert.runModal() == .alertFirstButtonReturn,
+                      generation == self.openGeneration else { return nil }
                 let save = vaultEnabled && saveCheckbox.state == .on
                 if vaultEnabled {
                     UserDefaults.standard.set(save, forKey: "PasswordVaultSaveByDefault")
@@ -1666,7 +1713,7 @@ final class ReaderWindowController: NSWindowController {
     /// 旧実装の「正解かキャンセルまで無限に再表示」をやめ、3 回で打ち切る。
     /// 保存済みパスワード(PasswordVault)があれば先に無言で試し、成功なら
     /// ダイアログを出さない(自動解錠。設計書 §2.4)
-    private func unlock(_ source: any BookSource) async -> UnlockResult {
+    private func unlock(_ source: any BookSource, generation: Int) async -> UnlockResult {
         // UI 検証用の隠しフック/XCTest 実行(モーダルを出さずキャンセル扱いにする)
         if ProcessInfo.processInfo.environment["COOVIEWER_UI_TEST_CANCEL_PASSWORD"] != nil
             || AutomatedRun.isXCTest,
@@ -1687,6 +1734,7 @@ final class ReaderWindowController: NSWindowController {
         let maxAttempts = 3
         var attemptsLeft = maxAttempts
         while await source.isEncrypted() {
+            guard generation == openGeneration else { return .cancelled }
             guard attemptsLeft > 0 else { return .attemptsExceeded }
             let alert = NSAlert()
             alert.messageText = String(localized: "This archive is password-protected.")
@@ -1701,7 +1749,8 @@ final class ReaderWindowController: NSWindowController {
                 ? Self.passwordAccessory(field: field, checkbox: saveCheckbox)
                 : field
             alert.window.initialFirstResponder = field
-            guard alert.runModal() == .alertFirstButtonReturn else { return .cancelled }
+            guard alert.runModal() == .alertFirstButtonReturn,
+                  generation == openGeneration else { return .cancelled }
             let save = settings.passwordVaultEnabled && saveCheckbox.state == .on
             if settings.passwordVaultEnabled {
                 // チェック状態は誤入力でも記憶する(ネスト側ダイアログと同じ)
@@ -1770,8 +1819,19 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: - 表示更新
 
-    func refreshDisplay() async {
-        guard let book else { return }
+    func replaceBook(_ book: Book?) {
+        resetInteractiveCurl()
+        self.book = book
+    }
+
+    func invalidatePendingDisplay() {
+        displayGeneration &+= 1
+        cancelLoupeHighResolution()
+    }
+
+    func refreshDisplay(interactiveCurl session: InteractiveCurlSession? = nil) async {
+        guard let book, !Task.isCancelled else { return }
+        if let session, !ownsInteractiveCurlDestination(session) { return }
         // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
         // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
         // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
@@ -1788,12 +1848,40 @@ final class ReaderWindowController: NSWindowController {
             setResampleIndicator(true)
         }
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
-        _ = await book.updateDisplayPixelCap(currentDisplayPixelCap())
+        _ = book.updateDisplayPixelCap(currentDisplayPixelCap())
         displayGeneration += 1
         let generation = displayGeneration
+        let position = book.navigationCheckpoint
         let spread = await book.currentSpread()
         // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
-        guard generation == displayGeneration, book === self.book else { return }
+        guard generation == displayGeneration, book === self.book, !Task.isCancelled,
+              book.isAtNavigationCheckpoint(position) else { return }
+        if let session, !ownsInteractiveCurlDestination(session) { return }
+
+        // 壊れページも元のページ番号に対応するプレースホルダで表示する。
+        let images = spread.images.map { $0 ?? brokenPlaceholder }.compactMap(\.self)
+        let ids = spread.indices.map { book.entries[$0].id }
+        // リサンプル済みキャッシュの事前引き当て(照会のみ。事前リサンプルが
+        // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
+        // からフィルタ済みの絵を使える)
+        var preResampled: [(size: CGSize, image: CGImage)?] = []
+        if let targets = readerView.predictedResampleSizes(
+            for: images.map { CGSize(width: $0.width, height: $0.height) }) {
+            let useMetalFX = settings.interpolation == .high
+            let level = settings.noiseReductionLevel
+            for (position, image) in images.enumerated() {
+                let hit = await ImageResampler.shared.cached(
+                    image, to: targets[position],
+                    cacheKey: "\(book.cacheKey)#\(ids[position])",
+                    upscaleWithMetalFX: useMetalFX, noiseReduction: level)
+                preResampled.append(hit.map { (targets[position], $0) })
+            }
+        }
+        // キャッシュ照会も await。表示・位置・カール所有者を再照合した後に
+        // 一回消費フラグやビューを更新し、古い pass の書き込みを一括で防ぐ。
+        guard generation == displayGeneration, book === self.book, !Task.isCancelled,
+              book.isAtNavigationCheckpoint(position) else { return }
+        if let session, !ownsInteractiveCurlDestination(session) { return }
 
         // 一回消費フラグ(めくり向き・合本到達方向・先頭強制)は、連打・競合を
         // 弾く supersession ガードを通過した「勝ち残る表示」でだけ消費する。
@@ -1859,13 +1947,6 @@ final class ReaderWindowController: NSWindowController {
             return
         }
         statusLabel.isHidden = true
-        // 壊れページは理由入りプレースホルダで表示(ページ数は保つ。§4.17)
-        let images = spread.images.map { $0 ?? brokenPlaceholder }.compactMap(\.self)
-        // 非同期の合間に本が入れ替わった場合に備えて範囲を検証する(範囲外は
-        // インデックスをそのままキーにする。クラッシュ報告 Index out of range 対策)
-        let ids = spread.indices.map { index in
-            book.entries.indices.contains(index) ? book.entries[index].id : index
-        }
         displayedEntryIDs = Set(ids)
         // デコード先読みの深さを実ページサイズ・メモリ条件へ追従させる
         updatePrefetchDepth(book: book, images: images)
@@ -1884,21 +1965,8 @@ final class ReaderWindowController: NSWindowController {
             else { return nil }
             return ReaderView.PageTurn(animation: animation, forward: turnForward)
         }()
-        // リサンプル済みキャッシュの事前引き当て(照会のみ。事前リサンプルが
-        // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
-        // からフィルタ済みの絵を使える)
-        var preResampled: [(size: CGSize, image: CGImage)?] = []
-        if let targets = readerView.predictedResampleSizes(
-            for: images.map { CGSize(width: $0.width, height: $0.height) }) {
-            let useMetalFX = settings.interpolation == .high
-            let level = settings.noiseReductionLevel
-            for (position, image) in images.enumerated() {
-                let hit = await ImageResampler.shared.cached(
-                    image, to: targets[position],
-                    cacheKey: "\(book.cacheKey)#\(ids[position])",
-                    upscaleWithMetalFX: useMetalFX, noiseReduction: level)
-                preResampled.append(hit.map { (targets[position], $0) })
-            }
+        if let session, let oldContent = session.oldContent {
+            readerView.pendingInteractiveCurl = (oldContent, session.forward)
         }
         readerView.setPages(images, ids: ids,
                             readsFromLeft: book.readMode.readsFromLeft,
@@ -2510,7 +2578,7 @@ final class ReaderWindowController: NSWindowController {
             Task { await refreshDisplay() }
         case .hitEnd:
             handleEndOfBook()
-        case .hitStart:
+        case .hitStart, .superseded:
             break
         }
     }
@@ -2518,13 +2586,15 @@ final class ReaderWindowController: NSWindowController {
     private func showPrevious() {
         guard let book else { return }
         Task {
-            switch await book.movePrevious() {
+            let result = await book.movePrevious()
+            guard book === self.book else { return }
+            switch result {
             case .moved:
                 pendingTurnForward = false
                 await refreshDisplay()
             case .hitStart:
                 handleStartOfBook()
-            case .hitEnd:
+            case .hitEnd, .superseded:
                 break
             }
         }
@@ -2568,7 +2638,7 @@ final class ReaderWindowController: NSWindowController {
                 // 巻頭ループで同じ合本の末尾へ戻る。末尾が代理 EPUB のとき
                 // 後退到達として末尾から開く(監査 #1。設定なしだと先頭で開く)
                 epubCollectionArrivalForward = false
-                await book.goToLast()
+                guard await book.goToLast(), book === self.book else { return }
                 await refreshDisplay()
             }
         case 1:
@@ -2591,16 +2661,18 @@ final class ReaderWindowController: NSWindowController {
     func performPreviousFromEnd() {
         guard let book else { return }
         Task {
-            switch await book.movePrevious() {
+            let result = await book.movePrevious()
+            guard book === self.book else { return }
+            switch result {
             case .moved:
                 pendingTurnForward = false
                 await refreshDisplay()
-                if settings.prevPageMode == 1 {
+                if book === self.book, settings.prevPageMode == 1 {
                     readerView.scrollToEnd()
                 }
             case .hitStart:
                 handleStartOfBook()
-            case .hitEnd:
+            case .hitEnd, .superseded:
                 break
             }
         }
@@ -2661,8 +2733,9 @@ final class ReaderWindowController: NSWindowController {
 
     @objc func goToLastPage(_ sender: Any?) {
         if isEPUBMode { epubGoToLast(); return }
+        guard let book else { return }
         Task {
-            await book?.goToLast()
+            guard await book.goToLast(), book === self.book else { return }
             // 最終ページが合本内リフロー EPUB 代理なら、末尾到達として末尾から
             // 開く(前進到達=先頭ではない)。handleStartOfBook の goToLast 経路や
             // openBookFlow の atLastPage 経路と対称。設定なしだと先頭/復元位置で

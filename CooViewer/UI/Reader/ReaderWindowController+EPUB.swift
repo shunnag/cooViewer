@@ -1378,6 +1378,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// census(全文ページ数の実測)があれば画像本の jumpToPercent と同じ
     /// 「ページ番号」基準、未完了なら spine 単位の近似
     func epubJump(toBookFraction fraction: Double) {
+        // 保存された割当値に NaN が混じっても Int 変換で停止しない。
+        guard fraction.isFinite else { return }
         guard let epubPublication, let epubView else { return }
         // コレクション文脈では % もバーも「合本全体」基準(§3.4 の読み替え。
         // 画像ページへの復帰・別 EPUB への横断もここから起きる)。
@@ -1397,6 +1399,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             return
         }
         let count = epubPublication.readingOrder.count
+        guard count > 0 else { return }
         let scaled = min(clamped, 0.9999) * Double(count)
         let spine = min(count - 1, Int(scaled))
         epubView.go(to: EPUBLocator(spineIndex: spine,

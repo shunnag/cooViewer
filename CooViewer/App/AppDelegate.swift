@@ -1,9 +1,10 @@
 import AppKit
+import os
 import Sparkle
 import SwiftUI
 import Washi
 
-/// 自動実行(XCTest / スナップショット検証)の判定。
+/// 自動実行(XCTest / スナップショット検証 / 書庫監査)の判定。
 /// テストホストがユーザーの実データ(最後に開いた本)に触ったり、
 /// モーダル(Sparkle 許可・パスワード)で停止したりしないための共通ゲート
 enum AutomatedRun {
@@ -15,10 +16,23 @@ enum AutomatedRun {
     static var isSnapshot: Bool {
         CommandLine.arguments.contains("--snapshot")
     }
+
+    static var isArchiveAudit: Bool {
+        CommandLine.arguments.contains("--audit-archives")
+    }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    /// NSApplicationMain より先に終了することで、復元・履歴移行・更新確認を起動しない。
+    /// 書庫パーサー設定だけは通常起動と共通にする(開発ガイド §2.1)。
+    static func runArchiveAuditIfRequested() {
+        guard AutomatedRun.isArchiveAudit else { return }
+        SettingsStore.shared.registerDefaults()
+        SettingsStore.shared.applyArchiveParserSettings()
+        exit(ArchiveAuditCommand.run(arguments: CommandLine.arguments))
+    }
+
     private var readerWindowController: ReaderWindowController?
     private var settingsWindow: NSWindow?
     private var activityWindow: NSWindow?
@@ -37,10 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
     /// Info.plist(SUFeedURL / SUPublicEDKey)。初回は Sparkle 標準の
     /// 許可ダイアログでユーザーが自動チェックを選ぶ。検証用スナップショット
-    /// 実行(--snapshot)と XCTest 実行では、許可ダイアログ(モーダル)が
+    /// 実行(--snapshot)・書庫監査・XCTest 実行では、許可ダイアログ(モーダル)が
     /// 写り込み・ハングの原因になるため起動しない
     let updaterController = SPUStandardUpdaterController(
-        startingUpdater: !AutomatedRun.isSnapshot && !AutomatedRun.isXCTest,
+        startingUpdater: !AutomatedRun.isSnapshot && !AutomatedRun.isXCTest && !AutomatedRun.isArchiveAudit,
         updaterDelegate: nil, userDriverDelegate: nil)
 
     /// メニュー「アップデートを確認…」(MainMenuBuilder から使用)
@@ -494,13 +508,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// A/B 指定を UserDefaults へ保存せず、このプロセスで今後開く本だけに
+    /// 互換用の CLI 指定を UserDefaults へ保存せず、このプロセスで今後開く本だけに
     /// 適用する。起動時の文書イベントより先に固定する(設計書 §2.4)。
     private func applyArchiveEngineArgumentOverride() {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--engine"),
-              index + 1 < arguments.count,
-              let engine = ArchiveEngineKind(rawValue: arguments[index + 1]) else {
+              index + 1 < arguments.count else { return }
+        let name = arguments[index + 1]
+        guard let engine = ArchiveEngineKind(rawValue: name) else {
+            Logger(subsystem: "jp.coo.cooViewer", category: "ArchiveEngine").warning(
+                "Ignoring unsupported archive engine: \(name, privacy: .public); this version uses KaitoKit only")
             return
         }
         SettingsStore.shared.overrideArchiveEngineForCurrentRun(engine)
@@ -634,9 +651,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         readerWindowController?.openBook(at: URL(fileURLWithPath: path))
     }
 
-    /// Debug メニューから現在の書庫バックエンドとフォールバック履歴を表示する。
-    /// 実本比較中だけ必要な診断面で、通常 UI へ実装詳細を露出させない
-    /// (設計書 §2.4 段階的な置き換え)。
+    /// Debug メニューから現在の書庫エンジンと mmap→file 再試行履歴を表示する。
+    /// 読み込み調査用の診断面で、通常 UI へ実装詳細を露出させない
+    /// (設計書 §2.4)。
     @objc func showArchiveEngineStatus(_ sender: Any?) {
         let currentBook = readerWindowController?.book
         Task { @MainActor in
@@ -656,8 +673,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.informativeText = [
                 String(format: String(localized:
                     "Engine in use for the current book: %@"), engine),
-                String(format: String(localized: "Fallback count: %lld"),
-                       Int64(diagnostics.fallbackCount)),
+                String(format: String(localized: "Memory-map retries: %lld"),
+                       Int64(diagnostics.mmapRetryCount)),
                 String(format: String(localized: "Last error: %@"), error),
             ].joined(separator: "\n")
             alert.addButton(withTitle: String(localized: "OK"))

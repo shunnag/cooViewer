@@ -26,7 +26,7 @@
 | 読書ビュー | **AppKit カスタム NSView(layer-backed、CALayer 合成)** | ページ配置計算・スクロール端判定・カーソル管理・ルーペ等(§3-5)はピクセル単位の制御が必要。旧 BufferingMode=New の「ビュー側 2 枚並置描画」(§13.1)を踏襲 |
 | 補助 UI | **SwiftUI**(設定・サムネイル・しおり編集) | フォーム/グリッド UI は SwiftUI が最も読みやすく、Tahoe の Liquid Glass 外観が自動で得られる |
 | PDF | **PDFKit**(ページ毎独立レンダリング) | 旧 COPDFImageRep の共有 rep+setCurrentPage はスレッド不安全(§4.14)。白背景・ポイント原寸の描画特性は維持 |
-| 書庫 | **XADMaster + UniversalDetector(サブモジュール継続、LGPL 2.1)** | rar/rar5/7z 対応とファイル名エンコーディング自動判定(§4.17)は本アプリの生命線。libarchive 案(ヘッダ非公開・エンコーディング検出なし)、ZIPFoundation 案(zip のみ)は機能後退のため却下。modulemap 付き .framework のため Swift から直接 `import XADMaster` 可能(確認済み) |
+| 書庫 | **KaitoKit 単独**。XADMaster + UniversalDetector の利用と自動フォールバックは撤去済み。ファイル名判定は `EncodingPolicy.automatic` | rar/rar5/7z 対応とファイル名エンコーディング自動判定(§4.17)を維持する。libarchive 案(ヘッダ非公開・エンコーディング検出なし)、ZIPFoundation 案(zip のみ)は機能後退のため却下 |
 | ローカライズ | **String Catalog(.xcstrings)**、ja/en | 旧 Localizable.strings 6 世代連結(§10.1)はユニーク 136 キーへ正規化 |
 | テスト | **XCTest ユニットテストターゲットを新設** | 旧アプリにはテストが皆無。ロジック層(ソート・合成判定・バインディング解決・移行)を重点的にテストする。「正しく動作」最優先の担保 |
 
@@ -44,11 +44,9 @@
 │                               fileSystemSynchronizedGroups 方式)
 ├── CooViewer/               ← 新 Swift ソース(§3 のモジュール構成)
 ├── CooViewerTests/          ← ユニットテスト
-├── XADMaster/               ← サブモジュール(継続)
-├── UniversalDetector/       ← サブモジュール(継続)
 ├── Documentation/           ← 仕様書・本設計書
 ├── Design/                  ← アイコン元画像(AppIcon.icon は Icon Composer 管理)
-├── Frameworks/              ← build-frameworks.sh の成果物(ビルド時生成)
+├── Frameworks/              ← KaitoKit / Washi / Sparkle(ビルド時生成・取得)
 ├── legacy/                  ← 旧ソース一式を git mv(*.m/*.h/xib/旧 xcodeproj/
 │                               旧リソース)。参照用アーカイブでありビルド対象外
 └── docs/                    ← GitHub Pages(原作者マニュアル)。当面そのまま
@@ -58,10 +56,17 @@
 - 孤児ファイル(COImageLoader_temp.m、info copy.plist、MainMenu~.nib、Controller.m_1.xcclassmodel、up.tiff 等 §11.4)は legacy/ にも持ち込まず削除。
 - アイコン(icon.icns、coo_*.icns)・Credits.rtf・ライセンス文書は新アプリへ引き継ぐ。
 
-### 1.4 XADMaster のビルド統合
+### 1.4 KaitoKit / Washi / Sparkle の Run Script による Frameworks 生成
 
-- `Scripts/build-frameworks.sh`: XADMaster の xcodeproj を `xcodebuild -scheme XADMaster -configuration Release ARCHS=arm64` でビルドし `Frameworks/` へ配置。**成果物が新しければスキップ**(旧実装の毎回 clean build §11.2 を排除)。
-- 新ターゲットの Run Script phase(input/output 宣言付き)から呼び、`Frameworks/XADMaster.framework` と `UniversalDetector.framework` をリンク+**Embed & Sign**(LGPL 2.1 の差し替え可能性要件を動的リンクで充足 §14)。
+書庫エンジンは KaitoKit 単独。旧 XADMaster / UniversalDetector の framework・submodule・
+LGPL 表記も PR 2 で撤去し、通常の clone に旧エンジンを含めない。
+
+- `Scripts/build-kaitokit-framework.sh`: 兄弟チェックアウト `../KaitoKit` を使い `Frameworks/KaitoKit.framework` を生成する(`KAITOKIT_SOURCE_DIR` で変更可)。
+- `Scripts/build-washi-framework.sh`: 兄弟チェックアウト `../Washi` を使い `Frameworks/Washi.framework` を生成する(`WASHI_SOURCE_DIR` で変更可)。
+- `Scripts/fetch-sparkle.sh`: **Fetch Sparkle** フェーズから単独で呼び、バージョンと SHA-256 を固定した公式配布を取得する。出力は `Frameworks/Sparkle.framework/Versions/B/Sparkle`。
+- 3 framework をリンクし、**Embed & Sign** で同梱する。KaitoKit / Washi の Run Script は各スクリプトがソース・ツールチェーンの更新を判定する。Xcode の legacy build location と SwiftPM 参照が併用できないため、この方式を使う。
+- ソースのファイル名と内容の SHA-256 をスタンプへ含める。更新日時だけでは
+  見えない削除・復元も検出し、署名・配置の成功後にスタンプを確定する。
 
 ---
 
@@ -71,7 +76,7 @@
 
 §13.2 のチェックリスト全項目。骨子:
 
-- 本 = フォルダ / XADMaster 対応書庫(zip/rar/rar5/7z/lha 等) / PDF。単一画像を開くと親フォルダを本として開く(§2.4)。
+- 本 = フォルダ / 書庫エンジン(KaitoKit 既定)対応書庫(zip/rar/rar5/7z/lha/sit/sitx 等) / PDF。単一画像を開くと親フォルダを本として開く(§2.4)。
 - 書庫内の書庫/PDF のネスト取り込み(§2.4): 一時領域へ展開して**子 BookSource**(ArchiveSource/PDFSource)を生成し、そのページを「書庫内パス/子の相対パス」で同じ本に取り込む(旧ネスト COImageLoader 相当)。zip 爆弾対策で 3 段まで。ネスト分は展開時点でローカル化されるためスプール対象外。**暗号化親の子は平文を disk に置かずメモリから開く**(cooViewer-6ax。上限超は 0700/0600 の平文 temp にフォールバック。§2.4 パスワードマネージャー行)。
 - **フォルダ内**の書庫/PDF も同様に統合する(`NestedFolderSource`。旧フォルダモードのネストローダー相当)。書庫/PDF を含む本は旧 canSortByDate 規則どおり日付ソート不可。画像だけのフォルダは従来どおり `FolderSource`(並列ロード・日付ソート可)。
 - 暗号化されたネスト書庫/PDF は `NestedUnlocker`(本の全階層で共有)がロック解除する: 既知パスワード(外側書庫・入力済み)を先に試し、駄目ならダイアログで最大 3 回尋ねる(旧 askInArchivePassword 相当)。キャンセルでその子を本から外し、以降この本では尋ねない。
@@ -84,7 +89,7 @@
 - GoToLastPage 復元(0=確認/1=自動/2=無効、page==0 は復帰なし §7.3)、RecentItems/LastPages/BookSettings の互換移行(キー基数 0/1 始まりを厳守 §13.2)。
 - パスワード書庫(NSSecureTextField 化)、ゴミ箱(`trashItemAtURL` + 削除後のローダ再構築)、原寸表示、Finder 表示、ドラッグ&ドロップ。
 - フルスクリーン: ネイティブ全画面へ移行しつつ「上端ホバーでメニューバー」「カーソル 3 秒自動隠し」を再現(§3.3)。
-- 日英ローカライズ、About パネルの XAD クレジット表記(§14.2)。
+- 日英ローカライズ、About パネルの KaitoKit / Washi / Sparkle / ML モデルの第三者表記。
 
 ### 2.2 削除(§13.1 準拠)
 
@@ -107,6 +112,8 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 
 | 変更 | 内容 |
 |---|---|
+| 書庫エンジン | XADMaster + UniversalDetector → KaitoKit 単独。自動フォールバック撤去、文字コード判定は KaitoKit の `EncodingPolicy.automatic`(bd cooViewer-6lrc)。mmap の open が失敗したら file 入口で一度再試行し診断へ記録する。列挙失敗は unreadable、名前 nil のエントリはログ付きで除外して残りを表示する。旧設定値は書き戻さず KaitoKit へ写像し、旧 `--engine` 引数は警告して無視する。framework・submodule・LGPL 表記も撤去(PR 2) |
+| 書庫監査 CLI | 旧実装には無い新規。`--audit-archives` で GUI・フォールバック・パスワード保管庫を介さず KaitoKit の open・名前・任意の内容 SHA-256 を直列に記録する。入口は `ArchiveSource.shouldMemoryMap` に従う。結果を相対パスの TSV として保存し、ディレクトリ名末尾の区切りだけ比較時に正規化する。TSV は単一エンジン行のみで `match` 列は持たず、過去の TSV との比較は `Scripts/audit-compare.py` を使う。実行手順・失敗分類は development-guide §2.1。監査コアは同期処理内にエンジンを閉じ込め、書庫単位で記録を出力する |
 | 設定ウインドウ | Cancel 全ロールバック(§6.3)→ **即時反映**(SwiftUI Settings 標準)。「デフォルトに戻す」は「高度」タブの高度な設定に対して提供 |
 | フルスクリーン | 疑似(hidesOnDeactivate)→ ネイティブ。esc で解除、3 勘所(§13.2)は再現 |
 | マウスクリックのモード解決 | fitScreenMode 3 のとき Mode2 参照(§5.3)→ キーと同じ Mode3 参照に統一 |
@@ -115,7 +122,7 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 | ドラッグジェスチャの方向 HUD | 旧実装には無い**新規**(既定オン、defaults `GestureHUDEnabled`)。ドラッグ 10pt 超で画面中央に方向矢印+割当アクション名(resolveDrag の switchAction 反転込み)を薄表示、30pt 超(本判定)で強調、未割当は灰色、1 秒超過はさらに薄く=長押しキャンセルの予告。ドラッグスクロール中とカール追従中は出さない。検証フラグ `--show-gesture-hud <left\|right\|up\|down>` |
 | マウスドラッグのカール追従 | 旧実装には無い**新規**: 水平ドラッグ方向の割当が次/前ページ(修飾キーなし)かつページカール有効時、30pt 超(本判定)からカールがカーソルに 1:1 追従(スワイプと同じ 350pt でめくり切り、離すと 60pt 超または進行度 0.35 超で確定・以下で巻き戻し)。追従開始後は 1 秒長押しキャンセルを適用しない(スワイプ同様の直接操作として扱う)。垂直ドラッグはカールの向きと合わないため従来動作 |
 | サイドボタンの既定割当 | 旧既定(§5.7.4)に無い**新規**: button 3=前のページ(7)/button 4=次のページ(6)。switchAction なし=ブラウザの戻る/進むと同じ論理ナビゲーションとして綴じ方向非依存。保存済み MouseArray へは起動時のメモリ内注入(該当ボタンが未使用のときだけ)。**設定「マウスとジェスチャ」で MouseArray を編集・保存すると 2.0 専用フラグ `MouseArrayUserEdited`(legacy スキーマ外の新キー)が立ち、以後は注入せず保存内容だけを使う** — UI で削除したサイドボタン行は復活しない。保存時は表示中の配列(注入行を含む)をそのまま旧互換形式で書き戻す(編集後はそれがユーザーの明示した内容になるため) |
-| パスワードマネージャー | 旧実装には無い**新規**(既定オン、defaults `PasswordVaultEnabled`)。暗号化書庫/PDF のパスワードを保存し次回から自動解錠する。**保存方式**: Keychain にはランダムなマスターキー 1 つ(service `jp.coo.cooViewer.password-vault`、ThisDeviceOnly・iCloud 非同期)だけを置き、本体は Application Support/jp.coo.cooViewer/Passwords/vault.enc へ AES-GCM で暗号化保存(JSON→seal→tmp→rename、0600。per-item Keychain は ad-hoc 署名 Debug でプロンプト頻発のため不採用)。**キー**: CanonicalPath.normalize(BookStates と同一規則)した実ファイルパス — コレクションフォルダ内の zip は実パスのまま子ソース化されるため、単体で開いた同じ zip と同一キーになり保存が共有される。zip 内 zip は親キー+書庫内パスの JSON 配列(連結は非単射のため不使用)。ArchiveSource の persistenceKey は必須引数(一時展開パス由来のキー混入をコンパイル時に防ぐ)。**フロー**: 保存済みを無言で自動試行→失敗時のみ従来の 3 回ダイアログ(「このパスワードを保存」チェックボックス付き、既定オフ・前回状態を記憶)→成功+同意で保存(上書き=パスワード変更対応)。同意済みパスワードはネスト子の解錠時に子キーへ展延。§4.17 の黙殺・キャンセル動作は不変。**プローブ強化**: checkAndSetPassword の検証対象を暗号化エントリ優先に(先頭が非暗号化の混在書庫で誤パスワードが無音確定するのを防ぐ)。**スプール暗号化**: 暗号化書庫の復号済みページのスプールはプロセス限定の使い捨て鍵で AES-GCM 暗号化(CWE-312。AES-GCM 実測 約 6GB/s で展開性能への影響なし)。**ネスト平文回避**(cooViewer-6ax): 暗号化祖先由来の zip 内 zip/PDF は復号済みバイトを disk に置かず**メモリから開く**(`XADArchive(data:)`/`PDFDocument(data:)`。展開/レンダラープールも共有 NSData/Data から再オープンして並列性を保つ。機微性は子孫へ伝播)。ただし RAM 常駐が重い 256MiB 超の子は従来の平文 temp にフォールバック(所有者限定 0700/0600・終了時削除+起動時掃除)。**残余リスク**(受容・文書化): 上記フォールバック分と、同一ユーザー権限の悪意プロセスはマスターキー経由で復号可能(非サンドボックス設計の受容範囲)。移動・改名した書庫は再入力(新パスで保存し直し)。テスト・スナップショット実行では Keychain に触れず、検証は `COOVIEWER_TEST_VAULT_KEY`(hex64)+`COOVIEWER_TEST_VAULT_DIR` の注入で行う。管理 UI は設定「本」ペイン(トグル・件数・すべて削除) |
+| パスワードマネージャー | 旧実装には無い**新規**(既定オン、defaults `PasswordVaultEnabled`)。暗号化書庫/PDF のパスワードを保存し次回から自動解錠する。**保存方式**: Keychain にはランダムなマスターキー 1 つ(service `jp.coo.cooViewer.password-vault`、ThisDeviceOnly・iCloud 非同期)だけを置き、本体は Application Support/jp.coo.cooViewer/Passwords/vault.enc へ AES-GCM で暗号化保存(JSON→seal→tmp→rename、0600。per-item Keychain は ad-hoc 署名 Debug でプロンプト頻発のため不採用)。**キー**: CanonicalPath.normalize(BookStates と同一規則)した実ファイルパス — コレクションフォルダ内の zip は実パスのまま子ソース化されるため、単体で開いた同じ zip と同一キーになり保存が共有される。zip 内 zip は親キー+書庫内パスの JSON 配列(連結は非単射のため不使用)。ArchiveSource の persistenceKey は必須引数(一時展開パス由来のキー混入をコンパイル時に防ぐ)。**フロー**: 保存済みを無言で自動試行→失敗時のみ従来の 3 回ダイアログ(「このパスワードを保存」チェックボックス付き、既定オフ・前回状態を記憶)→成功+同意で保存(上書き=パスワード変更対応)。同意済みパスワードはネスト子の解錠時に子キーへ展延。§4.17 の黙殺・キャンセル動作は不変。**プローブ強化**: checkAndSetPassword の検証対象を暗号化エントリ優先に(先頭が非暗号化の混在書庫で誤パスワードが無音確定するのを防ぐ)。**スプール暗号化**: 暗号化書庫の復号済みページのスプールはプロセス限定の使い捨て鍵で AES-GCM 暗号化(CWE-312。AES-GCM 実測 約 6GB/s で展開性能への影響なし)。**ネスト平文回避**(cooViewer-6ax): 暗号化祖先由来の zip 内 zip/PDF は復号済みバイトを disk に置かず**メモリから開く**(`KaitoKitEngine(data:)`/`PDFDocument(data:)`。展開/レンダラープールも共有 NSData/Data から再オープンして並列性を保つ。機微性は子孫へ伝播)。ただし RAM 常駐が重い 256MiB 超の子は従来の平文 temp にフォールバック(所有者限定 0700/0600・終了時削除+起動時掃除)。**残余リスク**(受容・文書化): 上記フォールバック分と、同一ユーザー権限の悪意プロセスはマスターキー経由で復号可能(非サンドボックス設計の受容範囲)。移動・改名した書庫は再入力(新パスで保存し直し)。テスト・スナップショット実行では Keychain に触れず、検証は `COOVIEWER_TEST_VAULT_KEY`(hex64)+`COOVIEWER_TEST_VAULT_DIR` の注入で行う。管理 UI は設定「本」ペイン(トグル・件数・すべて削除) |
 | ComicInfo.xml 対応(Phase 1–3) | 旧実装には無い**新規**(cooViewer-4fi / bt1 / oo6)。cbz ルート/フォルダ直下の `ComicInfo.xml`(ComicRack/Komga/Kavita 系標準)を **read-only** で消費。Foundation `XMLParser` で fail-soft(壊れ/非 ComicInfo/空 → nil、ObjC 例外を投げない=b19 の教訓)、16MiB 上限、暗号化書庫は解錠後に読む。`BookSource.metadata()`(extension 既定 nil)→ `Book.comicInfo()`(成功時キャッシュ・解錠前 nil を焼き付けない)。用途: ① **ウインドウタイトル**を `Series Vol.N – Title` 等に(無ければファイル名)、② **読み方向**を Manga=YesAndRightToLeft/No から推定(設定「ComicInfo.xml の読み方向に従う」既定オフ。適用は **saved(ユーザー)> ComicInfo > 全体既定**、`ReadMode.withDirection` で方向のみ差替)、③ **ファイル情報窓**に「コミック」セクション(存在フィールドのみ)、④ **章/目次**(Pages[Bookmark])を「移動 → 章へ移動」サブメニューに(メニューのみ・`ChapterListMenuDelegate`。image は 0 始まりページとして実ページへ写像・範囲外は捨てる)、⑤ **見開き補助**(Phase 2。`Pages[DoublePage]`/`[Type=FrontCover]` を「そのページは見開きにしない」ヒントとして `PageLayout.isSmall` へ渡す。設定「ComicInfo.xml の見開き指定に従う」既定オフ。優先度 = **marks(ユーザー)> ComicInfo > coverSingle 設定 > 縦横比**)。⑥ **PDF 属性マップ**(Phase 3・cooViewer-oo6)。PDF 自身のメタデータを ComicInfo へ合成: 文書 Title→`documentTitle`(**窓には出さずファイル情報窓のみ**=ユーザー決定。displayTitle は無視)、Author→writer、Subject→summary、アウトライン(PDFOutline)を平坦化→`pages[bookmark]`(章メニュー。上限 5000・空ラベル/宛先なし除外・`index(for:)` でページ写像)。Producer/Creator は生成ソフト名(≠出版社)・Keywords は NSArray の自由記述タグ(≠ジャンル)のため**写さない**(誤ラベル回避)。`NestedFolderSource` はフォルダ ComicInfo.xml を `FolderSource` へ委譲。常にヒントで永続スキーマ・ユーザー設定を上書きしない。編集/蔵書DBは持たない |
 | アクティビティ窓 | 旧実装には無い**新規**。ウインドウメニュー「アクティビティ」(⌥⌘A)で開く。読み込み(デコード・先読み)/リサンプル(補間)/リサンプルキャッシュ/先読み予算/書庫の一時展開/ML モデル/メモリの**計画(📐 予算・予定)と実態(● 進行中・完了・使用量)**を live 表示。開いている間だけ ~0.7s 間隔で更新し、閉じたら停止(NSWindowDelegate.windowWillClose で ActivityMonitor.stop → actor への query を止める)。値はすべて実在の内部状態から取得(ImageResampler.stats/Book のアクセサ/spoolStats/MLModelInstallStatus/MemoryFootprint の task_info など)で、取れないもの(ヒット率・ML タイル進捗・トリム回数)は載せない(捏造しない)。ActivityMonitor(ObservableObject)+ ActivitySnapshot(Sendable/Equatable 値型・差分時のみ再描画)+ ActivityView(SwiftUI)。検証フラグ `--show-activity`(ImageRenderer で撮る) |
 | 連続ピンチズーム | 旧実装(ピンチ=表示モードの段階切替 enlarge/reduceViewMode)から**変更**: ピンチジェスチャは常に連続ズーム。ReaderView に `zoomScale`(下限 1.0=現在の表示モードの見え方、上限 8x)を導入し、fitMode は昇格させず relayout の scaled にだけ乗じる純乗数(predictedResampleSizes/先読み予算は 1.0 基準を保つ)。magnify を .ended 単発の仮想ボタン送出からライブ処理へ: .changed で毎イベント追従(カーソル位置アンカー固定)、.ended で慣性・下限吸着(1.08 未満→1.0)を 120Hz Timer でスクラブ、確定時に表示ピクセルキャップを 1x/2x/4x バケットで段階引き上げ(ZoomMath.capBucket)して高解像度再描画。ページめくり・表示モード変更・回転で 1.0 リセット。ズーム中は 2 本指スクロールをパンへ振り替え(ページ送り抑止)、カールは zoomScale==1 のみ。段階切替アクション(enlarge/reduce/cycleViewMode)はキー・他ボタン割当に温存。**ピンチはバインディング経路(仮想ボタン 5000/6000)を通さないため、既定割当 pinchOut=63/pinchIn=64 は外し、マウス割当編集 UI(MouseBindingsPane)のトリガ選択肢からもピンチを除外した**(§7.5: 設定 UI と実挙動を一致させる。表示モード拡大/縮小はキー 51/52 か他ボタン割当で)。状態遷移は ZoomMath(純関数)で XCTest。検証フラグ `--zoom <倍率>` |
@@ -136,14 +143,14 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 | 表示モードの永続化と設定 UI | 旧: fitScreenMode は永続化されず毎回 0(全体フィット)で起動(§3.2)→ **defaults `FitMode`(新キー)にグローバル保存**し、次回起動時も復元。設定「表示」ペインのピッカーとメニュー ⌘1-4/キー巡回(action 42/51/52)は同じ値を共有(変更経路は ReaderWindowController.setFitMode に一本化)。方針: メニューにある設定的項目は必ず設定ウインドウにもあり、メニューは頻繁に切り替えるものの抜粋 |
 | 表紙の単ページ表示 | 旧実装には無い**新規**(既定オフ)。defaults `SpreadCoverSingle`。ON のとき見開きモードで先頭ページ(表紙)を常に単ページにし、以降を (1,2)(3,4)… で組む(PageLayout.isSmall の coverSingle 判定。marks の強制ペア「1-2」が最優先)。サムネイル一覧の見開きセルも同じ規則で追従。設定「表示」の読み方向直下のトグルと、表示メニュー > 読み方向 > 「表紙を単ページで表示」の両方から切替(即時反映)。ペア判定は §4.2 どおり現在位置から局所的に決まるため、切替の瞬間だけ Book.reanchorToLeadingPartition が先頭起点の区分を歩き直して現在位置を整列させる(途中ページで切り替えても 3-4 → 2-3 のように即座に組み替わる。サイズ未取得ページは縦長とみなし、marks の強制指定は常に優先。検証フラグ `--then-toggle-cover-single`) |
 | 設定ウインドウの構成 | 旧: 5 タブの TabView → **macOS のシステム設定風**(サイドバー+検索+詳細、NavigationSplitView。リサイズ可)。ペインは意味で再編: 一般(起動・履歴・記憶・アップデート確認)/本(並び順・サブフォルダ・本の端)/表示(読み方向・表紙単ページ・見開きしきい値・表示モード・補間・サムネイル)/ページ番号/ページバー/操作/キー割り当て/マウスとジェスチャ/デコーダ(高度から独立)/高度(チューニングのみ)。**キー割り当てとマウスとジェスチャは「できること別」**: 機能をカテゴリ列挙し、各行に入力(キーは実押下の捕捉、マウスは種類選択)をチップとして割り当てる。使用中の入力を選ぶと付け替え(シートで予告)。1 度でも UI から保存すると自動注入(f キー・サイドボタン)を止めるフラグ `KeyArrayUserEdited`/`MouseArrayUserEdited` が立ち、削除が定着する。**検索**はペインごとの索引(タイトル+項目ラベル、SettingsSearch)でサイドバーを絞り込み、一致した項目名を行の下に注釈表示。選択ペインは defaults `SettingsSelectedTab`(旧 0-4 の意味を保持し新ペインは 5 以降。検証は `-SettingsSelectedTab n --snapshot-settings`、検索は `-SettingsSearchText 語` で注入)。ペインへ項目を足すときは SettingsView.searchTerms への追加も必須 |
-| 書庫の並列展開プール | エントリ独立圧縮の形式(zip/cbz)のみ、ArchiveEntryExtractor(独立 XADArchive の actor)を最大 3 つプールし、未スプールのページ展開をエントリ間で並列化(PDFSource のレンダラープールと同型)。空き再利用が最優先で全員使用中のときだけ成長(直列読みでは 1 つのまま)。エントリ数不一致(差し替え)は成長を止めてメイン書庫の直列展開へ。solid 形式(rar/7z 等)は従来どおり直列 |
+| 書庫の並列展開プール | エントリ独立圧縮の形式(zip/cbz)のみ、ArchiveEntryExtractor(独立した KaitoKit エンジンの actor)を最大 3 つプールし、未スプールのページ展開をエントリ間で並列化(PDFSource のレンダラープールと同型)。空き再利用が最優先で全員使用中のときだけ成長(直列読みでは 1 つのまま)。エントリ数不一致(差し替え)は成長を止めてメイン書庫の直列展開へ。solid 形式(rar/7z 等)は従来どおり直列 |
 | 縮小リサンプルの GPU 化 | 表示ピクセルへの縮小を CoreImage(Metal)の Lanczos で行う(LanczosDownscaler)。従来の CGContext 高品質補間(CPU)はフォールバック。色空間の規則は CG 経路と同一(RGB 以外は sRGB)。CIImage(cgImage:) は CG と同じ向きのため反転補正は不要(色・向きの回帰テストあり) |
 | 次スプレッドの事前リサンプル | refreshDisplay 後、進行方向の隣接スプレッド列(Book.predictedAdjacentSpreads が moveNext/movePrevious と同じ規則で予測)を表示ピクセルサイズ(ReaderView.predictedResampleSizes)へ先行リサンプルし、ImageResampler のキャッシュに載せる。めくった直後の最初の描画から等倍のシャープな画像になる。先へ進む量は**メモリ予算内**(PreresamplePolicy: 1 ページの表示サイズ×枚数 ≤ 物理メモリの 1/8・最大 4GB。ページ数上限 64 は小さすぎるページでの保険。ペアは分割しない)。ImageResampler のキャッシュは件数制(8)から**バイト基準 LRU**(物理メモリの 1/5・最大 12GB=先読み予算+表示中・ルーペ分の余裕、メモリ圧迫で半減トリム)に変更。リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため広めに確保する(旧 1/6・最大 4.5GB はデコードキャッシュ 16GB に比べ使用率が高く大容量機でキャップが早く効いていたため引き上げ)。現スプレッドのリサンプルと競合しないよう 250ms 遅延+**表示中スプレッドの補間完了を待ってから**積む(ML 実行は actor の FIFO のため、先に並ぶと見開き 2 枚目の表示処理が先読みに抜かれる)。表示要求が来たら先読みタスクを即キャンセルして ML キューを明け渡し(SR はタイル毎にキャンセルを確認)、表示確定後に組み直す。キャンセルされたページは次回の先読みで最初から再計算(完成済みは SR ディスクキャッシュで即復元)。表示世代が進んでいたら残りを捨てる |
 | ページめくり効果 | 旧実装には無い**新規**(既定オフ)。defaults `PageTurnAnimation`(0=なし/1=フェード/2=スライド/3=ズームフェード/4=ページカール)。フェード/スライドは CATransition(スライドは読み方向連動: 右→左読みで進むと新ページが左から入る。PageTurnAnimation.entersFromLeft)、ズームフェードは container への軽い拡大+フェード。**ページカール**は本式のめくり: 画面をノド(中央)で左右に分割し、空く側の半面をストリップ列(12 本)として 0→π 回転+外側ほど大きい曲げ角(sin θ 比例)で紙のしなりを表現(piecewise 円筒近似。幾何は PageCurlGeometry の純関数)。リーフの表=旧内容の空く側半面、裏=新内容の着地側半面(実際の紙の裏=次のページ)で、α が π/2 を跨いだストリップから discrete キーフレームで裏面に切替。裏面用の複製は **180° 回転**(水平だけでなく垂直も反転): 裏面描画の向きは机上の行列計算では決められず、**CARenderer による実描画テスト**(PageCurlRenderTests: 実物の ReaderView に実経路のスナップショットを流し、終端の絵=ライブ表示の絵をピクセル比較する自己校正方式)で確定した。リーフは**帯(横割り 24)×ストリップ(縦割り 12)のパッチ格子**で、ストリップ角は α = min(π, θ×(1+curl×外側度)×(1+lead×下端度)) の巻き込み+ねじれモデル(自由端が先に裏返って丸まる Apple Books 風の剥がれ方で、**下の帯ほど先行**して下の角から持ち上がる)。ノイズ対策: ねじれは序盤に集中させ二乗フェードで中盤に 0 へ(帯間の食い違い=階段状の横線を消す)、パッチは 1.2pt 重ねる(丸め由来のヘアラインを消す)。**影はパッチに載せない**(パッチ毎の陰は重なり部分で二重に暗くなり格子が見える。過去実装の反省点): 幾何(ロール頂点の投影 x)に追従する単一レイヤー群 — 投影影(広く柔らかい)+接触影(芯)+綴じ目の陰影+着地側の影。紙の縁ハイライトは不採用: リーフは「画面の半分」でありページ実体より広いため、ページが画面より小さいとき明線が黒背景まで届いて白線ノイズになる(実装後に撤去)。ページ束の表現もユーザー判断で不採用。濃さはいずれも sin θ 比例で始端・終端は消える。キーフレームは 48 分割(120Hz 表示でも補間段差なし)。メモリ圧迫時はオーバーレイ(スナップショット 2 枚)を即時解放。白ページの行輝度走査でシームを検出する実描画テストあり。どの帯も連結はノドから始まるため**綴じは離れない**(リーフ全体の面内回転で角先行を作ると上端がノドから浮く。過去実装の反省点。ノド起点は幾何の単体テストで固定)。角に応じた陰(パッチ毎)と着地側の影も付く。非公開の CATransition "pageCurl" は macOS 26 ではフェードにフォールバックすることをプローブで確認済み(採用不可)。着地側には旧内容を静止表示する。**スナップショットの向きに注意**: flipped ビューの layer を直接 render すると上下逆の像になるため snapshotContent が補正する(この取り違えが「着地側が上下反転」の原因だった。裏面は水平鏡像の複製で正像に戻る)。**スワイプ追従**: 設定がページカールのとき、2 本指スワイプはオーバーレイを speed=0 で組んで timeOffset を指の移動量(350pt でめくり切り)でスクラブする。モデルは追従開始時に先へ進めておき、確定=残り再生、取消=巻き戻してからモデルを戻す(スワイプの向きが次/前ページに割り当てられている場合のみ追従。修飾キー付き・別割当・端到達は従来動作)。オーバーレイ構築は PageCurlOverlay(静止フレーム版 makeStatic がテスト用)。完了時にオーバーレイごと除去。回転表示・ルーペ表示中とリサイズ時は省略/打ち切り。適用はページ送り(次/前/半ページ・スライドショー)のみで、ジャンプ・設定変更の再表示には付けない(ReaderWindowController.pendingTurnForward の消費方式)。「視差効果を減らす」で自動無効。設定「表示」ペインと表示メニューの両方から切替(§7.5 の不変条件)。**めくりに使う絵はフィルタ済みを優先**: 表示前にリサンプル済みキャッシュを照会のみで引き当て(ImageResampler.cached → setPages の preResampled)、命中すれば最初のレイアウト=めくりのスナップショットから完成画像(ML 高画質化込み)が入る(次スプレッドの事前リサンプルが温めているため通常のページ送りはほぼ命中。未命中は従来どおり原画で開始し完成後に差し替え)。検証フラグ `--then-next-page` |
 | メニューのキー割当の互換 | 旧 §8.1 のメニューショートカットを踏襲: ⌘, / ⌘O / **⇧⌘O(最後の本)** / ⌘W / ⌘1-4(表示モード)/ **⌘5・⌘6(回転)** / ⌘M。**編集メニュー**(⌘Z/⇧⌘Z/⌘X/⌘C/⌘V/⌘A、FirstResponder 接続)も旧同様に用意 — 無いとテキスト欄(パスワード・しおり名・ページ番号)でコピペのキーが効かない。旧の ⇧⌘F(フィルタ)は機能ごと見送り(§2.2)。リフロー EPUB の本文検索追加に伴い、**⌘F は検索へ再割当し、フルスクリーンは macOS 標準の ⌃⌘F へ移す**。検索の次/前は ⌘G / ⇧⌘G。新規追加: ⇧⌘R(Finder 表示)/ ⌘I(ファイル情報)/ ⌘T(サムネイル)/ **⌘L(ルーペ。旧実装はキー l のみでメニューなし。メニューからも切替可、チェックマーク付き)** |
 | 補間=描画品質 5 段階(ML 高画質化統合) | 旧「補間」(4 種)と 2.0b16 の「圧縮ノイズ低減」を **UI 上 1 本の「補間」5 段階に統合**: なし(ニアレスト)/標準(高品質縮小)/高(+MetalFX 拡大)/**超高(+waifu2x の ML ノイズ除去)**/**最高(+Real-ESRGAN の ×4 ML 超解像)**(RenderQuality enum。設定「表示」ペインと表示メニュー「補間」の両方から選択・§7.5 の同値性維持。メニュー経由の ML 選択も NSAlert で同意を取る)。**保存は旧互換の 2 キーの組合せ**(SettingsStore.renderQuality): `Interpolation` は旧 0-3 のまま(1.x と共有するドメインに未知値を書かないため。なし→1/標準→0/高以上→3)、ML 段階は `NoiseReductionLevel`(超高→3/最高→4)。読み出しは ML 段階優先、旧「低」(2)は標準扱い(選択肢からは廃止)、旧 CI 弱・中(NR 1-2)は表示上は基礎補間だがパイプラインでは従来どおり効く。f キーのトグル(toggleInterpolationNone)は ML 段階も含めた品質単位で往復。**全ページ対象**(2.0b16 の JPEG 限定は撤廃 — waifu2x/Real-ESRGAN はアニメ・漫画絵全般の高画質化に有効なため)。適用範囲(メイン表示のみ/+ルーペ/原寸も。`NoiseReductionScope`)は ML 段階に対して従来どおり。モデルは 2 つとも**本リポジトリのリリース資産(models-1 タグ)から自前配信**(外部リポジトリの構成変更・消失に影響されない): **超高 = waifu2x anime_noise2(MIT、約 1.2MB。imxieyi/waifu2x-mac から無改変で再配布、元重みは nagadomi/waifu2x。帰属表示とライセンス全文はリリース資産 LICENSES-models.txt)**、**最高 = Real-ESRGAN x4plus anime 6B(BSD-3-Clause、© 2021 Xintao Wang)**の自前 CoreML 変換(`Scripts/convert-realesrgan.py`、fp16 約 9MB、PyTorch パリティ最大誤差 0.003)。いずれも**初回選択時の同意後・必要時にのみ** DL し SHA-256 ピン照合→コンパイル→Application Support/Models にキャッシュ(同意フラグ `NoiseReductionMLAccepted` / `NoiseReductionSRAccepted`、取得共通処理は MLModelInstaller、状態表示は MLModelInstallStatus.noise / .superResolution)。waifu2x は 128px タイル+7px 文脈で 1 タイル約 2ms(MLNoiseReducer)。Real-ESRGAN は入力 [1,3,256,256] の 0-1 → 出力 [1,3,1024,1024]、内容 240px タイル+8px 文脈で 1 タイル約 46ms(MLSuperResolver)。×4 はリサンプル前段で行い後段の表示縮小で画質向上を得る設計のため、**等倍系(ルーペ・原寸)は超高へ格下げ**(cappedForOriginalSize)し、**長辺 2048px 超の元画像も超高へフォールバック**。タイル継ぎ目は「マージン捨て」だけでは不十分(GAN は平坦部のトーンがタイル毎に Δ1-2 階調揺れ、帯として見える。実測): 右・下へ margin 分を余計に書き、次のタイルが**線形フェザーで合成**+8bit 量子化の残段差は **Bayer 8×8 の秩序ディザ**で分散(いずれも決定的処理)。×4 結果は HEIC でディスクキャッシュ(Caches/jp.coo.cooViewer/SuperRes/、キー=リサンプルキー+元サイズの SHA-256、サムネイルと同じ保持日数で起動時トリム)。未導入・失敗・XCTest 時は 1 段ずつフォールバック(最高→超高→中相当の CI)。メイン表示は ImageResampler のリサンプル前段で適用しレベル込みのキーでキャッシュ(事前リサンプルも同一条件)、ルーペは超解像前、原寸はフル解像度デコード後に適用 |
 | オープン進捗表示 | 旧実装には無い**新規**。開くのに 0.35 秒を超えたら中央に HUD(スピナー+「“名前” を開いています…」)。統合ソースの組み立て中は「書庫 n/m」の進捗を併記(NestedFolderSource の進捗コールバック)。ドリルダウン中は畳まず引き継ぐ |
-| EPUB 対応(Washi 統合) | 旧実装には無い**新規**(cooViewer-c6s)。EPUB 3 の解析・描画は**独立 SwiftPM パッケージ `Washi/`**(MIT・依存ゼロ・macOS 14+。詳細は `Washi/README.md`)が担い、cooViewer はそれを利用する。**ビルド統合**: Xcode は legacy build location(build/ 直下)とパッケージ参照を併用できないため、SwiftPM 参照ではなく `Scripts/build-washi-framework.sh` が `Frameworks/Washi.framework` を組み立てて埋め込む(XADMaster と同じ方式。Washi のソース更新後は `rm -rf Frameworks/Washi.framework` で再ビルド)。**形式の振り分け**は `openBookFlow` の 1 点(全オープン入口が `openBook(at:)` に合流するため): ①**固定レイアウト**(日本の漫画配信の標準形)→ `EPUBSource` が「1 XHTML = 画像 1 枚」構造(電書協 FXL テンプレートの SVG ラッパー含む)から画像を直接取り出し**既存の画像パイプラインへ**(先読み・見開き・ページカール・ルーペ・サムネイルすべて有効。複雑ページのみ WKWebView ラスタライズ)。spine の `page-spread-left/right/center` と `page-progression-direction` は ComicInfo ヒント(章=nav 目次、シリーズ=belongs-to-collection、右綴じ=Manga 相当)へ写像。②**リフロー**(縦組み小説等)→ **同じリーダーウインドウの EPUB 表示モード**(`ReaderWindowController+EPUB.swift` が readerView と Washi の `EPUBReaderView` を入替表示。独立ウインドウにしないのは PDF 等と操作感を揃えるため — 同一の開閉・次/前の本・メニュー・履歴・章メニュー(nav 目次)・D&D が働く)。版面は **Apple Books に倣う**: ウインドウ幅で単ページ⇔**見開き 2 ページ**を自動切替(横書き=標準 multicol 2 カラム、縦書き=`-webkit-column-axis: horizontal` の半幅ページボックス〈WKWebView 専用・実測検証済み。アンカー位置はプローブで自己校正〉)、中央にノド(内容幅の約 7%)、**ノンブルは各ページの下部中央に素の番号**(書名はウインドウタイトルが担い、ページ面に柱は置かない。ただしページ番号ラベル「N-M/総数 (章題)」の下配置(PageNumPosition 2/3)ではホストの不透明帯ラベルとノンブルが重なるため、その配置に限りノンブルを抑止しラベル一本にする=`epubShowsFolio`。上配置 0/1 は上隅ラベル+下中央ノンブルで両立)。表紙等の画像単独ページは見開き時も単独の中央フィット。**配色はシステム外観に追従**(ライト=紙白/ダーク=Apple Books 系のほぼ黒 + 明灰文字、`color-scheme` 注入。EPUBReaderTheme で固定も可)。縦組みは「標準 multicol の縦積みカラム+無アニメーションジャンプ」方式(Bibi/Readium CSS と同じ実証済みモデル。行が途中で割れない)、ルビ・縦中横・圏点・右綴じは WebKit ネイティブ+電書協互換 CSS(`-epub-`/`-webkit-` 別名は WebKit が解釈)。**キーバインドは resolveKey まで共有**し(fitMode 0、readsFromLeft=綴じ方向。switchAction の対称入替も効く)、実行だけ EPUB 用の縮小ディスパッチャ(WKWebView がキーを食うためローカル NSEvent モニタで捕捉)。メニューは同名セレクタ実装で MainMenuBuilder 無改修。**水平スワイプ/ホイールめくり**は Washi が内部でめくるため、`EPUBReaderSettings.horizontalWheelTurnsPages`(= SwipeToTurnPage でゲート)と `reversesHorizontalWheelTurn`(向きを画像本のスワイプめくりへそろえる。反転条件 = `bookRTL != (実効綴じ方向 != FlipSwipeDirection)` を `currentEPUBReaderSettings` が算出。混在方向コレクションでは Washi が本の宣言方向でめくる差もここで吸収)で画像本と対称にする(監査 #2。既定=画像本と一致するため通常は無反転)。**ハードウェアのスワイプ/回転**は EPUB モードでも `.swipe`/`.rotate` のローカル NSEvent モニタ(`installEPUBGestureMonitorIfNeeded`)で拾い、画像本と同じスワイプ仮想ボタン(swipeDown=次の本/swipeUp=前の本/水平=前後ページ・回転)へ写像して `performEPUB` へ流す(写像は `ReaderView.swipe(with:)`/`rotate(with:)` と同一。カスタム割当も尊重。監査 #10)。**残差**(bd cooViewer-252): 2 本指スクロール由来の水平スワイプは Washi の scrollWheel がめくりに使うため、そこへの**カスタム(非ページめくり)割当だけ**は EPUB で効かない(常に前後ページめくり=#2 の向き整合済み)。core の縦スクロール読みを壊す risk があるため scrollWheel の横取りはしない — 同じカスタム割当は 3 本指スワイプで発火する。**読書位置**は v2 ストアに `lastReflowPosition`(spine index+進行率 0..1。オプショナル追加なのでスキーマ互換)として保存し、復元ゲート(§7.3 write-time 意味論)・**GoToLastPage(0=確認/1=自動/2=無効。確認は全体進行率%で表示)**・移動追跡の urlBookmark・ループ設定 2 の「前の本を末尾から」(atLastPage)は固定ページと共有。**DRM**(ADEPT/LCP/FairPlay)は指紋検出して明示アラート(§4.17 黙殺の例外: ファイルは正常で原因がストア保護だと分かるため)。フォント難読化(IDPF/Adobe)は Washi が透過解除。**全文ページ数は census**(`EPUBPaginationCensus`: 画面外 WKWebView で全 spine 項目を本番と同一メトリクス・同一 `__washi.setup()` で実測。フォント倍率・寸法・見開き切替で再実測、メトリクスキーでキャッシュ)が供給し、ページ番号表示「N-M/総数 (章題)」・ページバーのページ単位進捗/ジャンプ・0-9 の%ジャンプを画像本と同じ意味論にする(census 完了までは spine 近似でバーのみ)。**EPUB 専用の設定ペイン**(SettingsPane.epub=rawValue 10): 文字サイズ(EPUBFontScale。倍率≠1 のときは body をルート相対 1rem に正規化し、`font-size: medium` 等の絶対指定の本にも効かせる)・版面余白(EPUBPageMargins: 狭い/標準/広い→insets 写像)・本が指定しない場合の既定フォント(EPUBDefaultFont。html レベルへ !important なし注入=本の指定が最優先)・ピンチトグル。**コレクション統合**: フォルダ内の FXL EPUB は統合ソースの子になれる。リフロー EPUB は**表紙 1 ページの代理エントリ**(`ReflowEPUBPlaceholderSource`・`PageEntry.reflowEPUBURL`。表紙が無い本はタイトルカード合成。見開きには決して混ぜない)として合本に入り、表示到達で自動的に EPUB モードへ(前進=先頭/復元、後退=末尾)、巻端で合本の隣接エントリへ復帰(合本自体の巻端は §4.3.4 のループ規則)。コレクション文脈では次/前の本=コレクションの隣の本、**キー/マウスの綴じ方向解決はコレクションの readMode に従う**(`EPUBCollectionContext`。表示は本の宣言どおり — 混在方向のコレクションで操作系が本ごとに反転しない)。子 EPUB は履歴(最近使った本)に入れない。**サムネイル一覧(t / §4.8)**も EPUB 対応: セルは表示と同じ「画面」単位(単ページ/見開き 1 面)で census のページ割り・全文ページ番号に一致し、Washi の画面外レンダラ(EPUBScreenThumbnailRenderer。本番と同一メトリクス+現テーマ配色、FXL 項目はラスタライザ委譲、FIFO 直列)が生成、既存オーバーレイへは BookSource アダプタ(EPUBScreenThumbnailSource)で供給。census 未完了時は章単位にフォールバック。クリックで該当位置へジャンプ、表示中のページ送りキーは一覧の画面送りに転用。**コレクション(合本)の一覧では代理ページを census の画面セル列へ「全ページ展開」**(EPUBScreenMetrics=画面計画の単一の正、EPUBScreenAtlas=リーダー外の census/サムネイル、EPUBAtlasStore で LRU 共有、CollectionThumbnailPlan が展開とジャンプ先を対応付け)。クリックでその位置へ直接入場(atLocator が復元より優先)。EPUB 内(コレクション文脈)から開いた一覧も合本全体を表示し、実ページへの復帰・同一/別 EPUB の位置への横断ジャンプができる(census 失敗の本は表紙 1 セルのまま)。**画面外 WebKit の教訓**: 最初の JS 実行を低 QoS(.utility の先読み等)の継承優先度で発行すると応答が永久に返らない(実測)— ラスタライザ/census/サムネイルのジョブは明示的に .userInitiated で回す。**ページバー/ページ番号も合本全体基準**(CollectionPageMap: 画像=1・リフロー EPUB=census ページ数の通し。書庫内 zip・サブフォルダと同じ §3.4 意味論): EPUB 内でも「全体 N/総数」を表示し、バードラッグ・0-9 の %ジャンプは全体基準で 画像ページ復帰/EPUB 内移動/別 EPUB への横断を振り分ける。開いている本の census はリーダー実測を流用し、未計測の巻は暫定 1 ページで表示→計測でき次第差し替え、欠落があれば未完マップとして**欠落巻だけ再計測**(毎ナビゲーション再解析しない上限つき。読了した巻のリーダー census が出れば上限後でもゼロコストで取り込む)。census が恒久的に取れない巻(DRM 等)は表紙 1 セルのまま。書庫内の固定レイアウト EPUB は合本へ取り込む(cooViewer-c6s.14。ArchiveSource が temp 展開して EPUBSource で画像化。リフロー EPUB と暗号化祖先下の EPUB は c6s.23 まで従来どおり無視)。検証: `--open x.epub --snapshot`(EPUB 窓は takeSnapshot 合成)+ `--then-next-page`(--then-* 系はコマンドライン順に逐次実行)+ `--show-thumbnails` |
+| EPUB 対応(Washi 統合) | 旧実装には無い**新規**(cooViewer-c6s)。EPUB 3 の解析・描画は**独立 SwiftPM リポジトリ(兄弟チェックアウト `../Washi`)**(MIT・依存ゼロ・macOS 14+。詳細は `../Washi/README.md`)が担い、cooViewer はそれを利用する。**ビルド統合**: Xcode は legacy build location(build/ 直下)とパッケージ参照を併用できないため、SwiftPM 参照ではなく `Scripts/build-washi-framework.sh` が `Frameworks/Washi.framework` を組み立てて埋め込む(KaitoKit と同じ方式。Washi のソース更新後は `rm -rf Frameworks/Washi.framework` で再ビルド)。**形式の振り分け**は `openBookFlow` の 1 点(全オープン入口が `openBook(at:)` に合流するため): ①**固定レイアウト**(日本の漫画配信の標準形)→ `EPUBSource` が「1 XHTML = 画像 1 枚」構造(電書協 FXL テンプレートの SVG ラッパー含む)から画像を直接取り出し**既存の画像パイプラインへ**(先読み・見開き・ページカール・ルーペ・サムネイルすべて有効。複雑ページのみ WKWebView ラスタライズ)。spine の `page-spread-left/right/center` と `page-progression-direction` は ComicInfo ヒント(章=nav 目次、シリーズ=belongs-to-collection、右綴じ=Manga 相当)へ写像。②**リフロー**(縦組み小説等)→ **同じリーダーウインドウの EPUB 表示モード**(`ReaderWindowController+EPUB.swift` が readerView と Washi の `EPUBReaderView` を入替表示。独立ウインドウにしないのは PDF 等と操作感を揃えるため — 同一の開閉・次/前の本・メニュー・履歴・章メニュー(nav 目次)・D&D が働く)。版面は **Apple Books に倣う**: ウインドウ幅で単ページ⇔**見開き 2 ページ**を自動切替(横書き=標準 multicol 2 カラム、縦書き=`-webkit-column-axis: horizontal` の半幅ページボックス〈WKWebView 専用・実測検証済み。アンカー位置はプローブで自己校正〉)、中央にノド(内容幅の約 7%)、**ノンブルは各ページの下部中央に素の番号**(書名はウインドウタイトルが担い、ページ面に柱は置かない。ただしページ番号ラベル「N-M/総数 (章題)」の下配置(PageNumPosition 2/3)ではホストの不透明帯ラベルとノンブルが重なるため、その配置に限りノンブルを抑止しラベル一本にする=`epubShowsFolio`。上配置 0/1 は上隅ラベル+下中央ノンブルで両立)。表紙等の画像単独ページは見開き時も単独の中央フィット。**配色はシステム外観に追従**(ライト=紙白/ダーク=Apple Books 系のほぼ黒 + 明灰文字、`color-scheme` 注入。EPUBReaderTheme で固定も可)。縦組みは「標準 multicol の縦積みカラム+無アニメーションジャンプ」方式(Bibi/Readium CSS と同じ実証済みモデル。行が途中で割れない)、ルビ・縦中横・圏点・右綴じは WebKit ネイティブ+電書協互換 CSS(`-epub-`/`-webkit-` 別名は WebKit が解釈)。**キーバインドは resolveKey まで共有**し(fitMode 0、readsFromLeft=綴じ方向。switchAction の対称入替も効く)、実行だけ EPUB 用の縮小ディスパッチャ(WKWebView がキーを食うためローカル NSEvent モニタで捕捉)。メニューは同名セレクタ実装で MainMenuBuilder 無改修。**水平スワイプ/ホイールめくり**は Washi が内部でめくるため、`EPUBReaderSettings.horizontalWheelTurnsPages`(= SwipeToTurnPage でゲート)と `reversesHorizontalWheelTurn`(向きを画像本のスワイプめくりへそろえる。反転条件 = `bookRTL != (実効綴じ方向 != FlipSwipeDirection)` を `currentEPUBReaderSettings` が算出。混在方向コレクションでは Washi が本の宣言方向でめくる差もここで吸収)で画像本と対称にする(監査 #2。既定=画像本と一致するため通常は無反転)。**ハードウェアのスワイプ/回転**は EPUB モードでも `.swipe`/`.rotate` のローカル NSEvent モニタ(`installEPUBGestureMonitorIfNeeded`)で拾い、画像本と同じスワイプ仮想ボタン(swipeDown=次の本/swipeUp=前の本/水平=前後ページ・回転)へ写像して `performEPUB` へ流す(写像は `ReaderView.swipe(with:)`/`rotate(with:)` と同一。カスタム割当も尊重。監査 #10)。**残差**(bd cooViewer-252): 2 本指スクロール由来の水平スワイプは Washi の scrollWheel がめくりに使うため、そこへの**カスタム(非ページめくり)割当だけ**は EPUB で効かない(常に前後ページめくり=#2 の向き整合済み)。core の縦スクロール読みを壊す risk があるため scrollWheel の横取りはしない — 同じカスタム割当は 3 本指スワイプで発火する。**読書位置**は v2 ストアに `lastReflowPosition`(spine index+進行率 0..1。オプショナル追加なのでスキーマ互換)として保存し、復元ゲート(§7.3 write-time 意味論)・**GoToLastPage(0=確認/1=自動/2=無効。確認は全体進行率%で表示)**・移動追跡の urlBookmark・ループ設定 2 の「前の本を末尾から」(atLastPage)は固定ページと共有。**DRM**(ADEPT/LCP/FairPlay)は指紋検出して明示アラート(§4.17 黙殺の例外: ファイルは正常で原因がストア保護だと分かるため)。フォント難読化(IDPF/Adobe)は Washi が透過解除。**全文ページ数は census**(`EPUBPaginationCensus`: 画面外 WKWebView で全 spine 項目を本番と同一メトリクス・同一 `__washi.setup()` で実測。フォント倍率・寸法・見開き切替で再実測、メトリクスキーでキャッシュ)が供給し、ページ番号表示「N-M/総数 (章題)」・ページバーのページ単位進捗/ジャンプ・0-9 の%ジャンプを画像本と同じ意味論にする(census 完了までは spine 近似でバーのみ)。**EPUB 専用の設定ペイン**(SettingsPane.epub=rawValue 10): 文字サイズ(EPUBFontScale。倍率≠1 のときは body をルート相対 1rem に正規化し、`font-size: medium` 等の絶対指定の本にも効かせる)・版面余白(EPUBPageMargins: 狭い/標準/広い→insets 写像)・本が指定しない場合の既定フォント(EPUBDefaultFont。html レベルへ !important なし注入=本の指定が最優先)・ピンチトグル。**コレクション統合**: フォルダ内の FXL EPUB は統合ソースの子になれる。リフロー EPUB は**表紙 1 ページの代理エントリ**(`ReflowEPUBPlaceholderSource`・`PageEntry.reflowEPUBURL`。表紙が無い本はタイトルカード合成。見開きには決して混ぜない)として合本に入り、表示到達で自動的に EPUB モードへ(前進=先頭/復元、後退=末尾)、巻端で合本の隣接エントリへ復帰(合本自体の巻端は §4.3.4 のループ規則)。コレクション文脈では次/前の本=コレクションの隣の本、**キー/マウスの綴じ方向解決はコレクションの readMode に従う**(`EPUBCollectionContext`。表示は本の宣言どおり — 混在方向のコレクションで操作系が本ごとに反転しない)。子 EPUB は履歴(最近使った本)に入れない。**サムネイル一覧(t / §4.8)**も EPUB 対応: セルは表示と同じ「画面」単位(単ページ/見開き 1 面)で census のページ割り・全文ページ番号に一致し、Washi の画面外レンダラ(EPUBScreenThumbnailRenderer。本番と同一メトリクス+現テーマ配色、FXL 項目はラスタライザ委譲、FIFO 直列)が生成、既存オーバーレイへは BookSource アダプタ(EPUBScreenThumbnailSource)で供給。census 未完了時は章単位にフォールバック。クリックで該当位置へジャンプ、表示中のページ送りキーは一覧の画面送りに転用。**コレクション(合本)の一覧では代理ページを census の画面セル列へ「全ページ展開」**(EPUBScreenMetrics=画面計画の単一の正、EPUBScreenAtlas=リーダー外の census/サムネイル、EPUBAtlasStore で LRU 共有、CollectionThumbnailPlan が展開とジャンプ先を対応付け)。クリックでその位置へ直接入場(atLocator が復元より優先)。EPUB 内(コレクション文脈)から開いた一覧も合本全体を表示し、実ページへの復帰・同一/別 EPUB の位置への横断ジャンプができる(census 失敗の本は表紙 1 セルのまま)。**画面外 WebKit の教訓**: 最初の JS 実行を低 QoS(.utility の先読み等)の継承優先度で発行すると応答が永久に返らない(実測)— ラスタライザ/census/サムネイルのジョブは明示的に .userInitiated で回す。**ページバー/ページ番号も合本全体基準**(CollectionPageMap: 画像=1・リフロー EPUB=census ページ数の通し。書庫内 zip・サブフォルダと同じ §3.4 意味論): EPUB 内でも「全体 N/総数」を表示し、バードラッグ・0-9 の %ジャンプは全体基準で 画像ページ復帰/EPUB 内移動/別 EPUB への横断を振り分ける。開いている本の census はリーダー実測を流用し、未計測の巻は暫定 1 ページで表示→計測でき次第差し替え、欠落があれば未完マップとして**欠落巻だけ再計測**(毎ナビゲーション再解析しない上限つき。読了した巻のリーダー census が出れば上限後でもゼロコストで取り込む)。census が恒久的に取れない巻(DRM 等)は表紙 1 セルのまま。書庫内の固定レイアウト EPUB は合本へ取り込む(cooViewer-c6s.14。ArchiveSource が temp 展開して EPUBSource で画像化。リフロー EPUB と暗号化祖先下の EPUB は c6s.23 まで従来どおり無視)。検証: `--open x.epub --snapshot`(EPUB 窓は takeSnapshot 合成)+ `--then-next-page`(--then-* 系はコマンドライン順に逐次実行)+ `--show-thumbnails` |
 | 自動更新 | 旧実装には無い **Sparkle 2** による自動更新を追加(2.0b3〜)。フィードは master の `appcast.xml`(raw URL)、更新 zip は EdDSA 署名。フレームワークは公式バイナリ配布をバージョン+SHA-256 固定で取得(`Scripts/fetch-sparkle.sh`)。検証スナップショット実行(`--snapshot`)ではアップデーターを起動しない。**自動チェックの有無・周期(毎日/毎週/毎月)・自動ダウンロード**は設定「一般」ペインの「ソフトウェアアップデート」セクションで変更でき、起動済み `SPUUpdater` へ即時反映される(`UpdateSettingsSection` / `UpdaterViewModel`。永続化は Sparkle の UserDefaults キー `SUEnableAutomaticChecks`/`SUScheduledCheckInterval`/`SUAutomaticallyUpdate`)。updater 未起動のスナップショット/XCTest では nil を注入し UserDefaults 直読みで UI のみ成立させる |
 
 ---
@@ -163,7 +170,7 @@ CooViewer/
 │   ├── Source/
 │   │   ├── BookSource.swift        — プロトコル+既定実装+BookSourceFactory
 │   │   ├── FolderSource.swift      — 不変・並列。フォルダ走査(readSubFolder §4.1)
-│   │   ├── ArchiveSource.swift     — actor。XADMaster ラッパ+ローカルスプール+
+│   │   ├── ArchiveSource.swift     — actor。KaitoKit ラッパ+ローカルスプール+
 │   │   │                             書庫内書庫/PDF のネスト統合(§5)
 │   │   ├── PDFSource.swift         — actor。PDFKit(ページ毎独立レンダリング+
 │   │   │                             レンダラープールで並列化)
@@ -240,9 +247,9 @@ CooViewerTests/                     — ソート・ソース(スプール/暗�
                                       リサンプル/MetalFX 色回帰・レトロデコーダ・
                                       メディアプロファイル・設定・設定検索・
                                       EPUB リフロー位置のユニットテスト
-Washi/                              — EPUB 3 ツールキット(独立 SwiftPM パッケージ・MIT。
+../Washi/                           — EPUB 3 ツールキット(リポジトリ外の独立 SwiftPM リポジトリ・MIT。
                                       OCF/OPF/nav/難読化解除/リフローレンダラー/FXL。
-                                      単体テストは `swift test`。Washi/README.md 参照)
+                                      単体テストは `cd ../Washi && swift test`。../Washi/README.md 参照)
 ```
 
 計画時との主な差分: LegacyMigration の一括移行方式は「各ストアが旧キーを
@@ -259,7 +266,7 @@ Icon Composer の AppIcon.icon。
   冪等で、表示経路は先読み結果に依存しない)。表示の一貫性は
   ReaderWindowController の世代番号(displayGeneration)で守る。
   NSLock+ビジーウェイト+threadStop は持ち込まない。
-- 書庫展開(XADMaster)は ObjC 同期 API のため、専用 actor(`ArchiveSource` 内)で直列化。solid rar の逐次展開特性を前提にシーケンシャルな先読みを優先する(§13.4)。
+- 書庫展開(KaitoKit)は非スレッド安全な同期 API のため、専用 actor(`ArchiveSource` 内)で直列化。solid rar の逐次展開特性を前提にシーケンシャルな先読みを優先する(§13.4)。
 
 ### 3.2 描画設計(旧 §4.9-4.11 の置換)
 
@@ -273,7 +280,7 @@ Icon Composer の AppIcon.icon。
 
 | # | 内容 | 完了条件 |
 |---|---|---|
-| 3 | 骨組み: legacy/ 再編成、新 pbxproj、空アプリ+メニュー+ウインドウ、XADMaster 統合ビルド、テストターゲット | `xcodebuild` 一発でビルド・起動 |
+| 3 | 骨組み: legacy/ 再編成、新 pbxproj、空アプリ+メニュー+ウインドウ、当時の XADMaster 統合ビルド(PR 2 で撤去)、テストターゲット | `xcodebuild` 一発でビルド・起動 |
 | 4 | Core: BookSource 3 実装+ソート+キャッシュ/先読み+ユニットテスト | フォルダ/zip/rar/PDF を開いて全ページ列挙・画像取得がテストで通る |
 | 5 | Reader UI: 表示・見開き合成・フィット/回転・ページ送り・全画面・ページバー | 実書庫を開いて読める |
 | 6 | 入力+設定: バインディング解決・既定バインディング(§5.7)・Settings・移行 | 旧既定操作が全て効く。旧 defaults からの移行テストが通る |
@@ -292,7 +299,7 @@ Icon Composer の AppIcon.icon。
 |---|---|---|
 | 書庫スプール | `ArchiveSource.beginSpooling`: 開いた直後にバックグラウンドで全ページ画像をローカル一時領域(`tmp/cooViewer-spool/<pid>-<uuid>/`)へ**書庫順に逐次展開**。以降のページ取得・サムネイル生成はローカル読み。展開中の要求はオンデマンド経路で応え、1 エントリ毎に譲る。ネストした書庫/PDF(`<pid>-<uuid>-nested/`)は entries() 確定時に展開済みのためスプール対象外 | 合計展開サイズ 4GB まで。超過書庫はオンデマンドのみ |
 | サイズ索引と動的キャップ | ページ寸法索引(`BookSource.imageSize`: ヘッダのみ・EXIF 回転適用。フォルダ/スプール済み書庫/PDF/ネスト委譲)で**見開き判定をデコードなし**に。後方めくり・巻末ジャンプはデコードゼロ、確定した見開きは両ページ**並列取得**。寸法不明時は従来のデコード判定へフォールバック。表示デコード上限は fitToScreen のみウインドウ実寸の 1024 バケット(最低 2048)、noScale/fitWidth 系はユーザー上限。上げ方向はキャッシュ破棄+再デコード(飛行中の旧キャップ結果はキャッシュ照合で棄却)。書庫の並列先読みは「全スプール済み or 非 solid 形式」のみ動的に許可(solid ストリームの巻き戻し防止)。フォルダ内書庫は幅 4 で並列オープン(解錠は直列チェーンで多重ダイアログなし) | |
-| デコード並列化 | Apple Silicon 前提の最適化(2.0b6): 書庫の**デコードは actor 外**(展開・スプールと並行)、フォルダの読み取りゲートは I/O のみ(デコードはゲート外で多コア並列)、Book はページデコードの**単一飛行**(表示要求が先読みの進行中デコードに合流し二重デコードなし)、スプール読みはメモリマップ、アニメ判定は静止画を記録して再判定せず+デコードはメイン外、リサンプルのデバウンスはライブリサイズ中のみ、同フォルダ一覧は 5 秒キャッシュ、applySettings は runloop 単位で一括。XADMaster は -O2+ThinLTO+現行ターゲットでビルド(フラグ版スタンプで再ビルド制御) | |
+| デコード並列化 | Apple Silicon 前提の最適化(2.0b6): 書庫の**デコードは actor 外**(展開・スプールと並行)、フォルダの読み取りゲートは I/O のみ(デコードはゲート外で多コア並列)、Book はページデコードの**単一飛行**(表示要求が先読みの進行中デコードに合流し二重デコードなし)、スプール読みはメモリマップ、アニメ判定は静止画を記録して再判定せず+デコードはメイン外、リサンプルのデバウンスはライブリサイズ中のみ、同フォルダ一覧は 5 秒キャッシュ、applySettings は runloop 単位で一括。当時の XADMaster は -O2+ThinLTO+現行ターゲットでビルドしていた(フラグ版スタンプで再ビルド制御。PR 2 で撤去) | |
 | 表示サイズ連動デコード | Apple Silicon 前提の最適化(2.0b6 続)。**PDF レンダラープール**: `PDFPageRenderer` actor(各自が独立の `PDFDocument` を保持、パスワードは解除時に引き継ぎ、ページ数一致を検証)で並列レンダリング。空きレンダラーの再利用が最優先で全員使用中のときだけ最大 3 まで成長(直列読みなら 1 つのまま)。ロック中は作らず、作成失敗/ページ数不一致は成長を恒久停止してメイン文書直列描画へフォールバック。アニメーションはウインドウ拡大が読み込みキャップを 1.25 倍超えたら再デコード(バケット内リサイズ対応)。**アニメーション**は表示枠ピクセル(`pageFramePixelSize`)を上限にデコード(GIF/APNG の原寸フレーム常駐をやめる。上限 2048 は維持)。**HDR** はゲインマップ検出時にまず表示キャップ付き HDR デコード(`kCGImageSourceDecodeToHDR` + ThumbnailMaxPixelSize)を試し、>8bit で得られたときのみ採用(8K 半精度フル解像度のキャッシュ占有を防止)。**MetalFX** は入力が既知の RGBA8 なら正規化再描画を省略し、出力は malloc バッファへ直接レンダリングして CGImage に所有権ごと渡す(全画素コピー 2 回削減) | |
 | メディア速度適応 | `MediaSpeedProbe` が本を開くとき置き場所を判定(statfs でネットワーク → IOKit の Medium Type で SSD/回転 → 不明なら 16MB/250ms 上限の実測ベンチ。結果はマウントポイント単位でセッションキャッシュ)。`MediaProfile` の方針表: **fastLocal**=zip 系スプール省略(solid 系と分割書庫はスプール)・フォルダ読み 6 並列・サムネイル 6 並列 / **slowLocal(HDD)**=全スプール・読み 2 並列・先読み 16/4 / **network**=全スプール・読み 3 並列・先読み 20/4 / **unknown**=従来動作と同一。フォルダの本は `SourceReadGate` で全読者(サムネイルのセル読み含む)の同時読み取りを制御。整合規則は「**明示は自動に勝つ**」: 先読み深さの適応は高度設定 OFF のときのみ(ON では明示値)、書庫スプールは「高度」タブの三択(自動=メディア速度で判断/常に行う/行わない)が最優先(自動調整 OFF でも明示は有効)。「メディア速度に応じた自動調整」(既定 ON)で判定自体を無効化可 | プローブは開くフローと並行実行・時間バジェット付き |
 | ページキャッシュ | `PageCache`: デコード済み CGImage の**バイト基準** LRU。メモリ圧迫通知(DispatchSource)で半減トリム | 物理メモリの 15%(上限 16GB)。高度な設定 ON のときのみ `PageCacheMegabytes`(MB 直指定)>メモリ%指定で上書き可(OFF では明示指定も無視して標準へ戻る)。旧 `ImageCache`(枚数)は廃止 |
@@ -340,7 +347,7 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
 | リスク | 対策 |
 |---|---|
 | 入力バインディング移行の取りこぼし(6 配列×modifier 符号化) | 旧スキーマの実データ(§5.7 既定+§7.6 の各版追記)をフィクスチャにした移行ユニットテストを先に書く |
-| XADMaster の Swift 連携で未知の穴(例外・スレッド) | ArchiveSource actor で直列化+ObjC 例外を NSException キャッチのブリッジで吸収 |
+| 書庫エンジンの失敗・スレッド安全性 | ArchiveSource actor で KaitoKit を直列化し、open・列挙の失敗は unreadable へ変換する。監査は例外境界と段階別の失敗分類を維持 |
 | 見開き合成・ナビゲーションのエッジケース(§4.2-4.3 の複雑な相互作用) | PageLayout/Navigator を純粋ロジックとして切り出しテーブル駆動テスト |
 | 「Tahoe らしさ」と挙動互換の衝突(全画面・設定即時反映) | §2.4 の仕様変更表で明示管理。迷ったら挙動互換を優先 |
 | 旧 NSArchiver データ(色/フォント)の読替 | 読めなければ既定値へフォールバック(§13.5 が許容) |
@@ -374,7 +381,7 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
 ### 7.3 並行性
 
 - UI と Book は `@MainActor`。スレッド安全でないライブラリを包むソース
-  (XADArchive、PDFDocument)は actor で直列化する。
+  (KaitoKit、PDFDocument)は actor で直列化する。
 - 非同期の競合は**世代番号**で守るのが本アプリの定石:
   `openGeneration`(開くフローの連打)、`displayGeneration`(表示更新)、
   `resampleGeneration`(リサンプルの遅延書込)、`ThumbnailOverlayModel.presentationEpoch`
@@ -385,8 +392,27 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   EPUBScreenAtlas.measuring・`EPUBParseCoalescer`(同一 URL の EPUB 解析)の
   「単一飛行+合流」パターンを踏襲する(合流エントリの自己退去はタスク同一性/
   世代 ID で照合し、完了済みタスクへ後続要求が居座らないようにする)。
+- Book 専用の PageCache は MainActor 上で同期操作する。メモリ索引の照会・
+  読み込み登録・表示上限変更による失効を await で分断しないため。
+  デコードは従来どおり独立タスクで行い、完了時は登録世代を照合してから格納する。
+- Book の見開き取得は位置・並び・見開き条件の変更を検出したら再計算する。
+  後退・巻末移動・見開き再調整の待機中にジャンプや設定変更が入った場合は
+  旧操作を失効させる。同方向の後退どうしは新しい位置から再判定して両方を反映する。
+- 指追従のページカールは操作ごとのセッションが開始位置・着地点・準備 Task を持つ。
+  取消は後発操作がない場合だけ開始位置と表示枚数へ同期復元する。確定済みの
+  連続操作は前の着地点の表示枚数まで待ち、未確定の操作は次のジェスチャーで失効する。
+  旧本/旧操作の準備完了は新しいカール状態に触れない。オーバーレイの予約と
+  表示用の一回消費フラグは、リサンプルキャッシュ照会後の世代照合を通ってから渡す。
+- ルーペの画像取得も要求世代・Book 同一性・位置と表示世代を await 後に照合する。
+  ソース内でしか一意でないページ ID だけで別の本へ結果を差し込まない。
+  倍率・ノイズ低減・保護コンテンツの設定と PageEntry は要求中に固定する。
 - 読み取り I/O は SourceReadGate(メディア速度別の同時数)で絞る。
   ゲートは I/O だけを覆い、CPU デコードはゲート外で並列に行う。
+- 複雑な FXL EPUB の WebKit ラスタライズは専用の2枠を使い、レンダラの
+  保持も2個までに制限する。同じ出版物の要求は同じ枠へ合流し、別冊の枠を
+  待機ページで埋めない。使用中/待機中の要求があるレンダラは追い出さず、
+  空きができてからアイドルの LRU を入れ替える。破棄時はソースごとの所有者 ID を
+  外し、他ソースや進行中の描画が使わなくなってから `invalidate()` する。
 
 ### 7.4 エラーの扱い
 

@@ -124,7 +124,7 @@ final class ArchiveSourceTests: XCTestCase {
 
     func testShiftJISEntryNamesAreAutoDetected() async throws {
         // UTF-8 フラグなしの DOS ホスト ZIP に Shift-JIS 名を入れると、
-        // XADMaster + UniversalDetector が自動判定する(仕様書 §4.17)
+        // KaitoKit が文字コードを自動判定する(仕様書 §4.17、設計書 §2.4)
         let png = TestFixtures.pngData(width: 2, height: 2)
         let sjis = { (s: String) in [UInt8](s.data(using: .shiftJIS)!) }
         let url = try writeZip(named: "sjis.zip", entries: [
@@ -139,10 +139,8 @@ final class ArchiveSourceTests: XCTestCase {
 
     func testUnflaggedUTF8Names() async throws {
         // UTF-8 フラグ(汎用ビット 11)を立てずに UTF-8 バイトの CJK 名を格納した ZIP。
-        // universalchardet は短い CJK 名を統計推定で外しやすいが、XADMaster フォークの
-        // 「確信 UTF-8」fast path(3 バイト以上の列を含む厳密妥当 UTF-8 は UTF-8 と確定。
-        // XADString.m IsDataConfidentlyUTF8)が正しく復号する。1 文字名・日中韓・4 バイトの
-        // 絵文字(サロゲート)まで含めて検証する
+        // KaitoKit の文字コード自動判定で、短い CJK 名も正しく復号することを確認する。
+        // 1 文字名・日中韓・4 バイトの絵文字まで含める(設計書 §2.4)。
         let png = TestFixtures.pngData(width: 2, height: 2)
         let u8 = { (s: String) in [UInt8](s.utf8) }
         let url = try writeZip(named: "utf8noflag.zip", entries: [
@@ -287,6 +285,26 @@ final class ArchiveSourceTests: XCTestCase {
         let entry = try await source.entries()[0]
         let image = try await source.image(for: entry, maxPixelSize: nil)
         XCTAssertEqual(image.width, 4)
+    }
+
+    func testSpoolStatusFinishesAndRepeatedStartDoesNotRestart() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let url = try writeZip(named: "status.zip", entries: [
+            (Array("a.png".utf8), png), (Array("b.png".utf8), png),
+        ])
+        let source = try ArchiveSource(url: url)
+        let initial = await source.spoolStats()
+        XCTAssertFalse(initial.active)
+        let started = await source.startSpoolingAndReadStats()
+        XCTAssertTrue(started.active)
+        await source.waitForSpoolCompletion()
+        let finished = await source.spoolStats()
+        XCTAssertFalse(finished.active, "完了後は実行中と報告しない")
+        XCTAssertEqual(finished.spooled, 2)
+        XCTAssertEqual(finished.bytes, Int64(png.count * 2))
+        let repeated = await source.startSpoolingAndReadStats()
+        XCTAssertFalse(repeated.active, "完了済みの準備を再実行しない")
+        XCTAssertEqual(repeated, finished)
     }
 
     func testGarbageArchiveDoesNotCrash() async throws {
@@ -547,5 +565,13 @@ final class NestedArchiveTests: XCTestCase {
         XCTAssertEqual(entries.count, 2)
         let image = try await source.image(for: entries[1], maxPixelSize: nil)
         XCTAssertEqual(image.width, 10)
+    }
+}
+
+private extension ArchiveSource {
+    /// 開始直後の観測を同じ actor 呼出し内で行い、短い ZIP の完了競合を避ける。
+    func startSpoolingAndReadStats() -> SpoolStats {
+        beginSpooling(sizeLimit: 1 << 30)
+        return spoolStats()
     }
 }

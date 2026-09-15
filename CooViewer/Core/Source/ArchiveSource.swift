@@ -7,8 +7,7 @@ import Washi
 
 /// 書庫(zip/rar/7z 等)を本として読む(仕様書 §2.4, §4.17)。
 /// 書庫エンジンはスレッド安全でないため actor で直列化する。
-/// 既定はファイル名エンコーディングを自動判定する XADMaster とし、
-/// KaitoKit は高度な設定から次に開く本だけに選べる(設計書 §2.4)。
+/// 読み込みと名前の文字コード自動判定は KaitoKit のみを使う(設計書 §2.4)。
 ///
 /// ネットワークドライブや solid 書庫でも快適に読めるよう、開いた後に
 /// バックグラウンドで全ページをローカル一時領域へ逐次展開する(スプール。
@@ -21,9 +20,9 @@ import Washi
 actor ArchiveSource: BookSource {
     nonisolated let url: URL
     private let archive: any ArchiveEngine
-    /// このソースを実際に開いた実装。KaitoKit 失敗時は XADMaster になる。
+    /// このソースを実際に開いた実装。ファイル情報と診断表示に使う。
     nonisolated let archiveEngineKind: ArchiveEngineKind
-    /// ネスト子と展開係も同じ比較条件で生成する。
+    /// ネスト子と展開係も同じエンジンで生成する。
     private let preferredEngine: ArchiveEngineKind
     private let engineFactory: ArchiveEngineFactory
     /// メモリ背景(暗号化親のネスト子)。非 nil のとき disk を読まず、
@@ -66,7 +65,13 @@ actor ArchiveSource: BookSource {
     private var spoolEncrypted = false
     /// スプール暗号鍵(メモリのみの使い捨て。CWE-312 対策のプロセス限定鍵)
     private let spoolKey = SymmetricKey(size: .bits256)
-    private var spoolTask: Task<Void, Never>?
+    /// 完了済みと未開始を区別し、完了 Task を稼働中と数えたり再実行したりしない。
+    private enum SpoolState: Sendable {
+        case idle
+        case running(Task<Void, Never>)
+        case finished
+    }
+    private var spoolState: SpoolState = .idle
 
     private static let logger = Logger(
         subsystem: "jp.coo.cooViewer", category: "archive")
@@ -213,7 +218,7 @@ actor ArchiveSource: BookSource {
     /// コンパイル時に防ぐため)
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
          persistenceKey: PasswordVault.Key, sensitive: Bool = false,
-         preferredEngine: ArchiveEngineKind = .xadmaster,
+         preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live) throws {
         self.url = url
         self.contentIsSensitive = sensitive
@@ -227,7 +232,7 @@ actor ArchiveSource: BookSource {
         // cooViewer-01h)。sourceData に載せることで展開プールも同じマップを共有し
         // 再オープンの I/O も消える。マップ中の切り詰めは SIGBUS になり得る残余
         // リスク(mappedIfSafe+ローカル限定が緩和策。エントリ数一致検証は従来通り)。
-        // 失敗時(マップ不可・パース不能)は従来のファイル経路へ黙って戻す
+        // マップ不可ならファイル経路を使い、解析不能なら診断を記録して一度再試行する
         let opened = try Self.open(
             url: url, nestingDepth: nestingDepth,
             preferredEngine: preferredEngine, factory: engineFactory)
@@ -245,7 +250,8 @@ actor ArchiveSource: BookSource {
     /// mmap で開いてよい書庫か(cooViewer-01h)。条件は保守的に:
     /// (1) 拡張子がボリューム跨ぎのない単一ファイル形式(zip 系・7z)のみ。
     ///     rar は分割書庫(part1/rNN)の兄弟探索がファイル名ベースで data: 経路では
-    ///     働かないため除外。spanned zip(.z01 兄弟)も同じ理由で除外する。
+    ///     働かないため除外。分割 zip(.z01 兄弟)も同じ理由で除外する。
+    ///     KaitoKit の兄弟探索は file: 入口でのみ働く。
     /// (2) ローカルかつ非リムーバブルのボリューム(ネットワークは mappedIfSafe が
     ///     実コピーになり利点消失、リムーバブルは取り外しで SIGBUS)。
     static func shouldMemoryMap(url: URL) -> Bool {
@@ -267,7 +273,7 @@ actor ArchiveSource: BookSource {
     /// 使われる(disk は決して読まない)。sensitive は常に true(暗号化祖先由来)
     init(data: Data, name: String, nestingDepth: Int, unlocker: NestedUnlocker,
          persistenceKey: PasswordVault.Key, sensitive: Bool = true,
-         preferredEngine: ArchiveEngineKind = .xadmaster,
+         preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live) throws {
         self.url = URL(fileURLWithPath: name)
         self.contentIsSensitive = sensitive
@@ -322,8 +328,7 @@ actor ArchiveSource: BookSource {
         }
     }
 
-    /// ファイル入力を選択実装で開き、KaitoKit の生成・列挙失敗だけを
-    /// XADMaster へ一度退避する(設計書 §2.4)。
+    /// ファイル入力を KaitoKit で開き、生成・列挙失敗は unreadable にする(設計書 §2.4)。
     private static func open(url: URL, nestingDepth: Int,
                              preferredEngine: ArchiveEngineKind,
                              factory: ArchiveEngineFactory) throws -> OpenedArchive {
@@ -338,23 +343,14 @@ actor ArchiveSource: BookSource {
                 url: url, mappedData: mapped, nestingDepth: nestingDepth,
                 kind: preferredEngine, factory: factory)
         } catch {
-            guard preferredEngine == .kaitokit else {
-                throw BookSourceError.unreadable(url)
-            }
-            noteFallback(error, input: url.path)
-            do {
-                return try attemptOpen(
-                    url: url, mappedData: mapped, nestingDepth: nestingDepth,
-                    kind: .xadmaster, factory: factory)
-            } catch {
-                logger.error(
-                    "XADMaster fallback failed for \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
-                throw BookSourceError.unreadable(url)
-            }
+            let message = "\(url.path): \(String(describing: error))"
+            ArchiveEngineDiagnostics.recordError(message: message)
+            logger.error("Archive open failed: \(message, privacy: .public)")
+            throw BookSourceError.unreadable(url)
         }
     }
 
-    /// メモリ入力も同じ一回退避規則で開く。暗号化祖先の平文を disk へ戻さない。
+    /// メモリ入力を開く。実ファイルを持たないため file 再試行はせず、暗号化祖先の平文を disk へ戻さない。
     private static func open(data: Data, name: String, nestingDepth: Int,
                              preferredEngine: ArchiveEngineKind,
                              factory: ArchiveEngineFactory) throws -> OpenedArchive {
@@ -364,19 +360,10 @@ actor ArchiveSource: BookSource {
                 data: data, nestingDepth: nestingDepth,
                 kind: preferredEngine, factory: factory)
         } catch {
-            guard preferredEngine == .kaitokit else {
-                throw BookSourceError.unreadable(displayURL)
-            }
-            noteFallback(error, input: name)
-            do {
-                return try attemptOpen(
-                    data: data, nestingDepth: nestingDepth,
-                    kind: .xadmaster, factory: factory)
-            } catch {
-                logger.error(
-                    "XADMaster fallback failed for \(name, privacy: .public): \(String(describing: error), privacy: .public)")
-                throw BookSourceError.unreadable(displayURL)
-            }
+            let message = "\(name): \(String(describing: error))"
+            ArchiveEngineDiagnostics.recordError(message: message)
+            logger.error("Archive open failed: \(message, privacy: .public)")
+            throw BookSourceError.unreadable(displayURL)
         }
     }
 
@@ -391,9 +378,12 @@ actor ArchiveSource: BookSource {
                 archive = try open(data: mappedData, kind: kind, factory: factory)
                 retainedData = mappedData
             } catch {
-                // XADMaster の従来動作だけは mmap 解析不能時に file: へ戻す。
-                // KaitoKit の失敗は比較結果として記録して XADMaster へ退避する。
-                guard kind == .xadmaster else { throw error }
+                // エンジンに関係なく mmap の解析失敗だけを file: で一度再試行する。
+                // 列挙はこの catch の外で行い、列挙失敗では再試行しない(設計書 §2.4)。
+                let message = "\(url.path): \(String(describing: error))"
+                ArchiveEngineDiagnostics.recordRetry(message: message)
+                logger.info(
+                    "\(kind.displayName, privacy: .public) mmap open failed; retrying file once: \(message, privacy: .public)")
                 archive = try open(file: url.path, kind: kind, factory: factory)
                 retainedData = nil
             }
@@ -403,7 +393,7 @@ actor ArchiveSource: BookSource {
         }
         let enumerated = try enumerateEntries(
             archive, nestingDepth: nestingDepth, kind: kind,
-            requireCompleteNames: kind == .kaitokit)
+            requireCompleteNames: false)
         return OpenedArchive(
             archive: archive, kind: kind, sourceData: retainedData,
             enumerated: enumerated)
@@ -416,7 +406,7 @@ actor ArchiveSource: BookSource {
         let archive = try open(data: data, kind: kind, factory: factory)
         let enumerated = try enumerateEntries(
             archive, nestingDepth: nestingDepth, kind: kind,
-            requireCompleteNames: kind == .kaitokit)
+            requireCompleteNames: false)
         return OpenedArchive(
             archive: archive, kind: kind, sourceData: data,
             enumerated: enumerated)
@@ -452,13 +442,6 @@ actor ArchiveSource: BookSource {
         }
     }
 
-    private static func noteFallback(_ error: Error, input: String) {
-        let message = "\(input): \(String(describing: error))"
-        ArchiveEngineDiagnostics.recordFallback(message: message)
-        logger.error(
-            "KaitoKit failed for \(input, privacy: .public); falling back to XADMaster once: \(String(describing: error), privacy: .public)")
-    }
-
     /// 書庫のエントリを画像/ネスト候補へ振り分ける(両 init 共通)。
     /// 旧実装(XADWrapper)同様、ディレクトリとサイズ 0 のエントリを除外し、
     /// 画像以外のファイルと macOS メタデータ(__MACOSX/、._*)も除外する。
@@ -476,6 +459,9 @@ actor ArchiveSource: BookSource {
                 if requireCompleteNames {
                     throw EngineOpenError.missingEntryName(kind, index)
                 }
+                // 名前を取得できないエントリだけを除外し、残りのページを残す(設計書 §2.4)。
+                logger.warning(
+                    "\(kind.displayName, privacy: .public) skipped entry \(index) with no name")
                 continue
             }
             // 空判定はサイズ申告がある場合だけ 64bit 値で行う。未知サイズを 0 と
@@ -520,7 +506,7 @@ actor ArchiveSource: BookSource {
     }
 
     deinit {
-        spoolTask?.cancel()
+        if case .running(let task) = spoolState { task.cancel() }
         let directories = [spoolDirectory, nestedRoot].compactMap(\.self)
         if !directories.isEmpty {
             Task.detached(priority: .utility) {
@@ -715,7 +701,7 @@ actor ArchiveSource: BookSource {
 
     /// ネスト子を一時領域へ書き出す(<pid>-<uuid>-nested/)。非機微な子、または
     /// 上限超でメモリ経由を諦めた機微な書庫/PDF に使う。暗号化祖先由来の EPUB は
-    /// 6ax/c6s.23 によりここへ渡さない。残る平文 temp は XADMaster/PDFKit がパスを
+    /// 6ax/c6s.23 によりここへ渡さない。残る平文 temp は KaitoKit/PDFKit がパスを
     /// 直読みするため暗号化不可(設計書 §2.4 の残余リスク)なので、権限を所有者限定にする
     private func writeNestedTemp(_ candidate: (index: Int32, path: String),
                                  data: Data) -> URL? {
@@ -1035,7 +1021,7 @@ actor ArchiveSource: BookSource {
                                               independentEntries: independent) else {
             return
         }
-        guard spoolTask == nil, !outerImages.isEmpty else { return }
+        guard case .idle = spoolState, !outerImages.isEmpty else { return }
         // 暗号化書庫の復号済みページを平文で temp に残さない(CWE-312。
         // 保存パスワードの自動解錠で無人でも展開が走るため)。スプールは
         // プロセス生存中しか読まれないので、鍵はメモリのみの使い捨て —
@@ -1067,19 +1053,25 @@ actor ArchiveSource: BookSource {
         spoolDirectory = directory
 
         let ids = outerImages.map(\.id)
-        spoolTask = Task { [weak self] in
+        let task = Task<Void, Never> { [weak self] in
             for id in ids {
-                if Task.isCancelled { return }
+                if Task.isCancelled { break }
                 await self?.spoolEntry(id)
                 // 表示中のページ要求が割り込めるよう 1 エントリごとに譲る
                 await Task.yield()
             }
+            await self?.finishSpooling()
         }
+        spoolState = .running(task)
+    }
+
+    private func finishSpooling() {
+        spoolState = .finished
     }
 
     /// スプール完了を待つ(テスト・診断用)
     func waitForSpoolCompletion() async {
-        await spoolTask?.value
+        if case .running(let task) = spoolState { await task.value }
     }
 
     var spooledEntryCount: Int { spooledIDs.count }
@@ -1094,8 +1086,9 @@ actor ArchiveSource: BookSource {
         let active: Bool
     }
     func spoolStats() -> SpoolStats {
-        SpoolStats(spooled: spooledIDs.count, total: outerImages.count,
-                   bytes: spooledBytes, active: spoolTask != nil)
+        let active = if case .running = spoolState { true } else { false }
+        return SpoolStats(spooled: spooledIDs.count, total: outerImages.count,
+                          bytes: spooledBytes, active: active)
     }
 
     private func spoolEntry(_ id: Int) {

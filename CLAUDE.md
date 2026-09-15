@@ -22,8 +22,6 @@ when those procedures change.
 
 ## Build & test
 
-Submodules are required: `git submodule update --init --recursive`.
-
 ```
 xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug build
 xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug test
@@ -31,25 +29,25 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
 
 If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applications/Xcode.app`.
 
-- A run-script phase builds XADMaster/UniversalDetector into `Frameworks/` (skipped while
-  outputs exist). After updating the submodules, `rm -rf Frameworks` to force a rebuild.
-- **KaitoKit (since 9153ef2, 2026-09-08)**: a second archive engine, built from a sibling
+- The Fetch Sparkle run-script phase calls `Scripts/fetch-sparkle.sh` to fetch the
+  pinned Sparkle binary into `Frameworks/` (version and SHA-256 checked). No submodules
+  are needed; KaitoKit and Washi require the sibling checkouts described below.
+- **KaitoKit (since 9153ef2, 2026-09-08)**: the sole archive engine, built from a sibling
   checkout `../KaitoKit` (override with `KAITOKIT_SOURCE_DIR`) by
   `Scripts/build-kaitokit-framework.sh` into `Frameworks/KaitoKit.framework`. The checkout is
   **required** — the build fails without it (the repo is public at
   github.com/shunnag/KaitoKit, MIT). After editing KaitoKit
-  sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. The engine is selected
-  by the `ArchiveEngine` default (`kaitokit` since 2.0b34) or `--engine xadmaster` on the
-  snapshot CLI; see development-guide §3.6. XADMaster stays bundled as the automatic
-  fallback for archives KaitoKit cannot open.
-- EPUB support lives in `Washi/` — an independent, MIT-licensed, zero-dependency SwiftPM
-  package (see `Washi/README.md`), published as a one-way subtree mirror at
-  https://github.com/shunnag/Washi (procedure: development-guide §3.5; commits
-  touching `Washi/` become public history there). A second run-script phase
-  (`Scripts/build-washi-framework.sh`) assembles it into `Frameworks/Washi.framework`
-  because Xcode cannot combine SwiftPM package references with this project's legacy
-  build locations. After editing `Washi/` sources, `rm -rf Frameworks/Washi.framework`
-  to force a rebuild. Washi's own tests run with `cd Washi && swift test`.
+  sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. Archive loading and
+  filename encoding detection use KaitoKit only; see development-guide §3.6.
+- **Washi(EPUB 3 ツールキット)**: 兄弟チェックアウト `../Washi`
+  (`WASHI_SOURCE_DIR` で上書き可)から `Scripts/build-washi-framework.sh` が
+  `Frameworks/Washi.framework` を組み立てる。チェックアウトは**必須**で、
+  無いとビルドは失敗する(公開リポジトリ github.com/shunnag/Washi、MIT、
+  依存パッケージなし。`../Washi/README.md` と development-guide §3.5 参照)。
+  Run Script フェーズを使うのは、Xcode がこのプロジェクトの legacy build location と
+  SwiftPM パッケージ参照を併用できないため。Washi のソース更新後は
+  `rm -rf Frameworks/Washi.framework` で再ビルドを強制する。
+  Washi 単体のテストは `cd ../Washi && swift test`。
   - Washi is **two SwiftPM targets** (since 1.2.0): `WashiCore` (parse layer,
     Foundation-family only, headless) and `Washi` (rendering layer, adds
     AppKit/WebKit) which `@_exported import`s WashiCore. The `WashiDynamic`
@@ -65,12 +63,12 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   per-file entries to the pbxproj.
 - The app is **arm64-only by design** (`ARCHS = arm64` at project level; the frameworks in
   `Frameworks/` are built arm64-only). Never set `ARCHS = $(ARCHS_STANDARD)` on the target —
-  the x86_64 slice then fails to link XADMaster with `Undefined symbol: _OBJC_CLASS_$_XADArchive`.
+  the x86_64 slice can fail to link the KaitoKit/Washi frameworks built for arm64.
   Xcode's Signing & Capabilities pane may inject this silently; remove it if it reappears.
 - Signing: Debug is ad-hoc (`CODE_SIGN_IDENTITY = "-"`), Release is manual Developer ID
   (team FQTM2788K5) with hardened runtime for notarized distribution.
 - Release & notarization (procedure verified for 2.0b1): bump `MARKETING_VERSION` /
-  `CURRENT_PROJECT_VERSION` in the pbxproj, then build with
+  `CURRENT_PROJECT_VERSION` in the pbxproj, run `rm -rf build/Release`, then build with
   `xcodebuild -configuration Release build CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
   OTHER_CODE_SIGN_FLAGS="--timestamp"` — a plain Release build FAILS notarization
   (no secure timestamp + leftover `get-task-allow` entitlement). Then:
@@ -102,16 +100,11 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 ## Code conventions
 
 - Swift 6 language mode with strict concurrency; UI is `@MainActor`, sources that wrap
-  non-thread-safe libraries (XADArchive, PDFDocument) are actors.
+  non-thread-safe libraries (KaitoArchive, PDFDocument) are actors.
 - Comments in Japanese **only** (no English duplicates), citing the spec (`仕様書 §n`)
   or design doc (`設計書 §n`) for any behavior that mirrors or deliberately deviates
   from the legacy app. Prefer explaining *why* (spec, avoided bug, performance)
   over *what*.
-  - **Exception — `Washi/` public API doc comments are English** (decided
-    2026-08-25 for the standalone-package audience; see cooViewer-gse.11).
-    `///` doc comments on `public` symbols are written in English so DocC and
-    external consumers read naturally. Internal (`private`/`internal`) comments
-    and all `// …` inline comments in `Washi/` stay Japanese per the rule above.
 - Persisted-data compatibility (updated for 2.0b5): the UserDefaults domain
   `jp.coo.cooViewer` and the binding array schema (`KeyArray*`/`MouseArray*`) remain
   legacy-compatible (§13.2) — never change those without a migration mapping (§13.5).
@@ -125,15 +118,26 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 - Every logic-level module (sources, sorting, layout, bindings, persistence) has XCTest
   coverage in `CooViewerTests/`; keep it that way for new logic.
 
+Washi リポジトリを変更するときの申し送り: **公開 API の `///` doc コメント、
+DocC カタログ記事、README は日本語を主、英語を併記**する。
+これは Washi 側の規約であり、cooViewer 側の規約の例外ではない。
+段落単位で「日本語→空行→英語」の順に並べ、日本語を先頭段落に置く
+(DocC / Quick Help は最初の段落を要約として扱うため、要約が日本語になる)。
+`private`/`internal` のコメントと全ての `// …` インラインコメントは従来どおり日本語のみ。
+2026-08-25 に英語のみと決定 (cooViewer-gse.11)、
+2026-09-10 に日英併記へ変更 (cooViewer-mdsx)。
+
 ## Architecture (new app)
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
-  `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit by default, automatic one-shot
-  fallback to XADMaster; filename encoding auto-detection comes from
-  XADMaster+UniversalDetector), `PDFSource` (actor over PDFKit, point-size rendering),
+  `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit only, no engine fallback;
+  filename encoding auto-detection uses KaitoKit's `EncodingPolicy.automatic`
+  (39 languages / 54 legacy code pages, no delegate override); failed memory-map opens
+  retry the file entrypoint once, while enumeration failures remain unreadable),
+  `PDFSource` (actor over PDFKit, point-size rendering),
   `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
   extraction for single-image pages, WebKit rasterization fallback).
-- `Washi/` — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
+- Washi(`../Washi`、別リポジトリ) — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
   DRM detection, reflowable WKWebView renderer with vertical-writing pagination,
   paper-book page furniture (folio / page number in the bottom margin), light/dark theming,
   fixed-layout support). Reflowable EPUBs display **in the same reader window** as an
@@ -176,21 +180,12 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   `BookHistoryStore` (BookSettings/RecentItems/LastPages, URL bookmarks instead of alias),
   `PasswordVault` (archive/PDF password manager: one Keychain master key + AES-GCM
   encrypted vault file; keys are canonical file paths via `Core/CanonicalPath`).
-- `Scripts/build-frameworks.sh` — nested xcodebuild for the XADMaster submodule.
 
-## Licensing constraints
+## Third-party notices
 
-XADMaster and UniversalDetector are LGPL 2.1: keep them dynamically linked (embedded
-frameworks), keep the About-panel credits in `Credits.rtf` (the original libxad credit,
-plus the XADMaster / UniversalDetector blocks with the LGPL 2.1 notice, added
-2026-08-26 for §6), keep the bundled license text (`CooViewer/Resources/LGPL-2.1.txt`,
-copied into the app's Resources — §6 requires shipping the license with the binary),
-keep license files. Because Release uses the hardened runtime (users cannot swap the
-frameworks in a signed app), §6 compliance rests on §6(a)/(d) — complete source
-availability: the forks (github.com/shunnag/XADMaster, github.com/shunnag/
-universal-detector) must stay public, and the pinned submodule commits must be pushed
-to them before any Release build ships.
-
+Keep KaitoKit's MIT notice and bundled `KaitoKit-LICENSE.txt`, and the MIT notices for Washi and Sparkle.
+Preserve the KaitoKit, Sparkle, and ML model credits in `Credits.rtf`.
+ML model distributions must include their MIT/BSD notices in `LICENSES-models.txt` (development-guide §4).
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker

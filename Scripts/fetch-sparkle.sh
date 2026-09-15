@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Sparkle(自動更新フレームワーク。MIT ライセンス)の公式バイナリ配布を
-# Frameworks/ へ取得する。build-frameworks.sh から呼ばれる。
+# Frameworks/ へ取得する。Xcode の Fetch Sparkle フェーズから単独で呼ばれる。
 # バージョンと SHA-256 を固定し、改ざん・すり替えを検出する。
 # 更新するときは SPARKLE_VERSION と SPARKLE_SHA256 を併せて上げること。
 # EN: Fetches the pinned official Sparkle binary distribution into Frameworks/,
