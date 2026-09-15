@@ -2,7 +2,7 @@
 # macos-26 は現行の安定版、xcode-27 は開発機と同じ Xcode を検査する。
 # Washi では「開発機でしか通らない/CI でしか落ちない」問題が両方向で起きた実績があるため、
 # 2 つのランナーを回してツールチェーン間の差異を検出する。
-# Sparkle・XADMaster・UniversalDetector・KaitoKit・Washi の各フレームワークは
+# Sparkle・KaitoKit・Washi の各フレームワークは
 # Run Script フェーズが自動で組み立てるため、ソースの取得以外に事前手順は不要。
 
 name: CI
@@ -22,8 +22,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Clone KaitoKit and Washi
         run: |

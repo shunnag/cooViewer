@@ -26,18 +26,22 @@ macOS 用の漫画・画像ビューア。フォルダ / zip / rar / 7z 等の�
 
 ## ビルド
 
-Xcode 26 以降が必要です。依存ライブラリ(XADMaster / UniversalDetector)はサブモジュールです。
+Xcode 26 以降が必要です。サブモジュールは不要で、通常の `git clone` を使います。
+KaitoKit / Washi は別リポジトリのため、兄弟ディレクトリに取得してください。
 
 ```
-$ git clone --recursive https://github.com/shunnag/cooViewer.git
+$ git clone https://github.com/shunnag/cooViewer.git
+$ git clone https://github.com/shunnag/KaitoKit.git
+$ git clone https://github.com/shunnag/Washi.git
 $ cd cooViewer
 $ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Release build
 ```
 
 - Xcode.app で `CooViewer.xcodeproj` を開いてビルドしても構いません。
-- 初回ビルド時に XADMaster.framework / UniversalDetector.framework が `Frameworks/` に
-  自動ビルドされます。サブモジュール更新後に作り直す場合は `rm -rf Frameworks` してから
-  ビルドしてください。
+- 初回ビルド時に KaitoKit / Washi が `Frameworks/` に自動ビルドされ、Sparkle は
+  バージョン・SHA-256 を固定した公式配布から自動取得されます。
+  別のソース配置には `KAITOKIT_SOURCE_DIR` / `WASHI_SOURCE_DIR` を指定できます。
+  再生成は [開発ガイド §1](Documentation/development-guide.md#1-セットアップとビルド)を参照してください。
 - テスト: `xcodebuild -project CooViewer.xcodeproj -scheme cooViewer test`
 
 ## 主な機能
@@ -147,8 +151,8 @@ and run the commands above (this also erases 1.x data).
 挙動の調査と互換性の維持を可能にしました。
 
 あわせて、現代の macOS でビルドできるよう旧版を保守してくださった
-[plife18 氏のフォーク](https://github.com/plife18/cooViewer)、および書庫展開と文字コード
-判定を支える [XADMaster / UniversalDetector](https://github.com/MacPaw/XADMaster)
+[plife18 氏のフォーク](https://github.com/plife18/cooViewer)、および 2.0b36 まで書庫展開と文字コード
+判定を支えた [XADMaster / UniversalDetector](https://github.com/MacPaw/XADMaster)
 (MacPaw によるメンテナンス)の各開発者の皆さまに感謝します。
 
 **English**
@@ -164,14 +168,14 @@ behavioral research and compatibility work possible.
 We also thank [plife18's fork](https://github.com/plife18/cooViewer) for keeping the
 legacy app buildable on modern macOS, and the maintainers of
 [XADMaster / UniversalDetector](https://github.com/MacPaw/XADMaster) (maintained by
-MacPaw), which power archive extraction and filename-encoding detection.
+MacPaw), which supported archive extraction and filename-encoding detection through 2.0b36.
 
 ## ライセンス
 
 - cooViewer 本体: MIT ライセンス([Licence.txt](Licence.txt))。Copyright (c) 2005- coo.
-- [XADMaster](https://github.com/MacPaw/XADMaster) /
-  [UniversalDetector](https://github.com/MacPaw/universal-detector): **LGPL 2.1**
-  (動的リンクの .framework として同梱。各サブモジュールの LICENSE を参照)
+- [KaitoKit](https://github.com/shunnag/KaitoKit): MIT
+  ([KaitoKit-LICENSE.txt](CooViewer/Resources/KaitoKit-LICENSE.txt) をアプリに同梱)
+- [Washi](https://github.com/shunnag/Washi) / [Sparkle](https://sparkle-project.org/): MIT
 - 補間(描画品質)の ML モデル(必要時にダウンロード): waifu2x anime_noise2 は
   [imxieyi/waifu2x-mac](https://github.com/imxieyi/waifu2x-mac)(MIT、元重みは
   [nagadomi/waifu2x](https://github.com/nagadomi/waifu2x)、MIT)からの無改変再配布、
@@ -181,8 +185,7 @@ MacPaw), which power archive extraction and filename-encoding detection.
   配信し、ライセンス全文は同リリースの `LICENSES-models.txt` に同梱
 - 旧版が同梱していた Remote Control Wrapper(MIT)は削除済みです。旧版由来の
   ライセンス文書([Licence_RemoteControlWrapper.txt](legacy/Licence_RemoteControlWrapper.txt)、
-  [Licence_xad.txt](legacy/Licence_xad.txt) — 現行の正式なライセンスはサブモジュール
-  `XADMaster/LICENSE` / `UniversalDetector/LICENSE`)は参照用に [legacy/](legacy/) にあります
+  [Licence_xad.txt](legacy/Licence_xad.txt))は参照用に [legacy/](legacy/) にあります
 
 旧版の README・操作説明は [docs/](docs/)(原作者による GitHub Pages)と
 [`legacy/`](legacy/) を参照してください。

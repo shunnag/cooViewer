@@ -70,7 +70,7 @@ final class ArchiveEngineTests: XCTestCase {
     }
 
     /// 7 形式・構造の file/data 両入口を保存済みの観測値と比較し、
-    /// 並列判定を含めた契約を XADMaster 撤去後も維持する(設計書 §2.4)。
+    /// 並列判定を含めた契約を旧エンジン撤去後も維持する(設計書 §2.4)。
     func testKaitoKitMatchesEngineGoldenAcrossArchiveFixtures() throws {
         try assertEngineMatchesGolden(.kaitokit)
     }

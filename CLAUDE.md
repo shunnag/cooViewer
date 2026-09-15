@@ -22,8 +22,6 @@ when those procedures change.
 
 ## Build & test
 
-Submodules are required: `git submodule update --init --recursive`.
-
 ```
 xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug build
 xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug test
@@ -31,8 +29,9 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
 
 If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applications/Xcode.app`.
 
-- A run-script phase builds XADMaster/UniversalDetector into `Frameworks/` (skipped while
-  outputs exist). After updating the submodules, `rm -rf Frameworks` to force a rebuild.
+- The Fetch Sparkle run-script phase calls `Scripts/fetch-sparkle.sh` to fetch the
+  pinned Sparkle binary into `Frameworks/` (version and SHA-256 checked). No submodules
+  are needed; KaitoKit and Washi require the sibling checkouts described below.
 - **KaitoKit (since 9153ef2, 2026-09-08)**: the sole archive engine, built from a sibling
   checkout `../KaitoKit` (override with `KAITOKIT_SOURCE_DIR`) by
   `Scripts/build-kaitokit-framework.sh` into `Frameworks/KaitoKit.framework`. The checkout is
@@ -40,8 +39,6 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   github.com/shunnag/KaitoKit, MIT). After editing KaitoKit
   sources, `rm -rf Frameworks/KaitoKit.framework` to force a rebuild. Archive loading and
   filename encoding detection use KaitoKit only; see development-guide §3.6.
-  XADMaster / UniversalDetector frameworks are still built and embedded until PR 2 but
-  no longer referenced by the app or tests.
 - **Washi(EPUB 3 ツールキット)**: 兄弟チェックアウト `../Washi`
   (`WASHI_SOURCE_DIR` で上書き可)から `Scripts/build-washi-framework.sh` が
   `Frameworks/Washi.framework` を組み立てる。チェックアウトは**必須**で、
@@ -66,7 +63,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   per-file entries to the pbxproj.
 - The app is **arm64-only by design** (`ARCHS = arm64` at project level; the frameworks in
   `Frameworks/` are built arm64-only). Never set `ARCHS = $(ARCHS_STANDARD)` on the target —
-  the x86_64 slice then fails to link XADMaster with `Undefined symbol: _OBJC_CLASS_$_XADArchive`.
+  the x86_64 slice can fail to link the KaitoKit/Washi frameworks built for arm64.
   Xcode's Signing & Capabilities pane may inject this silently; remove it if it reappears.
 - Signing: Debug is ad-hoc (`CODE_SIGN_IDENTITY = "-"`), Release is manual Developer ID
   (team FQTM2788K5) with hardened runtime for notarized distribution.
@@ -183,23 +180,12 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   `BookHistoryStore` (BookSettings/RecentItems/LastPages, URL bookmarks instead of alias),
   `PasswordVault` (archive/PDF password manager: one Keychain master key + AES-GCM
   encrypted vault file; keys are canonical file paths via `Core/CanonicalPath`).
-- `Scripts/build-frameworks.sh` — nested xcodebuild for the XADMaster submodule.
 
-## Licensing constraints
+## Third-party notices
 
-The XADMaster / UniversalDetector frameworks are scheduled for removal in PR 2.
-
-XADMaster and UniversalDetector are LGPL 2.1: keep them dynamically linked (embedded
-frameworks), keep the About-panel credits in `Credits.rtf` (the original libxad credit,
-plus the XADMaster / UniversalDetector blocks with the LGPL 2.1 notice, added
-2026-08-26 for §6), keep the bundled license text (`CooViewer/Resources/LGPL-2.1.txt`,
-copied into the app's Resources — §6 requires shipping the license with the binary),
-keep license files. Because Release uses the hardened runtime (users cannot swap the
-frameworks in a signed app), §6 compliance rests on §6(a)/(d) — complete source
-availability: the forks (github.com/shunnag/XADMaster, github.com/shunnag/
-universal-detector) must stay public, and the pinned submodule commits must be pushed
-to them before any Release build ships.
-
+Keep KaitoKit's MIT notice and bundled `KaitoKit-LICENSE.txt`, and the MIT notices for Washi and Sparkle.
+Preserve the KaitoKit, Sparkle, and ML model credits in `Credits.rtf`.
+ML model distributions must include their MIT/BSD notices in `LICENSES-models.txt` (development-guide §4).
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
