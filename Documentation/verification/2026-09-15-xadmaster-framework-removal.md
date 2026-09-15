@@ -3,7 +3,7 @@
 - 対象: Task R2、bd `cooViewer-6lrc.7` / `cooViewer-6lrc.8`
 - 起点: `8b726c18dcd25a39056d4b3103933142b3ebcd83`、作業ブランチ `feat/xad-removal-2`
 - 方針 D1(b): 通常の clone に旧エンジンを含めない。旧オラクル群は履歴に残し、
-  bd `cooViewer-6lrc.9` で別リポジトリへ移設する。
+  移設先は [cooViewer-bench](https://github.com/shunnag/cooViewer-bench)。
 - 本記録は sandbox 内の実装・検証結果。コミット・push はしていない。
   gitlink を含む削除差分は作業ツリーにあるが、共有 index の更新と実アプリ検証は未完了。
 
@@ -106,7 +106,7 @@ About パネルでの実描画は未確認。
 | `makemutants.py` | 維持(無変更) | Python 標準ライブラリで生バイトの切詰め・ビット反転 |
 | `coldopen.sh` | 維持(呼び出しを引数化) | 元は `variants/<name>/MacOS/xadbench` に依存。disk-image と任意のコマンド・引数を受け取り、detach/attach 後に cold / warm 実行する形へ変更 |
 | `purge-cold.sh` | 維持(呼び出しを引数化) | 元は lha / cdmem 変種の `xadbench` と専用 JSON に依存。`sudo -n purge` 後に任意のコマンドを呼ぶ形へ変更し、実行権限も付与 |
-| `README.md` | 書換え | 残存ツールの前提・引数・利用例、旧群の履歴と移設予定を記載 |
+| `README.md` | 書換え | 残存ツールの前提・引数・利用例、旧群の履歴と移設先 [cooViewer-bench](https://github.com/shunnag/cooViewer-bench) を記載 |
 
 cold 計測の 2 本は仕様で維持対象とされたが、実際には旧実行体に依存していた。
 コメント変更だけでは使用不能になるため、固定パスと専用 JSON 解析を除去した。
@@ -196,7 +196,7 @@ failed to load database "cooViewer": openat LOCK: operation not permitted
 - 新規アプリの `Contents/Frameworks` と `otool -L` に旧 2 framework がないこと、
   `Contents/Resources/LGPL-2.1.txt` がないことを確認する。
 - Credits の About 表示、snapshot CLI で CBZ / 7z / 分割 ZIP を確認する。
-- bd `cooViewer-6lrc.9`: 履歴 `8b726c1` のオラクル・ベンチ群を別リポジトリへ移設する。
+- 旧オラクル・ベンチ群の参照先: [cooViewer-bench](https://github.com/shunnag/cooViewer-bench)(元の履歴は `8b726c1`)。
 - リリース **2.0b37**: Sparkle 内部署名、Release 署名・公証・staple を確認する。バージョン更新はリリース作業で行う。
 - 日本語のコミットメッセージは `.build/task-r2/commit-message.txt` に保存。指定のトレーラー 2 行を末尾に保持する。
 
