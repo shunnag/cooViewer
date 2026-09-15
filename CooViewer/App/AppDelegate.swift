@@ -3,7 +3,7 @@ import Sparkle
 import SwiftUI
 import Washi
 
-/// 自動実行(XCTest / スナップショット検証)の判定。
+/// 自動実行(XCTest / スナップショット検証 / 書庫監査)の判定。
 /// テストホストがユーザーの実データ(最後に開いた本)に触ったり、
 /// モーダル(Sparkle 許可・パスワード)で停止したりしないための共通ゲート
 enum AutomatedRun {
@@ -15,10 +15,23 @@ enum AutomatedRun {
     static var isSnapshot: Bool {
         CommandLine.arguments.contains("--snapshot")
     }
+
+    static var isArchiveAudit: Bool {
+        CommandLine.arguments.contains("--audit-archives")
+    }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    /// NSApplicationMain より先に終了することで、復元・履歴移行・更新確認を起動しない。
+    /// 書庫パーサー設定だけは通常起動と共通にする(開発ガイド §2.1)。
+    static func runArchiveAuditIfRequested() {
+        guard AutomatedRun.isArchiveAudit else { return }
+        SettingsStore.shared.registerDefaults()
+        SettingsStore.shared.applyArchiveParserSettings()
+        exit(ArchiveAuditCommand.run(arguments: CommandLine.arguments))
+    }
+
     private var readerWindowController: ReaderWindowController?
     private var settingsWindow: NSWindow?
     private var activityWindow: NSWindow?
@@ -37,10 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
     /// Info.plist(SUFeedURL / SUPublicEDKey)。初回は Sparkle 標準の
     /// 許可ダイアログでユーザーが自動チェックを選ぶ。検証用スナップショット
-    /// 実行(--snapshot)と XCTest 実行では、許可ダイアログ(モーダル)が
+    /// 実行(--snapshot)・書庫監査・XCTest 実行では、許可ダイアログ(モーダル)が
     /// 写り込み・ハングの原因になるため起動しない
     let updaterController = SPUStandardUpdaterController(
-        startingUpdater: !AutomatedRun.isSnapshot && !AutomatedRun.isXCTest,
+        startingUpdater: !AutomatedRun.isSnapshot && !AutomatedRun.isXCTest && !AutomatedRun.isArchiveAudit,
         updaterDelegate: nil, userDriverDelegate: nil)
 
     /// メニュー「アップデートを確認…」(MainMenuBuilder から使用)
