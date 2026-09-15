@@ -1,8 +1,9 @@
 # Scripts/bench — 書庫コーパスと計測
 
 書庫エンジンに依存しない入力生成・計測ツールを置く。
-削除したオラクル・旧エンジンのベンチ群は **git 履歴 8b726c1 の `Scripts/bench/` にあり、
-bd cooViewer-6lrc.9 で別リポジトリへ移設予定**。この PR では履歴に残す。
+削除したオラクル・旧エンジンのベンチ群の移設先は
+[cooViewer-bench](https://github.com/shunnag/cooViewer-bench)。
+git 履歴 **8b726c1** の `Scripts/bench/` にも残している。
 削除・維持の判定は [PR 2 検証記録](../../Documentation/verification/2026-09-15-xadmaster-framework-removal.md)を参照。
 
 ## 残したツール
