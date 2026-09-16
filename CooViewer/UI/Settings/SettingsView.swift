@@ -102,6 +102,7 @@ struct SettingsView: View {
     @AppStorage("ReadSubFolder") private var readSubFolder = false
     @AppStorage("RememberBookSettings") private var rememberBookSettings = false
     @AppStorage("OpenLastFolder") private var openLastFolder = true
+    @AppStorage("LaunchWindowMode") private var launchWindowMode = 0
     @AppStorage("AlwaysRememberLastPage") private var alwaysRememberLastPage = false
     @AppStorage("OpenRecentLimit") private var openRecentLimit = 10
 
@@ -321,6 +322,10 @@ struct SettingsView: View {
         switch pane {
         case .general: [
             String(localized: "Open the last book at launch"),
+            String(localized: "Window at launch:"),
+            String(localized: "Always windowed"),
+            String(localized: "Always full screen"),
+            String(localized: "Restore last state"),
             String(localized: "Recent books to keep: \(10)"),
             String(localized: "Restore last page:"),
             String(localized: "Always remember the last page"),
@@ -454,6 +459,11 @@ struct SettingsView: View {
         Form {
             Section {
                 Toggle(String(localized: "Open the last book at launch"), isOn: $openLastFolder)
+                Picker(String(localized: "Window at launch:"), selection: $launchWindowMode) {
+                    Text(String(localized: "Always windowed")).tag(0)
+                    Text(String(localized: "Always full screen")).tag(1)
+                    Text(String(localized: "Restore last state")).tag(2)
+                }
                 Stepper(String(localized: "Recent books to keep: \(openRecentLimit)"),
                         value: $openRecentLimit, in: 0...50)
             }

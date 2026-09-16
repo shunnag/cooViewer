@@ -1587,6 +1587,8 @@ final class ReaderWindowController: NSWindowController {
         resetInteractiveCurl()?.cancel()
         saveCurrentBookState()
         saveEPUBState()
+        // 終了直前の通知で保存された値より、終了時の実状態を優先する(設計書 §2.4)。
+        SettingsStore.shared.lastWindowWasFullscreen = window?.styleMask.contains(.fullScreen) ?? false
     }
 
     // MARK: - ウインドウのタイル状態除去(macOS 26)
@@ -2936,11 +2938,13 @@ final class ReaderWindowController: NSWindowController {
     // MARK: - フルスクリーンのカーソル自動非表示(仕様書 §3.3)
 
     func windowDidEnterFullScreen(_ notification: Notification) {
+        SettingsStore.shared.lastWindowWasFullscreen = true
         scheduleCursorHide()
         refreshDisplayIfCapRaised()
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        SettingsStore.shared.lastWindowWasFullscreen = false
         cursorHideTimer?.invalidate()
         cursorHideTimer = nil
     }

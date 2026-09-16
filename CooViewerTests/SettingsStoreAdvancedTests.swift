@@ -27,6 +27,63 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         }
     }
 
+    /// 起動状態は既定 0 で、新設キーの有効な値だけを往復する(設計書 §2.4)。
+    func testLaunchWindowModeDefaultsToWindowedAndRoundTrips() {
+        store.registerDefaults()
+        XCTAssertEqual(store.launchWindowMode, 0)
+        XCTAssertNil(defaults.object(forKey: "LaunchWindowMode"))
+        for mode in [1, 2, 0] {
+            store.launchWindowMode = mode
+            XCTAssertEqual(store.launchWindowMode, mode)
+            XCTAssertEqual(defaults.object(forKey: "LaunchWindowMode") as? Int, mode)
+        }
+    }
+
+    func testLaunchWindowModeRejectsOutOfRangeValuesOnReadAndWrite() {
+        for invalidMode in [-1, 3, 99] {
+            defaults.set(invalidMode, forKey: "LaunchWindowMode")
+            XCTAssertEqual(store.launchWindowMode, 0)
+
+            store.launchWindowMode = 2
+            store.launchWindowMode = invalidMode
+            XCTAssertEqual(store.launchWindowMode, 0)
+            XCTAssertEqual(defaults.object(forKey: "LaunchWindowMode") as? Int, 0)
+        }
+    }
+
+    /// 旧状態キーを再利用せず、1.x の保存値も変えない(仕様書 §6.1、設計書 §2.4)。
+    func testLastWindowWasFullscreenDefaultsToOffAndIgnoresLegacyKey() {
+        store.registerDefaults()
+        XCTAssertFalse(store.lastWindowWasFullscreen)
+        XCTAssertNil(defaults.object(forKey: "LastWindowWasFullscreen"))
+        defaults.set(true, forKey: "Fullscreen")
+        XCTAssertEqual(store.launchWindowMode, 0)
+        XCTAssertFalse(store.lastWindowWasFullscreen)
+
+        for isFullscreen in [true, false] {
+            store.lastWindowWasFullscreen = isFullscreen
+            XCTAssertEqual(store.lastWindowWasFullscreen, isFullscreen)
+            XCTAssertEqual(defaults.object(forKey: "LastWindowWasFullscreen") as? Bool, isFullscreen)
+            XCTAssertEqual(store.launchWindowMode, 0)
+        }
+        XCTAssertTrue(defaults.bool(forKey: "Fullscreen"))
+    }
+
+    func testLaunchFullscreenDecisionUsesModeAndLastState() {
+        for lastWasFullscreen in [false, true] {
+            XCTAssertFalse(SettingsStore.entersFullscreenAtLaunch(mode: 0,
+                lastWasFullscreen: lastWasFullscreen))
+            XCTAssertTrue(SettingsStore.entersFullscreenAtLaunch(mode: 1,
+                lastWasFullscreen: lastWasFullscreen))
+            XCTAssertEqual(SettingsStore.entersFullscreenAtLaunch(mode: 2,
+                lastWasFullscreen: lastWasFullscreen), lastWasFullscreen)
+            for invalidMode in [-1, 3, 99] {
+                XCTAssertFalse(SettingsStore.entersFullscreenAtLaunch(mode: invalidMode,
+                    lastWasFullscreen: lastWasFullscreen))
+            }
+        }
+    }
+
     func testZipLazyLocalHeadersDefaultsToOnWhenUnset() {
         XCTAssertNil(defaults.object(forKey: "ZipLazyLocalHeaders"))
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(false)

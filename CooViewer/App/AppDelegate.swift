@@ -76,6 +76,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let controller = ReaderWindowController()
         readerWindowController = controller
         controller.showWindow(nil)
+        if SettingsStore.entersFullscreenAtLaunch(
+            mode: SettingsStore.shared.launchWindowMode,
+            lastWasFullscreen: SettingsStore.shared.lastWindowWasFullscreen),
+           !AutomatedRun.isSnapshot, !AutomatedRun.isXCTest {
+            // 初回表示直後の同期呼び出しは AppKit に無視されることがあるため、
+            // 起動時だけ次の実行ループで全画面へ入る(設計書 §2.4)。
+            DispatchQueue.main.async {
+                guard let window = controller.window,
+                      !window.styleMask.contains(.fullScreen) else { return }
+                window.toggleFullScreen(nil)
+            }
+        }
         cleanUpCaches()
         if let pending = pendingLaunchOpenURL {
             // 起動前に届いていた文書オープンを確定する(§6.1)
@@ -133,6 +145,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// applicationWillFinishLaunching で適用済みとする(設計書 §2.4)。
     private func handleDebugArguments() {
         let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--dump-window-state"),
+           index + 1 < arguments.count {
+            // 検証用: 全画面遷移が落ち着いた後のウインドウ状態を書き出して終了
+            let path = arguments[index + 1]
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                if let window = self.readerWindowController?.window {
+                    let state = "fullscreen=\(window.styleMask.contains(.fullScreen))\nframe=\(window.frame)\n"
+                    try? state.write(toFile: path, atomically: true, encoding: .utf8)
+                }
+                NSApp.terminate(nil)
+            }
+        }
         if let index = arguments.firstIndex(of: "--dump-first-responder"),
            index + 1 < arguments.count {
             // 検証用: キーウインドウの first responder 型名を書き出して終了

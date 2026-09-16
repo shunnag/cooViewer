@@ -85,6 +85,34 @@ final class SettingsStore {
     var openLastFolder: Bool { defaults.bool(forKey: "OpenLastFolder") }
     var openRecentLimit: Int { defaults.integer(forKey: "OpenRecentLimit") }
 
+    /// 起動ウインドウ状態(設計書 §2.4)。0=常にウインドウ(既定)、
+    /// 1=常に全画面、2=前回の状態。範囲外の保存値・入力値は 0 に戻す。
+    var launchWindowMode: Int {
+        get {
+            let value = defaults.integer(forKey: "LaunchWindowMode")
+            return (0...2).contains(value) ? value : 0
+        }
+        set { defaults.set((0...2).contains(newValue) ? newValue : 0, forKey: "LaunchWindowMode") }
+    }
+
+    /// 前回のネイティブ全画面状態(既定オフ。設計書 §2.4)。
+    /// 旧 Fullscreen キー(1.x が読み書き、既定 YES。仕様書 §6.1)は読まない。
+    /// 再利用すると 1.x の挙動を変え、旧ユーザーの初回「前回の状態」が
+    /// 全て全画面になるため、新設キーだけで記録する。
+    var lastWindowWasFullscreen: Bool {
+        get { defaults.bool(forKey: "LastWindowWasFullscreen") }
+        set { defaults.set(newValue, forKey: "LastWindowWasFullscreen") }
+    }
+
+    /// 起動設定と前回状態から全画面に入るかを決める純粋述語(設計書 §2.4)。
+    static func entersFullscreenAtLaunch(mode: Int, lastWasFullscreen: Bool) -> Bool {
+        switch mode {
+        case 1: true
+        case 2: lastWasFullscreen
+        default: false
+        }
+    }
+
     /// 表示モード(仕様書 §3.2 fitScreenMode)。旧実装は永続化せず毎回 0 で
     /// 起動したが、新実装ではグローバル設定として保存する(仕様変更)。
     /// キー "FitMode" は新実装のみのキー(旧実装に同名キーは存在しない)
