@@ -10,6 +10,16 @@
         <language>en</language>
         <!-- make-appcast.sh inserts new items below -->
         <item>
+            <title>cooViewer 2.0b39</title>
+            <pubDate>Wed, 16 Sep 2026 02:35:51 +0000</pubDate>
+            <sparkle:version>2039</sparkle:version>
+            <sparkle:shortVersionString>2.0b39</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b39</link>
+            <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b39</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b39/cooViewer-2.0b39.zip" sparkle:edSignature="t8WKXMT+WaaSDZLgP5V9BOUX5NyAwRrs2+lTNVUprQvbtll18COfAy9urdyHdbrOrIHYI0ggqWe2DlAfgRKbDg==" length="8338862" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>cooViewer 2.0b38</title>
             <pubDate>Tue, 15 Sep 2026 08:01:49 +0000</pubDate>
             <sparkle:version>2038</sparkle:version>

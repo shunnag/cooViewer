@@ -6,6 +6,16 @@ final class BindingTests: XCTestCase {
     private let bindings = BindingConfiguration.builtInDefaults
     private let leftArrow = Character(UnicodeScalar(NSLeftArrowFunctionKey)!)
 
+    /// 微動でクリックを失わない救済は中・サイドボタンだけに適用する(設計書 §2.4)。
+    func testDragFallsBackToClickOnlyForMiddleAndSideButtons() {
+        for button in [0, 1] {
+            XCTAssertFalse(BindingConfiguration.dragFallsBackToClick(button: button))
+        }
+        for button in [2, 3, 4] {
+            XCTAssertTrue(BindingConfiguration.dragFallsBackToClick(button: button))
+        }
+    }
+
     // MARK: - 既定バインディング(仕様書 §5.7)
 
     func testDefaultZIsNextPageInRTL() {
@@ -274,15 +284,15 @@ extension BindingTests {
     }
 
     func testSideButtonDefaultsAreLogicalBackForward() {
-        // button 3=戻る(前ページ)/4=進む(次ページ)。switchAction なしなので
+        // button 3=戻る(前の本)/4=進む(次の本)。switchAction なしなので
         // 左綴じでも反転しない(ブラウザ同様の論理ナビゲーション。設計書 §2.4)
         for readsFromLeft in [false, true] {
             XCTAssertEqual(bindings.resolveMouse(button: 3, modifiers: 0, fitMode: 0,
                                                  readsFromLeft: readsFromLeft)?.action,
-                           .previousPage)
+                           .previousBook)
             XCTAssertEqual(bindings.resolveMouse(button: 4, modifiers: 0, fitMode: 0,
                                                  readsFromLeft: readsFromLeft)?.action,
-                           .nextPage)
+                           .nextBook)
         }
     }
 
@@ -292,19 +302,19 @@ extension BindingTests {
         suite.set([["action": 0, "button": 0, "modifier": 0]], forKey: "MouseArray")
         let loaded = BindingConfiguration.load(from: suite)
         XCTAssertTrue(loaded.mouseNormal.contains {
-            $0.button == 3 && $0.legacyActionNumber == 7
+            $0.button == 3 && $0.legacyActionNumber == 15
         })
         XCTAssertTrue(loaded.mouseNormal.contains {
-            $0.button == 4 && $0.legacyActionNumber == 6
+            $0.button == 4 && $0.legacyActionNumber == 14
         })
         // button 3 を別用途に使っている場合はそのボタンへは注入しない
         suite.set([["action": 43, "button": 3, "modifier": 0]], forKey: "MouseArray")
         let custom = BindingConfiguration.load(from: suite)
         XCTAssertFalse(custom.mouseNormal.contains {
-            $0.button == 3 && $0.legacyActionNumber == 7
+            $0.button == 3 && $0.legacyActionNumber == 15
         })
         XCTAssertTrue(custom.mouseNormal.contains {
-            $0.button == 4 && $0.legacyActionNumber == 6
+            $0.button == 4 && $0.legacyActionNumber == 14
         })
         suite.removePersistentDomain(forName: "test.cooViewer.mouse")
     }

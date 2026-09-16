@@ -99,8 +99,13 @@ extension ReaderWindowController {
         }
         guard let binding = bindings.resolveDrag(
             button: button, baseModifiers: baseModifiers, directionModifier: directionModifier,
-            fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
-            let action = binding.action else { return }
+            fitMode: fitModeNumber, readsFromLeft: readsFromLeft) else {
+            if BindingConfiguration.dragFallsBackToClick(button: button) {
+                handleClick(button: button, modifiers: baseModifiers, leftHalf: leftHalf)
+            }
+            return
+        }
+        guard let action = binding.action else { return }
         perform(action, value: binding.value, leftHalf: leftHalf)
     }
 
@@ -132,6 +137,11 @@ extension ReaderWindowController {
             if let binding = bindings.resolveDrag(
                 button: button, baseModifiers: modifiers, directionModifier: direction,
                 fitMode: fitModeNumber, readsFromLeft: readsFromLeft) {
+                actionName = ActionNames.mouseActionName(binding.legacyActionNumber)
+            } else if BindingConfiguration.dragFallsBackToClick(button: button),
+                      let binding = bindings.resolveMouse(
+                        button: button, modifiers: modifiers,
+                        fitMode: fitModeNumber, readsFromLeft: readsFromLeft) {
                 actionName = ActionNames.mouseActionName(binding.legacyActionNumber)
             }
         case .hidden, .expired:

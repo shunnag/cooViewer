@@ -156,6 +156,12 @@ struct BindingConfiguration: Sendable {
                             fitMode: fitMode, readsFromLeft: readsFromLeft)
     }
 
+    /// ドラッグ割当が無いボタンの 30pt 超クリックをクリックへ戻すか(設計書 §2.4)。
+    /// 左右(0/1)はレガシーのドラッグジェスチャ/ドラッグスクロールを保つため対象外。
+    /// 中(2)・サイド(3/4)等は素のナビゲーションボタンで、微動でクリックが
+    /// 消えると「たまに効かない」になるため戻す。
+    static func dragFallsBackToClick(button: Int) -> Bool { button >= 2 }
+
     // MARK: - 旧 defaults 形式との相互変換(仕様書 §5.1)
 
     /// 旧データの真偽値。キーが無ければ偽、明示保存された 0/NO も偽として扱う
@@ -285,17 +291,17 @@ struct BindingConfiguration: Sendable {
             // 再起動で既定が復活していた(UserEdited フラグより手前で短絡。監査 #8)
             guard !bindings.isEmpty || array.isEmpty else { return fallback }
             // 保存済み配列への新既定の移行(メモリ内注入): サイドボタンを
-            // 戻る/進むに。ユーザーが button 3/4 を既に使っている場合と、
+            // 戻る/進む=前/次の本に。ユーザーが button 3/4 を既に使っている場合と、
             // 2.0 の設定 UI で MouseArray を編集済み(MouseArrayUserEdited)の
             // 場合は尊重して注入しない — UI で削除したら復活しない(設計書 §2.4)
             if name == "MouseArray", !defaults.bool(forKey: "MouseArrayUserEdited") {
                 if !bindings.contains(where: { $0.button == 3 }) {
-                    bindings.append(MouseBinding(legacyActionNumber: 7, button: 3,
+                    bindings.append(MouseBinding(legacyActionNumber: 15, button: 3,
                                                  modifiers: 0, value: nil,
                                                  switchAction: false))
                 }
                 if !bindings.contains(where: { $0.button == 4 }) {
-                    bindings.append(MouseBinding(legacyActionNumber: 6, button: 4,
+                    bindings.append(MouseBinding(legacyActionNumber: 14, button: 4,
                                                  modifiers: 0, value: nil,
                                                  switchAction: false))
                 }
@@ -393,13 +399,14 @@ struct BindingConfiguration: Sendable {
             key(32, left, value: 20), key(33, right, value: 20),
         ]
 
-        // §5.7.4 MouseArray(+ サイドボタン戻る/進むは 2.0 の新規既定。
-        // ブラウザ同様の論理ナビゲーションなので switchAction なし=綴じ方向
-        // 非依存。設計書 §2.4)
+        // 仕様書 §5.7.4 MouseArray(+ サイドボタンの前/次の本は 2.0 の新規既定。
+        // 同一フォルダ内の書庫を移動したいという要望による。ページ送りは
+        // クリック・キー・スワイプで可能。ブラウザ同様の文書単位の移動なので
+        // switchAction なし=綴じ方向非依存。設計書 §2.4)
         let mouseNormal: [MouseBinding] = [
             mouse(0, 0),
             mouse(1, 0, LegacyModifier.shift),
-            mouse(7, 3), mouse(6, 4),
+            mouse(15, 3), mouse(14, 4),
             mouse(6, VirtualButton.swipeLeft, sw: true),
             mouse(7, VirtualButton.swipeRight, sw: true),
             mouse(14, VirtualButton.swipeDown),

@@ -125,6 +125,7 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `-SettingsSearchText <語>` | 設定検索の初期値を注入(検索 UI の検証用) |
 | `--appearance <dark\|light>` | 外観を強制(EPUB のテーマ追従などダークモード検証用) |
 | `--dump-first-responder <txt>` | 3 秒後に first responder の型名を書き出して終了(EPUB⇔画像本のフォーカス復帰検証) |
+| `--dump-window-state <txt>` | 3 秒後に全画面状態(`fullscreen=true/false`)とウインドウのフレーム(`frame=…`)を書き出して終了(`-LaunchWindowMode 1` で全画面起動、`-LaunchWindowMode 2 -LastWindowWasFullscreen true` で前回状態の復元を検証。引数ドメインの Bool は `true` 表記のみ効き、`YES`/`1` は false 扱いになる) |
 | `-キー名 <値>` | 任意の defaults を引数ドメインで上書き(例 `-SpreadCoverSingle 1`) |
 
 `--then-*` はコマンドライン順に、1 秒の最低間隔を置き、表示整定(オープンフローと
