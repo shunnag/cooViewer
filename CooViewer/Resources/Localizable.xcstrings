@@ -359,6 +359,16 @@
         }
       }
     },
+    "Always full screen": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フルスクリーンで常に開く"
+          }
+        }
+      }
+    },
     "Always remember the last page": {
       "localizations": {
         "ja": {
@@ -375,6 +385,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "常にページをめくる"
+          }
+        }
+      }
+    },
+    "Always windowed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "常にウインドウ"
           }
         }
       }
@@ -3657,6 +3677,16 @@
         }
       }
     },
+    "Restore last state": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前回の状態"
+          }
+        }
+      }
+    },
     "Resume from the last position (%@)?": {
       "localizations": {
         "ja": {
@@ -5187,6 +5217,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "ウインドウ"
+          }
+        }
+      }
+    },
+    "Window at launch:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起動時のウインドウ:"
           }
         }
       }
