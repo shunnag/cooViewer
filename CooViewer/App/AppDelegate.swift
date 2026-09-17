@@ -267,6 +267,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                     }
                 }
+            case "--then-side-click":
+                if argIndex + 1 < arguments.count,
+                   let button = Int64(arguments[argIndex + 1]) {
+                    argIndex += 1
+                    let dx: CGFloat
+                    if argIndex + 1 < arguments.count,
+                       let offset = Double(arguments[argIndex + 1]) {
+                        argIndex += 1
+                        dx = CGFloat(offset)
+                    } else {
+                        dx = 0
+                    }
+                    navigationSteps.append { [weak self] in
+                        guard let readerWindowController = self?.readerWindowController,
+                              let window = readerWindowController.window,
+                              let contentView = window.contentView else { return }
+                        let center = contentView.convert(
+                            NSPoint(x: contentView.bounds.midX, y: contentView.bounds.midY),
+                            to: nil)
+                        let end = NSPoint(x: center.x + dx, y: center.y)
+                        let timestamp = ProcessInfo.processInfo.systemUptime
+                        var events: [(NSEvent.EventType, NSPoint, TimeInterval)] = [
+                            (.otherMouseDown, center, timestamp),
+                        ]
+                        if dx != 0 {
+                            events.append((.otherMouseDragged, end, timestamp + 0.05))
+                        }
+                        events.append((.otherMouseUp, end, timestamp + 0.1))
+                        for (type, location, eventTimestamp) in events {
+                            guard let event = NSEvent.mouseEvent(
+                                with: type, location: location, modifierFlags: [],
+                                timestamp: eventTimestamp, windowNumber: window.windowNumber,
+                                context: nil, eventNumber: 0, clickCount: 1, pressure: 0),
+                                  let cgEvent = event.cgEvent else { return }
+                            // NSEvent の生成 API にはボタン番号の引数がないため、下位イベントに設定する。
+                            cgEvent.setIntegerValueField(.mouseEventButtonNumber, value: button)
+                            guard let inputEvent = NSEvent(cgEvent: cgEvent) else { return }
+                            // 前面化に依存せず、押下から解放までを同じ処理経路へ同期配送する。
+                            if readerWindowController.isEPUBMode {
+                                _ = readerWindowController.handleEPUBMouseEvent(inputEvent)
+                            } else {
+                                let readerView = readerWindowController.readerViewForInput
+                                switch type {
+                                case .otherMouseDown:
+                                    readerView.otherMouseDown(with: inputEvent)
+                                case .otherMouseDragged:
+                                    readerView.otherMouseDragged(with: inputEvent)
+                                case .otherMouseUp:
+                                    readerView.otherMouseUp(with: inputEvent)
+                                default:
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
             case "--then-play-narration":
                 // 音声メディアオーバーレイ再生を開始(SMIL 同期ハイライトの検証用)
                 navigationSteps.append { [weak self] in

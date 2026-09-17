@@ -115,6 +115,7 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--then-goto-percent <n>` | 表示後に比率ジャンプ(数字キー 0-9 の goToPercent 経路の検証。**EPUB モード中のみ**動作) |
 | `--then-show-thumbnails` | サムネイル一覧をトグル(EPUB 入場後に開く順序制御用) |
 | `--then-rapid-thumbnails <N>` | サムネイル一覧を約 70ms 間隔で N 回トグル(t キー連打の再現。奇数なら開いた状態で終わる。`0` はトグルせず、1 秒の最低間隔と表示整定待ちの後に撮影を 2 秒延ばす)。撮影は連打の所要時間ぶん自動で遅延する |
+| `--then-side-click <button> [dx]` | サイド/中ボタンのクリックをアプリ内で同期配送(前面化不要)。EPUB・画像本のマウス処理検証用。dx で微動を再現 |
 | `--dump-thumbnail-stats` | 撮影時に ThumbnailCache の内部状態(メモリ/生成中/失敗記録/生成ゲート)と本の保護コンテンツ判定を stdout へ出力(欠けセルの原因判別用) |
 | `--then-show-bubble <0-1>` | ページバーのホバーバブルを指定比率位置に表示(マウスホバーは CLI から再現できないため。EPUB では census 完了後に出すこと) |
 | `--then-play-narration` | 音声メディアオーバーレイ(SMIL)の再生をトグル(EPUB でオーバーレイを持つ項目のとき。読み上げ中テキストの active-class ハイライトの検証用。2 回で一時停止になる) |
