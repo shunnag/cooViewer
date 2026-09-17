@@ -104,6 +104,10 @@ final class ReaderWindowController: NSWindowController {
     /// EPUB モードの 2 本指水平スクロールを必要時だけ横取りするモニタ
     var epubScrollMonitor: Any?
     var epubScrollGesture = EPUBScrollGestureRecognizer()
+    /// EPUB モードの中・サイドボタンを画像本と同じ規則で拾うモニタ(設計書 §2.4)
+    var epubMouseMonitor: Any?
+    /// 中・サイドボタンの押下〜解放を分類し、EPUB 退出時にリセットする
+    var epubMouseRecognizer = MouseGestureRecognizer()
     /// 回転ジェスチャの累積角(.began でリセット・.ended で発火。ReaderView と同型)
     var epubRotationSum: CGFloat = 0
     /// EPUB の「N/M (章題)」ページ番号表示(census 完了時のみ非 nil)
@@ -2904,7 +2908,7 @@ final class ReaderWindowController: NSWindowController {
             return (book?.pageCount ?? 0) > 0 || isEPUBMode
         case #selector(toggleGestureHUDMenu(_:)):
             menuItem.state = settings.gestureHUDEnabled ? .on : .off
-            return !isEPUBMode  // EPUB にドラッグジェスチャ経路がない
+            return !isEPUBMode  // EPUB ではドラッグの HUD を表示しない
         case #selector(nextPage(_:)), #selector(previousPage(_:)),
              #selector(halfNextPage(_:)), #selector(halfPreviousPage(_:)),
              #selector(goToFirstPage(_:)), #selector(goToLastPage(_:)):
