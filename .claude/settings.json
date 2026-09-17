@@ -1,18 +1,18 @@
 {
+  "enabledPlugins": {
+    "security-guidance@claude-plugins-official": true
+  },
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "",
         "hooks": [
           {
-            "type": "command",
-            "command": "bd prime --hook-json"
+            "command": "bd prime --hook-json",
+            "type": "command"
           }
-        ]
+        ],
+        "matcher": ""
       }
     ]
-  },
-  "enabledPlugins": {
-    "security-guidance@claude-plugins-official": true
   }
 }

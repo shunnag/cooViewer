@@ -330,6 +330,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         installEPUBKeyMonitorIfNeeded()
         installEPUBGestureMonitorIfNeeded()
         installEPUBScrollMonitorIfNeeded()
+        installEPUBMouseMonitorIfNeeded()
         // フォーカスも EPUB ビューへ(隠れた ReaderView に残さない)
         window?.makeFirstResponder(view)
         // ページバー(仕様書 §3.4)は EPUB でも設定どおり出す。進捗は
@@ -538,6 +539,12 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     func dismissEPUBMode() {
         teardownEPUBSearch()
         dismissEPUBFootnote()
+        // 退出中の押下を画像本や次の EPUB へ持ち越さない(設計書 §2.4)。
+        if let epubMouseMonitor {
+            NSEvent.removeMonitor(epubMouseMonitor)
+            self.epubMouseMonitor = nil
+        }
+        epubMouseRecognizer = MouseGestureRecognizer()
         guard isEPUBMode else { return }
         disableEPUBLoupe()
         saveEPUBState()
@@ -1636,6 +1643,63 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                                            leftHalf: leftHalf)
                 return nil
             }
+        }
+    }
+
+    /// 隠れた ReaderView に届かない中・サイドボタンを捕捉し、画像本と同じ
+    /// 状態機械でクリック・ドラッグ・長押しキャンセルを判定する(仕様書 §5.9)。
+    /// 左右ボタンは対象外とし、本文の選択・コンテキストメニューを保つ。
+    func installEPUBMouseMonitorIfNeeded() {
+        guard epubMouseMonitor == nil else { return }
+        epubMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.otherMouseDown, .otherMouseDragged, .otherMouseUp]) { [weak self] event in
+            // nil(消費)をそのまま返す。`?? event` にすると消費が打ち消され
+            // WKWebView 側の JS 経路と二重発火する
+            guard let self else { return event }
+            return self.handleEPUBMouseEvent(event)
+        }
+    }
+
+    func handleEPUBMouseEvent(_ event: NSEvent) -> NSEvent? {
+        // マウスは event.window で対象窓を特定できるため、キー入力と異なり
+        // キーウインドウ判定は不要。前面化に依存しない同期検証にも対応する。
+        guard self.isEPUBMode, event.window === self.window,
+              event.buttonNumber >= 2,
+              let epubView = self.epubView else { return event }
+        let point = epubView.convert(event.locationInWindow, from: nil)
+        // EPUB ビューは非フリップ座標なので、状態機械が前提とする
+        // ReaderView と同じ下向き正の変位へ揃える(仕様書 §5.9)。
+        let gesturePoint = CGPoint(x: point.x,
+                                   y: epubView.isFlipped ? point.y : -point.y)
+        switch event.type {
+        case .otherMouseDown:
+            // 同時押しで追跡中のボタンや始点を上書きしない。
+            guard !self.epubMouseRecognizer.isTracking else { return nil }
+            guard epubView.bounds.contains(point) else { return event }
+            self.epubMouseRecognizer.begin(
+                button: event.buttonNumber, point: gesturePoint,
+                time: event.timestamp, dragScroll: false)
+            return nil
+        case .otherMouseDragged:
+            return self.epubMouseRecognizer.isTracking ? nil : event
+        case .otherMouseUp:
+            guard self.epubMouseRecognizer.isTracking,
+                  self.epubMouseRecognizer.button == event.buttonNumber
+            else { return event }
+            let outcome = self.epubMouseRecognizer.finish(
+                point: gesturePoint, time: event.timestamp,
+                modifiers: LegacyModifier.encode(flags: event.modifierFlags))
+            if let resolved = EPUBMouseDispatch.resolve(
+                outcome, bindings: self.bindings,
+                readsFromLeft: self.epubInputReadsFromLeft) {
+                _ = self.performEPUB(
+                    resolved.action, value: resolved.value,
+                    leftHalf: self.epubLeftHalf(
+                        locationInWindow: event.locationInWindow))
+            }
+            return nil
+        default:
+            return event
         }
     }
 
