@@ -73,7 +73,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   OTHER_CODE_SIGN_FLAGS="--timestamp"` — a plain Release build FAILS notarization
   (no secure timestamp + leftover `get-task-allow` entitlement). Then:
   `ditto -c -k --keepParent cooViewer.app out.zip` →
-  `xcrun notarytool submit out.zip --keychain-profile cooviewer --wait` →
+  `xcrun notarytool submit out.zip --keychain-profile KaitoFinder --wait` →
   `xcrun stapler staple cooViewer.app` → re-zip the STAPLED app for distribution →
   verify `spctl -a -vv cooViewer.app` says "Notarized Developer ID". Tag `vX.YbN`
   on master and publish via `gh release create` (beta = `--prerelease`).
