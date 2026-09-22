@@ -375,7 +375,7 @@ rm -rf Frameworks/KaitoKit.framework
 StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 [PR 2 検証記録の付録](verification/2026-09-15-xadmaster-framework-removal.md#付録-stuffit-統合時の検証記録)へ移した。
 
-## 4. リリース手順(2.0b14 まで検証済み)
+## 4. リリース手順(2.0b41 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
 
 1. pbxproj の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` を bump(各 4 箇所)。
 2. ブランチをコミット・push → `master` 向けの PR をマージ。
@@ -394,7 +394,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
    `KaitoKit.framework` / `Sparkle.framework` / `Washi.framework` の 3 つだけであることと、
    `build/Release/cooViewer.app/Contents/Resources` に不要なライセンス文書が無いことを確認する。
    確認後に `ditto -c -k --keepParent cooViewer.app out.zip` →
-   `xcrun notarytool submit out.zip --keychain-profile cooviewer --wait` →
+   `xcrun notarytool submit out.zip --keychain-profile KaitoFinder --wait` →
    `xcrun stapler staple cooViewer.app` → **ステープル済みアプリを再 zip**
    (資産名は `cooViewer-<version>.zip` 固定。appcast の URL が名前から決まる)。
 6. `spctl -a -vv cooViewer.app` が "Notarized Developer ID" であることを確認。
