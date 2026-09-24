@@ -74,11 +74,17 @@ final class MediaProfileTests: XCTestCase {
         // solid になり得る形式と分割書庫は高速ローカルでもスプールする
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "rar"))
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "7z"))
+        XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "cb7"))
+        XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "CB7"))
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "001"))
         // 構造が拡張子に勝つ: エントリ独立と判明した rar/7z はスプール不要
         XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "rar",
                                                   independentEntries: true))
         XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "7z",
+                                                  independentEntries: true))
+        XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "cb7",
+                                                  independentEntries: true))
+        XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "CB7",
                                                   independentEntries: true))
         // 分割ボリュームは独立でも常にスプール
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "001",

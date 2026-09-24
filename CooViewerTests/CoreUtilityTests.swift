@@ -424,6 +424,13 @@ final class PageEntryDisplayTitleTests: XCTestCase {
 
 /// 書庫の拡張子判定(仕様書 §2.1 の archiveTypes、§2.3 の番号系列、設計書 §2.4)
 final class ArchiveExtensionTests: XCTestCase {
+    func testComicBookSevenZipArchives() {
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.cb7")))
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.CB7")))
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.7z")))
+        XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.cb7.001")))
+    }
+
     func testStuffItArchives() {
         for ext in ["sit", "sitx", "sea", "hqx"] {
             XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.\(ext)")))
