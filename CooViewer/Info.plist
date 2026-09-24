@@ -82,6 +82,18 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Comic Book 7-Zip Archive</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>coo_alt</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>jp.coo.cooviewer.cb7</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>LHA Archive</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
@@ -292,6 +304,23 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>cbr</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>jp.coo.cooviewer.cb7</string>
+			<key>UTTypeDescription</key>
+			<string>Comic Book 7-Zip Archive</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>org.7-zip.7-zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>cb7</string>
 				</array>
 			</dict>
 		</dict>
