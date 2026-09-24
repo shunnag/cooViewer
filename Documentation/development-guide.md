@@ -5,8 +5,10 @@
 [legacy-app-analysis.md](legacy-app-analysis.md)(仕様書)**にあり、
 本書はビルド・検証・リリースの手順と、ハマりどころをまとめる。
 
-対象: macOS 26 (Tahoe) 以降 / Apple Silicon 専用。作業ブランチは
-`modernize/macos26`、リリースは `master`。
+対象: macOS 26 (Tahoe) 以降 / Apple Silicon 専用。作業は `master` から
+切ったブランチ(`release/X.YbN` 等)で行い、PR で `master` へマージする。
+リリースは `master` から行う(旧作業ブランチ `modernize/macos26` は
+2026-09-24 に削除)。
 
 ## 1. セットアップとビルド
 
@@ -404,7 +406,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 8. `Scripts/make-appcast.sh <stapled-zip> <version> <build>` で appcast.xml に
    `<item>` を追加(EdDSA 署名はログインキーチェーンの鍵)→ master へ
    コミット・push → フィードの `length=` が実ファイルサイズと一致するか確認。
-9. `master` を `modernize/macos26` へマージバックする。
+9. マージ済みの `release/X.YbN` ブランチをローカル・リモートとも削除する。
 
 **開発機での禁止事項**: `defaults delete jp.coo.cooViewer BookStateStoreVersion`
 と `BookStates/` の削除の組み合わせ(移行の再実行)は、開発機の実読書データを
