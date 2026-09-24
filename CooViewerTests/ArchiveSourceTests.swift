@@ -384,6 +384,28 @@ final class ArchiveSourceTests: XCTestCase {
                              "テストリソース \(name).\(ext) がバンドルにない")
     }
 
+    func testComicBookSevenZipExtractsAndSpoolsLikeSevenZip() async throws {
+        // cb7 へ改名しても画像を展開でき、7z と同じ構造別のスプール方針になること(設計書 §2.4)
+        for (name, expectedSpooled) in [("nonsolid", 0), ("solid", 4)] {
+            let url = tempDir.appendingPathComponent("\(name).cb7")
+            try FileManager.default.copyItem(at: fixture(name), to: url)
+            let source = try ArchiveSource(url: url)
+            let pages = try await source.entries()
+            XCTAssertEqual(pages.count, 4)
+            for entry in pages {
+                let image = try await source.image(for: entry, maxPixelSize: nil)
+                XCTAssertEqual(image.width, 4)
+                XCTAssertEqual(image.height, 6)
+            }
+
+            await source.applyMediaProfile(MediaProfile(mediaClass: .fastLocal))
+            await source.beginBackgroundPreparation(spoolSizeLimit: 1 << 30)
+            await source.waitForSpoolCompletion()
+            let spooled = await source.spooledEntryCount
+            XCTAssertEqual(spooled, expectedSpooled, name)
+        }
+    }
+
     func testSevenZipParallelModeFollowsStructure() async throws {
         // 非 solid → perEntry(zip 同様の自由並列)、完全 solid → serial(従来)、
         // ブロック分割 solid → byGroup(グループ内直列・グループ間並列)

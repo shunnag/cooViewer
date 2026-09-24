@@ -62,7 +62,7 @@ struct MediaProfile: Sendable, Equatable {
             let ext = fileExtension.lowercased()
             if SupportedTypes.isSplitVolumeExtension(ext) { return true }
             if independentEntries { return false }
-            let solidProne: Set<String> = ["rar", "cbr", "7z", "lha", "lzh", "sit", "sitx", "sea"]
+            let solidProne: Set<String> = ["rar", "cbr", "7z", "cb7", "lha", "lzh", "sit", "sitx", "sea"]
             return solidProne.contains(ext)
         case .slowLocal, .network, .unknown:
             return true
