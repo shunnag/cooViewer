@@ -1398,7 +1398,8 @@ final class ReaderWindowController: NSWindowController {
             }
         } catch {
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
-            NSSound.beep()
+            // オープンのキャンセルは読めない本として通知しない。
+            if !(error is CancellationError), !Task.isCancelled { NSSound.beep() }
             endOpeningProgress(generation: generation)
         }
     }
