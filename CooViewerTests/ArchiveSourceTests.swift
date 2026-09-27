@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import XCTest
+import os
 @testable import cooViewer
 
 final class ArchiveSourceTests: XCTestCase {
@@ -120,6 +121,207 @@ final class ArchiveSourceTests: XCTestCase {
         }
         let count = await source.extractorCount
         XCTAssertLessThanOrEqual(count, 1)
+    }
+
+    func testCancelledOpenDoesNotRecordFailureOrRetry() async throws {
+        defer { ArchiveEngineDiagnostics.resetForTesting() }
+        let zip = TestFixtures.storedZip(entries: [
+            (Array("a.png".utf8), TestFixtures.pngData(width: 4, height: 6)),
+            (Array("b.png".utf8), TestFixtures.pngData(width: 5, height: 6)),
+        ])
+        let mappedURL = try writeZip(zip, name: "cancelled.zip")
+        // 拡張子だけ変えて file 入口も通す。内容は同じ ZIP のまま。
+        let fileURL = try writeZip(zip, name: "cancelled.cbr")
+        XCTAssertTrue(ArchiveSource.shouldMemoryMap(url: mappedURL))
+        XCTAssertFalse(ArchiveSource.shouldMemoryMap(url: fileURL))
+        let calls = OSAllocatedUnfairLock(initialState: [String]())
+        let factory = ArchiveEngineFactory(
+            openFile: { kind, path in
+                calls.withLock { $0.append("file") }
+                return try ArchiveEngineFactory.live.openFile(kind, path)
+            },
+            openData: { kind, data in
+                calls.withLock { $0.append("data") }
+                return try ArchiveEngineFactory.live.openData(kind, data)
+            })
+        for route in 0..<3 {
+            ArchiveEngineDiagnostics.resetForTesting()
+            calls.withLock { $0.removeAll() }
+            let task = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                do {
+                    if route == 2 {
+                        _ = try ArchiveSource(
+                            data: zip, name: "nested.zip", nestingDepth: 1,
+                            unlocker: NestedUnlocker(),
+                            persistenceKey: .file(path: mappedURL.path).nested(entryPath: "nested.zip"),
+                            engineFactory: factory)
+                    } else {
+                        _ = try ArchiveSource(url: route == 0 ? mappedURL : fileURL,
+                                              engineFactory: factory)
+                    }
+                    XCTFail("キャンセル済みのオープンが成功した: \(route)")
+                } catch {
+                    XCTAssertTrue(error is CancellationError, "\(route): \(error)")
+                }
+            }
+            await task.value
+            XCTAssertEqual(ArchiveEngineDiagnostics.snapshot(),
+                           .init(mmapRetryCount: 0, lastError: nil), "入口 \(route)")
+            XCTAssertEqual(calls.withLock { $0 }, route == 1 ? ["file"] : ["data"])
+        }
+    }
+
+    func testUncancelledPoolOpenFailureStillDisablesGrowth() async throws {
+        let url = try writeZip(named: "failed-pool.zip", entries: (0..<3).map {
+            (Array("p\($0).avifs".utf8), TestFixtures.pngData(width: 4 + $0, height: 6))
+        })
+        let opens = OSAllocatedUnfairLock(initialState: 0)
+        let factory = ArchiveEngineFactory(
+            openFile: ArchiveEngineFactory.live.openFile,
+            openData: { kind, data in
+                let ordinal = opens.withLock { $0 += 1; return $0 }
+                guard ordinal == 1 else { return nil }
+                return try ArchiveEngineFactory.live.openData(kind, data)
+            })
+        let source = try ArchiveSource(url: url, engineFactory: factory)
+        for (offset, entry) in try await source.entries().enumerated() {
+            let image = try await source.image(for: entry, maxPixelSize: nil)
+            XCTAssertEqual(image.width, 4 + offset)
+        }
+        XCTAssertEqual(opens.withLock { $0 }, 2, "通常の失敗では従来どおり増設を停止する")
+        let count = await source.extractorCount
+        XCTAssertEqual(count, 0)
+    }
+
+    func testCancelledPoolGrowthCanBeRetried() async throws {
+        // OS の型情報サービスに依存しない拡張子を使い、PNG の実デコードは通す。
+        let url = try writeZip(named: "cancelled-pool.zip", entries: (0..<4).map {
+            (Array("p\($0).avifs".utf8), TestFixtures.pngData(width: 4 + $0, height: 6))
+        })
+        try await assertCancelledPoolGrowthCanBeRetried(
+            url: url, cancelledPage: 1, expectedWidths: [4, 5, 6, 7])
+    }
+
+    func testCancelledSolidGroupAssignmentCanBeRetried() async throws {
+        // 別の solid グループへ一時的に相乗りしても、その割当を固定しない。
+        try await assertCancelledPoolGrowthCanBeRetried(
+            url: fixture("blocks"), cancelledPage: 2, expectedWidths: [4, 4, 4, 4])
+    }
+
+    func testCancelledFirstExtractorFailureIsTransient() async throws {
+        let url = try writeZip(named: "first-cancel.zip", entries: [
+            (Array("page.avifs".utf8), TestFixtures.pngData(width: 4, height: 6)),
+        ])
+        let opens = OSAllocatedUnfairLock(initialState: 0)
+        let factory = ArchiveEngineFactory(
+            openFile: ArchiveEngineFactory.live.openFile,
+            openData: { kind, data in
+                let ordinal = opens.withLock { $0 += 1; return $0 }
+                if ordinal == 2 { withUnsafeCurrentTask { $0?.cancel() } }
+                guard let engine = try ArchiveEngineFactory.live.openData(kind, data) else { return nil }
+                return PoolTestArchiveEngine(engine: engine)
+            })
+        let source = try ArchiveSource(url: url, engineFactory: factory)
+        let entries = try await source.entries()
+        let entry = try XCTUnwrap(entries.first)
+        let cancelled = Task { try await source.image(for: entry, maxPixelSize: nil) }
+        do {
+            _ = try await cancelled.value
+            XCTFail("メイン書庫への退避も失敗したキャンセルは伝播する")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        let image = try await source.image(for: entry, maxPixelSize: nil)
+        XCTAssertEqual(image.width, 4)
+        let count = await source.extractorCount
+        XCTAssertEqual(count, 1, "最初の展開係の生成失敗も一時的に扱う")
+    }
+
+    private func assertCancelledPoolGrowthCanBeRetried(
+        url: URL, cancelledPage: Int, expectedWidths: [Int]
+    ) async throws {
+        let busy = expectation(description: "最初の展開係を使用中にする")
+        let cancelledOpen = expectation(description: "増設オープンをキャンセル済み Task で実行")
+        let regrown = expectation(description: "後続の要求で増設を再試行")
+        regrown.assertForOverFulfill = false
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let opens = OSAllocatedUnfairLock(initialState: 0)
+        let factory = ArchiveEngineFactory(
+            openFile: ArchiveEngineFactory.live.openFile,
+            openData: { kind, data in
+                let ordinal = opens.withLock { $0 += 1; return $0 }
+                // image() 入口の検査を通過後、KaitoKit を開く直前にキャンセルする。
+                // actor 待機中にキャンセルされる競合を、時間待ちなしで再現する。
+                if ordinal == 3 { withUnsafeCurrentTask { $0?.cancel() } }
+                let engine = try ArchiveEngineFactory.live.openData(kind, data)
+                if ordinal == 3 {
+                    XCTAssertTrue(Task.isCancelled)
+                    XCTAssertNil(engine, "KaitoKit 0.11.0 の実際のキャンセル契約を通す")
+                    cancelledOpen.fulfill()
+                }
+                if ordinal >= 4 { regrown.fulfill() }
+                guard let engine else { return nil }
+                if ordinal == 2 {
+                    return PoolTestArchiveEngine(engine: engine) {
+                        busy.fulfill()
+                        XCTAssertEqual(release.wait(timeout: .now() + 10), .success)
+                    }
+                }
+                return PoolTestArchiveEngine(engine: engine)
+            })
+        let source = try ArchiveSource(url: url, engineFactory: factory)
+        let pages = try await source.entries()
+        XCTAssertEqual(pages.count, expectedWidths.count)
+        guard pages.count == expectedWidths.count else { return }
+        let first = Task { try await source.image(for: pages[0], maxPixelSize: nil) }
+        await fulfillment(of: [busy], timeout: 3)
+        let cancelled = Task {
+            do {
+                _ = try await source.image(for: pages[cancelledPage], maxPixelSize: nil)
+                XCTFail("キャンセルされた展開の nil を成功扱いしない")
+            } catch {
+                XCTAssertTrue(error is CancellationError, "\(error)")
+            }
+        }
+        await fulfillment(of: [cancelledOpen], timeout: 3)
+        let countAfterCancellation = await source.extractorCount
+        XCTAssertEqual(countAfterCancellation, 1)
+
+        // 最初の係を保持したまま再要求するので、正常なら必ず 2 個以上へ成長する。
+        let later = pages[2...].map { entry in
+            Task { try await source.image(for: entry, maxPixelSize: nil) }
+        }
+        await fulfillment(of: [regrown], timeout: 3)
+        let count = await source.extractorCount
+        XCTAssertGreaterThan(count, 1, "キャンセル 1 回で増設を恒久停止しない")
+        release.signal()
+        let firstImage = try await first.value
+        XCTAssertEqual(firstImage.width, expectedWidths[0])
+        await cancelled.value
+        for (offset, task) in later.enumerated() {
+            let image = try await task.value
+            XCTAssertEqual(image.width, expectedWidths[2 + offset])
+        }
+    }
+
+    func testCancelledWaiterDoesNotDropNestedPages() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let nested = TestFixtures.storedZip(entries: [(Array("page.avifs".utf8), png)])
+        let url = try writeZip(named: "nested-cancel.zip", entries: [
+            (Array("cover.avifs".utf8), png), (Array("nested.zip".utf8), nested),
+        ])
+        let source = try ArchiveSource(url: url)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await source.entries()
+        }
+        // 一覧構築はキャンセルを継承しない共有 Task。途中結果を恒久保存しない。
+        let cancelledEntries = try await task.value
+        let laterEntries = try await source.entries()
+        XCTAssertEqual(cancelledEntries.map(\.pathInBook), ["cover.avifs", "nested.zip/page.avifs"])
+        XCTAssertEqual(laterEntries.map(\.pathInBook), cancelledEntries.map(\.pathInBook))
     }
 
     func testShiftJISEntryNamesAreAutoDetected() async throws {
@@ -595,5 +797,47 @@ private extension ArchiveSource {
     func startSpoolingAndReadStats() -> SpoolStats {
         beginSpooling(sizeLimit: 1 << 30)
         return spoolStats()
+    }
+}
+
+/// 実エンジンの展開開始を同期し、キャンセル後の展開失敗(nil)も再現する。
+private final class PoolTestArchiveEngine: ArchiveEngine {
+    private let engine: any ArchiveEngine
+    private var pause: (() -> Void)?
+
+    init(engine: any ArchiveEngine, pause: (() -> Void)? = nil) {
+        self.engine = engine
+        self.pause = pause
+    }
+
+    init?(file path: String) { return nil }
+    init?(data: Data) { return nil }
+
+    func contents(ofEntry index: Int32) -> Data? {
+        guard !Task.isCancelled else { return nil }
+        let once = pause
+        pause = nil
+        once?()
+        return engine.contents(ofEntry: index)
+    }
+
+    func numberOfEntries() -> Int32 { engine.numberOfEntries() }
+    func name(ofEntry index: Int32) -> String? {
+        // 既存 7z の PNG も型情報サービスに依存せず列挙する。内容と solid 情報は実物を使う。
+        engine.name(ofEntry: index)?.replacingOccurrences(of: ".png", with: ".avifs")
+    }
+    func uncompressedSize(ofEntry index: Int32) -> Int64 { engine.uncompressedSize(ofEntry: index) }
+    func entryHasSize(_ index: Int32) -> Bool { engine.entryHasSize(index) }
+    func entryIsDirectory(_ index: Int32) -> Bool { engine.entryIsDirectory(index) }
+    func entryIsEncrypted(_ index: Int32) -> Bool { engine.entryIsEncrypted(index) }
+    func isEncrypted() -> Bool { engine.isEncrypted() }
+    func setPassword(_ password: String) { engine.setPassword(password) }
+    func solidGroup(ofEntry index: Int32) -> Int32 { engine.solidGroup(ofEntry: index) }
+    func extractEntry(_ index: Int32, to directory: String) -> Bool {
+        engine.extractEntry(index, to: directory)
+    }
+    static var defaultZipLazyLocalHeaders: Bool { KaitoKitEngine.defaultZipLazyLocalHeaders }
+    static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(enabled)
     }
 }
