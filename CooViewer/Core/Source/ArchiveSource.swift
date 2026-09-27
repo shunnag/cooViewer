@@ -162,11 +162,12 @@ actor ArchiveSource: BookSource {
 
     /// 展開プール(エントリ独立圧縮の形式のみ。PDFSource のレンダラープールと
     /// 同型)。書庫エンジンは非スレッド安全なので actor 毎に独立の書庫を開き、
-    /// 未スプールのページ展開をエントリ間で並列化する(最大 3)。
+    /// 未スプールのページ展開をエントリ間で並列化する(上限はコア数に連動)。
     /// 空きの再利用が最優先で、**全員使用中のときだけ**成長する:
     /// 直列読み(HDD プロファイル等)では 1 つのままで余計に開かない。
-    /// 作成失敗(差し替え・削除)やエントリ数不一致は成長を恒久停止して
-    /// メイン書庫の直列展開に戻す(従来と同じ挙動)
+    /// 作成失敗(差し替え・削除)やエントリ数不一致は成長を恒久停止し、
+    /// 既存の係に相乗りする(係がなければメイン書庫で直列展開する)。
+    /// キャンセルによる失敗はその要求だけの相乗りに留め、以後の成長を妨げない
     private var extractors: [ArchiveEntryExtractor] = []
     private var extractorBusyCounts: [Int] = []
     private var extractorGrowthDisabled = false
@@ -343,6 +344,8 @@ actor ArchiveSource: BookSource {
                 url: url, mappedData: mapped, nestingDepth: nestingDepth,
                 kind: preferredEngine, factory: factory)
         } catch {
+            // 互換 API はキャンセルも nil にするため、診断へ記録する前に区別する。
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
             let message = "\(url.path): \(String(describing: error))"
             ArchiveEngineDiagnostics.recordError(message: message)
             logger.error("Archive open failed: \(message, privacy: .public)")
@@ -360,6 +363,7 @@ actor ArchiveSource: BookSource {
                 data: data, nestingDepth: nestingDepth,
                 kind: preferredEngine, factory: factory)
         } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
             let message = "\(name): \(String(describing: error))"
             ArchiveEngineDiagnostics.recordError(message: message)
             logger.error("Archive open failed: \(message, privacy: .public)")
@@ -378,6 +382,7 @@ actor ArchiveSource: BookSource {
                 archive = try open(data: mappedData, kind: kind, factory: factory)
                 retainedData = mappedData
             } catch {
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
                 // エンジンに関係なく mmap の解析失敗だけを file: で一度再試行する。
                 // 列挙はこの catch の外で行い、列挙失敗では再試行しない(設計書 §2.4)。
                 let message = "\(url.path): \(String(describing: error))"
@@ -423,6 +428,7 @@ actor ArchiveSource: BookSource {
         } catch let error as EngineOpenError {
             throw error
         } catch {
+            if error is CancellationError { throw error }
             throw EngineOpenError.threw(kind, "file", String(describing: error))
         }
     }
@@ -438,6 +444,7 @@ actor ArchiveSource: BookSource {
         } catch let error as EngineOpenError {
             throw error
         } catch {
+            if error is CancellationError { throw error }
             throw EngineOpenError.threw(kind, "data", String(describing: error))
         }
     }
@@ -757,6 +764,7 @@ actor ArchiveSource: BookSource {
             let data = await extractor.contents(ofEntry: entryIndex)
             await releaseExtractor(poolIndex)
             guard let data else {
+                try Task.checkCancellation()
                 throw BookSourceError.pageLoadFailed(entry.name)
             }
             return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
@@ -804,6 +812,9 @@ actor ArchiveSource: BookSource {
     }
 
     private func pageContent(for entry: PageEntry) throws -> PageContent {
+        // actor の順番待ちの間に取り消された要求は、展開係の生成や展開に進まない
+        // (KaitoKit 0.11 では取消し済みの Task からの open は中央ディレクトリを読んでから失敗する)
+        try Task.checkCancellation()
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return .child(children[sourceIndex], childEntry)
         }
@@ -822,6 +833,7 @@ actor ArchiveSource: BookSource {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
         guard let extracted = archive.contents(ofEntry: index) else {
+            try Task.checkCancellation()
             throw BookSourceError.pageLoadFailed(entry.name)
         }
         return .data(extracted)
@@ -849,7 +861,8 @@ actor ArchiveSource: BookSource {
             // ときは相乗りになり、その係上で 2 グループが交互になると block 頭
             // からの再展開が起き得る(従来の全体巻き戻しより常に軽い)
             guard let (index, extractor) = acquireIdleOrGrownExtractor() else { return nil }
-            groupExtractorAssignment[group] = index
+            // キャンセル時の一時的な相乗り先をグループの恒久割当へ残さない。
+            if !Task.isCancelled { groupExtractorAssignment[group] = index }
             return (index, extractor)
         }
     }
@@ -884,7 +897,7 @@ actor ArchiveSource: BookSource {
                 extractorBusyCounts.append(1)
                 return (extractors.count - 1, extractor)
             }
-            extractorGrowthDisabled = true
+            if !Task.isCancelled { extractorGrowthDisabled = true }
         }
         guard !extractors.isEmpty else { return nil }
         var index = 0
