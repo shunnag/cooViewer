@@ -11,6 +11,11 @@ on:
   push:
     branches: [master]
   pull_request:
+  # KaitoKit と Washi は main を固定せずに取得するため、上流の変更による破損を
+  # cooViewer への push を待たずに検出できるよう、手動と定期でも実行する。
+  workflow_dispatch:
+  schedule:
+    - cron: '17 21 * * 1'
 
 jobs:
   build-and-test:
