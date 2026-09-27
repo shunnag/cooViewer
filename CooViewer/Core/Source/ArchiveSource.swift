@@ -812,6 +812,9 @@ actor ArchiveSource: BookSource {
     }
 
     private func pageContent(for entry: PageEntry) throws -> PageContent {
+        // actor の順番待ちの間に取り消された要求は、展開係の生成や展開に進まない
+        // (KaitoKit 0.11 では取消し済みの Task からの open は中央ディレクトリを読んでから失敗する)
+        try Task.checkCancellation()
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return .child(children[sourceIndex], childEntry)
         }
