@@ -345,9 +345,10 @@ cooViewer の拡張子判定には `.sit` に加えて `.sitx`・`.sea`・`.hqx`
 この拡張子の振り分けは PR 1 でも維持する。
 
 `Scripts/build-kaitokit-framework.sh` はソース・Package.swift・ビルドスクリプトの
-mtime と Swift コンパイラのスタンプを調べ、更新時だけ KaitoKit 側の
-`Scripts/build-framework.sh` を呼ぶ。KaitoKit 側が生成する arm64/x86_64 の
-ユニバーサルフレームワークを `Frameworks/KaitoKit.framework` へ複製し、通常は
+内容の SHA-256 fingerprint（`Scripts/framework-source-fingerprint.sh`）、参照先、対象 arch と
+Swift コンパイラの版をスタンプと比べ、変わったときだけ KaitoKit 側の
+`Scripts/build-framework.sh` を呼ぶ。既定は arm64 のみ（`KAITOKIT_ARCHS="arm64 x86_64"` で
+universal に上書きできる）。生成物を `Frameworks/KaitoKit.framework` へ複製し、通常は
 CooViewer.xcodeproj の Run Script フェーズから自動実行される。配置を明示して
 単独で組み立てる場合は次のとおり:
 
@@ -365,14 +366,21 @@ KAITOKIT_SOURCE_DIR=/path/to/KaitoKit Scripts/build-kaitokit-framework.sh
 $(SRCROOT)/Frameworks/KaitoKit.framework/Modules
 ```
 
-兄弟チェックアウトを更新するときは KaitoKit 側で fast-forward し、cooViewer 側の
+兄弟チェックアウトを更新するときは KaitoKit 側を `main` にして fast-forward し、cooViewer 側の
 コピーを削除してから通常のビルドを行う。削除対象はこのリポジトリの
 `Frameworks/KaitoKit.framework` であり、兄弟チェックアウトのソースではない。
 
 ```sh
+git -C ../KaitoKit switch main
 git -C ../KaitoKit pull --ff-only
+git -C ../KaitoKit describe --tags --exact-match   # 公開済みの tag（例: v0.11.0）であること
 rm -rf Frameworks/KaitoKit.framework
 ```
+
+Washi と同じく、cooViewer の **Release ビルド前には `../KaitoKit` が push 済みの release tag の状態であること**
+(`KAITOKIT_SOURCE_DIR` 指定時も参照先で同様)。cooViewer 側の履歴には KaitoKit の版が記録されないため
+（fingerprint が変われば未公開の作業中の branch でも黙って組み直す）、release の commit message に
+tag と commit を記す。
 
 StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 [PR 2 検証記録の付録](verification/2026-09-15-xadmaster-framework-removal.md#付録-stuffit-統合時の検証記録)へ移した。
