@@ -1,5 +1,4 @@
 import Foundation
-import Washi
 
 /// コレクション(合本)の「全体ページ」対応表(設計書 §2.4 EPUB 対応)。
 /// 画像・FXL 統合ページは 1 ページ、リフロー EPUB は census の全ページ数

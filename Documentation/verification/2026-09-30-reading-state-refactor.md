@@ -2,7 +2,7 @@
 
 対象は `refactor/code-quality` の cooViewer。開始時点は `master` の `4308c06`。
 全リポジトリの品質改善を追跡する Beads `cooViewer-a9qn` のうち、値型と一括保存
-(`.1`/`.2`)および EPUB セッションの整理(`.3`の一部)の検証記録である。
+(`.1`/`.2`)および EPUB・合本の状態の整理(`.3`)の検証記録である。
 
 ## 値型と保存の境界
 
@@ -39,7 +39,8 @@ Controller のストアを注入できるようにし、実編集コールバッ
 
 Xcode 27.0 (27A266a)、Apple Swift 6.4、arm64。
 開始時の Debug テストは719件、既存スキップ1件、失敗0件。
-本段階の Debug 全テストは734件、同じスキップ1件、失敗0件。
+EPUB セッション段階の Debug 全テストは734件、合本の整理後は741件。
+どちらも同じスキップ1件、失敗0件。
 スキップは `RETRO_SAMPLE_DIR` が指定されていない既存の実画像ゴールデン比較。
 
 追加検証は、画像/EPUB 一括保存の書込回数と復元、保存失敗と読取不能保護、
@@ -53,8 +54,29 @@ DEVELOPER_DIR=/Applications/Xcode.app xcodebuild \
 ```
 
 詳細ログ・xcresult は `/tmp/cooviewer-quality-20260930/` の
-`baseline`、`save-schedule`、`epub-session-reviewed`。
+`baseline`、`save-schedule`、`epub-session-reviewed`、`collection-late-failure`。
 `git diff --check` も通過した。
+
+## 合本の対応表とナビゲーション
+
+CollectionPageMap は UI/Washi に依存しないページ対応の値として Core/Book へ移した。
+構築は読書側の CollectionPageMapState が所有し、合本の往来と構築の配線を
+ReaderWindowController+Collection にまとめた。サムネイルには表示とセル展開を残す。
+
+構築の識別を文字列の folder#metrics から型付きキーと要求オブジェクトへ変更した。
+同じ版面でもエントリ列が変われば新しく構築し、旧完了・旧取消が新要求を解除しない。
+未完マップの予算は公開された結果だけで数え、ページ列の変更後へ持ち越さない。
+完成済みの版面へ戻った場合は、別の版面の不要な構築を止める。
+
+CollectionNavigationState は確定降格・一過性失敗を別の集合で所有する。一過性集合を
+外部へ公開せず、着地時の消費以外にクリアする API を設けない。着地方向の消費と
+失敗マーカーの保持を分け、個別 EPUB の終了で再入場防止の印を失わないようにした。
+
+追加7件は、並べ替え中の構築切替、同じキーの再構築へ遅れた結果が戻る場合、
+未完結果の予算、閉窓後の構築再開、二種類の失敗記録、解析失敗の完了順を検証する。
+最後の検査では最初の巻の準備を停止し、後発の巻を先に表紙へ着地させ、その後に
+最初の巻の失敗を完了させた。成功時だけでなく失敗時も提示 epoch を照合する修正により、
+最新の着地ページを保持する。
 
 ## 保存処理の計測
 

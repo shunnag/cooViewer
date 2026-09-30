@@ -236,7 +236,7 @@ extension ReaderWindowController {
             // 復帰オープンが不成立。この終端は openBook(→openBookFlow の defer)を
             // 通らないため、ここで復帰フラグを消さないと残って didReachBookEdge の
             // ガードを恒久的に塞ぐ(cooViewer-s7j)
-            epubCollectionReturnPending = false
+            collectionNavigation.returnPending = false
             return
         }
         let siblings = siblingBooks(of: currentURL)
@@ -247,7 +247,7 @@ extension ReaderWindowController {
             // せず、失敗ナビの慣習どおり音で「これ以上進めない」を返す
             // (goToBookmark と同じフィードバック。監査 #6)。復帰フラグも消す
             // (openBookFlow を通らない終端。cooViewer-s7j)
-            epubCollectionReturnPending = false
+            collectionNavigation.returnPending = false
             NSSound.beep()
             return
         }

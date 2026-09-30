@@ -93,40 +93,16 @@ final class ReaderWindowController: NSWindowController {
     var epubPresentEpoch = 0
     /// 同一 URL の並行 EPUB 解析を 1 本に束ねる(往復連打での無制限並走を防ぐ)
     let epubParseCoalescer = EPUBParseCoalescer()
-    /// 合本復帰時の到達方向(代理ページへの着地時に消費。自動入場の向き)
-    var epubCollectionArrivalForward: Bool?
-    /// 開けなかった代理ページ(FXL/DRM の確定降格)。自動入場せず静的な表紙として
-    /// 表示する(全滅フォルダ + ループ設定での無限循環防止)。恒久記録
-    var epubFailedPlaceholders: Set<URL> = []
-    /// 一過性の解析失敗(nil = 一時 I/O 失敗・壊れファイル)の代理ページ。恒久
-    /// ブラックリストと違い「今回の着地だけ」代理表紙にする消費式マーカー:
-    /// refreshDisplay が読み取り時に remove して消費し、次の意図的な再着地では
-    /// 再解析する。**不変条件: 一括クリアしてはならない** — 挿入→openBook→
-    /// 再着地→消費 の順序に依存しており、開始時クリアは挿入とレースして
-    /// enterCollectionReflowEPUB→openBook の無限ループを再発させる(消費のみが
-    /// 唯一のクリア経路)
-    var epubTransientFailedPlaceholders: Set<URL> = []
-    /// 合本への復帰オープンが進行中(EPUB 側の巻端イベントを抑止する。
-    /// 巻端でのキーリピートが二重の復帰・単体モード誤爆になるのを防ぐ)
-    var epubCollectionReturnPending = false
-    /// 合本の巻末ループ(LoopCheck 0)による前進再入場では保存位置を復元せず
-    /// 先頭から開く(画像本の goToFirst と同じ意味論)
-    var epubCollectionArrivalAtFirst = false
+    /// 合本の往来と失敗マーカーは、個別 EPUB の提示をまたいで保持する。
+    let collectionNavigation = CollectionNavigationState()
     /// コレクション一覧の展開(census 収集 → 差し替え)の進行タスク
     var collectionOverlayTask: Task<Void, Never>?
     /// 表示中の展開済みコレクション一覧(refreshDisplay の follow が
     /// 未展開へ巻き戻さないための対応表)
     var activeCollectionOverlay: ActiveCollectionOverlay?
-    /// 合本の「全体ページ」対応表(ページバー・ページ番号・%ジャンプを
-    /// 書庫内 zip と同じ全体基準にする。census が揃ってから有効)
-    var collectionPageMap: CollectionPageMap?
-    var collectionPageMapTask: Task<Void, Never>?
-    /// 構築中のキー(folder#metrics。同じ対象の二重構築防止)
-    var collectionPageMapPendingKey: String?
-    /// published 済みの未完マップの再構築試行回数(pendingKey 別)。DRM/壊れ巻で
-    /// 恒久的に欠ける場合に毎ナビゲーション再解析しない上限(一過性は上限内で埋まる)
-    var collectionPageMapAttempts: [String: Int] = [:]
-    static let collectionPageMapMaxAttempts = 3
+    /// ページバー・本文位置の全体基準化。サムネイルの寿命とは独立して構築する。
+    let collectionPageMaps = CollectionPageMapState()
+
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
     private var settingsObserver: (any NSObjectProtocol)?
@@ -1012,7 +988,7 @@ final class ReaderWindowController: NSWindowController {
         // より新しいオープンの立てたフラグを潰さないため(cooViewer-s7j/ari)
         defer {
             if openGeneration == generation {
-                epubCollectionReturnPending = false
+                collectionNavigation.returnPending = false
                 isOpeningBook = false
             }
         }
@@ -1097,7 +1073,7 @@ final class ReaderWindowController: NSWindowController {
         let requestedArchiveEngine = settings.effectiveArchiveEngine
         do {
             let source: any BookSource
-            if epubCollectionReturnPending, let context = epubCollectionContext,
+            if collectionNavigation.returnPending, let context = epubCollectionContext,
                CanonicalPath.normalize(context.folderURL.path)
                    == CanonicalPath.normalize(bookURL.path) {
                 // EPUB(合本内の巻)から同じ合本へ戻る復帰は、入場時に文脈へ
@@ -1304,7 +1280,7 @@ final class ReaderWindowController: NSWindowController {
                 // 後退到達(前の本を末尾から)の意図を代理ページ入場へ伝える。
                 // 末尾が合本内リフロー EPUB のとき、これが無いと refreshDisplay の
                 // forward 既定が true になり EPUB が先頭で開いてしまう(監査 #1)
-                epubCollectionArrivalForward = false
+                collectionNavigation.arrivalForward = false
                 await book.goToLast()
             }
             guard generation == openGeneration else { return }  // goToLast の await をカバー
@@ -1511,17 +1487,13 @@ final class ReaderWindowController: NSWindowController {
         openGeneration &+= 1
         epubPresentEpoch &+= 1
         isOpeningBook = false
-        epubCollectionReturnPending = false
+        collectionNavigation.returnPending = false
         fileInfoGeneration &+= 1
         endAnyOpeningProgress()
         resetInteractiveCurl()?.cancel()
         stopSlideshow()
         collectionOverlayTask?.cancel()  // 全冊 census をウインドウ亡き後に残さない
-        collectionPageMapTask?.cancel()
-        // キャンセルしたタスクは自分では pendingKey を消せない(isCancelled
-        // guard で先に抜ける)。残すと同キーの再構築が恒久的に塞がる
-        collectionPageMapPendingKey = nil
-        collectionPageMapAttempts.removeAll()
+        collectionPageMaps.cancel(resetAttempts: true)
         // 隣接スプレッドの ML 先行リサンプルと本の先読みを止める。単一ウインドウ
         // (isReleasedWhenClosed=false)ではプロセスは生き続け、preresampleTask の
         // ガード(displayGeneration/preresampleRun/book 同一性)は閉窓では変わらない
@@ -1846,27 +1818,26 @@ final class ReaderWindowController: NSWindowController {
         // 残留が後の自動入場を汚染することはない
         let turnForward = pendingTurnForward
         pendingTurnForward = nil
-        let collectionArrival = epubCollectionArrivalForward
-        epubCollectionArrivalForward = nil
-        let collectionArrivalAtFirst = epubCollectionArrivalAtFirst
-        epubCollectionArrivalAtFirst = false
+        let arrival = collectionNavigation.takeArrival()
+        let collectionArrival = arrival.forward
+        let collectionArrivalAtFirst = arrival.atFirst
 
         // コレクション(合本)内のリフロー EPUB 代理ページ: 表示せず EPUB
         // モードへ切り替える(前進到達は先頭/復元、後退到達は末尾から。
         // 代理ページは常に単独スプレッドなので素通りしない)。
         // 恒久に開けない本(FXL/DRM)は自動入場せず静的な表紙として表示する
-        // (epubFailedPlaceholders)。一過性失敗は「今回だけ」表紙にして次回再入場を
-        // 試みる消費式(epubTransientFailedPlaceholders。下の remove を参照)
+        // (CollectionNavigationState)。一過性失敗は「今回だけ」表紙にして、
+        // 次回の意図的な着地で再入場を試みる
         if let (entryIndex, epubURL) = spread.indices.lazy.compactMap({ index in
             book.entries.indices.contains(index)
                 ? book.entries[index].reflowEPUBURL.map { (index, $0) } : nil
-        }).first, !epubFailedPlaceholders.contains(epubURL) {
+        }).first, !collectionNavigation.hasPermanentFailure(for: epubURL) {
             // 一過性失敗直後の再着地は「今回だけ」代理表紙として通常描画へ流す
-            // (消費式)。remove がヒット = 一過性直後 → return せず下の通常描画で
+            // (消費式)。マーカーを消費したら、return せず下の通常描画で
             // 表紙を出す。恒久ブラックリスト(FXL/DRM)と違い消費後の再着地では
             // また入場を試みる。消費は必ず「入場判断の直前」で(位置がずれると
             // ループ再発)
-            if epubTransientFailedPlaceholders.remove(epubURL) == nil {
+            if !collectionNavigation.consumeTransientFailure(for: epubURL) {
                 setResampleIndicator(false)  // この表示は Web ビューが担う(消し忘れ防止)
                 enterCollectionReflowEPUB(url: epubURL, entryIndex: entryIndex,
                                           forward: collectionArrival ?? turnForward ?? true,
@@ -2463,7 +2434,7 @@ final class ReaderWindowController: NSWindowController {
         // spread.indices 走査と等価。
         if book.entries.indices.contains(i),
            let url = book.entries[i].reflowEPUBURL,
-           !epubFailedPlaceholders.contains(url) {
+           !collectionNavigation.hasPermanentFailure(for: url) {
             return false  // 代理ページに着地→自動入場待ち
         }
         return true
@@ -2569,8 +2540,8 @@ final class ReaderWindowController: NSWindowController {
             // 開く(保存位置の復元・確認ダイアログをバイパス)。EPUB 側の巻末ラップ
             // openCollectionEntry(at:0, forward:true, atFirst:true)と対称。設定なしだと
             // 巻中復元や『前回位置から?』ダイアログがループ途中で出る(cooViewer-zfl)
-            epubCollectionArrivalForward = true
-            epubCollectionArrivalAtFirst = true
+            collectionNavigation.arrivalForward = true
+            collectionNavigation.arrivalAtFirst = true
             Task { await refreshDisplay() }
         case 1, 2:
             // 前方は 1/2 とも「次の本の先頭」(仕様書 §4.3.4)
@@ -2591,7 +2562,7 @@ final class ReaderWindowController: NSWindowController {
             Task {
                 // 巻頭ループで同じ合本の末尾へ戻る。末尾が代理 EPUB のとき
                 // 後退到達として末尾から開く(監査 #1。設定なしだと先頭で開く)
-                epubCollectionArrivalForward = false
+                collectionNavigation.arrivalForward = false
                 guard await book.goToLast(), book === self.book else { return }
                 await refreshDisplay()
             }
@@ -2695,7 +2666,7 @@ final class ReaderWindowController: NSWindowController {
             // openBookFlow の atLastPage 経路と対称。設定なしだと先頭/復元位置で
             // 開いてしまう(cooViewer-zfl)。代理でなければ refreshDisplay が
             // 消費するだけで無害
-            epubCollectionArrivalForward = false
+            collectionNavigation.arrivalForward = false
             await refreshDisplay()
         }
     }
