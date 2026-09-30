@@ -169,7 +169,9 @@ CooViewer/
 │                                     サブメニューは NSMenuDelegate で動的再構築)
 ├── Core/
 │   ├── Source/
-│   │   ├── BookSource.swift        — プロトコル+既定実装+BookSourceFactory
+│   │   ├── BookSource.swift        — プロトコルと既定実装
+│   │   ├── BookSourceFactory.swift — URL からソースを生成・EPUB 解析結果を再利用
+│   │   ├── PageEntry.swift         — ページの同一性・パス・日付(ソートと表示で共有)
 │   │   ├── FolderSource.swift      — 不変・並列。フォルダ走査(readSubFolder §4.1)
 │   │   ├── ArchiveSource.swift     — actor。KaitoKit ラッパ+ローカルスプール+
 │   │   │                             書庫内書庫/PDF のネスト統合(§5)
@@ -185,9 +187,11 @@ CooViewer/
 │   │   ├── Book.swift              — @MainActor。ページ列・現在位置・見開き(§4.2)・
 │   │   │                             ナビゲーション・先読み・サイズ索引
 │   │   ├── PageLayout.swift        — 見開き合成判定(marks + 740 比率+表紙単ページ)
-│   │   └── ReadMode.swift
+│   │   ├── ReadMode.swift
+│   │   └── PageBookmark.swift      — 固定ページのしおりと保存済み設定の値型
 │   ├── Cache/
-│   │   ├── PageCache.swift         — actor。バイト基準 LRU+メモリ圧迫トリム(§5)
+│   │   ├── PageCache.swift         — @MainActor。Book 専用の同期 LRU+圧迫トリム(§5)
+│   │   ├── ReadingResourceDefaults.swift — 読み込み・キャッシュの標準予算
 │   │   └── ThumbnailCache.swift    — actor。メモリ+ディスク(HEIC)、
 │   │                                 世代一致の待ち手管理・失敗記録
 │   ├── Rendering/
@@ -199,7 +203,8 @@ CooViewer/
 │   │   ├── MLNoiseReducer.swift    — 強: waifu2x ノイズ除去(CoreML、128px タイル)
 │   │   ├── MLSuperResolver.swift   — 最高: Real-ESRGAN ×4 超解像(CoreML、240px タイル
 │   │   │                             +フェザー合成+ディザ、HEIC ディスクキャッシュ)
-│   │   └── DisplayCapPolicy.swift  — ウインドウ実寸に応じたデコード上限(1024 刻み)
+│   │   ├── DisplayCapPolicy.swift  — ウインドウ実寸に応じたデコード上限(1024 刻み)
+│   │   └── ReaderDisplaySettings.swift — 表示モード・補間の値型(UI 非依存)
 │   ├── Sort/PageSorter.swift       — 自然順ほか SortMode 全種(§4.4.3)
 │   ├── ImageDecoding.swift         — ImageIO デコード(HDR ゲインマップ・SVG・
 │   │                                 レトロ形式へのフォールバック)
@@ -222,6 +227,10 @@ CooViewer/
 │   │   │                           — 開くフロー・表示更新・入力ディスパッチ・
 │   │   │                             付随機能・ページ番号/バーの配置と自動隠し・
 │   │   │                             オープン進捗 HUD・ウインドウ位置復元
+│   │   ├── EPUBReadingSession.swift — 一冊のリフロー状態と明示的な終了。
+│   │   │                             検索状態は EPUBSearchSession が所有
+│   │   ├── ReaderWindowController+EPUBSearch/EPUBBookmarks/EPUBFootnotes.swift
+│   │   │                           — 機能ごとの UI 配線とセッション同一性の照合
 │   │   ├── ReaderView.swift        — layer-backed。1/2 ページ配置・フィット・回転・
 │   │   │                             内部スクロール端判定・リサンプル差し替え・
 │   │   │                             アニメ再生
@@ -231,17 +240,20 @@ CooViewer/
 │   │   └── PlaceholderImage.swift  — 壊れページ等の実行時生成プレースホルダ
 │   ├── Thumbnails/ (SwiftUI)       — ThumbnailOverlayModel / ThumbnailOverlayView /
 │   │                                 ThumbnailGridLayout(ウインドウ内オーバーレイ §4.8)
-│   ├── Bookmarks/ (SwiftUI)        — BookmarkEditorView(しおり編集シート §4.7.2)
+│   ├── Bookmarks/ (SwiftUI)        — BookmarkEditorView(しおり編集シート §4.7.2) /
+│   │                                 EPUBBookmarkLogic(リフロー位置の一致・編集解決)
 │   └── Settings/ (SwiftUI)         — SettingsView(システム設定風サイドバー+検索。
 │                                     9 ペイン)+ SettingsSearch + KeyBindingsPane
 ├── Persistence/
 │   ├── SettingsStore.swift         — 型付きアクセサ。旧キーを直接読み書きし、色/
 │   │                                 フォント等の旧 NSArchiver データは読み替え(§13.5)
-│   └── BookHistoryStore.swift      — 本ごとの状態の v2 ストア(1 冊 1 JSON+
-│                                     recents.json。旧キーは初回に一括インポート)
+│   ├── BookHistoryStore.swift      — 本ごとの状態の v2 ストア(1 冊 1 JSON+
+│   │                                 recents.json。旧キーは初回に一括インポート)
+│   ├── BookStateRecord.swift       — JSON の互換読み取りと純粋な状態更新規則
+│   └── ReadingStateSnapshot.swift — 一冊の位置・設定・しおりを同じ保存要求へ束ねる
 └── Resources/
     ├── Localizable.xcstrings       — ja/en
-    ├── Credits.rtf                 — XAD クレジット維持(§14.2)
+    ├── Credits.rtf                 — KaitoKit・Washi・Sparkle・ML モデルの表記
     └── AppIcon.icon ほか
 CooViewerTests/                     — ソート・ソース(スプール/暗号化 zip/ネスト含む)・
                                       Book・バインディング移行・履歴・キャッシュ・
@@ -262,12 +274,34 @@ Icon Composer の AppIcon.icon。
 ### 3.1 並行性設計(旧 §4.6 の置換)
 
 - UI・Navigator・表示状態は `@MainActor`。
-- キャッシュは actor。先読みは `Task` ベースで、ページ移動のたびに前回の
+- Book 専用の PageCache は MainActor 上で同期操作する。ThumbnailCache と
+  ImageResampler は独立 actor。先読みは `Task` ベースで、ページ移動のたびに前回の
   先読みタスクをキャンセルして作り直す。**完了待ちはしない**(キャッシュ挿入は
   冪等で、表示経路は先読み結果に依存しない)。表示の一貫性は
   ReaderWindowController の世代番号(displayGeneration)で守る。
   NSLock+ビジーウェイト+threadStop は持ち込まない。
 - 書庫展開(KaitoKit)は非スレッド安全な同期 API のため、専用 actor(`ArchiveSource` 内)で直列化。solid rar の逐次展開特性を前提にシーケンシャルな先読みを優先する(§13.4)。
+
+リフロー EPUB の状態は、再利用する表示ビューと一冊の読書セッションで寿命を分ける。
+
+| 所有者 | 状態 | 失効・終了 |
+|---|---|---|
+| ReaderWindowController | EPUBReaderView、入力モニタ、提示要求の epoch、解析コアレサ、合本全体の対応表と失敗マーカー | ウインドウに属する。提示の epoch は画像本を開く入口でも進める |
+| EPUBReadingSession | publication/URL/合本文脈、しおり/目次/表示番号、保存予約と周期、脚注、選択本文、カールのホスト | 提示ごとに生成。旧ビューを保存してから `end()` し、次のセッションを設置する |
+| EPUBSearchSession | 検索モデル/パネル、検索・厳密着地のタスクと世代、移動回数、本文ハイライト | パネル閉鎖・読書終了では検索全体を終了。設定/版面変更では厳密着地と矩形を失効させる |
+
+ホストが作るタスクと UI クロージャは、開始時の読書セッションを捕まえ、結果反映前に
+参照同一性と active を照合する。同じ publication や同じビューの再利用でも旧処理を
+採用しない。検索の世代番号は、そのセッション内の連打を区別するために使う。
+設定同期から load/importCensus までの提示中は読書状態の callback を抑止し、
+同一 publication の再提示で旧版面の通知を新セッションへ保存しない。
+Washi 内部の document/spine 世代による通知の失効も引き続き必要である。
+
+ウインドウを閉じる場合は保存と `cancelTransientWork()` に留め、本とビューを保持する。
+Dock から `showWindow` で再表示する経路では同じ読書内容へ戻る。
+しおり編集シートの確定は例外的に旧対象 URL へも保存する。ページ番号の再解決は
+同じ読書セッションに限り、同じ URL を開き直した場合は確定した名前・並び・削除を
+現在のしおり配列にも反映して、後続の状態保存による上書きを防ぐ。
 
 ### 3.2 描画設計(旧 §4.9-4.11 の置換)
 
@@ -315,7 +349,7 @@ Icon Composer の AppIcon.icon。
 
 **高度な設定(2026-08 追加)**: 上表の既定値は設定タブ「高度」で調整できる。
 マスタースイッチ `AdvancedSettingsEnabled` が OFF の間は保存値を無視して既定値で
-動作する(`SettingsStore.AdvancedDefault` が唯一の既定値定義)。新設キー:
+動作する(`ReadingResourceDefaults` が唯一の既定値定義)。新設キー:
 `AdvancedMemoryPercent`(物理メモリ %、5-50。ON 時は標準の 6GB 上限を適用しない)/
 `AdvancedPrefetchAhead`(2-64)/`AdvancedPrefetchBehind`(0-16、0 で無効)/
 `AdvancedDisplayPixelCap`(2048-8192)/`AdvancedSpoolLimitGB`(1-64)/
@@ -378,6 +412,10 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   **1.x 用に凍結保持**し、新実装からは読みも書きもしない。
 - 新規の設定キーは既存キーと衝突しない名前にし、未設定時の既定値を
   コード側で保証する(registerDefaults か アクセサの補正)。
+- 一冊の位置・設定・しおりは保存スナップショットで一度に反映し、状態 JSON は
+  一回だけ更新する。リフローの census は最終状態に残す内容がある場合だけ保持する。
+  保存結果は状態 JSON の成否を表し、別ファイルの最近の一覧の成否は含まない。
+  EPUB の成功時刻は保存できた時だけ進め、失敗後も最終試行から30秒の間隔を空ける。
 
 ### 7.3 並行性
 

@@ -113,7 +113,7 @@ struct MediaProfile: Sendable, Equatable {
     /// レイテンシ隠蔽のため深くする)
     var defaultPrefetchAhead: Int {
         switch mediaClass {
-        case .fastLocal, .unknown: SettingsStore.AdvancedDefault.prefetchAhead
+        case .fastLocal, .unknown: ReadingResourceDefaults.prefetchAhead
         case .slowLocal: 16
         case .network: 20
         }
@@ -121,7 +121,7 @@ struct MediaProfile: Sendable, Equatable {
 
     var defaultPrefetchBehind: Int {
         switch mediaClass {
-        case .fastLocal, .unknown: SettingsStore.AdvancedDefault.prefetchBehind
+        case .fastLocal, .unknown: ReadingResourceDefaults.prefetchBehind
         case .slowLocal, .network: 4
         }
     }

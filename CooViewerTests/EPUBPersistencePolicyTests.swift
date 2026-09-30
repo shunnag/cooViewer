@@ -32,6 +32,35 @@ final class EPUBPersistencePolicyTests: XCTestCase {
             lastSave: origin, now: origin.addingTimeInterval(30)))
     }
 
+    func testContinuousNotificationsDoNotRetryEveryFailedSave() {
+        let origin = Date(timeIntervalSinceReferenceDate: 1_000)
+        var schedule = EPUBSaveSchedule()
+        var attempts = 0
+        // 1 秒に 4 回の移動通知が 2 分続き、ストレージが保存に失敗する場合。
+        for step in 0...480 {
+            let now = origin.addingTimeInterval(Double(step) / 4)
+            if schedule.shouldSaveNow(at: now) {
+                attempts += 1
+                schedule.recordAttempt(at: now, succeeded: false)
+            }
+        }
+        XCTAssertEqual(attempts, 5)
+        XCTAssertNil(schedule.lastSuccessfulSaveAt)
+    }
+
+    func testSuccessfulRetryStartsANewSavePeriod() {
+        let origin = Date(timeIntervalSinceReferenceDate: 1_000)
+        var schedule = EPUBSaveSchedule()
+        schedule.recordAttempt(at: origin, succeeded: false)
+        XCTAssertFalse(schedule.shouldSaveNow(at: origin.addingTimeInterval(29.999)))
+        let recovered = origin.addingTimeInterval(30)
+        XCTAssertTrue(schedule.shouldSaveNow(at: recovered))
+        schedule.recordAttempt(at: recovered, succeeded: true)
+        XCTAssertEqual(schedule.lastSuccessfulSaveAt, recovered)
+        XCTAssertFalse(schedule.shouldSaveNow(at: recovered.addingTimeInterval(29.999)))
+        XCTAssertTrue(schedule.shouldSaveNow(at: recovered.addingTimeInterval(30)))
+    }
+
     private func makeEPUBData() -> Data {
         let container = """
         <?xml version="1.0"?>

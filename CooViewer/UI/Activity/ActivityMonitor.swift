@@ -224,7 +224,7 @@ final class ActivityMonitor: ObservableObject {
         }
     }
 
-    private static func interpolationName(_ i: ReaderView.Interpolation) -> String {
+    private static func interpolationName(_ i: ImageInterpolation) -> String {
         switch i {
         case .none: String(localized: "None")
         case .low: String(localized: "Low")

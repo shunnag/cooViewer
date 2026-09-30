@@ -49,9 +49,9 @@ final class MediaProfileTests: XCTestCase {
         XCTAssertEqual(profile.bookPrefetchConcurrency, 4)
         XCTAssertEqual(profile.thumbnailPrefetchConcurrency, 3)
         XCTAssertEqual(profile.defaultPrefetchAhead,
-                       SettingsStore.AdvancedDefault.prefetchAhead)
+                       ReadingResourceDefaults.prefetchAhead)
         XCTAssertEqual(profile.defaultPrefetchBehind,
-                       SettingsStore.AdvancedDefault.prefetchBehind)
+                       ReadingResourceDefaults.prefetchBehind)
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "zip"))
         XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "rar"))
     }

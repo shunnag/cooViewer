@@ -116,8 +116,8 @@ final class SettingsStore {
     /// 表示モード(仕様書 §3.2 fitScreenMode)。旧実装は永続化せず毎回 0 で
     /// 起動したが、新実装ではグローバル設定として保存する(仕様変更)。
     /// キー "FitMode" は新実装のみのキー(旧実装に同名キーは存在しない)
-    var fitMode: ReaderView.FitMode {
-        get { ReaderView.FitMode(rawValue: defaults.integer(forKey: "FitMode")) ?? .fitToScreen }
+    var fitMode: ReaderFitMode {
+        get { ReaderFitMode(rawValue: defaults.integer(forKey: "FitMode")) ?? .fitToScreen }
         set { defaults.set(newValue.rawValue, forKey: "FitMode") }
     }
 
@@ -143,8 +143,8 @@ final class SettingsStore {
         return value == 0 ? PageLayout.defaultSingleSetting : value
     }
 
-    var interpolation: ReaderView.Interpolation {
-        ReaderView.Interpolation(rawValue: defaults.integer(forKey: "Interpolation"))
+    var interpolation: ImageInterpolation {
+        ImageInterpolation(rawValue: defaults.integer(forKey: "Interpolation"))
             ?? .systemDefault
     }
 
@@ -296,21 +296,10 @@ final class SettingsStore {
         // 標準時の上限。15% がこれに達するのは 107GB 超の構成のみで、
         // 実質はメモリ圧迫トリムに任せる安全弁
         return min(16 * 1024 * 1024 * 1024,
-                   physical / 100 * AdvancedDefault.memoryPercent)
+                   physical / 100 * ReadingResourceDefaults.memoryPercent)
     }
 
     // MARK: - 高度な設定(新設。設定タブ「高度」)
-
-    /// 高度な設定の既定値。マスタースイッチ OFF のとき・リセット時はこの値
-    enum AdvancedDefault {
-        static let memoryPercent = 15
-        static let prefetchAhead = 12
-        static let prefetchBehind = 3
-        static let displayPixelCap = 4096
-        static let spoolLimitGB = 4
-        static let prepareNextBookPages = 6
-        static let thumbnailCacheDays = 30
-    }
 
     /// マスタースイッチ。OFF の間は下記アクセサすべてが既定値を返す
     var advancedSettingsEnabled: Bool {
@@ -320,43 +309,43 @@ final class SettingsStore {
     /// ページキャッシュに使う物理メモリの割合(%)
     var advancedMemoryPercent: Int {
         advancedInt("AdvancedMemoryPercent",
-                    default: AdvancedDefault.memoryPercent, in: 5...50)
+                    default: ReadingResourceDefaults.memoryPercent, in: 5...50)
     }
 
     /// 進行方向の先読みページ数
     var prefetchAheadCount: Int {
         advancedInt("AdvancedPrefetchAhead",
-                    default: AdvancedDefault.prefetchAhead, in: 2...64)
+                    default: ReadingResourceDefaults.prefetchAhead, in: 2...64)
     }
 
     /// 逆方向の先読みページ数(0 で無効)
     var prefetchBehindCount: Int {
         advancedInt("AdvancedPrefetchBehind",
-                    default: AdvancedDefault.prefetchBehind, in: 0...16)
+                    default: ReadingResourceDefaults.prefetchBehind, in: 0...16)
     }
 
     /// 表示用デコードの長辺上限(px)。原寸表示・ルーペには影響しない
     var displayPixelCap: Int {
         advancedInt("AdvancedDisplayPixelCap",
-                    default: AdvancedDefault.displayPixelCap, in: 2048...8192)
+                    default: ReadingResourceDefaults.displayPixelCap, in: 2048...8192)
     }
 
     /// 書庫のローカル一時展開(スプール)の合計サイズ上限
     var archiveSpoolSizeLimit: Int64 {
         Int64(advancedInt("AdvancedSpoolLimitGB",
-                          default: AdvancedDefault.spoolLimitGB, in: 1...64)) << 30
+                          default: ReadingResourceDefaults.spoolLimitGB, in: 1...64)) << 30
     }
 
     /// 巻末の残りページ数がこの値以内になったら次の本を事前準備(0 で無効)
     var prepareNextBookPages: Int {
         advancedInt("AdvancedPrepareNextBookPages",
-                    default: AdvancedDefault.prepareNextBookPages, in: 0...20)
+                    default: ReadingResourceDefaults.prepareNextBookPages, in: 0...20)
     }
 
     /// サムネイルのディスクキャッシュ保持日数
     var thumbnailCacheDays: Int {
         advancedInt("AdvancedThumbnailCacheDays",
-                    default: AdvancedDefault.thumbnailCacheDays, in: 1...365)
+                    default: ReadingResourceDefaults.thumbnailCacheDays, in: 1...365)
     }
 
     /// 本の置き場所の速度(内蔵 SSD/USB-HDD/ネットワーク)に応じて

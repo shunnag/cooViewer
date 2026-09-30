@@ -2,41 +2,6 @@ import CoreGraphics
 import Foundation
 import Washi
 
-/// 本の中の 1 ページ(1 画像)を表す。
-struct PageEntry: Sendable, Hashable, Identifiable {
-    /// ソース内での安定 ID(書庫エントリ番号 / PDF ページ番号 / フォルダ列挙順)
-    let id: Int
-    /// 表示名(拡張子付きファイル名)
-    let name: String
-    /// 本の中の相対パス。ソート(名前順)とサブフォルダ移動の単位に使う。
-    /// PDF はページ番号を 0 埋めした擬似パス。
-    let pathInBook: String
-    /// 実ファイルの URL(フォルダの本のみ。Finder 表示・ゴミ箱に使う)
-    let fileURL: URL?
-    let creationDate: Date?
-    let modificationDate: Date?
-    /// コレクション(合本)内のリフロー EPUB の代理ページなら、その EPUB の
-    /// URL(表紙 1 ページで本を代表し、表示到達で EPUB モードへ切り替える)。
-    /// 常に単独表示(見開きに混ぜない — Book.isSmall が除外する)
-    var reflowEPUBURL: URL? = nil
-
-    /// 本の中でこのページが属するフォルダ(サブフォルダ移動の判定単位。仕様書 §4.3.5)
-    var containerPath: String {
-        (pathInBook as NSString).deletingLastPathComponent
-    }
-
-    /// 表示用の名前。relativePath 指定時はサブフォルダ/書庫内の相対パスを含める。
-    /// 擬似パスのソース(PDF: 0 埋めページ番号)は末尾がファイル名と一致しないため
-    /// 末尾をページ名に置き換える: 最上位 PDF は名前のみ、ネストした PDF は
-    /// 「書庫内パス/ページ名」(巻をまたいで同じ「ページ N」にならないように)。
-    func displayTitle(relativePath: Bool) -> String {
-        guard relativePath, pathInBook != name else { return name }
-        if (pathInBook as NSString).lastPathComponent == name { return pathInBook }
-        let container = containerPath
-        return container.isEmpty ? name : container + "/" + name
-    }
-}
-
 enum BookSourceError: Error {
     case unreadable(URL)
     case unsupportedFormat(URL)
@@ -162,56 +127,4 @@ extension BookSource {
     func preparsedReflowPublication(for url: URL) async -> EPUBPublication? { nil }
     func layoutSinglePageIndices() async -> Set<Int> { [] }
     func archiveEngineKind(for entry: PageEntry) async -> ArchiveEngineKind? { nil }
-}
-
-enum BookSourceFactory {
-    /// URL から適切な BookSource を生成する。
-    /// 単一画像ファイル → 親フォルダの読み替え(仕様書 §4.1.2 手順 2)は呼び出し側で
-    /// 済ませておくこと。
-    /// nestedPasswordProvider: 暗号化されたネスト書庫/PDF のパスワードを UI に
-    /// 求めるコールバック(nil なら既知パスワードのみ試して黙って飛ばす)
-    static func make(for url: URL, readSubFolders: Bool,
-                     nestedPasswordProvider: NestedPasswordProvider? = nil,
-                     preparsedEPUB: EPUBPublication? = nil,
-                     vault: PasswordVault? = PasswordVault.sharedIfEnabled(),
-                     archiveEngine: ArchiveEngineKind = .kaitokit)
-        async throws -> any BookSource {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            throw BookSourceError.unreadable(url)
-        }
-        let unlocker = NestedUnlocker(provider: nestedPasswordProvider, vault: vault)
-        if isDirectory.boolValue {
-            let folder = try FolderSource(url: url, readSubFolders: readSubFolders)
-            // 書庫/PDF を含むフォルダは統合ソースで包む(旧ネストローダー §2.4)。
-            // 画像だけなら従来どおり(並列ロード・日付ソート可を維持)
-            if folder.nestedBookCandidates.isEmpty {
-                return folder
-            }
-            return NestedFolderSource(
-                folder: folder, unlocker: unlocker,
-                preferredEngine: archiveEngine)
-        }
-        if SupportedTypes.isPDF(url) {
-            return try PDFSource(url: url)
-        }
-        if SupportedTypes.isEPUB(url) {
-            // FXL と画像のみ EPUB が対象(通常のリフローは openBookFlow が
-            // 専用リーダーへ振り分け済み)。
-            if let preparsedEPUB,
-               CanonicalPath.normalize(preparsedEPUB.url.path)
-                   == CanonicalPath.normalize(url.path) {
-                // ルーティング済み Publication を引き継ぎ、同じ EPUB の
-                // OCF/package を読み直さない(cooViewer-oxr.42、設計書 §2.4)。
-                return try EPUBSource(publication: preparsedEPUB, url: url)
-            }
-            return try EPUBSource(url: url)
-        }
-        if SupportedTypes.isArchive(url) {
-            return try ArchiveSource(url: url, unlocker: unlocker,
-                                     persistenceKey: .file(path: url.path),
-                                     preferredEngine: archiveEngine)
-        }
-        throw BookSourceError.unsupportedFormat(url)
-    }
 }

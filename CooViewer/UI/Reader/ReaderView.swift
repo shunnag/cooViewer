@@ -1,5 +1,15 @@
 import AppKit
 
+private extension ImageInterpolation {
+    var layerFilter: CALayerContentsFilter {
+        switch self {
+        case .none: .nearest
+        case .low: .linear
+        case .systemDefault, .high: .trilinear
+        }
+    }
+}
+
 @MainActor
 protocol ReaderViewDelegate: AnyObject {
     func readerView(_ view: ReaderView, didReceiveDropped url: URL)
@@ -41,30 +51,6 @@ protocol ReaderViewDelegate: AnyObject {
 /// (端到達判定 §4.16 をページ送りに使うため)。
 @MainActor
 final class ReaderView: NSView {
-    /// 表示モード(仕様書 §3.2)。旧 fitScreenMode の整数値を維持。
-    enum FitMode: Int, CaseIterable {
-        case fitToScreen = 0      // 全体フィット・スクロールなし
-        case fitWidth = 1         // 幅フィット・縦スクロール
-        case noScale = 2          // ポイント原寸
-        case fitWidthDivide = 3   // 横長 1 枚を 2 ページ幅とみなす幅フィット
-    }
-
-    /// 補間(仕様書 §6.1 Interpolation)。旧整数値を維持。
-    enum Interpolation: Int {
-        case systemDefault = 0
-        case none = 1
-        case low = 2
-        case high = 3
-
-        var filter: CALayerContentsFilter {
-            switch self {
-            case .none: .nearest
-            case .low: .linear
-            case .systemDefault, .high: .trilinear
-            }
-        }
-    }
-
     weak var delegate: (any ReaderViewDelegate)?
 
     private let containerLayer = CALayer()
@@ -106,7 +92,7 @@ final class ReaderView: NSView {
     /// チェックで止めてから新しい要求を積む(即キャンセルしない)
     private var softRestartRequested = false
 
-    var fitMode: FitMode = .fitToScreen {
+    var fitMode: ReaderFitMode = .fitToScreen {
         didSet { scrollOffset = .zero; resetZoom(); needsLayout = true }
     }
 
@@ -144,10 +130,10 @@ final class ReaderView: NSView {
         zoomScale = 1
     }
 
-    var interpolation: Interpolation = .systemDefault {
+    var interpolation: ImageInterpolation = .systemDefault {
         didSet {
             for layer in pageLayers {
-                layer.magnificationFilter = interpolation.filter
+                layer.magnificationFilter = interpolation.layerFilter
             }
             if interpolation != oldValue {
                 resampledPages = Array(repeating: nil, count: images.count)
@@ -193,7 +179,7 @@ final class ReaderView: NSView {
         layer?.addSublayer(containerLayer)
         for pageLayer in pageLayers {
             pageLayer.contentsGravity = .resize
-            pageLayer.magnificationFilter = interpolation.filter
+            pageLayer.magnificationFilter = interpolation.layerFilter
             pageLayer.minificationFilter = .trilinear
             pageLayer.isHidden = true
             // HDR(ゲインマップ)画像を EDR ディスプレイで輝度拡張表示する
