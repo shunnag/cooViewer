@@ -16,7 +16,7 @@ final class BookHistoryStore {
     private let directory: URL
 
     /// 読み込んだ状態のメモリキャッシュ(正規化パス → 状態)
-    private var stateCache: [String: BookState] = [:]
+    private var stateCache: [String: BookStateRecord] = [:]
     /// 参照ミス(ファイルが本当に無い本)の記録。状態のない本を開くたびに
     /// 再配置スキャンしないため。**「在るのに読めなかった」本はここに入れない**
     /// (一過性の失敗で恒久 nil 化しないため。回復すれば読み直せる)
@@ -30,6 +30,8 @@ final class BookHistoryStore {
     private var relocatableNames: Set<String>?
     /// 検証用: relocateState が高コストな全走査に入った回数(cooViewer-3ri)
     private(set) var relocateFullScanCount = 0
+    /// 実際に JSON を書き込んだ回数。一冊の保存が複数更新へ分裂していないかを検証する。
+    private(set) var stateFileWriteCount = 0
     /// 当セッションで一度でも「在るのに読めなかった」本。以後その本への書き込みを
     /// 抑止し、一過性の失敗で空状態を読んだ後に回復した中身を空で上書きするのを
     /// 防ぐ(open 時失敗→session 空状態→close 時回復→save が空で上書き、の遮断)
@@ -41,27 +43,6 @@ final class BookHistoryStore {
         self.directory = directory ?? FileManager.default
             .userDomainDirectory(.applicationSupportDirectory)
             .appendingPathComponent("jp.coo.cooViewer/BookStates")
-    }
-
-    struct Bookmark: Equatable, Sendable {
-        var name: String
-        var pageIndex: Int  // 0 始まり
-        /// しおり先ページの本の中の相対パス。エントリ列が変わったとき
-        /// (ネスト展開の失敗・並び替え)の照合用
-        var pagePath: String?
-
-        init(name: String, pageIndex: Int, pagePath: String? = nil) {
-            self.name = name
-            self.pageIndex = pageIndex
-            self.pagePath = pagePath
-        }
-    }
-
-    struct BookSettings {
-        var readMode: ReadMode?
-        var sortMode: SortMode?
-        var marks: PageMarks
-        var bookmarks: [Bookmark]
     }
 
     /// 保存済みインデックスを、保存時のページパスで照合し直す。
@@ -77,141 +58,6 @@ final class BookHistoryStore {
     }
 
     // MARK: - v2 ストレージ
-
-    /// 1 冊分の状態(JSON)。しおり・per-book 設定・最終ページを 1 箇所に持つ
-    private struct BookState: Codable {
-        var version = 2
-        var path: String
-        var displayName: String?
-        /// 移動した本の追跡用(参照時は解決しない。ミス時の再配置でのみ使う)
-        var urlBookmark: Data?
-        var readMode: Int?
-        var sortMode: Int?
-        var marks: [String] = []
-        var bookmarks: [StoredBookmark] = []
-        var lastPageIndex: Int?
-        var lastPagePath: String?
-        /// 閉じた時点の AlwaysRememberLastPage(旧仕様の write-time 意味論:
-        /// 一覧から外れた後の復元可否は「閉じた時」の設定で決まる。§7.3)
-        var rememberBeyondRecents: Bool?
-        var lastOpened: Double?
-        /// リフロー EPUB の最終位置(固定ページ index と排他ではなく併存可。
-        /// オプショナル追加のみなので旧ビルドとの相互読み書きは壊れない)
-        var lastReflowPosition: ReflowPosition?
-        /// リフロー EPUB のしおり。固定ページ番号ではなく読書位置と同じ
-        /// spine 項目 + 項目内進行率で持つ(仕様書 §4.7、設計書 §2.4)
-        var reflowBookmarks: [StoredReflowBookmark] = []
-        /// リフロー EPUB の全文ページ実測(census)の旧ビルド互換ミラー。
-        /// 常に censusRecords の先頭を写し、旧ビルドにも最新値を渡す
-        /// (cooViewer-oxr.45、設計書 §2.4)
-        var lastCensus: StoredCensus?
-        /// 表示メトリクス別 census の MRU。先頭が最新で最大 3 件、
-        /// metricsKey の重複は持たない(cooViewer-oxr.45、設計書 §2.4)
-        var censusRecords: [StoredCensus] = []
-        /// リフロー EPUB の見開き/単ページ固定(s キー = EPUBColumnMode の
-        /// rawValue。1=single / 2=double。nil/0=auto)。画像本の単/見開き固定
-        /// (marks)に相当する表示設定で、RememberBookSettings が ON のときだけ
-        /// 残る。オプショナル追加なので旧 JSON はデコード互換(cooViewer-0dh)
-        var columnMode: Int?
-
-        /// lastCensus と censusRecords を除いた「残す価値のある内容」が空か。
-        /// columnMode を消した結果 census だけが残る状態(合本の子で起きうる)を
-        /// 検出し、census 単独ファイルを残さない方針を保つために使う
-        /// (cooViewer-oxr.45、設計書 §2.4)
-        var isEmptyIgnoringCensus: Bool {
-            readMode == nil && sortMode == nil && marks.isEmpty
-                && bookmarks.isEmpty && (lastPageIndex ?? 0) <= 0
-                && lastReflowPosition == nil && reflowBookmarks.isEmpty
-                && columnMode == nil
-        }
-
-        var isEmpty: Bool {
-            isEmptyIgnoringCensus && lastCensus == nil && censusRecords.isEmpty
-        }
-
-        init(path: String) {
-            self.path = path
-        }
-
-        /// reflowBookmarks 追加前の v2 JSON も空配列として読む。
-        /// 非 Optional 配列の合成 Decodable は欠落キーを許さないため、追加項目
-        /// だけ decodeIfPresent にする(設計書 §13.5 の後方互換方針)
-        init(from decoder: any Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 2
-            path = try container.decode(String.self, forKey: .path)
-            displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
-            urlBookmark = try container.decodeIfPresent(Data.self, forKey: .urlBookmark)
-            readMode = try container.decodeIfPresent(Int.self, forKey: .readMode)
-            sortMode = try container.decodeIfPresent(Int.self, forKey: .sortMode)
-            marks = try container.decodeIfPresent([String].self, forKey: .marks) ?? []
-            bookmarks = try container.decodeIfPresent(
-                [StoredBookmark].self, forKey: .bookmarks) ?? []
-            lastPageIndex = try container.decodeIfPresent(
-                Int.self, forKey: .lastPageIndex)
-            lastPagePath = try container.decodeIfPresent(
-                String.self, forKey: .lastPagePath)
-            rememberBeyondRecents = try container.decodeIfPresent(
-                Bool.self, forKey: .rememberBeyondRecents)
-            lastOpened = try container.decodeIfPresent(Double.self, forKey: .lastOpened)
-            lastReflowPosition = try container.decodeIfPresent(
-                ReflowPosition.self, forKey: .lastReflowPosition)
-            reflowBookmarks = try container.decodeIfPresent(
-                [StoredReflowBookmark].self, forKey: .reflowBookmarks) ?? []
-            let legacyCensus = try container.decodeIfPresent(
-                StoredCensus.self, forKey: .lastCensus)
-            let decodedCensuses = try container.decodeIfPresent(
-                [StoredCensus].self, forKey: .censusRecords) ?? []
-            var seenMetricsKeys: Set<String> = []
-            censusRecords = decodedCensuses.filter {
-                seenMetricsKeys.insert($0.metricsKey).inserted
-            }
-            if censusRecords.count > 3 {
-                censusRecords.removeSubrange(3...)
-            }
-            // censusRecords 導入前の JSON は lastCensus を 1 件の MRU として昇格する。
-            // 新形式では先頭を互換ミラーへ戻し、不整合な永続値も正規化する
-            // (cooViewer-oxr.45、設計書 §2.4)
-            if censusRecords.isEmpty, let legacyCensus {
-                censusRecords = [legacyCensus]
-            }
-            lastCensus = censusRecords.first
-            columnMode = try container.decodeIfPresent(Int.self, forKey: .columnMode)
-        }
-    }
-
-    /// リフロー EPUB の全文ページ実測(表示メトリクスキー + 項目別ページ数 +
-    /// 版識別子)。メトリクス・版が一致する再オープンでのみ再利用する
-    private struct StoredCensus: Codable {
-        var metricsKey: String
-        var counts: [Int]
-        var releaseIdentifier: String?
-    }
-
-    /// リフロー EPUB の読書位置(spine 項目 + 項目内進行率 0..1)。
-    /// リフローに固定ページ番号は存在しないため進行率で持つ
-    private struct ReflowPosition: Codable {
-        var spineIndex: Int
-        var progression: Double
-        /// spine itemref の idref(あれば配信本の改版で spine が並べ替わっても
-        /// 正しい章へ復元できる。旧 JSON は idref を持たずデコード互換)
-        var idref: String?
-    }
-
-    /// リフロー EPUB のしおり。BookHistoryStore は Washi 非依存を保ち、
-    /// 境界では ReflowPosition と同じタプルで授受する(設計書 §2.4)
-    private struct StoredReflowBookmark: Codable {
-        var name: String
-        var spineIndex: Int
-        var progression: Double
-        var idref: String?
-    }
-
-    private struct StoredBookmark: Codable {
-        var name: String
-        var pageIndex: Int  // 0 始まり(v2 は文字列変換なし)
-        var pagePath: String?
-    }
 
     private struct RecentEntry: Codable {
         var path: String
@@ -234,7 +80,7 @@ final class BookHistoryStore {
 
     /// 状態読み取りの三態。found = 復元してよい / absent = 本当に無い(新規化可) /
     /// unreadable = 在るのに読めない(中身を潰さないこと)
-    private enum StateLoad { case found(BookState); case absent; case unreadable }
+    private enum StateLoad { case found(BookStateRecord); case absent; case unreadable }
 
     /// 三態読み取り。**unreadable は missCache に入れない**(回復時に読み直せる)。
     /// allowRelocation は「一括取込モードでない=通常運用」の意味も兼ねる:
@@ -247,7 +93,7 @@ final class BookHistoryStore {
         let url = stateURL(forNormalizedPath: path)
         switch PersistedFile.readBytes(at: url) {
         case .data(let data):
-            if let state = try? JSONDecoder().decode(BookState.self, from: data),
+            if let state = try? JSONDecoder().decode(BookStateRecord.self, from: data),
                state.version <= 2 {  // 版検証: 未知の新版を旧ビルドが潰さない
                 stateCache[path] = state
                 return .found(state)
@@ -271,7 +117,7 @@ final class BookHistoryStore {
 
     /// 読み取り専用の薄いラッパ: absent も unreadable も nil(=復元しない=安全側)
     private func loadState(forNormalizedPath path: String,
-                           allowRelocation: Bool = true) -> BookState? {
+                           allowRelocation: Bool = true) -> BookStateRecord? {
         if case .found(let state) = loadStateResult(
             forNormalizedPath: path, allowRelocation: allowRelocation) {
             return state
@@ -281,24 +127,51 @@ final class BookHistoryStore {
 
     /// 書き込み用に既存状態を返す(無ければ新規)。ただし当セッションで一度でも
     /// 読めなかった本は nil を返し、呼び出し側に書込中止を促す(回復後の空上書き防止)
-    private func mutableState(forNormalizedPath path: String) -> BookState? {
+    private func mutableState(forNormalizedPath path: String) -> BookStateRecord? {
         if unreadableObserved.contains(path) { return nil }
         switch loadStateResult(forNormalizedPath: path) {
         case .found(let state): return state
-        case .absent: return BookState(path: path)  // 初回オープン/クローズ(正常)
+        case .absent: return BookStateRecord(path: path)  // 初回オープン/クローズ(正常)
         case .unreadable: return nil  // loadStateResult 側で unreadableObserved 記録済み
         }
     }
 
+    /// 一冊の状態 JSON の保存結果。別ファイルの最近の一覧の成否は含まない。
+    enum SaveResult: Equatable {
+        case saved
+        case blocked  // 読取不能・未知の版を上書きしない
+        case failed   // 永続化できなかった
+    }
+
+    /// 既存状態の保護と read-modify-write の境界を全ての更新で共有する。
+    /// census だけの要求は creatingIfAbsent=false とし、状態を新規作成しない。
     @discardableResult
-    private func writeState(_ state: BookState, forNormalizedPath path: String) -> Bool {
+    private func updateState(
+        forNormalizedPath path: String,
+        creatingIfAbsent: Bool = true,
+        _ update: (inout BookStateRecord) -> Void
+    ) -> SaveResult {
+        guard !unreadableObserved.contains(path),
+              var state = creatingIfAbsent
+                ? mutableState(forNormalizedPath: path)
+                : loadState(forNormalizedPath: path) else { return .blocked }
+        update(&state)
+        return writeState(state, forNormalizedPath: path) ? .saved : .failed
+    }
+
+    @discardableResult
+    private func writeState(_ state: BookStateRecord, forNormalizedPath path: String) -> Bool {
         if state.isEmpty {
             // 実内容が何もなければファイルごと消す(旧 §7.1 のエントリ削除相当)
             stateCache[path] = nil
             missCache.insert(path)
-            try? FileManager.default.removeItem(
-                at: stateURL(forNormalizedPath: path))
-            return true
+            do {
+                try FileManager.default.removeItem(at: stateURL(forNormalizedPath: path))
+                return true
+            } catch {
+                let error = error as NSError
+                return error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError
+            }
         }
         stateCache[path] = state
         missCache.remove(path)
@@ -312,6 +185,7 @@ final class BookHistoryStore {
         guard let data = try? JSONEncoder().encode(state) else { return false }
         do {
             try data.write(to: stateURL(forNormalizedPath: path), options: .atomic)
+            stateFileWriteCount += 1
             return true
         } catch {
             return false
@@ -320,7 +194,7 @@ final class BookHistoryStore {
 
     /// 移動した本の再配置: 同じファイル名の状態だけを対象に URL ブックマークを
     /// 解決し、要求パスを指していれば新しいキーへ移し替える(参照ミス時のみ)
-    private func relocateState(toNormalizedPath path: String) -> BookState? {
+    private func relocateState(toNormalizedPath path: String) -> BookStateRecord? {
         let requestedName = (path as NSString).lastPathComponent
         // 再配置候補のファイル名索引を一度だけ構築し、索引に無いファイル名
         // (=どの保存状態とも同名でない新規の本)は全走査せず即 nil を返す
@@ -333,7 +207,7 @@ final class BookHistoryStore {
         for file in files where file.pathExtension == "json"
             && file.lastPathComponent != "recents.json" {
             guard let data = try? Data(contentsOf: file),
-                  var state = try? JSONDecoder().decode(BookState.self, from: data),
+                  var state = try? JSONDecoder().decode(BookStateRecord.self, from: data),
                   // 未知の新版(version>2)は loadStateResult 同様に触らない。
                   // v2 構造で再エンコードすると v3 専用フィールドを落として書き戻し、
                   // 旧ビルドが将来版の状態を破壊してしまう(cooViewer-358)
@@ -386,7 +260,7 @@ final class BookHistoryStore {
             for file in files where file.pathExtension == "json"
                 && file.lastPathComponent != "recents.json" {
                 guard let data = try? Data(contentsOf: file),
-                      let state = try? JSONDecoder().decode(BookState.self, from: data),
+                      let state = try? JSONDecoder().decode(BookStateRecord.self, from: data),
                       state.version <= 2, state.urlBookmark != nil else { continue }
                 names.insert((state.path as NSString).lastPathComponent)
             }
@@ -465,12 +339,10 @@ final class BookHistoryStore {
 
     func noteOpened(path rawPath: String) {
         let path = normalize(rawPath)
-        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)。recents は
-        // 別ファイル・独自ガードなので常に touch する
-        if var state = mutableState(forNormalizedPath: path) {
+        updateState(forNormalizedPath: path) { state in
             state.lastOpened = Date().timeIntervalSince1970
-            writeState(state, forNormalizedPath: path)
         }
+        // 最近の一覧は別ファイルで保護するため、本の状態を保存できなくても更新する。
         touchRecents(path: path)
     }
 
@@ -478,15 +350,11 @@ final class BookHistoryStore {
     /// pagePath はそのページの本の中の相対パス(照合用)
     func noteClosed(path rawPath: String, pageIndex: Int, pagePath: String? = nil) {
         let path = normalize(rawPath)
-        // 在るのに読めなかった本は書込抑止(回復後の空上書き/削除防止)
-        if var state = mutableState(forNormalizedPath: path) {
-            state.lastPageIndex = pageIndex
-            state.lastPagePath = pagePath
-            // 一覧から外れた後も復元できるかは「閉じた時点」の設定で固定する
-            // (旧 LastPages の write-time 意味論 §7.3)
-            state.rememberBeyondRecents = defaults.bool(forKey: "AlwaysRememberLastPage")
-            state.lastOpened = Date().timeIntervalSince1970
-            writeState(state, forNormalizedPath: path)
+        updateState(forNormalizedPath: path) { state in
+            state.applyImagePosition(
+                pageIndex: pageIndex, pagePath: pagePath,
+                rememberBeyondRecents: defaults.bool(forKey: "AlwaysRememberLastPage"),
+                closedAt: Date().timeIntervalSince1970)
         }
         touchRecents(path: path)
     }
@@ -504,32 +372,14 @@ final class BookHistoryStore {
                           progression: Double, idref: String? = nil,
                           forceRememberBeyondRecents: Bool = false) {
         let path = normalize(rawPath)
-        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)
-        guard var state = mutableState(forNormalizedPath: path) else { return }
-        // 先頭位置は「復帰なし」と不可分のため保存しない(savedPage と同じ規則)
-        if spineIndex == 0 && progression <= 0 {
-            state.lastReflowPosition = nil
-            // 位置を消した結果 census だけが残る状態(先頭まで戻って閉じた本、
-            // 合本の子で起きうる)は census も落とす。census 単独ファイルを残さない
-            // 方針(noteReflowCensus)に従う。cooViewer-cr6(0dh と同型の隣接経路)
-            if state.isEmptyIgnoringCensus {
-                state.lastCensus = nil
-                state.censusRecords.removeAll()
-            }
-        } else {
-            state.lastReflowPosition = ReflowPosition(
-                spineIndex: spineIndex, progression: progression, idref: idref)
+        updateState(forNormalizedPath: path) { state in
+            state.applyReflowPosition(
+                .init(spineIndex: spineIndex, progression: progression, idref: idref),
+                rememberBeyondRecents: defaults.bool(forKey: "AlwaysRememberLastPage")
+                    || forceRememberBeyondRecents)
+            state.discardOrphanedCensus()
+            updateURLBookmark(&state, path: path)
         }
-        state.rememberBeyondRecents =
-            defaults.bool(forKey: "AlwaysRememberLastPage")
-                || forceRememberBeyondRecents
-        // 移動追跡用の URL ブックマーク(画像本は save() が書くが EPUB は
-        // save() を通らないためここで書く。無いと relocateState が成立せず
-        // ファイル移動で読書位置が失われる。cooViewer-c6s.18)
-        if let data = try? URL(fileURLWithPath: path).bookmarkData() {
-            state.urlBookmark = data
-        }
-        writeState(state, forNormalizedPath: path)
     }
 
     /// リフロー EPUB の保存位置(savedPage と同じ復元可否ゲート)
@@ -555,55 +405,31 @@ final class BookHistoryStore {
     }
 
     /// リフロー EPUB のしおりを保存する。Washi の型を永続層へ持ち込まず、
-    /// ReflowPosition と同じタプル境界を維持する(設計書 §2.4)
+    /// BookStateRecord.ReflowPosition と同じタプル境界を維持する(設計書 §2.4)
     func noteReflowBookmarks(
         path rawPath: String,
         bookmarks: [(name: String, spineIndex: Int,
                      progression: Double, idref: String?)]
     ) {
         let path = normalize(rawPath)
-        // 在るのに読めなかった本は既存状態を空で上書きしない
-        guard var state = mutableState(forNormalizedPath: path) else { return }
-        state.reflowBookmarks = bookmarks.map {
-            StoredReflowBookmark(name: $0.name, spineIndex: $0.spineIndex,
-                                 progression: $0.progression, idref: $0.idref)
+        updateState(forNormalizedPath: path) { state in
+            state.applyReflowBookmarks(bookmarks.map {
+                .init(name: $0.name, position: .init(
+                    spineIndex: $0.spineIndex, progression: $0.progression, idref: $0.idref))
+            })
+            state.discardOrphanedCensus()
+            if !bookmarks.isEmpty { updateURLBookmark(&state, path: path) }
         }
-        // しおりを全削除して census だけになった場合はファイルごと回収する。
-        // noteReflowCensus の「census 単独ファイルを残さない」方針と同じ
-        if state.reflowBookmarks.isEmpty && state.isEmptyIgnoringCensus {
-            state.lastCensus = nil
-            state.censusRecords.removeAll()
-        }
-        // しおりだけを持つ EPUB もファイル移動時に再配置できるようにする。
-        // 空配列では isEmpty 判定が URL bookmark を無視して状態を削除する
-        if !state.reflowBookmarks.isEmpty,
-           let data = try? URL(fileURLWithPath: path).bookmarkData() {
-            state.urlBookmark = data
-        }
-        writeState(state, forNormalizedPath: path)
     }
 
     /// リフロー EPUB の census(全文ページ実測)を保存する。位置と同居させ、
     /// 存在する状態にだけ追記する(census だけのために新規状態は作らない)
     func noteReflowCensus(path rawPath: String, metricsKey: String,
                           counts: [Int], releaseIdentifier: String?) {
-        let path = normalize(rawPath)
-        // 既存の状態にだけ追記する。census だけのために状態ファイルを新規作成
-        // しない — さもないと「ちょっと開いただけ」の本や合本の子(recents に
-        // 入れない設計)にまで census 専用ファイルが残り、回収経路が無いため
-        // 際限なく増える。位置やしおりを持つ「読んでいる本」にのみ相乗りさせる
-        guard var state = loadState(forNormalizedPath: path) else { return }
-        let census = StoredCensus(metricsKey: metricsKey, counts: counts,
-                                  releaseIdentifier: releaseIdentifier)
-        // 同じメトリクスは更新して先頭へ移し、画面を往復しても最大 3 件を再利用する。
-        // lastCensus は旧ビルド向けに先頭と同期する(cooViewer-oxr.45、設計書 §2.4)
-        state.censusRecords.removeAll { $0.metricsKey == metricsKey }
-        state.censusRecords.insert(census, at: 0)
-        if state.censusRecords.count > 3 {
-            state.censusRecords.removeSubrange(3...)
+        updateState(forNormalizedPath: normalize(rawPath), creatingIfAbsent: false) { state in
+            state.applyCensus(.init(metricsKey: metricsKey, counts: counts,
+                                    releaseIdentifier: releaseIdentifier))
         }
-        state.lastCensus = state.censusRecords.first
-        writeState(state, forNormalizedPath: path)
     }
 
     /// 保存済みの census(再オープン時の注入用。整合検証は注入側=Washi が行う)
@@ -635,27 +461,11 @@ final class BookHistoryStore {
     /// ゲートを持たない(cooViewer-0dh)
     func noteReflowColumnMode(path rawPath: String, columnMode: Int) {
         let path = normalize(rawPath)
-        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)
-        guard var state = mutableState(forNormalizedPath: path) else { return }
-        if defaults.bool(forKey: "RememberBookSettings") {
-            state.columnMode = columnMode == 0 ? nil : columnMode
-        } else {
-            state.columnMode = nil
+        updateState(forNormalizedPath: path) { state in
+            state.applyColumnMode(columnMode, remember: defaults.bool(forKey: "RememberBookSettings"))
+            state.discardOrphanedCensus()
+            if state.columnMode != nil { updateURLBookmark(&state, path: path) }
         }
-        // columnMode を消した結果 census だけが残る状態(合本の子で
-        // s→census 実測→Remember OFF で解除、の順で起きうる)は census も落とす。
-        // census 単独ファイルを残さない方針(noteReflowCensus)に従う
-        if state.columnMode == nil && state.isEmptyIgnoringCensus {
-            state.lastCensus = nil
-            state.censusRecords.removeAll()
-        }
-        // 移動追跡用の URL ブックマーク(EPUB は save() を通らないため、状態を
-        // 作る経路では書いておく。noteClosedReflow と同じ理由。c6s.18)
-        if state.columnMode != nil,
-           let data = try? URL(fileURLWithPath: path).bookmarkData() {
-            state.urlBookmark = data
-        }
-        writeState(state, forNormalizedPath: path)
     }
 
     /// 保存済みの columnMode(s キーの単/見開き固定)。marks と同様に
@@ -683,15 +493,15 @@ final class BookHistoryStore {
 
     // MARK: - 本ごとの設定としおり
 
-    func settings(displayName: String, path rawPath: String) -> BookSettings? {
+    func settings(displayName: String, path rawPath: String) -> SavedBookSettings? {
         let path = normalize(rawPath)
         guard let state = loadState(forNormalizedPath: path) else { return nil }
-        return BookSettings(
+        return SavedBookSettings(
             readMode: state.readMode.flatMap(ReadMode.init(rawValue:)),
             sortMode: state.sortMode.flatMap(SortMode.init(rawValue:)),
             marks: PageMarks(legacyArray: state.marks),
             bookmarks: state.bookmarks.map {
-                Bookmark(name: $0.name, pageIndex: $0.pageIndex, pagePath: $0.pagePath)
+                PageBookmark(name: $0.name, pageIndex: $0.pageIndex, pagePath: $0.pagePath)
             }
         )
     }
@@ -699,28 +509,62 @@ final class BookHistoryStore {
     /// 保存。bookmarks は RememberBookSettings 無関係に保存される(§7.1)。
     /// readMode/sortMode/marks は RememberBookSettings が ON のときだけ残る
     /// (OFF での保存は旧仕様どおり既存値も消す)
-    func save(displayName: String, path rawPath: String, settings: BookSettings) {
+    func save(displayName: String, path rawPath: String, settings: SavedBookSettings) {
         let path = normalize(rawPath)
-        // 在るのに読めなかった本は書込抑止(回復後の空上書き防止)。open 時に
-        // 失敗し session が空設定を持ったまま閉じても、既存のしおりを潰さない
-        guard var state = mutableState(forNormalizedPath: path) else { return }
-        state.displayName = displayName
+        updateState(forNormalizedPath: path) { state in
+            state.displayName = displayName
+            state.applySettings(settings, remember: defaults.bool(forKey: "RememberBookSettings"))
+            updateURLBookmark(&state, path: path)
+        }
+    }
+
+    // MARK: - 一冊の状態をまとめて保存
+
+    /// 位置と設定を同じ状態へ反映し、JSON の更新は一回にする(仕様書 §7)。
+    /// 最近の一覧の write-time 意味論は noteClosed と同じ。
+    @discardableResult
+    func saveImageBook(path rawPath: String, snapshot: ImageBookStateSnapshot) -> SaveResult {
+        let path = normalize(rawPath)
+        let result = updateState(forNormalizedPath: path) { state in
+            state.displayName = snapshot.displayName
+            state.applyImagePosition(
+                pageIndex: snapshot.pageIndex, pagePath: snapshot.pagePath,
+                rememberBeyondRecents: defaults.bool(forKey: "AlwaysRememberLastPage"),
+                closedAt: Date().timeIntervalSince1970)
+            state.applySettings(snapshot.settings,
+                                remember: defaults.bool(forKey: "RememberBookSettings"))
+            updateURLBookmark(&state, path: path)
+        }
+        touchRecents(path: path)
+        return result
+    }
+
+    /// 位置・しおり・表示設定を反映した最終状態にだけ実測を相乗りさせる。
+    /// EPUB のデバウンス保存は最近の一覧を並べ替えない(設計書 §2.4)。
+    @discardableResult
+    func saveReflowBook(path rawPath: String, snapshot: ReflowBookStateSnapshot) -> SaveResult {
+        let path = normalize(rawPath)
+        return updateState(forNormalizedPath: path) { state in
+            state.applyReflowPosition(
+                snapshot.position,
+                rememberBeyondRecents: defaults.bool(forKey: "AlwaysRememberLastPage")
+                    || snapshot.forceRememberBeyondRecents)
+            state.applyColumnMode(snapshot.columnMode,
+                                  remember: defaults.bool(forKey: "RememberBookSettings"))
+            state.applyReflowBookmarks(snapshot.bookmarks)
+            if !state.isEmptyIgnoringCensus, let census = snapshot.census {
+                state.applyCensus(census)
+            }
+            state.discardOrphanedCensus()
+            updateURLBookmark(&state, path: path)
+        }
+    }
+
+    /// 位置・しおり・設定のどの経路で作った状態でも、移動した本を再配置できるようにする。
+    private func updateURLBookmark(_ state: inout BookStateRecord, path: String) {
         if let data = try? URL(fileURLWithPath: path).bookmarkData() {
             state.urlBookmark = data
         }
-        if defaults.bool(forKey: "RememberBookSettings") {
-            state.readMode = settings.readMode?.rawValue
-            state.sortMode = settings.sortMode?.rawValue
-            state.marks = settings.marks.legacyArray
-        } else {
-            state.readMode = nil
-            state.sortMode = nil
-            state.marks = []
-        }
-        state.bookmarks = settings.bookmarks.map {
-            StoredBookmark(name: $0.name, pageIndex: $0.pageIndex, pagePath: $0.pagePath)
-        }
-        writeState(state, forNormalizedPath: path)
     }
 
     // MARK: - 旧形式からの一括インポート(§13.5 の移行マッピング v2)
@@ -743,7 +587,7 @@ final class BookHistoryStore {
             guard let entry = legacySettings[key],
                   let path = legacyEntryPath(entry) else { continue }
             var state = loadState(forNormalizedPath: path, allowRelocation: false)
-                ?? BookState(path: path)
+                ?? BookStateRecord(path: path)
             var displayName = key
             if let hashIndex = displayName.range(of: "#", options: .backwards),
                Int(displayName[hashIndex.upperBound...]) != nil {
@@ -756,11 +600,11 @@ final class BookHistoryStore {
             let marks = entry["marks"] as? [String] ?? []
             if !marks.isEmpty { state.marks = marks }
             let bookmarks = (entry["bookmarks"] as? [[String: Any]] ?? [])
-                .compactMap { dict -> StoredBookmark? in
+                .compactMap { dict -> BookStateRecord.StoredBookmark? in
                     guard let name = dict["name"] as? String,
                           let pageString = dict["page"] as? String,
                           let page = Int(pageString), page >= 1 else { return nil }
-                    return StoredBookmark(name: name, pageIndex: page - 1,
+                    return BookStateRecord.StoredBookmark(name: name, pageIndex: page - 1,
                                           pagePath: dict["path"] as? String)
                 }
             if !bookmarks.isEmpty { state.bookmarks = bookmarks }
@@ -775,7 +619,7 @@ final class BookHistoryStore {
             guard let path = legacyEntryPath(entry),
                   let page = entry["page"] as? Int, page > 0 else { continue }
             var state = loadState(forNormalizedPath: path, allowRelocation: false)
-                ?? BookState(path: path)
+                ?? BookStateRecord(path: path)
             state.lastPageIndex = page
             state.lastPagePath = entry["pagepath"] as? String
             state.rememberBeyondRecents = true
@@ -798,7 +642,7 @@ final class BookHistoryStore {
                                        lastOpened: now - Double(offset)))
             if let page = entry["page"] as? Int, page > 0 {
                 var state = loadState(forNormalizedPath: path, allowRelocation: false)
-                    ?? BookState(path: path)
+                    ?? BookStateRecord(path: path)
                 state.lastPageIndex = page
                 if let pagePath = entry["pagepath"] as? String {
                     state.lastPagePath = pagePath

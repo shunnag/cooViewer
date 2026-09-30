@@ -2,31 +2,6 @@ import AppKit
 import SwiftUI
 import Washi
 
-/// EPUB 本文の再構成に影響する設定だけを表す比較値。
-/// ウインドウ枠の自動保存通知を設定変更と誤認しないために使う(cooViewer-oxr.83)。
-struct EPUBSettingsFingerprint: Equatable {
-    let pageTurnAnimation: Int
-    let fontScale: Double
-    let pinchAdjustsFontScale: Bool
-    let showsPageFurniture: Bool
-    let pageMargins: Int
-    let defaultFontFamily: String
-    let theme: Int
-    let forcesReadableColors: Bool
-    /// cooViewer-oxr.32/33/38: 設計書 §2.4 の新しい EPUB 設定も
-    /// UserDefaults 全体通知から確実に抽出する。
-    let footnotePopover: Bool
-    let hidesFootnoteAsides: Bool
-    let lineHeightScale: Double
-    let letterSpacing: Int
-    let paragraphSpacing: Int
-    let forceFont: Bool
-    let hidesRuby: Bool
-    let showsPrintPage: Bool
-    let horizontalWheelTurnsPages: Bool
-    let flipSwipeDirection: Bool
-}
-
 /// 解析できなかった EPUB を既存の空ページ状態へ載せるための最小ソース
 /// (cooViewer-oxr.41)。隣の本への移動に必要な URL だけを保持する。
 private struct EPUBParseFailureSource: BookSource {
@@ -77,6 +52,8 @@ final class ReaderWindowController: NSWindowController {
     private var openingProgressCounts: (done: Int, total: Int)?
 
     let settings = SettingsStore.shared
+    /// 本の保存先を明示する。通常は共有ストア、検証時は隔離ストアを渡す。
+    let history: BookHistoryStore
     var bindings = BindingConfiguration.load()
 
     /// 入力ディスパッチ(+Input.swift)からのビューアクセス
@@ -88,14 +65,13 @@ final class ReaderWindowController: NSWindowController {
     /// EPUB の WebKit 内容を拡大するルーペと、その非ヒットテストホスト
     var epubLoupe: LoupeController?
     var epubLoupeHost: EPUBLoupeHostView?
-    /// 厳密検索着地の矩形を WebKit 上へ重ねる非ヒットテストホスト
-    var epubSearchHighlightHost: EPUBSearchHighlightHostView?
-    var epubPublication: EPUBPublication?
-    var epubContentLoaded = false
-    var epubBookURL: URL?
-    /// 表示中の個別 EPUB に属するしおり(仕様書 §4.7、設計書 §2.4)。
-    /// 永続層との境界では Washi 非依存のタプルへ変換する
-    var epubBookmarks: [(name: String, locator: EPUBLocator)] = []
+    /// 一冊の読書状態。ビューと入力モニタはウインドウで再利用する。
+    var epubSession: EPUBReadingSession?
+    /// ナビゲーション側が読む本の識別情報は同じセッションから取得する。
+    var epubPublication: EPUBPublication? { epubSession?.publication }
+    var epubBookURL: URL? { epubSession?.url }
+    var epubCollectionContext: EPUBCollectionContext? { epubSession?.collectionContext }
+
     /// WKWebView がキーイベントを食うため、EPUB モード中はローカルモニタで拾う
     var epubKeyMonitor: Any?
     /// EPUB モード中、readerView が隠れて拾えなくなるハードウェアの
@@ -110,10 +86,6 @@ final class ReaderWindowController: NSWindowController {
     var epubMouseRecognizer = MouseGestureRecognizer()
     /// 回転ジェスチャの累積角(.began でリセット・.ended で発火。ReaderView と同型)
     var epubRotationSum: CGFloat = 0
-    /// EPUB の「N/M (章題)」ページ番号表示(census 完了時のみ非 nil)
-    var epubPageLabelText: String?
-    /// コレクション(合本)経由で開いた EPUB の文脈(nil = 単体で開いた EPUB)
-    var epubCollectionContext: EPUBCollectionContext?
     /// EPUB 提示の世代。presentReflowableEPUB へ至る全入口(単体オープン・合本
     /// 自動入場・合本横断)で採番し、提示直前で照合する。合本内の EPUB↔EPUB 移動は
     /// openBookFlow(openGeneration)を通らないため、提示専用にもう 1 本持つ
@@ -155,40 +127,6 @@ final class ReaderWindowController: NSWindowController {
     /// 恒久的に欠ける場合に毎ナビゲーション再解析しない上限(一過性は上限内で埋まる)
     var collectionPageMapAttempts: [String: Int] = [:]
     static let collectionPageMapMaxAttempts = 3
-    /// 位置保存のデバウンス(ページ送りのたびに書き込まない)
-    var epubSaveDebounce: Task<Void, Never>?
-    /// 現在の publication を最後に永続化できた時刻。連続 callback 中でも
-    /// 30 秒以内に保存する上限判定に使う（cooViewer-oxr.23、設計書 §2.4）。
-    var epubLastSuccessfulSaveAt: Date?
-    /// EPUB のページカール演出のホストビュー(連打時の掃除用)
-    var epubCurlHosts: [NSView] = []
-    /// 章メニュー用に平坦化した目次(representedObject は添字)
-    var epubFlattenedToc: [(title: String, indent: Int, item: EPUBNavItem)] = []
-    /// リフロー EPUB の本文検索パネルと表示状態
-    var epubSearchPanel: NSPanel?
-    var epubSearchModel: EPUBSearchModel?
-    /// 入力連打・本切替で古い検索結果を破棄する世代と実行タスク
-    var epubSearchEpoch = 0
-    var epubSearchTask: Task<Void, Never>?
-    /// 厳密着地の世代。pendingSearchLanding は「着地由来の移動を待っている」印
-    /// (検証の整定判定用。didMoveTo で消える)
-    var epubSearchLandingEpoch = 0
-    var pendingSearchLanding: Int?
-    /// didMoveTo の通算回数。着地 Task が「待機中に別の移動が起きたか」を判定する
-    /// (cooViewer-rso: nil フォールバックで利用者の操作を上書きしない)
-    var epubMoveCount = 0
-    var epubSearchLandingTask: Task<Void, Never>?
-    /// CLI 検証でページ・矩形数・正規化本文を出力する直近の成功結果
-    var lastEPUBSearchLanding: EPUBTextRangeLanding?
-    /// 脚注抽出と transient popover。EPUB 間切替時に旧 Task/表示を破棄する。
-    /// cooViewer-oxr.32 / 設計書 §2.4。
-    var epubFootnoteTask: Task<Void, Never>?
-    var epubFootnotePopover: NSPopover?
-    var epubLastClickLocation: CGPoint?
-    /// 空選択通知では消さず、⌘E が使う直近の非空本文を保持する。
-    /// cooViewer-oxr.34 / 設計書 §2.4。
-    var epubLatestSelectionText: String?
-
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
     private var settingsObserver: (any NSObjectProtocol)?
@@ -360,6 +298,16 @@ final class ReaderWindowController: NSWindowController {
     /// 最後に確認した EPUB 描画設定。UserDefaults 通知は変更キーを持たないため、
     /// ウインドウ移動による枠保存だけなら検索着地を維持する(cooViewer-oxr.83)。
     private var appliedEPUBSettingsFingerprint: EPUBSettingsFingerprint?
+
+    init(window: NSWindow?, history: BookHistoryStore = .shared) {
+        self.history = history
+        super.init(window: window)
+    }
+
+    required init?(coder: NSCoder) {
+        history = .shared
+        super.init(coder: coder)
+    }
 
     convenience init() {
         let window = NSWindow(
@@ -654,7 +602,7 @@ final class ReaderWindowController: NSWindowController {
     func updateIndicatorVisibility() {
         let hasPages = (book?.pageCount ?? 0) > 0
         // EPUB は census(全文ページ数の実測)完了後に N/M を表示できる
-        let epubHasNumber = isEPUBMode && epubPageLabelText != nil
+        let epubHasNumber = isEPUBMode && epubSession?.pageLabelText != nil
         pageLabel.isHidden = !(hasPages || epubHasNumber) || !settings.showNumber
             || (settings.pageNumAutoHide && !indicatorsTemporarilyVisible)
         pageBar.isHidden = !(hasPages || isEPUBMode) || !settings.showPageBar
@@ -1555,7 +1503,7 @@ final class ReaderWindowController: NSWindowController {
 
     func windowWillClose(_ notification: Notification) {
         if let closingWindow = notification.object as? NSWindow,
-           closingWindow === epubSearchPanel {
+           closingWindow === epubSession?.search.panel {
             teardownEPUBSearch(closePanel: false)
             return
         }
@@ -1567,8 +1515,6 @@ final class ReaderWindowController: NSWindowController {
         fileInfoGeneration &+= 1
         endAnyOpeningProgress()
         resetInteractiveCurl()?.cancel()
-        teardownEPUBSearch()
-        dismissEPUBFootnote()
         stopSlideshow()
         collectionOverlayTask?.cancel()  // 全冊 census をウインドウ亡き後に残さない
         collectionPageMapTask?.cancel()
@@ -1586,6 +1532,7 @@ final class ReaderWindowController: NSWindowController {
         epubView?.cancelPageCensus()
         saveCurrentBookState()
         saveEPUBState()
+        epubSession?.cancelTransientWork()
     }
 
     func saveStateBeforeTermination() {
@@ -2506,8 +2453,8 @@ final class ReaderWindowController: NSWindowController {
     // 検証用: --then 発火前に表示が整定したか(cooViewer-n7k)
     var debugDisplaySettled: Bool {
         if isEPUBMode {
-            return epubContentLoaded && epubSearchTask == nil
-                && epubSearchLandingTask == nil && pendingSearchLanding == nil
+            return epubSession?.contentLoaded == true && epubSession?.search.task == nil
+                && epubSession?.search.landingTask == nil && epubSession?.search.pendingLanding == nil
         }
         guard let book else { return false }
         let i = book.currentIndex
@@ -2754,13 +2701,13 @@ final class ReaderWindowController: NSWindowController {
     }
 
     @objc func changeFitMode(_ sender: NSMenuItem) {
-        guard let mode = ReaderView.FitMode(rawValue: sender.tag) else { return }
+        guard let mode = ReaderFitMode(rawValue: sender.tag) else { return }
         setFitMode(mode)
     }
 
     /// 表示モードの唯一の変更経路(メニュー/キー巡回/設定)。ビューへ即時
     /// 反映しつつ defaults へ保存する(applySettings 側は同値なら何もしない)
-    func setFitMode(_ mode: ReaderView.FitMode) {
+    func setFitMode(_ mode: ReaderFitMode) {
         settings.fitMode = mode
         guard readerView.fitMode != mode else { return }
         readerView.fitMode = mode
@@ -2868,10 +2815,10 @@ final class ReaderWindowController: NSWindowController {
             return isEPUBMode
         case #selector(useSelectionForEPUBFindMenu(_:)):
             // cooViewer-oxr.34: 設計書 §2.4 の EPUB 選択だけを ⌘E へ渡す。
-            return isEPUBMode && epubLatestSelectionText != nil
+            return isEPUBMode && epubSession?.latestSelectionText != nil
         case #selector(findNextEPUBMenu(_:)), #selector(findPreviousEPUBMenu(_:)):
-            return isEPUBMode && epubSearchPanel != nil
-                && !(epubSearchModel?.hits.isEmpty ?? true)
+            return isEPUBMode && epubSession?.search.panel != nil
+                && !(epubSession?.search.model?.hits.isEmpty ?? true)
         case #selector(epubGoBackMenu(_:)):
             // cooViewer-oxr.31: 通常のページ戻りとリンク履歴を混同しない。
             return isEPUBMode && (epubView?.canGoBack ?? false)

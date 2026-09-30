@@ -22,7 +22,7 @@ enum RenderQuality: Int, CaseIterable {
     /// 対応する基礎補間(レイヤーフィルタ+リサンプル経路)の保存値
     var interpolationRawValue: Int {
         switch self {
-        case .none: 1        // ReaderView.Interpolation.none
+        case .none: 1        // ImageInterpolation.none
         case .standard: 0    // .systemDefault
         case .high, .mlDenoise, .mlSuperRes: 3  // .high
         }

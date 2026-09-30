@@ -145,7 +145,7 @@ final class SettingsStoreAdvancedTests: XCTestCase {
         store.fitMode = .fitWidthDivide
         store.spreadCoverSingle = true
         XCTAssertEqual(defaults.integer(forKey: "FitMode"),
-                       ReaderView.FitMode.fitWidthDivide.rawValue)
+                       ReaderFitMode.fitWidthDivide.rawValue)
         XCTAssertEqual(store.fitMode, .fitWidthDivide)
         XCTAssertTrue(defaults.bool(forKey: "SpreadCoverSingle"))
     }

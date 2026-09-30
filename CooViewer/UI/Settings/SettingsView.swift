@@ -179,25 +179,25 @@ struct SettingsView: View {
     @AppStorage("PrevPageMode") private var prevPageMode = 0
     @AppStorage("SlideshowDelay") private var slideshowDelay = 0.0
 
-    // 高度な設定(SettingsStore.AdvancedDefault と同値の既定)
+    // 高度な設定(ReadingResourceDefaults と同値の既定)
     @AppStorage("AdaptiveMediaTuning") private var adaptiveMediaTuning = true
     @AppStorage("ZipLazyLocalHeaders") private var zipLazyLocalHeaders = true
     @AppStorage("AdvancedSpoolPolicy") private var advSpoolPolicy = 0
     @AppStorage("AdvancedSettingsEnabled") private var advancedEnabled = false
     @AppStorage("AdvancedMemoryPercent") private var advMemoryPercent =
-        SettingsStore.AdvancedDefault.memoryPercent
+        ReadingResourceDefaults.memoryPercent
     @AppStorage("AdvancedPrefetchAhead") private var advPrefetchAhead =
-        SettingsStore.AdvancedDefault.prefetchAhead
+        ReadingResourceDefaults.prefetchAhead
     @AppStorage("AdvancedPrefetchBehind") private var advPrefetchBehind =
-        SettingsStore.AdvancedDefault.prefetchBehind
+        ReadingResourceDefaults.prefetchBehind
     @AppStorage("AdvancedDisplayPixelCap") private var advDisplayPixelCap =
-        SettingsStore.AdvancedDefault.displayPixelCap
+        ReadingResourceDefaults.displayPixelCap
     @AppStorage("AdvancedSpoolLimitGB") private var advSpoolLimitGB =
-        SettingsStore.AdvancedDefault.spoolLimitGB
+        ReadingResourceDefaults.spoolLimitGB
     @AppStorage("AdvancedPrepareNextBookPages") private var advPrepareNextBook =
-        SettingsStore.AdvancedDefault.prepareNextBookPages
+        ReadingResourceDefaults.prepareNextBookPages
     @AppStorage("AdvancedThumbnailCacheDays") private var advThumbnailDays =
-        SettingsStore.AdvancedDefault.thumbnailCacheDays
+        ReadingResourceDefaults.thumbnailCacheDays
 
     // 独自デコーダの形式トグル(RetroFormatToggle と同じキー。既定は有効)
     @AppStorage("RetroDecodeMAG") private var retroDecodeMAG = true
@@ -1034,14 +1034,14 @@ struct SettingsView: View {
     }
 
     private func restoreAdvancedDefaults() {
-        advMemoryPercent = SettingsStore.AdvancedDefault.memoryPercent
-        advPrefetchAhead = SettingsStore.AdvancedDefault.prefetchAhead
-        advPrefetchBehind = SettingsStore.AdvancedDefault.prefetchBehind
-        advDisplayPixelCap = SettingsStore.AdvancedDefault.displayPixelCap
-        advSpoolLimitGB = SettingsStore.AdvancedDefault.spoolLimitGB
+        advMemoryPercent = ReadingResourceDefaults.memoryPercent
+        advPrefetchAhead = ReadingResourceDefaults.prefetchAhead
+        advPrefetchBehind = ReadingResourceDefaults.prefetchBehind
+        advDisplayPixelCap = ReadingResourceDefaults.displayPixelCap
+        advSpoolLimitGB = ReadingResourceDefaults.spoolLimitGB
         advSpoolPolicy = 0
-        advPrepareNextBook = SettingsStore.AdvancedDefault.prepareNextBookPages
-        advThumbnailDays = SettingsStore.AdvancedDefault.thumbnailCacheDays
+        advPrepareNextBook = ReadingResourceDefaults.prepareNextBookPages
+        advThumbnailDays = ReadingResourceDefaults.thumbnailCacheDays
     }
 
     // MARK: - 部品

@@ -77,7 +77,7 @@ final class EPUBBookmarkTests: XCTestCase {
         ]
         let converted = EPUBLocator(spineIndex: 4, progression: 0.25)
         let resolved = EPUBBookmarkLogic.resolvedBookmarks(
-            edited, sameBook: true,
+            edited, canResolvePageEdits: true,
             originalPage: { _ in 2 },
             range: 1...5, base: 0,
             locatorForLocalPage: { _ in converted })
@@ -94,7 +94,7 @@ final class EPUBBookmarkTests: XCTestCase {
         var conversionCalled = false
         var originalPageCalled = false
         let resolved = EPUBBookmarkLogic.resolvedBookmarks(
-            edited, sameBook: false,
+            edited, canResolvePageEdits: false,
             originalPage: { _ in originalPageCalled = true; return 2 },
             range: 1...5, base: 0,
             locatorForLocalPage: { _ in

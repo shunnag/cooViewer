@@ -12,14 +12,14 @@ struct BookmarkEditorView: View {
     }
 
     let pageCount: Int
-    let onSave: @MainActor ([BookHistoryStore.Bookmark]) -> Void
+    let onSave: @MainActor ([PageBookmark]) -> Void
     let onClose: @MainActor () -> Void
 
     @State private var items: [Item]
     @State private var selection: Set<UUID> = []
 
-    init(bookmarks: [BookHistoryStore.Bookmark], pageCount: Int,
-         onSave: @escaping @MainActor ([BookHistoryStore.Bookmark]) -> Void,
+    init(bookmarks: [PageBookmark], pageCount: Int,
+         onSave: @escaping @MainActor ([PageBookmark]) -> Void,
          onClose: @escaping @MainActor () -> Void) {
         self.pageCount = pageCount
         self.onSave = onSave
@@ -77,7 +77,7 @@ struct BookmarkEditorView: View {
                 Button(String(localized: "OK")) {
                     // 空の名前と範囲外ページは保存時に補正する
                     onSave(items.enumerated().map { offset, item in
-                        BookHistoryStore.Bookmark(
+                        PageBookmark(
                             name: item.name.isEmpty
                                 ? "bookmark\(offset + 1)" : item.name,
                             pageIndex: min(max(0, item.pageNumber - 1),

@@ -36,6 +36,126 @@ final class BookHistoryStoreTests: XCTestCase {
         return url.resolvingSymlinksInPath().path
     }
 
+    // MARK: - 一冊分の一括保存
+
+    func testImageSnapshotWritesPositionAndSettingsTogether() throws {
+        let path = try makeBookFile("snapshot.zip")
+        defaults.set(true, forKey: "RememberBookSettings")
+        let settings = SavedBookSettings(
+            readMode: .leftToRightSpread, sortMode: .literalName,
+            marks: PageMarks(), bookmarks: [.init(name: "mark", pageIndex: 4, pagePath: "p5.png")])
+
+        XCTAssertEqual(store.saveImageBook(path: path, snapshot: .init(
+            displayName: "snapshot.zip", pageIndex: 7, pagePath: "p8.png", settings: settings)), .saved)
+        XCTAssertEqual(store.stateFileWriteCount, 1)
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(fresh.savedPage(forPath: path)?.page, 7)
+        XCTAssertEqual(fresh.savedPage(forPath: path)?.pagePath, "p8.png")
+        let saved = try XCTUnwrap(fresh.settings(displayName: "snapshot.zip", path: path))
+        XCTAssertEqual(saved.readMode, .leftToRightSpread)
+        XCTAssertEqual(saved.sortMode, .literalName)
+        XCTAssertEqual(saved.bookmarks, settings.bookmarks)
+        XCTAssertEqual(fresh.recentBookPaths(), [path])
+    }
+
+    func testReflowSnapshotWritesAllContentWithoutReorderingRecents() throws {
+        let path = try makeBookFile("snapshot.epub")
+        let other = try makeBookFile("other.zip")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.noteOpened(path: path)
+        store.noteOpened(path: other)
+        let writesBefore = store.stateFileWriteCount
+        XCTAssertEqual(store.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 2, progression: 0.4, idref: "chapter3"),
+            columnMode: 2,
+            bookmarks: [.init(name: "mark", position: .init(spineIndex: 1, progression: 0.2))],
+            census: .init(metricsKey: "wide", counts: [5, 8, 3], releaseIdentifier: "v1"))), .saved)
+        XCTAssertEqual(store.stateFileWriteCount - writesBefore, 1)
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(fresh.savedReflowPosition(forPath: path)?.idref, "chapter3")
+        XCTAssertEqual(fresh.savedReflowPosition(forPath: path)?.progression, 0.4)
+        XCTAssertEqual(fresh.savedReflowColumnMode(forPath: path), 2)
+        XCTAssertEqual(fresh.savedReflowBookmarks(forPath: path).first?.name, "mark")
+        XCTAssertEqual(fresh.savedReflowCensus(forPath: path)?.counts, [5, 8, 3])
+        XCTAssertEqual(fresh.recentBookPaths(), [other, path])
+    }
+
+    func testReflowSnapshotKeepsCensusWithNewBookmarksAtStart() throws {
+        let path = try makeBookFile("bookmark-only.epub")
+        store.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 0, progression: 0), columnMode: 0,
+            bookmarks: [.init(name: "mark", position: .init(spineIndex: 1, progression: 0.5))],
+            census: .init(metricsKey: "m", counts: [2, 3], releaseIdentifier: nil)))
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(fresh.savedReflowCensus(forPath: path)?.counts, [2, 3])
+        XCTAssertNil(fresh.savedReflowPosition(forPath: path))
+        XCTAssertTrue(fresh.recentBookPaths().isEmpty)
+    }
+
+    func testReflowSnapshotDiscardsCensusWhenAllReadingStateIsRemoved() throws {
+        let path = try makeBookFile("cleared.epub")
+        defaults.set(true, forKey: "RememberBookSettings")
+        store.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 1, progression: 0.5), columnMode: 2,
+            bookmarks: [], census: .init(metricsKey: "old", counts: [3, 4], releaseIdentifier: nil)))
+        XCTAssertNotNil(store.savedReflowCensus(forPath: path))
+        defaults.set(false, forKey: "RememberBookSettings")
+        XCTAssertEqual(store.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 0, progression: 0), columnMode: 2,
+            bookmarks: [], census: .init(metricsKey: "new", counts: [1, 2], releaseIdentifier: nil))), .saved)
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertNil(fresh.savedReflowColumnMode(forPath: path))
+        XCTAssertNil(fresh.savedReflowCensus(forPath: path))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: stateDir.path).isEmpty)
+    }
+
+    func testReflowSnapshotRestoresCollectionChildWithoutAddingItToRecents() throws {
+        let path = try makeBookFile("child.epub")
+        store.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 1, progression: 0.5), columnMode: 0,
+            bookmarks: [], census: nil, forceRememberBeyondRecents: true))
+        defaults.set(false, forKey: "AlwaysRememberLastPage")
+
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        XCTAssertEqual(fresh.savedReflowPosition(forPath: path)?.spineIndex, 1)
+        XCTAssertTrue(fresh.recentBookPaths().isEmpty)
+    }
+
+    func testSnapshotReportsWriteFailure() throws {
+        let path = try makeBookFile("failed.epub")
+        let directoryFile = tempDir.appendingPathComponent("not-a-directory")
+        let original = Data("keep".utf8)
+        try original.write(to: directoryFile)
+        let failing = BookHistoryStore(defaults: defaults, directory: directoryFile)
+        XCTAssertEqual(failing.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 1, progression: 0.5), columnMode: 0,
+            bookmarks: [], census: nil)), .failed)
+        XCTAssertEqual(failing.stateFileWriteCount, 0)
+        XCTAssertEqual(try Data(contentsOf: directoryFile), original)
+    }
+
+    func testSnapshotAndCensusStayBlockedAfterUnreadableStateRecovers() throws {
+        let path = try makeBookFile("protected.epub")
+        store.noteClosedReflow(path: path, spineIndex: 1, progression: 0.5)
+        let url = try stateFileURL()
+        let original = try Data(contentsOf: url)
+        let fresh = BookHistoryStore(defaults: defaults, directory: stateDir)
+        try Data("garbage".utf8).write(to: url)
+        _ = fresh.savedReflowPosition(forPath: path)
+        try original.write(to: url)
+        // 読み取りは回復しても、このセッションが持つ空状態で書き戻してはならない。
+        _ = fresh.savedReflowCensus(forPath: path)
+        XCTAssertEqual(fresh.saveReflowBook(path: path, snapshot: .init(
+            position: .init(spineIndex: 0, progression: 0), columnMode: 0,
+            bookmarks: [], census: nil)), .blocked)
+        fresh.noteReflowCensus(path: path, metricsKey: "m", counts: [99], releaseIdentifier: nil)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
     // MARK: - 挙動互換(§7)
 
     func testRecentItemsNewestFirstAndDeduplicated() throws {
@@ -231,7 +351,7 @@ final class BookHistoryStoreTests: XCTestCase {
 
     func testBookmarksRoundTrip() throws {
         let a = try makeBookFile("book.zip")
-        let settings = BookHistoryStore.BookSettings(
+        let settings = SavedBookSettings(
             readMode: nil, sortMode: nil, marks: PageMarks(),
             bookmarks: [.init(name: "p5", pageIndex: 4, pagePath: "ch1/p005.png")])
         store.save(displayName: "book.zip", path: a, settings: settings)

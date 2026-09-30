@@ -19,6 +19,7 @@ git 履歴 **8b726c1** の `Scripts/bench/` にも残している。
 | `coldopen.sh` | ディスクイメージの detach/attach 後、指定コマンドを cold / warm の順で実行。hdiutil / time |
 | `purge-cold.sh` | `sudo -n purge` 後に指定コマンドを一度実行。sudo / purge / time |
 | `page-cache.swift` | 実際の PageCache を使うメモリキャッシュ命中ベンチ。CoreGraphics / Foundation |
+| `book-state.swift` | 実際の BookHistoryStore を使う4回更新と一括保存の交互比較。JSON書込回数・時間・復元結果 |
 
 ## ページキャッシュの命中計測
 
@@ -35,6 +36,27 @@ swiftc -swift-version 6 -target arm64-apple-macos26.0 \
 を指定して別バイナリを作る。チェックサムは各回 160,000。
 小さな同一画像を使う索引操作の計測であり、実画像のデコード・解放やアプリ全体の
 表示時間を表すものではない。
+
+## 一冊の状態保存の計測
+
+リポジトリのルートで実行する。本番のストアと値型を直接コンパイルし、
+専用の一時ディレクトリと UserDefaults ドメインだけを使う。
+
+```zsh
+swiftc -swift-version 6 -O -parse-as-library \
+  Scripts/bench/book-state.swift \
+  CooViewer/Persistence/{BookHistoryStore,BookStateRecord,ReadingStateSnapshot}.swift \
+  CooViewer/Core/Book/{PageBookmark,ReadMode,PageLayout}.swift \
+  CooViewer/Core/Sort/SortMode.swift CooViewer/Core/Source/PageEntry.swift \
+  CooViewer/Core/{CanonicalPath,PersistedFile,FileManager+UserDomain}.swift \
+  -o /tmp/cooviewer-book-state
+/tmp/cooviewer-book-state
+```
+
+100項目の実測・20しおりを含むEPUB状態を200回保存し、6巡交互に比較する。
+各巡の状態 JSON 書込は従来APIの順次呼出しで800回、一括保存で200回。
+最後に別ストアでファイルから読書状態を読み直し、両方式の復元結果も確認する。
+この比較は保存の処理時間であり、ページ描画・書庫展開の性能を測るものではない。
 
 ## コーパス生成
 

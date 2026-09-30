@@ -28,11 +28,11 @@ final class Book {
     var coverSingleFirst = false {
         didSet { if coverSingleFirst != oldValue { invalidatePendingNavigation() } }
     }
-    var bookmarks: [BookHistoryStore.Bookmark] = []
+    var bookmarks: [PageBookmark] = []
 
     /// 表示用デコードの長辺上限(px)。原寸表示は fullResolutionImage(at:) を使う
     /// (設計書「キャッシュ・先読み設計」)。nil で無制限。
-    private(set) var displayPixelCap: Int? = 4096
+    private(set) var displayPixelCap: Int? = ReadingResourceDefaults.displayPixelCap
 
     /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)
     let cacheKey: String
@@ -54,8 +54,8 @@ final class Book {
 
     /// 先読み枚数(設計書「キャッシュ・先読み設計」。設定「高度」または
     /// メディアプロファイルから注入される。既定は SSD 想定の値)
-    var prefetchAhead = 12
-    var prefetchBehind = 3
+    var prefetchAhead = ReadingResourceDefaults.prefetchAhead
+    var prefetchBehind = ReadingResourceDefaults.prefetchBehind
     /// 置き場所の速度プロファイル(先読み並列度・サムネイル並列度の根拠)
     var mediaProfile: MediaProfile = .unknown
 

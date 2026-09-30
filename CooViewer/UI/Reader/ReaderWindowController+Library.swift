@@ -17,9 +17,6 @@ extension ReaderWindowController {
         func pagePath(_ index: Int) -> String? {
             book.entries.indices.contains(index) ? book.entries[index].pathInBook : nil
         }
-        BookHistoryStore.shared.noteClosed(
-            path: path, pageIndex: book.currentIndex,
-            pagePath: pagePath(book.currentIndex))
         let bookmarks = book.bookmarks.map { bookmark in
             // 記録済みパスのページが今回の本に存在しない(ネスト展開の失敗等で
             // 照合できなかった)場合は元の記録を保つ。今回の位置で上書きすると、
@@ -28,19 +25,21 @@ extension ReaderWindowController {
                !book.entries.contains(where: { $0.pathInBook == stored }) {
                 return bookmark
             }
-            return BookHistoryStore.Bookmark(
+            return PageBookmark(
                 name: bookmark.name, pageIndex: bookmark.pageIndex,
                 pagePath: pagePath(bookmark.pageIndex) ?? bookmark.pagePath)
         }
-        BookHistoryStore.shared.save(
-            displayName: book.displayName, path: path,
-            settings: .init(readMode: book.readMode, sortMode: book.sortMode,
-                            marks: book.marks, bookmarks: bookmarks))
+        history.saveImageBook(
+            path: path, snapshot: .init(
+                displayName: book.displayName, pageIndex: book.currentIndex,
+                pagePath: pagePath(book.currentIndex),
+                settings: .init(readMode: book.readMode, sortMode: book.sortMode,
+                                marks: book.marks, bookmarks: bookmarks)))
     }
 
     /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)
     func restoreBookState(for book: Book, skipPageRestore: Bool) async {
-        let store = BookHistoryStore.shared
+        let store = history
         let path = book.source.url.path
         if let saved = store.settings(displayName: book.displayName, path: path) {
             if let readMode = saved.readMode { book.readMode = readMode }
@@ -128,7 +127,7 @@ extension ReaderWindowController {
                         }
                     } else {
                         // シート中に本が切り替わっても編集対象の本へ保存する
-                        BookHistoryStore.shared.save(
+                        self.history.save(
                             displayName: book.displayName,
                             path: book.source.url.path,
                             settings: .init(readMode: book.readMode,
@@ -688,7 +687,7 @@ extension ReaderWindowController {
     // MARK: - 最後に開いた本(仕様書 §4.1.1 #1)
 
     func openTheLastBook() {
-        guard let recent = BookHistoryStore.shared.mostRecentBook() else { return }
+        guard let recent = history.mostRecentBook() else { return }
         openBook(at: URL(fileURLWithPath: recent.path))
     }
 
@@ -738,7 +737,7 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
         let controller = NSApp.windows
             .compactMap { $0.windowController as? ReaderWindowController }.first
         if let controller, controller.isEPUBMode {
-            for (index, bookmark) in controller.epubBookmarks.enumerated() {
+            for (index, bookmark) in (controller.epubSession?.bookmarks ?? []).enumerated() {
                 let page = controller.epubBookmarkPageNumber(for: bookmark.locator)
                     .map { "  (p.\($0))" } ?? ""
                 let item = menu.addItem(
@@ -748,7 +747,7 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
                     keyEquivalent: "")
                 item.representedObject = index
             }
-            if controller.epubBookmarks.isEmpty {
+            if (controller.epubSession?.bookmarks ?? []).isEmpty {
                 let empty = menu.addItem(
                     withTitle: String(localized: "No Bookmarks"),
                     action: nil, keyEquivalent: "")
@@ -785,7 +784,7 @@ final class ChapterListMenuDelegate: NSObject, NSMenuDelegate {
             .compactMap { $0.windowController as? ReaderWindowController }.first
         // EPUB モードでは目次(nav)を章メニューとして出す(操作感の統一)
         if let controller, controller.isEPUBMode {
-            for (index, entry) in controller.epubFlattenedToc.enumerated() {
+            for (index, entry) in (controller.epubSession?.flattenedToc ?? []).enumerated() {
                 let item = menu.addItem(
                     withTitle: entry.title,
                     action: #selector(ReaderWindowController.goToEPUBChapterItem(_:)),
@@ -793,7 +792,7 @@ final class ChapterListMenuDelegate: NSObject, NSMenuDelegate {
                 item.indentationLevel = entry.indent
                 item.representedObject = index
             }
-            if controller.epubFlattenedToc.isEmpty {
+            if (controller.epubSession?.flattenedToc ?? []).isEmpty {
                 let empty = menu.addItem(withTitle: String(localized: "No Chapters"),
                                          action: nil, keyEquivalent: "")
                 empty.isEnabled = false

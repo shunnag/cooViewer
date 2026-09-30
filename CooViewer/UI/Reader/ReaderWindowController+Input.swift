@@ -818,7 +818,7 @@ extension ReaderWindowController {
 
     private func cycleViewMode() {
         // 0→1→3→2→0(仕様書 §5.5 action 42)
-        let next: ReaderView.FitMode = switch readerViewForInput.fitMode {
+        let next: ReaderFitMode = switch readerViewForInput.fitMode {
         case .fitToScreen: .fitWidth
         case .fitWidth: .fitWidthDivide
         case .fitWidthDivide: .noScale
@@ -829,7 +829,7 @@ extension ReaderWindowController {
 
     private func stepViewMode(enlarge: Bool) {
         // 仕様書 §5.5 action 51/52
-        let next: ReaderView.FitMode?
+        let next: ReaderFitMode?
         switch (readerViewForInput.fitMode, enlarge) {
         case (.fitToScreen, true): next = .fitWidth
         case (.fitWidth, true): next = .fitWidthDivide
