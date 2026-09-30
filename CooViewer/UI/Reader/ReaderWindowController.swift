@@ -713,8 +713,9 @@ final class ReaderWindowController: NSWindowController {
             book.prefetchAhead = book.mediaProfile.defaultPrefetchAhead
             book.prefetchBehind = book.mediaProfile.defaultPrefetchBehind
         }
-        // キャップは raise 時のクリアを通して反映(設定の上限引き上げにも追従)
-        refreshDisplayIfCapRaised()
+        // 準備中の本へ設定を反映しても、現在表示中の別の本は再描画しない。
+        // 採用後の refreshDisplay が新しい本のキャップを評価する。
+        if book === self.book { refreshDisplayIfCapRaised() }
     }
 
     /// デコード先読みの深さをメモリ条件に合わせて更新する(設計書 §5)。
@@ -1209,7 +1210,6 @@ final class ReaderWindowController: NSWindowController {
                     return
                 }
             }
-            endOpeningProgress(generation: generation)
             book.readMode = settings.readMode
             // ComicInfo の読み方向ヒント(オプトイン時のみ)。全体既定の上に載せ、
             // 本ごとに保存された読み方向(ユーザーの明示設定)が後で最優先で上書き
@@ -1232,23 +1232,6 @@ final class ReaderWindowController: NSWindowController {
             // 新しいオープンが始まっていたら、ここで自己状態を commit しない
             // (連打で「先に押した遅い本」が最後に押した本を上書きするのを防ぐ)
             guard generation == openGeneration else { return }
-            // cooViewer-oxr.45: 旧 Book を対象に完了済みの EPUB 先読みを、
-            // 新しい Book の隣接巻として残さない。
-            preparedNextEPUB = nil
-            replaceBook(book)
-            loadedAnimationFrameCaps.removeAll()  // id は本ごとの名前空間
-            // 本ごとのリサンプルキャッシュ名前空間(本切替時の取り違え防止)
-            readerView.resampleKeyPrefix = book.cacheKey
-            // パスワード付き書庫は超解像ディスクキャッシュを暗号化して残す
-            // (復号済みページを平文で SuperRes/ に残さない。CWE-312)。まず
-            // トップレベルの暗号化状態を反映する(ネスト内は組み立て後に上乗せ)
-            currentBookIsEncrypted = bookIsEncrypted
-            readerView.superResDiskCacheEncrypted = bookIsEncrypted
-
-            // [#1] スプール開始は確定プロファイルで判断したいので描画後の
-            // バックグラウンドへ移動した(unknown で SSD の zip を無駄にスプールしない)。
-            // containsProtectedContent は内部で buildIfNeeded するのでここで build 済み。
-
             // フォルダ内やネスト書庫内の暗号化書庫/PDF を解除して束ねた本も
             // 暗号化キャッシュ対象にする(組み立て後に確定。表示より前に反映する)
             var hasProtectedContent = bookIsEncrypted
@@ -1256,11 +1239,8 @@ final class ReaderWindowController: NSWindowController {
                 hasProtectedContent = await source.containsProtectedContent()
             }
             guard generation == openGeneration else { return }
-            currentBookIsEncrypted = hasProtectedContent
-            readerView.superResDiskCacheEncrypted = hasProtectedContent
-
             let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
-            await restoreBookState(for: book, skipPageRestore: skipPageRestore)
+            restoreBookState(for: book, skipPageRestore: skipPageRestore)
             guard generation == openGeneration else { return }
 
             // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
@@ -1280,12 +1260,22 @@ final class ReaderWindowController: NSWindowController {
                 // 後退到達(前の本を末尾から)の意図を代理ページ入場へ伝える。
                 // 末尾が合本内リフロー EPUB のとき、これが無いと refreshDisplay の
                 // forward 既定が true になり EPUB が先頭で開いてしまう(監査 #1)
-                collectionNavigation.arrivalForward = false
                 await book.goToLast()
             }
             guard generation == openGeneration else { return }  // goToLast の await をカバー
             let bookTitle = await book.displayTitle()  // ComicInfo 優先(cooViewer-4fi.3)
             guard generation == openGeneration else { return }  // displayTitle の await をカバー
+            // 準備中の Book は閉窓時の保存対象にしない。保護状態・保存設定・
+            // 初期位置・タイトルが揃い、最後の世代照合を通った後に同期で採用する。
+            endOpeningProgress(generation: generation)
+            preparedNextEPUB = nil
+            replaceBook(book)
+            loadedAnimationFrameCaps.removeAll()
+            readerView.resampleKeyPrefix = book.cacheKey
+            currentBookIsEncrypted = hasProtectedContent
+            readerView.superResDiskCacheEncrypted = hasProtectedContent
+            if atLastPage { collectionNavigation.arrivalForward = false }
+            history.noteOpened(path: book.source.url.path)
             window?.title = bookTitle
             lockedBookReason = nil
             statusLabel.isHidden = true
@@ -1790,17 +1780,19 @@ final class ReaderWindowController: NSWindowController {
         // リサンプル済みキャッシュの事前引き当て(照会のみ。事前リサンプルが
         // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
         // からフィルタ済みの絵を使える)
-        var preResampled: [(size: CGSize, image: CGImage)?] = []
+        var preResampled: [ResampledPage?] = []
         if let targets = readerView.predictedResampleSizes(
             for: images.map { CGSize(width: $0.width, height: $0.height) }) {
-            let useMetalFX = settings.interpolation == .high
-            let level = settings.noiseReductionLevel
+            let processing = readerView.imageProcessingSettings
             for (position, image) in images.enumerated() {
                 let hit = await ImageResampler.shared.cached(
                     image, to: targets[position],
                     cacheKey: "\(book.cacheKey)#\(ids[position])",
-                    upscaleWithMetalFX: useMetalFX, noiseReduction: level)
-                preResampled.append(hit.map { (targets[position], $0) })
+                    upscaleWithMetalFX: processing.interpolation == .high,
+                    noiseReduction: processing.noiseReduction)
+                preResampled.append(hit.map {
+                    ResampledPage(size: targets[position], image: $0, processing: processing)
+                })
             }
         }
         // キャッシュ照会も await。表示・位置・カール所有者を再照合した後に

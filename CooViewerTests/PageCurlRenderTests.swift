@@ -285,7 +285,8 @@ final class PageCurlRenderTests: XCTestCase {
         let bright = context.makeImage()!
 
         view.setPages([dark], readsFromLeft: false,
-                      preResampled: [(targets[0], bright)])
+                      preResampled: [ResampledPage(size: targets[0], image: bright,
+                          processing: view.imageProcessingSettings)])
         view.layoutSubtreeIfNeeded()
         let snapshot = try XCTUnwrap(view.snapshotContent())
         let data = try XCTUnwrap(snapshot.dataProvider?.data) as Data
@@ -302,5 +303,35 @@ final class PageCurlRenderTests: XCTestCase {
         let plainCenter = (plain.height / 2 * plain.bytesPerRow)
             + (plain.width / 2 * 4)
         XCTAssertLessThan(Int(plainData[plainCenter]), 100)
+    }
+
+    func testPreResampledRejectsSettingsChangedDuringCacheLookup() throws {
+        let staleSettings: [ImageProcessingSettings] = [
+            .init(interpolation: .high, noiseReduction: .none),
+            .init(interpolation: .systemDefault, noiseReduction: .light),
+        ]
+        for processing in staleSettings {
+            let view = ReaderView(frame: CGRect(origin: .zero, size: size))
+            let dark = solidImage(gray: 0.1)
+            let targets = try XCTUnwrap(view.predictedResampleSizes(
+                for: [CGSize(width: dark.width, height: dark.height)]))
+            let context = try XCTUnwrap(CGContext(
+                data: nil, width: Int(targets[0].width), height: Int(targets[0].height),
+                bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(gray: 0.9, alpha: 1))
+            context.fill(CGRect(origin: .zero, size: targets[0]))
+            let bright = try XCTUnwrap(context.makeImage())
+            // 旧設定で取得した完成画像が、設定変更後に届く状況を実表示へ渡す。
+            view.setPages([dark], readsFromLeft: false,
+                          preResampled: [.init(size: targets[0], image: bright, processing: processing)])
+            view.layoutSubtreeIfNeeded()
+            let snapshot = try XCTUnwrap(view.snapshotContent())
+            let data = try XCTUnwrap(snapshot.dataProvider?.data) as Data
+            let center = snapshot.height / 2 * snapshot.bytesPerRow + snapshot.width / 2 * 4
+            XCTAssertLessThan(Int(data[center]), 100,
+                              "旧処理条件の完成画像を最初のフレームへ採用しない: \(processing)")
+        }
     }
 }

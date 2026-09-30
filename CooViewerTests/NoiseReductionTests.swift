@@ -312,7 +312,8 @@ final class NoiseReductionTests: XCTestCase {
         let done = try XCTUnwrap(ImageResampler.cgResample(
             source, width: Int(targets[0].width), height: Int(targets[0].height)))
         view.setPages([source], readsFromLeft: false,
-                      preResampled: [(targets[0], done)])
+                      preResampled: [ResampledPage(size: targets[0], image: done,
+                          processing: view.imageProcessingSettings)])
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(events.last, false,
             "事前引き当てで完了済みならスピナー予約は即解除される")

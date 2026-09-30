@@ -155,6 +155,10 @@ final class ReaderView: NSView {
         }
     }
 
+    var imageProcessingSettings: ImageProcessingSettings {
+        .init(interpolation: interpolation, noiseReduction: noiseReductionLevel)
+    }
+
     var backgroundColor: NSColor = .black {
         didSet { layer?.backgroundColor = backgroundColor.cgColor }
     }
@@ -243,7 +247,7 @@ final class ReaderView: NSView {
     /// めくり効果のスナップショットにもフィルタ済みの絵が入る。
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
-                  preResampled: [(size: CGSize, image: CGImage)?] = [],
+                  preResampled: [ResampledPage?] = [],
                   turn: PageTurn? = nil) {
         // スワイプ追従カールの予約(表示確定直前にコントローラが設定)。
         // 自動再生の turn より優先する
@@ -267,7 +271,10 @@ final class ReaderView: NSView {
         // 事前引き当て分を最初から採用する(サイズが実レイアウトと一致した
         // ページだけが使われ、不一致・未命中は通常の非同期リサンプルが埋める)
         resampledPages = preResampled.count == images.count
-            ? preResampled : Array(repeating: nil, count: images.count)
+            ? preResampled.map { page in
+                guard let page, page.processing == imageProcessingSettings else { return nil }
+                return (page.size, page.image)
+            } : Array(repeating: nil, count: images.count)
         loupeHighResImages.removeAll()
         for pageLayer in pageLayers {
             pageLayer.removeAnimation(forKey: "pageAnimation")

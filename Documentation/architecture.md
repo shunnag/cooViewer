@@ -205,7 +205,8 @@ CooViewer/
 │   │   ├── MLSuperResolver.swift   — 最高: Real-ESRGAN ×4 超解像(CoreML、240px タイル
 │   │   │                             +フェザー合成+ディザ、HEIC ディスクキャッシュ)
 │   │   ├── DisplayCapPolicy.swift  — ウインドウ実寸に応じたデコード上限(1024 刻み)
-│   │   └── ReaderDisplaySettings.swift — 表示モード・補間の値型(UI 非依存)
+│   │   ├── ReaderDisplaySettings.swift — 表示モード・補間の値型(UI 非依存)
+│   │   └── ResampledPage.swift     — 完成画像と取得時の補間・ノイズ低減条件
 │   ├── Sort/PageSorter.swift       — 自然順ほか SortMode 全種(§4.4.3)
 │   ├── ImageDecoding.swift         — ImageIO デコード(HDR ゲインマップ・SVG・
 │   │                                 レトロ形式へのフォールバック)
@@ -220,6 +221,7 @@ CooViewer/
 │   ├── ReaderAction.swift          — 全アクション enum(旧番号 §5.5-5.6 は移行用対応表)
 │   ├── Bindings.swift              — 旧 6 配列互換の読み書き・解決順(§5.3)・
 │   │                                 switchAction(§5.4)・既定バインディング
+│   ├── GestureActionPolicy.swift   — 画像/EPUB 共通の水平ページ送りトグルと方向反転
 │   └── ActionNames.swift           — 表示名(設定のバインディング編集用)
 ├── UI/
 │   ├── Reader/
@@ -439,6 +441,12 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   (一覧の開閉連打)、`epubPresentEpoch`(EPUB 提示の連打 — 合本内の EPUB↔EPUB 移動は
   `openGeneration` を動かさないため別建て)、ThumbnailCache の世代付き in-flight。
   await をまたいだら世代を照合してから状態に触れる(commit 点の直前と各 await 後)。
+- 開く準備中の Book はローカルな候補として保持する。保護コンテンツの判定・保存状態の
+  復元・初期位置・タイトルが揃い、最後の openGeneration 照合を通った後に同期で採用する。
+  採用時に最近の一覧へ登録する。閉窓や後発要求で未確定の本を保存対象にしない。
+- 事前リサンプルのキャッシュ照会は取得時の ImageProcessingSettings を固定し、完成画像へ添える。
+  ReaderView は表示直前に現在の処理条件と照合する。照会中に設定が変わった場合は完成画像を
+  採用せず、通常の描画経路で現在の条件を使う。
 - 同じ結果を二重に計算しない: Book.inFlightLoads・ThumbnailCache.inFlight・
   EPUBScreenAtlas.measuring・`EPUBParseCoalescer`(同一 URL の EPUB 解析)の
   「単一飛行+合流」パターンを踏襲する(合流エントリの自己退去はタスク同一性/

@@ -63,6 +63,36 @@ final class EPUBMouseDispatchTests: XCTestCase {
             outcome, bindings: bindings, readsFromLeft: true)?.action, .previousPage)
     }
 
+    func testSwipeFlipPreservesAsymmetricBindingsAfterDirectionResolution() throws {
+        var bindings = BindingConfiguration.builtInDefaults
+        bindings.mouseNormal = [mouse(6, VirtualButton.swipeLeft, sw: true),
+                                mouse(24, VirtualButton.swipeRight)]
+        for readsFromLeft in [false, true] {
+            let pageBinding = try XCTUnwrap(bindings.resolveMouse(
+                button: VirtualButton.swipeLeft, modifiers: 0,
+                fitMode: 0, readsFromLeft: readsFromLeft)?.action)
+            XCTAssertEqual(GestureActionPolicy.action(
+                pageBinding, virtualButton: VirtualButton.swipeLeft,
+                swipeToTurnPage: true, flipSwipeDirection: true),
+                readsFromLeft ? .nextPage : .previousPage,
+                "反対側のサムネイル割当へ再解決せず、ページ送りだけを反転する")
+            XCTAssertNil(GestureActionPolicy.action(
+                pageBinding, virtualButton: VirtualButton.swipeLeft,
+                swipeToTurnPage: false, flipSwipeDirection: true))
+            let otherBinding = try XCTUnwrap(bindings.resolveMouse(
+                button: VirtualButton.swipeRight, modifiers: 0,
+                fitMode: 0, readsFromLeft: readsFromLeft)?.action)
+            for enabled in [false, true] {
+                XCTAssertEqual(GestureActionPolicy.action(
+                    otherBinding, virtualButton: VirtualButton.swipeRight,
+                    swipeToTurnPage: enabled, flipSwipeDirection: true), .showThumbnail)
+            }
+        }
+        XCTAssertEqual(GestureActionPolicy.action(
+            .nextPage, virtualButton: VirtualButton.swipeUp,
+            swipeToTurnPage: false, flipSwipeDirection: true), .nextPage)
+    }
+
     func testMiddleButtonFallbackPreservesModifiersAndValue() {
         var bindings = BindingConfiguration.builtInDefaults
         bindings.mouseNormal = [mouse(14, 2), mouse(19, 2, LegacyModifier.shift, value: 7)]

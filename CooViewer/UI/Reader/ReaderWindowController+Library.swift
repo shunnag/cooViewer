@@ -38,7 +38,7 @@ extension ReaderWindowController {
     }
 
     /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)
-    func restoreBookState(for book: Book, skipPageRestore: Bool) async {
+    func restoreBookState(for book: Book, skipPageRestore: Bool) {
         let store = history
         let path = book.source.url.path
         if let saved = store.settings(displayName: book.displayName, path: path) {
@@ -58,7 +58,6 @@ extension ReaderWindowController {
         }
         // 復元ページは履歴を更新する前に読む(仕様書 §4.1.2: 手順 7 → 8 の順)
         let restorePage = store.savedPage(forPath: path)
-        store.noteOpened(path: path)
 
         // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)。
         // ページパスが記録されていれば同じファイルのページへ照合し直す
