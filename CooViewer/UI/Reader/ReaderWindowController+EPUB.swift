@@ -872,24 +872,15 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     @discardableResult
     private func handleEPUBGesture(virtualButton: Int, modifiers: Int,
                                   leftHalf: Bool) -> Bool {
-        var button = virtualButton
-        if button == VirtualButton.swipeLeft || button == VirtualButton.swipeRight {
-            let action = bindings.resolveMouse(
-                button: button, modifiers: modifiers,
-                fitMode: 0, readsFromLeft: epubInputReadsFromLeft)?.action
-            if action == .nextPage || action == .previousPage {
-                guard settings.swipeToTurnPage else { return true }
-                if settings.flipSwipeDirection {
-                    button = button == VirtualButton.swipeLeft
-                        ? VirtualButton.swipeRight : VirtualButton.swipeLeft
-                }
-            }
-        }
         guard let binding = bindings.resolveMouse(
-            button: button, modifiers: modifiers,
+            button: virtualButton, modifiers: modifiers,
             fitMode: 0, readsFromLeft: epubInputReadsFromLeft),
             let action = binding.action else { return false }
-        return performEPUB(action, value: binding.value, leftHalf: leftHalf)
+        guard let effective = GestureActionPolicy.action(
+            action, virtualButton: virtualButton,
+            swipeToTurnPage: settings.swipeToTurnPage,
+            flipSwipeDirection: settings.flipSwipeDirection) else { return true }
+        return performEPUB(effective, value: binding.value, leftHalf: leftHalf)
     }
 
     /// ジェスチャ位置が EPUB ビューの左半分か(positional 系アクション用)

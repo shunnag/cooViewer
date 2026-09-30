@@ -4,6 +4,61 @@ import XCTest
 
 @MainActor
 final class OpenFlowConcurrencyTests: XCTestCase {
+    func testCloseDuringProtectedContentPreparationPreservesSavedState() async throws {
+        try await checkAbandonedPreparation(closesWindow: true)
+    }
+
+    func testLaterOpenDiscardsPreparedBookWithoutChangingItsHistory() async throws {
+        try await checkAbandonedPreparation(closesWindow: false)
+    }
+
+    private func checkAbandonedPreparation(closesWindow: Bool) async throws {
+        let directory = try TestFixtures.makeTempDir()
+        let suite = "test.cooViewer.open-preparation.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        defaults.set(true, forKey: "RememberBookSettings")
+        defaults.set(true, forKey: "AlwaysRememberLastPage")
+        let url = directory.appendingPathComponent("prepared.zip")
+        try Data().write(to: url)
+        let stateDirectory = directory.appendingPathComponent("BookStates")
+        let history = BookHistoryStore(defaults: defaults, directory: stateDirectory)
+        let saved = SavedBookSettings(
+            readMode: .leftToRightSingle, sortMode: .literalName,
+            marks: PageMarks(), bookmarks: [.init(name: "kept", pageIndex: 2, pagePath: "2.png")])
+        history.saveImageBook(path: url.path, snapshot: .init(
+            displayName: url.lastPathComponent, pageIndex: 2, pagePath: "2.png", settings: saved))
+        let otherURL = directory.appendingPathComponent("recent.zip")
+        try Data().write(to: otherURL)
+        history.noteOpened(path: otherURL.path)
+        let recentsBefore = history.recentBookPaths()
+        let writesBefore = history.stateFileWriteCount
+        let source = ProtectedContentPreparationSource(url: url)
+        let controller = ReaderWindowController(window: nil, history: history)
+        controller.preparedNextBook = (url.path, source, controller.settings.effectiveArchiveEngine)
+        let opening = controller.openBook(at: url, atPage: 1)
+        await fulfillment(of: [source.paused], timeout: 2)
+        XCTAssertNil(controller.book, "保護状態の準備中は新しい本を現在の本にしない")
+        if closesWindow {
+            controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        } else {
+            await controller.openBook(at: url.appendingPathExtension("missing")).value
+        }
+        await source.resume()
+        await opening.value
+        XCTAssertNil(controller.book)
+        XCTAssertEqual(history.stateFileWriteCount, writesBefore)
+        let restored = BookHistoryStore(defaults: defaults, directory: stateDirectory)
+        XCTAssertEqual(restored.savedPage(forPath: url.path)?.page, 2)
+        XCTAssertEqual(restored.settings(displayName: url.lastPathComponent, path: url.path)?.bookmarks,
+                       saved.bookmarks, "未確定の本で保存済みのしおりを上書きしない")
+        XCTAssertEqual(restored.recentBookPaths(), recentsBefore,
+                       "未確定のオープンで最近の一覧を並べ替えない")
+    }
+
     func testCloseDuringUnlockDoesNotInstallLatePlaceholder() async throws {
         let source = try makeSource()
         defer { try? FileManager.default.removeItem(at: source.url) }
@@ -57,6 +112,37 @@ final class OpenFlowConcurrencyTests: XCTestCase {
         controller.preparedNextBook = (
             source.url.path, source, controller.settings.effectiveArchiveEngine)
         return controller
+    }
+}
+
+private actor ProtectedContentPreparationSource: BookSource {
+    nonisolated let url: URL
+    nonisolated var supportsDateSort: Bool { false }
+    nonisolated let paused = XCTestExpectation(description: "保護コンテンツの準備を停止")
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(url: URL) { self.url = url }
+
+    func entries() async throws -> [PageEntry] {
+        (0..<3).map { .init(id: $0, name: "\($0).png", pathInBook: "\($0).png",
+                           fileURL: nil, creationDate: nil, modificationDate: nil) }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        throw BookSourceError.unreadable(url)
+    }
+
+    func containsProtectedContent() async -> Bool {
+        await withCheckedContinuation {
+            continuation = $0
+            paused.fulfill()
+        }
+        return true
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 

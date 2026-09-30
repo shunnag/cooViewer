@@ -77,14 +77,10 @@ extension ReaderWindowController {
                fitMode: fitModeNumber, readsFromLeft: readsFromLeft),
            let action = resolved.action,
            action == .nextPage || action == .previousPage {
-            guard settings.swipeToTurnPage else { return }
-            // スワイプの向き反転(既定オン)はページ送りだけに効かせる。ボタンを
-            // 付け替えて再解決すると反対側スワイプのカスタム割当(サムネイル表示等)
-            // へ漏れてしまう(既定オンなので非対称カスタムのユーザに顕在。
-            // cooViewer-jus)。ボタンではなくアクションの向きを入れ替える
-            let effective: ReaderAction = settings.flipSwipeDirection
-                ? (action == .nextPage ? .previousPage : .nextPage)
-                : action
+            guard let effective = GestureActionPolicy.action(
+                action, virtualButton: virtualButton,
+                swipeToTurnPage: settings.swipeToTurnPage,
+                flipSwipeDirection: settings.flipSwipeDirection) else { return }
             perform(effective, value: resolved.value, leftHalf: leftHalf)
             return
         }
