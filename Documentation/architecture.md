@@ -188,7 +188,8 @@ CooViewer/
 │   │   │                             ナビゲーション・先読み・サイズ索引
 │   │   ├── PageLayout.swift        — 見開き合成判定(marks + 740 比率+表紙単ページ)
 │   │   ├── ReadMode.swift
-│   │   └── PageBookmark.swift      — 固定ページのしおりと保存済み設定の値型
+│   │   ├── PageBookmark.swift      — 固定ページのしおりと保存済み設定の値型
+│   │   └── CollectionPageMap.swift — 合本の全文ページから実ページ/EPUB 位置への対応表
 │   ├── Cache/
 │   │   ├── PageCache.swift         — @MainActor。Book 専用の同期 LRU+圧迫トリム(§5)
 │   │   ├── ReadingResourceDefaults.swift — 読み込み・キャッシュの標準予算
@@ -229,6 +230,8 @@ CooViewer/
 │   │   │                             オープン進捗 HUD・ウインドウ位置復元
 │   │   ├── EPUBReadingSession.swift — 一冊のリフロー状態と明示的な終了。
 │   │   │                             検索状態は EPUBSearchSession が所有
+│   │   ├── ReaderWindowController+Collection.swift / CollectionPageMapState.swift
+│   │   │                           — 合本の往来・対応表の構築要求と再試行予算
 │   │   ├── ReaderWindowController+EPUBSearch/EPUBBookmarks/EPUBFootnotes.swift
 │   │   │                           — 機能ごとの UI 配線とセッション同一性の照合
 │   │   ├── ReaderView.swift        — layer-backed。1/2 ページ配置・フィット・回転・
@@ -286,9 +289,11 @@ Icon Composer の AppIcon.icon。
 
 | 所有者 | 状態 | 失効・終了 |
 |---|---|---|
-| ReaderWindowController | EPUBReaderView、入力モニタ、提示要求の epoch、解析コアレサ、合本全体の対応表と失敗マーカー | ウインドウに属する。提示の epoch は画像本を開く入口でも進める |
+| ReaderWindowController | EPUBReaderView、入力モニタ、提示要求の epoch、解析コアレサ | ウインドウに属する。提示の epoch は画像本を開く入口でも進める |
 | EPUBReadingSession | publication/URL/合本文脈、しおり/目次/表示番号、保存予約と周期、脚注、選択本文、カールのホスト | 提示ごとに生成。旧ビューを保存してから `end()` し、次のセッションを設置する |
 | EPUBSearchSession | 検索モデル/パネル、検索・厳密着地のタスクと世代、移動回数、本文ハイライト | パネル閉鎖・読書終了では検索全体を終了。設定/版面変更では厳密着地と矩形を失効させる |
+| CollectionNavigationState | 合本への復帰中フラグ、次の着地方向、確定降格と一過性失敗のマーカー | EPUB 提示をまたいで保持。一過性失敗は着地で一度消費する以外に消さない |
+| CollectionPageMapState | 公開済み対応表、構築要求、未完マップの再試行予算 | 対象/版面/エントリ列が変われば旧構築を取消。閉窓では対応表を残して pending と予算を解除 |
 
 ホストが作るタスクと UI クロージャは、開始時の読書セッションを捕まえ、結果反映前に
 参照同一性と active を照合する。同じ publication や同じビューの再利用でも旧処理を
@@ -302,6 +307,13 @@ Dock から `showWindow` で再表示する経路では同じ読書内容へ戻�
 しおり編集シートの確定は例外的に旧対象 URL へも保存する。ページ番号の再解決は
 同じ読書セッションに限り、同じ URL を開き直した場合は確定した名前・並び・削除を
 現在のしおり配列にも反映して、後続の状態保存による上書きを防ぐ。
+
+合本の対応表はサムネイルの表示に依存しない。構築要求は版面キーとエントリ列を
+持ち、完了・取消の後片付けは要求の参照同一性で照合する。ソート中でも新しい列の
+構築を始められ、A→B→A の旧完了で pending や新しい対応表を上書きしない。
+再試行は公開できた未完マップだけを数え、異なるエントリ列へ予算を引き継がない。
+個別 EPUB の解析失敗による表紙降格も提示 epoch を照合し、古い失敗が後発の着地を
+巻き戻さないようにする。
 
 ### 3.2 描画設計(旧 §4.9-4.11 の置換)
 

@@ -1,81 +1,9 @@
 import AppKit
 import Washi
 
-/// 開いている EPUB の実測 census を合本計画へ再利用する純粋な判定値
-/// （cooViewer-oxr.65 / cooViewer-oxr.70、設計書 §2.4）。
-struct EPUBOpenBookCensusSeed: Equatable, Sendable {
-    let entryIndex: Int
-    let counts: [Int]
-    let pagesPerScreen: Int
-
-    static func make(
-        requestedMetricsKey: String,
-        viewMetricsKey: String?,
-        counts: [Int]?,
-        pagesPerScreen: Int,
-        entryIndex: Int?
-    ) -> EPUBOpenBookCensusSeed? {
-        guard viewMetricsKey == requestedMetricsKey,
-              let counts, let entryIndex else { return nil }
-        return EPUBOpenBookCensusSeed(
-            entryIndex: entryIndex, counts: counts,
-            pagesPerScreen: pagesPerScreen)
-    }
-}
-
-/// EPUB サムネイルの描画条件をディスクキャッシュ名へ写像する
-/// 純関数群（cooViewer-oxr.64 / cooViewer-oxr.63、設計書 §2.4 EPUB 対応）。
-enum EPUBThumbnailCacheKey {
-    /// Washi と同じテーマ解決規則。システム設定時だけウインドウ外観へ従う
-    /// （cooViewer-oxr.63、設計書 §2.4 EPUB 対応）。
-    static func effectiveIsDark(theme: Int, windowIsDark: Bool) -> Bool {
-        switch theme {
-        case 1: false
-        case 2: true
-        default: windowIsDark
-        }
-    }
-
-    /// ページ割りが同じでも描画結果が変わる条件を分離する
-    /// （cooViewer-oxr.64、設計書 §2.4 EPUB 対応）。
-    static func renderingVariant(metricsKey: String, isDark: Bool,
-                                 forcesReadableColors: Bool) -> String {
-        "metrics:\(metricsKey)#theme:\(isDark ? "d" : "l")"
-            + "#readable:\(forcesReadableColors ? "1" : "0")"
-    }
-
-    /// 単体 EPUB の画面サムネイル用キーを組み立てる
-    /// （cooViewer-oxr.64、設計書 §2.4 EPUB 対応）。
-    static func singleBook(path: String, totalPages: Int, pagesPerScreen: Int,
-                           fontScale: Double, pageMargins: Int,
-                           defaultFont: String, metricsKey: String,
-                           isDark: Bool, forcesReadableColors: Bool) -> String {
-        let variant = renderingVariant(
-            metricsKey: metricsKey, isDark: isDark,
-            forcesReadableColors: forcesReadableColors)
-        return "epub:\(path)#\(totalPages)x\(pagesPerScreen)"
-            + "#\(fontScale)#\(pageMargins)#\(defaultFont)"
-            + "#\(variant)"
-    }
-}
-
 /// サムネイルオーバーレイとリーダーの配線(仕様書 §4.8)。
 /// 表示・非表示の切替と、表示中のページ送りキーの転用を担う。
 extension ReaderWindowController {
-    /// 現在巻と版面キーが一致するときだけ、Washi リーダーの実測値を返す。
-    func openBookCensusSeed(for metricsKey: String) -> EPUBOpenBookCensusSeed? {
-        guard let epubView,
-              EPUBPersistencePolicy.shouldPersist(
-                callbackPublication: epubView.publication,
-                currentPublication: epubPublication) else { return nil }
-        return EPUBOpenBookCensusSeed.make(
-            requestedMetricsKey: metricsKey,
-            viewMetricsKey: epubView.pageCensusMetricsKey,
-            counts: epubView.pageCensus,
-            pagesPerScreen: epubView.plannedPagesPerScreen,
-            entryIndex: epubCollectionContext?.entryIndex)
-    }
-
     /// サムネイルオーバーレイのトグル。本が無ければ何もしない
     func showThumbnail() {
         guard let book else { return }
@@ -254,182 +182,6 @@ extension ReaderWindowController {
         revealThumbnailOverlay()
     }
 
-    // MARK: - 合本の全体ページマップ(ページバー等の全体基準化)
-
-    /// 現在の文脈で有効な全体ページマップ(合本が対象で、census 構築済み、
-    /// かつ**エントリ列が構築時と同一**。ソート・シャッフル・削除で並びが
-    /// 変わった古いマップで番号やジャンプ先を出さない)
-    func activeCollectionPageMap() -> CollectionPageMap? {
-        guard let map = collectionPageMap else { return nil }
-        if let context = epubCollectionContext {
-            return map.folderPath == context.folderURL.path
-                && map.entries == context.entries ? map : nil
-        }
-        if let book, book.source.url.path == map.folderPath,
-           map.entries == book.entries {
-            return map
-        }
-        return nil
-    }
-
-    /// 全体ページマップを(必要なら)非同期で組み直す。folder+メトリクスが
-    /// 一致していれば何もしない(インジケータ更新のたびに呼んで安全)。
-    /// 開いている EPUB の census はリーダーから流用して再実測を省く
-    func ensureCollectionPageMap() {
-        let folderURL: URL
-        let entries: [PageEntry]
-        let collectionSource: any BookSource
-        if let context = epubCollectionContext {
-            folderURL = context.folderURL
-            entries = context.entries
-            collectionSource = context.source
-        } else if let book, book.source is NestedFolderSource {
-            folderURL = book.source.url
-            entries = book.entries
-            collectionSource = book.source
-        } else {
-            collectionPageMapTask?.cancel()
-            collectionPageMapPendingKey = nil
-            collectionPageMap = nil
-            collectionPageMapAttempts.removeAll()
-            return
-        }
-        let placeholders = entries.enumerated().compactMap { index, entry in
-            entry.reflowEPUBURL.map { (index: index, url: $0) }
-        }
-        guard !placeholders.isEmpty else {
-            collectionPageMapTask?.cancel()
-            collectionPageMapPendingKey = nil
-            collectionPageMap = nil
-            collectionPageMapAttempts.removeAll()
-            return
-        }
-        let baseMetrics = EPUBScreenMetrics(
-            viewportSize: window?.contentView?.bounds.size ?? .zero,
-            settings: plannedEPUBSettings())
-        let key = baseMetrics.cacheKey
-        let openKey = epubPublication.map {
-            baseMetrics.applyingRenditionSpread(
-                $0.metadata.rendition.spread).cacheKey
-        } ?? key
-        let openSeed = openBookCensusSeed(for: openKey)
-        let pendingKey = folderURL.path + "#" + key
-        if let map = collectionPageMap, map.folderPath == folderURL.path,
-           map.metricsKey == key, map.entries == entries {
-            // 開いている巻がまさに欠落中で、同一メトリクスのリーダー census が
-            // 出ているなら、上限後でもゼロコスト(atlas 呼び出しなし)で差し込む
-            let canSelfHeal: Bool = {
-                guard let openSeed else { return false }
-                return map.missingEntries.contains(openSeed.entryIndex)
-            }()
-            // 完成済み or 再試行上限に達した未完マップはそのまま(毎ナビゲーション
-            // 再解析しない)。自己回復できる場合だけ上限を無視して埋め直す
-            if !canSelfHeal,
-               map.isComplete
-                || (collectionPageMapAttempts[pendingKey] ?? 0)
-                    >= Self.collectionPageMapMaxAttempts {
-                return
-            }
-        }
-        if collectionPageMapPendingKey == pendingKey { return }
-        collectionPageMapTask?.cancel()
-        collectionPageMapPendingKey = pendingKey
-        // 開いている本の census はリーダー実測を流用(**同一メトリクスの
-        // 実測に限る** — 旧寸法の値を新キーのマップへ焼き込まない)
-        var seededCounts: [Int: [Int]] = [:]
-        if let openSeed {
-            seededCounts[openSeed.entryIndex] = openSeed.counts
-        }
-        // 直前の未完マップで計測済みの巻(epubURL != nil の segment)はそのまま流用し、
-        // 欠けた巻だけ測り直す(atlas LRU 退避で再測が要るときの二度手間を省く)
-        if let old = collectionPageMap, old.folderPath == folderURL.path,
-           old.metricsKey == key, old.entries == entries {
-            for segment in old.segments {
-                if segment.epubURL != nil, let itemCounts = segment.itemCounts,
-                   seededCounts[segment.entryIndex] == nil {
-                    seededCounts[segment.entryIndex] = itemCounts
-                }
-            }
-        }
-        collectionPageMapTask = Task { [weak self] in
-            var counts = seededCounts
-            for placeholder in placeholders where counts[placeholder.index] == nil {
-                guard !Task.isCancelled else { return }
-                let preparsed = await collectionSource
-                    .preparsedReflowPublication(for: placeholder.url)
-                if let plan = await EPUBAtlasStore.shared
-                    .screenPlan(for: placeholder.url, metrics: baseMetrics,
-                                preparsed: preparsed) {
-                    counts[placeholder.index] = plan.counts
-                }
-            }
-            guard let self, !Task.isCancelled,
-                  self.collectionPageMapPendingKey == pendingKey else { return }
-            self.collectionPageMapPendingKey = nil
-            // 対象が変わっていたら捨てる(合本切替・退場・構築中のソート)
-            let stillSame: Bool = {
-                if let context = self.epubCollectionContext {
-                    return context.folderURL == folderURL
-                        && context.entries == entries
-                }
-                return self.book?.source.url == folderURL
-                    && self.book?.entries == entries
-            }()
-            guard stillSame else { return }
-            self.collectionPageMap = CollectionPageMap.make(
-                folderPath: folderURL.path, metricsKey: key,
-                entries: entries, counts: counts)
-            // published が未完なら試行回数を加算(published のみ数える。
-            // キャンセル/超越では加算しない)。上限で毎回の再解析を止める
-            if let built = self.collectionPageMap, !built.isComplete {
-                self.collectionPageMapAttempts[pendingKey, default: 0] += 1
-            }
-            // 表示へ即時反映
-            if self.isEPUBMode {
-                self.updateEPUBIndicators()
-                // cooViewer-col: 合本ページマップ完成時は検索一覧の表示番号も
-                // 個別 EPUB 基準から合本全体基準へ即時更新する。
-                self.refreshEPUBSearchPageNumbers()
-            } else {
-                self.updatePageIndicators(indices: self.lastSpreadIndices)
-            }
-        }
-    }
-
-    /// 全体ページマップに基づくジャンプ(ページバードラッグ・0-9 の %)。
-    /// 画像ページ / いまの EPUB 内 / 別 EPUB を全体基準で振り分ける
-    func jumpToCollectionFraction(_ fraction: Double, map: CollectionPageMap) {
-        let page = Int((min(max(fraction, 0), 1)
-            * Double(max(1, map.total - 1))).rounded())
-        switch map.target(forGlobalPage: page) {
-        case .bookPage(let index):
-            if isEPUBMode {
-                epubCollectionReturnPending = true
-                openBook(at: URL(fileURLWithPath: map.folderPath), atPage: index)
-            } else if let book {
-                book.goTo(index: index)
-                refreshAfterJump()
-            }
-        case .epubPage(let url, let entryIndex, let spineIndex,
-                       let pageInItem, let countInItem):
-            let progression = countInItem <= 1
-                ? 0.0 : Double(pageInItem) / Double(countInItem - 1)
-            let locator = EPUBLocator(spineIndex: spineIndex,
-                                      progression: progression)
-            if isEPUBMode {
-                if url == epubBookURL {
-                    epubView?.go(to: locator)
-                } else if let context = epubCollectionContext {
-                    openCollectionEPUB(url: url, entryIndex: entryIndex,
-                                       locator: locator, context: context)
-                }
-            } else {
-                enterCollectionReflowEPUB(url: url, entryIndex: entryIndex,
-                                          forward: true, at: locator)
-            }
-        }
-    }
-
     // MARK: - コレクションの「全ページ展開」一覧(設計書 §2.4 EPUB 対応)
 
     /// EPUB の実効テーマがダークか（cooViewer-oxr.63、設計書 §2.4 EPUB 対応）。
@@ -527,7 +279,7 @@ extension ReaderWindowController {
                 self.refreshAfterJump()
             case (.bookPage(let index), .epubMode(let context)):
                 // 合本の実ページへ復帰(巻端復帰と同じ抑止フラグで)
-                self.epubCollectionReturnPending = true
+                self.collectionNavigation.returnPending = true
                 self.openBook(at: context.folderURL, atPage: index)
             case (.epubScreen(let url, let entryIndex, let spine,
                               let page, let count), .imageBook(let book)):
@@ -607,7 +359,7 @@ extension ReaderWindowController {
                                         locator: EPUBLocator(spineIndex: 0),
                                         context: context)
             } else {
-                self.epubCollectionReturnPending = true
+                self.collectionNavigation.returnPending = true
                 self.openBook(at: context.folderURL, atPage: cell)
             }
         }

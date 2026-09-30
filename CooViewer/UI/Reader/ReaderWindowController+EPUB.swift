@@ -68,7 +68,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
         unloadImageBookForEPUB(fromSlideshow: fromSlideshow)
         endEPUBSession()  // EPUB → EPUB でも旧本の保存と後片付けを同じ順で行う
-        epubCollectionReturnPending = false
+        collectionNavigation.returnPending = false
         // 永続層は Washi 非依存のタプルを返すため、復元位置と同じく境界で
         // EPUBLocator を直接構築する(matchingLocator 経路は導入しない)
         let bookmarks = history.savedReflowBookmarks(forPath: url.path)
@@ -374,7 +374,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         endEPUBSession()
         epubView?.stopMediaOverlay()  // 退出したら音声ナレーションも止める
         epubView?.cancelPageCensus()  // 退出後のオフスクリーン計測を止める
-        epubCollectionReturnPending = false
+        collectionNavigation.returnPending = false
         hideThumbnailOverlay()  // EPUB の一覧を画像本に持ち越さない
         // cooViewer-oxr.79: 設計書 §2.4 の画像/EPUB 入替では、非表示だけでは
         // ウインドウのリサイズが Washi へ届き、再ページ割りと census が続く。
@@ -397,200 +397,6 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         session.end()
         disableEPUBLoupe()
         epubSession = nil
-    }
-
-    // MARK: - コレクション(合本)との往来
-
-    /// 合本内のリフロー EPUB 代理ページに到達した(refreshDisplay から)。
-    /// EPUB モードへ切り替える: 前進到達は先頭(または保存位置の復元。
-    /// atFirst はループ再入場で復元をバイパス)、後退到達は末尾から。
-    /// 開けない本(DRM 等)は静的な表紙ページに降格する
-    func enterCollectionReflowEPUB(url: URL, entryIndex: Int, forward: Bool,
-                                   atFirst: Bool = false,
-                                   at explicitLocator: EPUBLocator? = nil,
-                                   fromSlideshow: Bool = false) {
-        guard let book else { return }
-        let context = EPUBCollectionContext(
-            folderURL: book.source.url,
-            entryIndex: entryIndex,
-            entryCount: book.pageCount,
-            readsFromLeft: book.readMode.readsFromLeft,
-            entries: book.entries,
-            source: book.source,
-            singleSetting: book.singleSetting,
-            coverSingle: book.coverSingleFirst,
-            bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)))
-        // 提示エポックを採番(await より前)。合本内移動は openGeneration を
-        // 動かさないため、last-request-wins は epubPresentEpoch で担保する
-        epubPresentEpoch += 1
-        let presentEpoch = epubPresentEpoch
-        let generation = openGeneration
-        Task { [weak self] in
-            guard let self else { return }
-            // cooViewer-oxr.42: 合本生成時に保持した publication を、ファイル
-            // 同一性検証を通して再利用する（設計書 §2.4）。
-            let preparsed = await book.source.preparsedReflowPublication(for: url)
-            let publication = await self.epubParseCoalescer.publicationIfAvailable(
-                at: url, preparsed: preparsed)
-            // 解析中に別の本が開かれた/代理ページを離れたら何もしない
-            // (openBookFlow の世代規則と同じ。book 同一性だけでは、新しい
-            // オープンの途中(book 差し替え前)をすり抜ける)。
-            // 一覧からの明示ジャンプは着地ページを問わない(現在ページが
-            // 代理ページとは限らないため)。提示の連打は presentReflowableEPUB 内の
-            // epubPresentEpoch 照合が守る
-            guard self.openGeneration == generation,
-                  self.book === book,
-                  explicitLocator != nil || book.currentIndex == entryIndex
-            else { return }
-            guard let publication, !publication.isFixedLayout,
-                  !EPUBImageOnlyHeuristic.qualifies(publication),
-                  !publication.isDRMProtected else {
-                if let publication {
-                    // 確定降格(FXL/DRM): 以後ずっと静的表紙。恒久ブラックリストへ。
-                    // 隣へ素通りさせると全滅フォルダ + ループ設定で openBook が無限
-                    // 循環する。初回降格のときだけ DRM を説明する(合本内で無説明に
-                    // 表紙へ化けると『なぜこの巻だけ読めないか』が分からない。監査 #9)
-                    let inserted = self.epubFailedPlaceholders.insert(url).inserted
-                    if inserted, publication.isDRMProtected {
-                        let alert = NSAlert()
-                        alert.messageText = String(localized: "This book is protected by DRM.")
-                        alert.informativeText = publication.drmSchemeName ?? ""
-                        alert.runModal()
-                    } else {
-                        NSSound.beep()
-                    }
-                } else {
-                    // 一過性の解析失敗(nil = 一時 I/O 失敗・壊れファイル): 恒久
-                    // ブラックリストには入れない。今回の着地だけ代理表紙を出すため
-                    // 消費式マーカーへ(そうしないと openBook→refreshDisplay→再入場 が
-                    // 一時失敗ファイルで無限ループする)。次の意図的再着地では再解析する
-                    self.epubTransientFailedPlaceholders.insert(url)
-                    NSSound.beep()
-                }
-                // 表紙降格は同一の合本ブックのまま静的表紙を再描画する。
-                // openBook で作り直すと NestedUnlocker の解錠済み子・パスワード
-                // キャンセル記憶が失われ再プロンプトになる(57t が塞ごうとして
-                // 届かなかった経路 = 画像モードでは self.epubCollectionContext が
-                // nil のため :908 の再利用条件が成立せず作り直していた。cooViewer-ari)。
-                // ブラックリスト登録は上で済んでいるので、その場で再描画すれば
-                // refreshDisplay の代理判定(:reflowEPUBURL & !epubFailedPlaceholders)が
-                // 入場せず表紙を出す。modal 中に状態が変わり得るので世代/本を再照合する
-                guard self.openGeneration == generation, self.book === book else { return }
-                book.goTo(index: entryIndex)
-                await self.refreshDisplay()
-                return
-            }
-            self.presentReflowableEPUB(
-                publication, url: url,
-                atPage: (explicitLocator == nil && atFirst) ? 0 : nil,
-                atLastPage: explicitLocator == nil && !forward && !atFirst,
-                atLocator: explicitLocator,
-                collectionContext: context,
-                epoch: presentEpoch,
-                fromSlideshow: fromSlideshow)
-        }
-    }
-
-    /// 一覧からの横断ジャンプ: 合本文脈のまま別の(または同じ)EPUB の
-    /// 指定位置を開く(EPUB モード内から。book は無いので文脈から組む)。
-    /// 合本内移動は openGeneration を動かさないため、提示エポックを採番して
-    /// last-request-wins を保証する(連打で最後にクリックした巻だけが確定)
-    func openCollectionEPUB(url: URL, entryIndex: Int,
-                            locator: EPUBLocator,
-                            context: EPUBCollectionContext) {
-        let newContext = EPUBCollectionContext(
-            folderURL: context.folderURL,
-            entryIndex: entryIndex,
-            entryCount: context.entryCount,
-            readsFromLeft: context.readsFromLeft,
-            entries: context.entries,
-            source: context.source,
-            singleSetting: context.singleSetting,
-            coverSingle: context.coverSingle,
-            bookmarkedPages: context.bookmarkedPages)
-        // 提示エポックを採番(await より前。last-request-wins)
-        epubPresentEpoch += 1
-        let presentEpoch = epubPresentEpoch
-        Task { [weak self] in
-            guard let self else { return }
-            // cooViewer-oxr.42: 代理ソースが保持する解析結果を EPUB 間移動にも
-            // 引き継ぐ（設計書 §2.4）。
-            let preparsed = await context.source.preparsedReflowPublication(for: url)
-            let publication = await self.epubParseCoalescer.publicationIfAvailable(
-                at: url, preparsed: preparsed)
-            guard self.isEPUBMode,
-                  self.epubCollectionContext?.folderURL == context.folderURL
-            else { return }
-            guard let publication, !publication.isFixedLayout,
-                  !EPUBImageOnlyHeuristic.qualifies(publication),
-                  !publication.isDRMProtected else {
-                NSSound.beep()
-                return
-            }
-            self.presentReflowableEPUB(publication, url: url,
-                                       atLocator: locator,
-                                       collectionContext: newContext,
-                                       epoch: presentEpoch)
-        }
-    }
-
-    /// 合本の指定エントリへ復帰する(EPUB の巻端・次/前の本から)。
-    /// 範囲外は合本自体の巻端として仕様書 §4.9 / §4.3.4 のループ規則に従う。
-    /// 文脈は消さない(オープン完了までの間に巻端イベントが再発しても
-    /// 単体モード意味論へ落とさない — 抑止は epubCollectionReturnPending)。
-    /// fromSlideshow は再帰・巻端ラップ・openBook へ一時的に伝播する
-    func openCollectionEntry(context: EPUBCollectionContext, at index: Int,
-                             forward: Bool, atFirst: Bool = false,
-                             fromSlideshow: Bool = false) {
-        guard (0..<context.entryCount).contains(index) else {
-            if forward {
-                switch settings.loopCheck {
-                case 0:
-                    // 巻末ループは画像本の goToFirst と同じく「先頭から」
-                    // (保存位置の復元は通さない)
-                    openCollectionEntry(context: context, at: 0,
-                                        forward: true, atFirst: true,
-                                        fromSlideshow: fromSlideshow)
-                case 1, 2:
-                    epubCollectionReturnPending = true
-                    openAdjacentBook(forward: true, fromSlideshow: fromSlideshow)
-                case 3:
-                    if fromSlideshow { stopSlideshow() }
-                default:
-                    if fromSlideshow { stopSlideshow() }
-                }
-            } else {
-                switch settings.loopCheck {
-                case 0: openCollectionEntry(
-                    context: context, at: context.entryCount - 1, forward: false,
-                    fromSlideshow: fromSlideshow)
-                case 1:
-                    epubCollectionReturnPending = true
-                    openAdjacentBook(forward: false, fromSlideshow: fromSlideshow)
-                case 2:
-                    epubCollectionReturnPending = true
-                    openAdjacentBook(forward: false, openLast: true,
-                                     fromSlideshow: fromSlideshow)
-                default: break
-                }
-            }
-            return
-        }
-        // 着地先が別の代理ページなら到達方向を引き継いで連続入場する
-        epubCollectionArrivalForward = forward
-        epubCollectionArrivalAtFirst = atFirst
-        epubCollectionReturnPending = true
-        openBook(at: context.folderURL, atPage: index, fromSlideshow: fromSlideshow)
-    }
-
-    /// 次/前の本ナビ(キー/マウス)で合本ソース再利用の復帰フラグを立てる。
-    /// **合本文脈のときだけ**立てる — 単体 EPUB には再利用先(合本)が無く、
-    /// 立てると開きが失敗(隣が DRM 等)したとき openBookFlow を通らず残り、
-    /// didReachBookEdge のガード(:guard !epubCollectionReturnPending)を恒久的に
-    /// 塞いで巻端ナビが全滅する。フラグの生存は「復帰オープンが in-flight の間だけ」
-    /// が不変条件(openBookFlow 末尾の defer と各終端で確実に消す。cooViewer-s7j)
-    private func markCollectionReturnForAdjacentBook() {
-        if epubCollectionContext != nil { epubCollectionReturnPending = true }
     }
 
     /// キー/マウスの綴じ方向解決に使う実効 readsFromLeft。
@@ -1418,7 +1224,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         // 復帰オープン中の重複イベント(巻端でのキーリピート等)は無視する
         // (二重復帰や、文脈なし分岐への誤爆=単体モード意味論での兄弟
         // オープン・保存位置の巻末上書きを防ぐ)
-        guard !epubCollectionReturnPending else { return }
+        guard !collectionNavigation.returnPending else { return }
         // コレクション(合本)内の EPUB は、巻端で合本の隣接エントリへ
         // シームレスに復帰する(合本自体の巻端は openCollectionEntry が
         // 仕様書 §4.9 / §4.3.4 のループ規則で処理する。1/2 は次の本へ継続し、
