@@ -125,6 +125,120 @@ final class EPUBHostPoliciesTests: XCTestCase {
         XCTAssertFalse(mapped.hidesRuby)
     }
 
+    func testNonpositiveWheelSensitivityDisablesVerticalTurnsButKeepsHorizontalSwipes() {
+        let cases: [(Double, Bool, EPUBScrollGestureRecognizer.Decision)] = [
+            (-1, false, .turn(positive: true)),
+            (0, false, .turn(positive: true)),
+            (0.5, true, .passThrough),
+            (1, true, .passThrough),
+            (2, true, .passThrough),
+        ]
+        for (sensitivity, wheelTurnsPages, horizontalDecision) in cases {
+            let mapped = EPUBSettingsMapper.readerSettings(from: settingsValues(
+                lineHeightScale: 0,
+                letterSpacing: 0,
+                paragraphSpacing: 0,
+                forceFont: false,
+                hidesRuby: false,
+                wheelSensitivity: sensitivity))
+
+            XCTAssertEqual(mapped.wheelTurnsPages, wheelTurnsPages,
+                           "WheelSensitivity=\(sensitivity)")
+            let intercept = EPUBScrollGesturePolicy.shouldInterceptHorizontal(
+                swipeToTurnPage: mapped.horizontalWheelTurnsPages,
+                swipeTrackingEnabled: true,
+                requestedFlow: .paginated,
+                requestsContinuousScroll: false,
+                wheelTurnsPages: mapped.wheelTurnsPages,
+                hasCustomSwipeBinding: false)
+            var recognizer = EPUBScrollGestureRecognizer()
+            XCTAssertEqual(recognizer.feed(deltaX: 0, deltaY: 100, precise: true,
+                timestamp: 1, interceptHorizontalIfNew: intercept), .passThrough)
+            XCTAssertEqual(recognizer.feed(deltaX: 100, deltaY: 0, precise: true,
+                timestamp: 2, interceptHorizontalIfNew: intercept), horizontalDecision)
+        }
+    }
+
+    func testHorizontalScrollPassesThroughWithDisabledSwipesOrScrolledFlow() {
+        let cases: [(Bool, Bool, RenditionFlow, Bool)] = [
+            (false, true, .paginated, false),
+            (true, false, .paginated, false),
+            (true, true, .scrolledDoc, false),
+            (true, true, .scrolledContinuous, false),
+            (true, true, .auto, true),
+            (true, true, .paginated, true),
+        ]
+        for (swipeToTurnPage, trackingEnabled, flow, continuous) in cases {
+            for wheelTurnsPages in [false, true] {
+                let intercept = EPUBScrollGesturePolicy.shouldInterceptHorizontal(
+                    swipeToTurnPage: swipeToTurnPage,
+                    swipeTrackingEnabled: trackingEnabled,
+                    requestedFlow: flow,
+                    requestsContinuousScroll: continuous,
+                    wheelTurnsPages: wheelTurnsPages,
+                    hasCustomSwipeBinding: true)
+                var recognizer = EPUBScrollGestureRecognizer()
+                XCTAssertEqual(recognizer.feed(deltaX: 0, deltaY: 0, precise: true,
+                    timestamp: 1, interceptHorizontalIfNew: intercept), .passThrough)
+                XCTAssertEqual(recognizer.feed(deltaX: 100, deltaY: 0, precise: true,
+                    timestamp: 1.1, interceptHorizontalIfNew: intercept), .passThrough)
+            }
+        }
+    }
+
+    func testPaginatedCustomHorizontalSwipeIsHandledOnce() {
+        for flow in [RenditionFlow.auto, .paginated] {
+            let intercept = EPUBScrollGesturePolicy.shouldInterceptHorizontal(
+                swipeToTurnPage: true,
+                swipeTrackingEnabled: true,
+                requestedFlow: flow,
+                requestsContinuousScroll: false,
+                wheelTurnsPages: true,
+                hasCustomSwipeBinding: true)
+            var recognizer = EPUBScrollGestureRecognizer()
+            XCTAssertEqual(recognizer.feed(deltaX: 0, deltaY: 0, precise: true,
+                timestamp: 1, interceptHorizontalIfNew: intercept), .passThrough)
+            XCTAssertEqual(recognizer.feed(deltaX: 100, deltaY: 0, precise: true,
+                timestamp: 1.1, interceptHorizontalIfNew: intercept), .turn(positive: true))
+            XCTAssertEqual(recognizer.feed(deltaX: 100, deltaY: 0, precise: true,
+                timestamp: 1.2, interceptHorizontalIfNew: intercept), .consume)
+        }
+    }
+
+    func testDisabledWheelHorizontalSwipeRespectsReadingAndFlipDirection() throws {
+        let intercept = EPUBScrollGesturePolicy.shouldInterceptHorizontal(
+            swipeToTurnPage: true,
+            swipeTrackingEnabled: true,
+            requestedFlow: .paginated,
+            requestsContinuousScroll: false,
+            wheelTurnsPages: false,
+            hasCustomSwipeBinding: false)
+        let cases: [(Bool, Bool, CGFloat, ReaderAction)] = [
+            (false, false, 100, .previousPage),
+            (false, false, -100, .nextPage),
+            (false, true, 100, .nextPage),
+            (false, true, -100, .previousPage),
+            (true, false, 100, .nextPage),
+            (true, false, -100, .previousPage),
+            (true, true, 100, .previousPage),
+            (true, true, -100, .nextPage),
+        ]
+        for (readsFromLeft, flipSwipeDirection, deltaX, expected) in cases {
+            var recognizer = EPUBScrollGestureRecognizer()
+            let decision = recognizer.feed(deltaX: deltaX, deltaY: 0, precise: true,
+                timestamp: 1, interceptHorizontalIfNew: intercept)
+            guard case .turn(let positive) = decision else {
+                XCTFail("水平スワイプをホストで処理する必要がある")
+                continue
+            }
+            let button = positive ? VirtualButton.swipeRight : VirtualButton.swipeLeft
+            let action = try XCTUnwrap(BindingConfiguration.builtInDefaults.resolveMouse(
+                button: button, modifiers: 0, fitMode: 0, readsFromLeft: readsFromLeft)?.action)
+            XCTAssertEqual(GestureActionPolicy.action(action, virtualButton: button,
+                swipeToTurnPage: true, flipSwipeDirection: flipSwipeDirection), expected)
+        }
+    }
+
     private func link(
         isNoteReference: Bool = false,
         hasBacklink: Bool = false
@@ -142,7 +256,8 @@ final class EPUBHostPoliciesTests: XCTestCase {
         letterSpacing: Int,
         paragraphSpacing: Int,
         forceFont: Bool,
-        hidesRuby: Bool
+        hidesRuby: Bool,
+        wheelSensitivity: Double = 1
     ) -> EPUBSettingsValues {
         EPUBSettingsValues(
             pageTurnStyle: .slide,
@@ -153,6 +268,7 @@ final class EPUBHostPoliciesTests: XCTestCase {
             defaultFontFamily: defaultFontFamily,
             theme: .dark,
             forcesReadableColors: true,
+            wheelSensitivity: wheelSensitivity,
             horizontalWheelTurnsPages: true,
             reversesHorizontalWheelTurn: false,
             hidesFootnoteAsides: true,
