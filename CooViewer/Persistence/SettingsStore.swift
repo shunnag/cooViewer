@@ -212,6 +212,13 @@ final class SettingsStore {
     /// ホイールめくり閾値。0=無効(仕様書 §6.1)
     var wheelSensitivity: Double { defaults.double(forKey: "WheelSensitivity") }
 
+    /// 縦ホイールめくりの有効判定。水平スワイプの設定とは独立(仕様書 §6.1)。
+    var wheelPageTurnsEnabled: Bool { Self.wheelPageTurnsEnabled(sensitivity: wheelSensitivity) }
+
+    nonisolated static func wheelPageTurnsEnabled(sensitivity: Double) -> Bool {
+        sensitivity > 0
+    }
+
     /// 前ページ復帰時の初期位置: 0=ページ先頭/1=ページ末尾
     var prevPageMode: Int { defaults.integer(forKey: "PrevPageMode") }
 

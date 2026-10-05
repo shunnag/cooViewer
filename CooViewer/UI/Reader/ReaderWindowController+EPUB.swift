@@ -234,6 +234,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             defaultFontFamily: settings.epubDefaultFont,
             theme: EPUBReaderTheme(rawValue: settings.epubTheme) ?? .system,
             forcesReadableColors: settings.epubForceReadableColors,
+            wheelSensitivity: settings.wheelSensitivity,
             horizontalWheelTurnsPages: settings.swipeToTurnPage,
             reversesHorizontalWheelTurn: epubHorizontalWheelReversed,
             hidesFootnoteAsides: settings.epubHidesFootnoteAsides,
@@ -724,9 +725,9 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     /// 2 本指スクロールの水平スワイプは Washi がめくりに消費し resolveMouse を
     /// 通らないため(3 本指と非対称。cooViewer-xsw)、EPUB モードでローカルモニタで
-    /// 捕捉する。横スワイプにカスタム(非ページめくり)割当があるときだけ横取りして
-    /// handleEPUBGesture へ回し、割当が無い水平めくり・縦スクロールは Washi へ
-    /// 素通しする(既定挙動は無変更)。
+    /// 捕捉する。ページ表示かつ画像本と同じスワイプ設定が有効なとき、カスタム
+    /// 割当の実行と縦ホイール無効時の水平スワイプめくりを handleEPUBGesture へ
+    /// 回す。スクロール表示の本文操作と縦方向は Washi へ素通しする。
     func installEPUBScrollMonitorIfNeeded() {
         guard epubScrollMonitor == nil else { return }
         epubScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
@@ -737,12 +738,21 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // EPUB ビュー上のスクロールのみ対象にし、サムネイル等の上は素通しする
             let point = epubView.convert(event.locationInWindow, from: nil)
             guard epubView.bounds.contains(point) else { return event }
+            // Washi は項目ごとの実効 flow を公開しないため、出版物全体の
+            // requestedFlow / requestsContinuousScroll でスクロール表示を近似判定する。
+            let interceptHorizontal = EPUBScrollGesturePolicy.shouldInterceptHorizontal(
+                swipeToTurnPage: self.settings.swipeToTurnPage,
+                swipeTrackingEnabled: NSEvent.isSwipeTrackingFromScrollEventsEnabled,
+                requestedFlow: epubView.requestedFlow,
+                requestsContinuousScroll: epubView.requestsContinuousScroll,
+                wheelTurnsPages: self.settings.wheelPageTurnsEnabled,
+                hasCustomSwipeBinding: self.epubHasCustomSwipeBinding())
             let decision = self.epubScrollGesture.feed(
                 deltaX: event.scrollingDeltaX,
                 deltaY: event.scrollingDeltaY,
                 precise: event.hasPreciseScrollingDeltas,
                 timestamp: event.timestamp,
-                interceptHorizontalIfNew: self.epubHasCustomSwipeBinding())
+                interceptHorizontalIfNew: interceptHorizontal)
             switch decision {
             case .passThrough:
                 return event
@@ -821,7 +831,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     }
 
     /// 水平スワイプのいずれかに非ページめくりのカスタム割当があるか。
-    /// あるときだけ scrollWheel を横取りする。
+    /// Washi の標準めくりよりユーザー割当を優先するかの判定に使う。
     private func epubHasCustomSwipeBinding() -> Bool {
         for button in [VirtualButton.swipeLeft, VirtualButton.swipeRight] {
             if let action = bindings.resolveMouse(
