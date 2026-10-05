@@ -81,6 +81,25 @@ enum EPUBSelectionSearchTerm {
     }
 }
 
+/// 画像本と同じスワイプ設定で、EPUB の水平スクロールをホストへ渡す条件。
+/// 縦ホイールめくり無効時は水平スワイプだけをホストで補う(仕様書 §6.1)。
+enum EPUBScrollGesturePolicy {
+    static func shouldInterceptHorizontal(
+        swipeToTurnPage: Bool,
+        swipeTrackingEnabled: Bool,
+        requestedFlow: RenditionFlow,
+        requestsContinuousScroll: Bool,
+        wheelTurnsPages: Bool,
+        hasCustomSwipeBinding: Bool
+    ) -> Bool {
+        guard swipeToTurnPage, swipeTrackingEnabled,
+              !requestsContinuousScroll,
+              requestedFlow != .scrolledDoc,
+              requestedFlow != .scrolledContinuous else { return false }
+        return hasCustomSwipeBinding || !wheelTurnsPages
+    }
+}
+
 /// SettingsStore の値を Washi 設定へ写すための Sendable な入力スナップショット。
 /// cooViewer-oxr.32/33/35/38 / 設計書 §2.4。
 struct EPUBSettingsValues: Sendable, Equatable {
@@ -92,6 +111,7 @@ struct EPUBSettingsValues: Sendable, Equatable {
     let defaultFontFamily: String
     let theme: EPUBReaderTheme
     let forcesReadableColors: Bool
+    let wheelSensitivity: Double
     let horizontalWheelTurnsPages: Bool
     let reversesHorizontalWheelTurn: Bool
     let hidesFootnoteAsides: Bool
@@ -119,6 +139,9 @@ enum EPUBSettingsMapper {
         settings.defaultFontFamily = font.isEmpty ? nil : font
         settings.theme = values.theme
         settings.forcesReadableColors = values.forcesReadableColors
+        // 仕様書 §6.1 の縦ホイール無効化で Washi の標準めくりを止める。
+        // 水平スワイプはホストのスクロールモニタで独立に扱う。
+        settings.wheelTurnsPages = SettingsStore.wheelPageTurnsEnabled(sensitivity: values.wheelSensitivity)
         settings.horizontalWheelTurnsPages = values.horizontalWheelTurnsPages
         settings.reversesHorizontalWheelTurn = values.reversesHorizontalWheelTurn
 

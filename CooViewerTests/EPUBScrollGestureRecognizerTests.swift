@@ -5,6 +5,32 @@ import XCTest
 final class EPUBScrollGestureRecognizerTests: XCTestCase {
     private var recognizer = EPUBScrollGestureRecognizer()
 
+    func testZeroDeltaBeforeHorizontalGesturePassesThroughWithoutFixingAxis() {
+        XCTAssertEqual(
+            recognizer.feed(deltaX: 0, deltaY: 0, precise: true,
+                            timestamp: 1, interceptHorizontalIfNew: true),
+            .passThrough)
+        XCTAssertEqual(
+            recognizer.feed(deltaX: 100, deltaY: 0, precise: true,
+                            timestamp: 1.1, interceptHorizontalIfNew: true),
+            .turn(positive: true))
+    }
+
+    func testZeroDeltaDoesNotExtendGestureQuietPeriod() {
+        XCTAssertEqual(
+            recognizer.feed(deltaX: 0, deltaY: 50, precise: true,
+                            timestamp: 1, interceptHorizontalIfNew: true),
+            .passThrough)
+        XCTAssertEqual(
+            recognizer.feed(deltaX: 0, deltaY: 0, precise: true,
+                            timestamp: 1.2, interceptHorizontalIfNew: false),
+            .passThrough)
+        XCTAssertEqual(
+            recognizer.feed(deltaX: 100, deltaY: 0, precise: true,
+                            timestamp: 1.3, interceptHorizontalIfNew: true),
+            .turn(positive: true))
+    }
+
     func testVerticalGestureAlwaysPassesThrough() {
         XCTAssertEqual(
             recognizer.feed(deltaX: 4, deltaY: 10, precise: true,

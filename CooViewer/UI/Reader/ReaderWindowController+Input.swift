@@ -637,7 +637,8 @@ extension ReaderWindowController {
 
     private func wheelTurnPage(deltaY: CGFloat) {
         let sensitivity = settings.wheelSensitivity
-        guard sensitivity > 0, abs(deltaY) >= sensitivity else { return }
+        guard SettingsStore.wheelPageTurnsEnabled(sensitivity: sensitivity),
+              abs(deltaY) >= sensitivity else { return }
         if deltaY < 0 {
             perform(.nextPage, value: nil, leftHalf: nil)
         } else {
