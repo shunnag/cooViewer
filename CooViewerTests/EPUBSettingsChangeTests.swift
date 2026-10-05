@@ -20,6 +20,21 @@ final class EPUBSettingsChangeTests: XCTestCase {
             previous: nil, current: fingerprint()))
     }
 
+    func testTogglingWheelPageTurnsCountsAsChanged() {
+        XCTAssertTrue(ReaderWindowController.epubSettingsActuallyChanged(
+            previous: fingerprint(wheelTurnsPages: true),
+            current: fingerprint(wheelTurnsPages: false)))
+        XCTAssertTrue(ReaderWindowController.epubSettingsActuallyChanged(
+            previous: fingerprint(wheelTurnsPages: false),
+            current: fingerprint(wheelTurnsPages: true)))
+    }
+
+    func testTogglingWheelPageTurnsDoesNotRebuildEPUBThumbnails() {
+        XCTAssertFalse(ReaderWindowController.epubThumbnailSettingsActuallyChanged(
+            previous: fingerprint(wheelTurnsPages: true),
+            current: fingerprint(wheelTurnsPages: false)))
+    }
+
     func testInteractionOnlyChangeDoesNotRebuildEPUBThumbnails() {
         XCTAssertFalse(ReaderWindowController.epubThumbnailSettingsActuallyChanged(
             previous: fingerprint(),
@@ -39,7 +54,8 @@ final class EPUBSettingsChangeTests: XCTestCase {
     private func fingerprint(
         pageTurnAnimation: Int = 0,
         theme: Int = 0,
-        lineHeightScale: Double = 0
+        lineHeightScale: Double = 0,
+        wheelTurnsPages: Bool = true
     ) -> EPUBSettingsFingerprint {
         EPUBSettingsFingerprint(
             pageTurnAnimation: pageTurnAnimation,
@@ -58,6 +74,7 @@ final class EPUBSettingsChangeTests: XCTestCase {
             forceFont: false,
             hidesRuby: false,
             showsPrintPage: false,
+            wheelTurnsPages: wheelTurnsPages,
             horizontalWheelTurnsPages: true,
             flipSwipeDirection: true)
     }

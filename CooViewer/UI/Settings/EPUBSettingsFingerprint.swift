@@ -21,6 +21,8 @@ struct EPUBSettingsFingerprint: Equatable {
     let forceFont: Bool
     let hidesRuby: Bool
     let showsPrintPage: Bool
+    /// 縦ホイールめくりの無効化切替も表示中の EPUB へ反映する(仕様書 §6.1)。
+    let wheelTurnsPages: Bool
     let horizontalWheelTurnsPages: Bool
     let flipSwipeDirection: Bool
 }

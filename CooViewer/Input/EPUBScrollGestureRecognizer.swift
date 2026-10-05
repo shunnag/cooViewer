@@ -22,6 +22,8 @@ struct EPUBScrollGestureRecognizer: Sendable, Equatable {
     mutating func feed(deltaX: CGFloat, deltaY: CGFloat, precise: Bool,
                        timestamp: TimeInterval,
                        interceptHorizontalIfNew: Bool) -> Decision {
+        // mayBegin のゼロ移動で軸を確定したり休止時間を延ばしたりしない。
+        guard deltaX != 0 || deltaY != 0 else { return .passThrough }
         if timestamp - lastTime > 0.25 {
             horizontal = abs(deltaX) > abs(deltaY)
             intercept = interceptHorizontalIfNew

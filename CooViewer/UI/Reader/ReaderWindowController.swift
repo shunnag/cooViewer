@@ -482,6 +482,7 @@ final class ReaderWindowController: NSWindowController {
             forceFont: settings.epubForceFont,
             hidesRuby: settings.epubHidesRuby,
             showsPrintPage: settings.epubShowsPrintPage,
+            wheelTurnsPages: settings.wheelPageTurnsEnabled,
             horizontalWheelTurnsPages: settings.swipeToTurnPage,
             flipSwipeDirection: settings.flipSwipeDirection)
     }
