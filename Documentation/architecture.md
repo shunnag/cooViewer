@@ -357,6 +357,13 @@ Dock から `showWindow` で再表示する経路では同じ読書内容へ戻�
 | サムネイル | `ThumbnailCache`: メモリ LRU(400 枚)+ディスク(`Caches/jp.coo.cooViewer/Thumbnails-v2/<bookKey>/<id>.heic`)。v2: PNG → **HEIC**(ハードウェアエンコード、約 1/5 サイズ)。旧 Thumbnails/ は起動時に削除して作り直し。bookKey は本のパス+更新日時+サイズ由来で、本の更新でキーごと無効化 | ディスクは 30 日でトリム |
 | 本の状態ストア v2 | `BookHistoryStore`: **1 冊 = 1 JSON**(パスの SHA-256 名)+ recents.json を Application Support に保存。パスから O(1) 参照・移動した本はミス時のみ URL ブックマークで再配置。旧形式(BookSettings/RecentItems/LastPages)は初回起動時に一括インポート変換(しおり 1 始まり文字列 → 0 始まり Int、保存ページは旧探索順を Recents 優先で再現)し、旧キーは 1.x 用に凍結保持。一覧外の本の復元可否は「閉じた時点」の AlwaysRememberLastPage を状態に固定保存(旧 LastPages の write-time 意味論)。消えた本は一覧から飛ばし(削除はしない)、移動した本はミス時のみ URL ブックマーク(マウント・UI 抑止)で再配置して一覧も付け替える | 旧形式の「表示名キー衝突解決+ブックマーク blob 逐次解決+配列全体の defaults 書き直し」を廃止 |
 
+電力方針は KaitoKit とアプリで低電力モードだけに揃え、`ArchiveReader` は
+`.reduceInLowPowerMode`、主書庫は自動並列数・256 MiB、展開係は
+`min(auto, max(2, auto / poolSize))`・128 MiB として最大約 1 GiB/冊に抑える。
+低電力時は自動の先読み並列度・深さと展開係数を半減し、ML 事前リサンプルは
+次の見開き(最大 4 ページ、バイト予算も 4/64)までに絞るが、高度設定の明示値を優先する。
+電力通知では先読みを再計画し、表示中ページ・EPUB の WebKit QoS・開いている reader の並列数は変えず、新しい reader の open から電力状態を反映する。
+
 後始末: スプールは ArchiveSource 解放時に削除し、起動時に**生存していない PID の
 残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策)。サムネイルの旧キー
 フォルダも起動時トリムで回収する。

@@ -3,7 +3,7 @@ import Foundation
 /// 本の置き場所(ボリューム)の速度特性と、そこから導くキャッシュ/先読みの
 /// 方針(設計書「キャッシュ・先読み設計」の自動適応)。
 /// 分類は MediaSpeedProbe が行い、本クラスは純粋な「方針表」に徹する。
-/// unknown は従来の固定動作と完全に同じ値を返す(判定不能時の回帰防止)。
+/// unknown は通常電力時に従来の固定動作と同じ値を返す(設計書 §5)。
 struct MediaProfile: Sendable, Equatable {
     enum MediaClass: String, Sendable {
         /// 内蔵 SSD・Thunderbolt/USB の SSD 等(実測 ≥ fastThreshold も含む)
@@ -23,13 +23,20 @@ struct MediaProfile: Sendable, Equatable {
     /// 「明示は自動に勝つ」の整合規則(設計書 キャッシュ節)
     var spoolOverride: Bool?
 
+    /// nil は現在の電力状態、テストは明示値で実行機から分離する(設計書 §5)。
+    var lowPowerMode: Bool?
+    var isLowPowerModeEnabled: Bool {
+        lowPowerMode ?? PowerStateMonitor.shared.isLowPowerModeEnabled
+    }
+
     static let unknown = MediaProfile(mediaClass: .unknown)
 
     init(mediaClass: MediaClass, measuredMBPerSec: Double? = nil,
-         spoolOverride: Bool? = nil) {
+         spoolOverride: Bool? = nil, lowPowerMode: Bool? = nil) {
         self.mediaClass = mediaClass
         self.measuredMBPerSec = measuredMBPerSec
         self.spoolOverride = spoolOverride
+        self.lowPowerMode = lowPowerMode
     }
 
     // MARK: - ベンチマークのしきい値
@@ -75,14 +82,20 @@ struct MediaProfile: Sendable, Equatable {
     /// 2 コア残し、下限は従来値の 6・上限 12(同時デコードのメモリ膨張を抑える)。
     /// M1(8コア)は 6 のままで回帰なし、Pro/Max ほど広がる。
     static var fastLocalConcurrency: Int {
-        min(max(6, ProcessInfo.processInfo.activeProcessorCount - 2), 12)
+        fastLocalConcurrency(lowPowerMode: PowerStateMonitor.shared.isLowPowerModeEnabled)
+    }
+
+    static func fastLocalConcurrency(lowPowerMode: Bool,
+                                     processorCount: Int = ProcessInfo.processInfo.activeProcessorCount) -> Int {
+        let normal = min(max(6, processorCount - 2), 12)
+        return lowPowerMode ? max(2, normal / 2) : normal
     }
 
     /// フォルダの本の同時読み取り上限(サムネイルのセル読みも含む全読者)。
     /// HDD ではシーク嵐を防ぎ、SSD では並列デコードを活かす
     var sourceReadConcurrency: Int {
         switch mediaClass {
-        case .fastLocal: Self.fastLocalConcurrency
+        case .fastLocal: Self.fastLocalConcurrency(lowPowerMode: isLowPowerModeEnabled)
         case .slowLocal: 2
         case .network: 3
         case .unknown: 64  // 実質無制限(従来動作)
@@ -92,38 +105,47 @@ struct MediaProfile: Sendable, Equatable {
     /// Book 先読みの並列幅(並列ロード可能なソースのみ)。
     /// fastLocal は読み取りゲート(6)と揃え、多コアの並列デコードを活かす
     var bookPrefetchConcurrency: Int {
-        switch mediaClass {
-        case .fastLocal: Self.fastLocalConcurrency
+        let normal = switch mediaClass {
+        case .fastLocal: Self.fastLocalConcurrency(lowPowerMode: false)
         case .unknown: 4  // 従来の固定値
         case .slowLocal: 1
         case .network: 2
         }
+        return isLowPowerModeEnabled ? max(mediaClass == .fastLocal ? 2 : 1, normal / 2) : normal
     }
 
     /// サムネイル一覧の先読み並列度
     var thumbnailPrefetchConcurrency: Int {
-        switch mediaClass {
-        case .fastLocal: Self.fastLocalConcurrency
+        let normal = switch mediaClass {
+        case .fastLocal: Self.fastLocalConcurrency(lowPowerMode: false)
         case .slowLocal, .network: 2
         case .unknown: 3  // 従来の固定値
         }
+        return isLowPowerModeEnabled ? max(mediaClass == .fastLocal ? 2 : 1, normal / 2) : normal
     }
 
     /// 先読み深さの既定値(高度設定 OFF のときだけ使う。遅い媒体ほど
     /// レイテンシ隠蔽のため深くする)
     var defaultPrefetchAhead: Int {
-        switch mediaClass {
+        let normal = switch mediaClass {
         case .fastLocal, .unknown: ReadingResourceDefaults.prefetchAhead
         case .slowLocal: 16
         case .network: 20
         }
+        return isLowPowerModeEnabled ? max(2, normal / 2) : normal
     }
 
     var defaultPrefetchBehind: Int {
-        switch mediaClass {
+        let normal = switch mediaClass {
         case .fastLocal, .unknown: ReadingResourceDefaults.prefetchBehind
         case .slowLocal, .network: 4
         }
+        return isLowPowerModeEnabled ? normal / 2 : normal
+    }
+
+    /// 高度設定の明示値は電力による自動調整に勝つ(設計書 §5)。
+    func prefetchDepth(explicitAhead: Int?, explicitBehind: Int?) -> (ahead: Int, behind: Int) {
+        (explicitAhead ?? defaultPrefetchAhead, explicitBehind ?? defaultPrefetchBehind)
     }
 
     // MARK: - 分類(純粋関数。プローブの入力から決める)
