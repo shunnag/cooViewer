@@ -204,8 +204,8 @@ struct ArchiveAudit: Sendable {
                 ? try Data(contentsOf: url, options: .mappedIfSafe) : nil
             try withExtendedLifetime(sourceData) {
                 guard let engine = try ArchiveAuditException.perform({
-                    if let sourceData { return try self.engineFactory.openData(kind, sourceData) }
-                    return try self.engineFactory.openFile(kind, url.path)
+                    if let sourceData { return try self.engineFactory.openData(kind, sourceData, .primary) }
+                    return try self.engineFactory.openFile(kind, url.path, .primary)
                 }) else {
                     throw ArchiveAuditException.Failure(message: "エンジンが nil を返しました")
                 }

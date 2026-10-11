@@ -106,6 +106,7 @@ final class ReaderWindowController: NSWindowController {
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
     private var settingsObserver: (any NSObjectProtocol)?
+    private var powerStateObserver: (any NSObjectProtocol)?
     var slideshowTimer: Timer?
     /// 2 本指スワイプ(ページ間スワイプ)の追跡状態(+Input.swift)
     var swipeTrackingActive = false
@@ -332,6 +333,26 @@ final class ReaderWindowController: NSWindowController {
                     self.applySettings()
                 }
             }
+        }
+        _ = PowerStateMonitor.shared
+        powerStateObserver = NotificationCenter.default.addObserver(
+            forName: PowerStateMonitor.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.replanForPowerState() }
+        }
+    }
+
+    /// 電力変更は先読みだけを再計画し、表示中ページと既存 reader は保つ(設計書 §5)。
+    private func replanForPowerState() {
+        guard let book else { return }
+        applyAdvancedSettings(to: book)
+        book.reschedulePrefetch()
+        preresampleAdjacentSpread()
+        thumbnailOverlayModel.applyMediaProfile(book.mediaProfile)
+        Task { [weak self] in
+            await book.source.applyMediaProfile(book.mediaProfile)
+            guard let self, self.book === book else { return }
+            book.reschedulePrefetch()
         }
     }
 
@@ -707,13 +728,11 @@ final class ReaderWindowController: NSWindowController {
     /// refreshDisplay で updatePrefetchDepth がメモリ予算連動へ引き上げる。
     /// ON なら明示値を尊重する
     private func applyAdvancedSettings(to book: Book) {
-        if settings.advancedSettingsEnabled {
-            book.prefetchAhead = settings.prefetchAheadCount
-            book.prefetchBehind = settings.prefetchBehindCount
-        } else {
-            book.prefetchAhead = book.mediaProfile.defaultPrefetchAhead
-            book.prefetchBehind = book.mediaProfile.defaultPrefetchBehind
-        }
+        let depth = book.mediaProfile.prefetchDepth(
+            explicitAhead: settings.advancedSettingsEnabled ? settings.prefetchAheadCount : nil,
+            explicitBehind: settings.advancedSettingsEnabled ? settings.prefetchBehindCount : nil)
+        book.prefetchAhead = depth.ahead
+        book.prefetchBehind = depth.behind
         // 準備中の本へ設定を反映しても、現在表示中の別の本は再描画しない。
         // 採用後の refreshDisplay が新しい本のキャップを評価する。
         if book === self.book { refreshDisplayIfCapRaised() }
@@ -740,13 +759,17 @@ final class ReaderWindowController: NSWindowController {
            let firstTarget = targets.first {
             resamplePages = PreresamplePolicy.pageBudget(
                 bytesPerPage: Int(firstTarget.width) * Int(firstTarget.height) * 4,
-                physicalMemory: ProcessInfo.processInfo.physicalMemory)
+                physicalMemory: ProcessInfo.processInfo.physicalMemory,
+                lowPowerMode: book.mediaProfile.isLowPowerModeEnabled)
         }
+        var normalProfile = book.mediaProfile
+        normalProfile.lowPowerMode = false
         book.prefetchAhead = PreresamplePolicy.decodeAhead(
             resamplePages: resamplePages,
             decodedPageBytes: decodedBytes,
             pageCacheByteLimit: settings.pageCacheByteLimit,
-            mediaFloor: book.mediaProfile.defaultPrefetchAhead)
+            mediaFloor: normalProfile.defaultPrefetchAhead,
+            lowPowerMode: book.mediaProfile.isLowPowerModeEnabled)
         book.prefetchBehind = PreresamplePolicy.decodeBehind(
             ahead: book.prefetchAhead)
     }
@@ -1979,20 +2002,23 @@ final class ReaderWindowController: NSWindowController {
             }
             guard !Task.isCancelled, generation == self.displayGeneration,
                   run == self.preresampleRun, book === self.book else { return }
-            let spreads = await book.predictedAdjacentSpreads(
-                forward: forward, maxPages: PreresamplePolicy.maxPages)
+            let lowPowerMode = book.mediaProfile.isLowPowerModeEnabled
+            let maxPages = PreresamplePolicy.pageLimit(lowPowerMode: lowPowerMode)
+            let predicted = await book.predictedAdjacentSpreads(forward: forward, maxPages: maxPages)
+            // 低電力時は次の見開きだけを処理する(設計書 §5)。
+            let spreads = PreresamplePolicy.spreadsToProcess(predicted, lowPowerMode: lowPowerMode)
             guard !spreads.isEmpty else { return }
             // 先読み処理中の薄い進行表示(タスク終了時に必ず対で消す)
             self.setPrefetchIndicator(true)
             defer { self.setPrefetchIndicator(false) }
             let useMetalFX = self.settings.interpolation == .high
             // ページ数の予算は最初のスプレッドの表示サイズが判明した時点で確定する
-            var pageLimit = PreresamplePolicy.maxPages
+            var pageLimit = maxPages
             var limitComputed = false
             var resampledPages = 0
             // 計画枚数(残数表示用)。予算確定前は maxPages 内での見込み
             let plannedPages = min(spreads.reduce(0) { $0 + $1.count },
-                                   PreresamplePolicy.maxPages)
+                                   maxPages)
             self.notePrefetchPlan(planned: plannedPages)
             for indices in spreads {
                 var images: [CGImage] = []
@@ -2015,7 +2041,8 @@ final class ReaderWindowController: NSWindowController {
                     let bytesPerPage = Int(first.width) * Int(first.height) * 4
                     pageLimit = PreresamplePolicy.pageBudget(
                         bytesPerPage: bytesPerPage,
-                        physicalMemory: ProcessInfo.processInfo.physicalMemory)
+                        physicalMemory: ProcessInfo.processInfo.physicalMemory,
+                        lowPowerMode: lowPowerMode)
                     limitComputed = true
                     // 予算確定で計画枚数を精緻化(残数表示に反映)
                     self.notePrefetchPlan(
