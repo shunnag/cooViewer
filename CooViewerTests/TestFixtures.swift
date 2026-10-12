@@ -49,6 +49,15 @@ enum TestFixtures {
         return data as Data
     }
 
+    /// 実マウントテーブルに依存しない、ルートのキューだけのプローブキュー群
+    /// (既定実装 `FileManagerProbe` を実フォルダで使うテスト用)
+    static func rootOnlyProbeQueues(width: Int = 4) -> VolumeProbeQueues {
+        VolumeProbeQueues(
+            label: "test.cooViewer.root-only", width: width,
+            mountTable: MountTableCache(read: { MountTable(mountPoints: []) },
+                                        refreshInterval: .seconds(60)))
+    }
+
     /// 一時ディレクトリを作る(テスト終了時に呼び出し側で削除)。
     static func makeTempDir(function: StaticString = #function) throws -> URL {
         let url = FileManager.default.temporaryDirectory

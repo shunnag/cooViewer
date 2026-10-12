@@ -31,6 +31,9 @@ actor EPUBStagingArea {
         var availableCapacity: @Sendable (URL) -> Int64?
         /// 元 → ステージング先のストリーミングコピー(全体をメモリへ読まない)
         var copy: @Sendable (URL, URL) throws -> Void
+        /// コピーのキューを元ファイルのボリュームで分けるためのマウントテーブル
+        /// (テストは実マウントに依存しない偽物を注入する)
+        var mountTable: MountTableCache = .live
 
         /// ディレクトリ名は書庫スプールと同じ <pid>-<uuid> 規則。起動時掃除が
         /// 生存しない pid の残骸として回収する(設計書 §5 後始末)
@@ -62,10 +65,11 @@ actor EPUBStagingArea {
     /// コピー後もステージング先に残す空き(他のキャッシュと OS の作業領域)
     static let capacityHeadroom: Int64 = 256 << 20
 
-    /// コピーは秒単位で塞がるため、ms 単位の stat を通す FileManagerProbe.queue
-    /// (幅 4)とは別のキューで走らせる。NAS からの同時コピーは 2 本で十分
-    private static let copyQueue = BlockingProbeQueue(
-        label: "jp.coo.cooViewer.EPUBStaging", width: 2)
+    /// コピーは秒単位で塞がるため、ms 単位の stat を通す FileManagerProbe のキュー
+    /// (幅 4)とは別のキューで走らせる。元ファイルのボリュームごとに分け、応答しない
+    /// NAS のコピー 2 本が別ボリュームのステージングを止めないようにする
+    /// (設計書 §7.3)。同じ NAS からの同時コピーは 2 本で十分
+    nonisolated private let copyQueues: VolumeProbeQueues
 
     nonisolated private let environment: Environment
     private var copies: [Key: WeakCopy] = [:]
@@ -73,6 +77,8 @@ actor EPUBStagingArea {
 
     init(environment: Environment) {
         self.environment = environment
+        copyQueues = VolumeProbeQueues(label: "jp.coo.cooViewer.EPUBStaging", width: 2,
+                                       mountTable: environment.mountTable)
     }
 
     /// 終了時にこのプロセスのステージングディレクトリを丸ごと消す(同期)。
@@ -100,10 +106,17 @@ actor EPUBStagingArea {
         let environment = self.environment
         // シンボリックリンクは先に実体へ解決する。リンク自体をコピーすると
         // ステージング先が切断される媒体を参照し続け、chmod は元ファイルに届く。
-        // ローカルのリンクが NAS の実体を指す場合も実体の方で安全性を判定する
-        let (path, isSafe) = await FileManagerProbe.queue.run {
-            let path = CanonicalPath.normalize(url.path)
-            return (path, environment.isSafeForMemoryMapping(URL(fileURLWithPath: path)))
+        // ローカルのリンクが NAS の実体を指す場合も実体の方で安全性を判定する。
+        // 2 段に分ける: 解決は入力パスのボリュームのキューで、安全性判定(実体の
+        // statfs)は解決後の実体のボリュームのキューで。1 段で済ませると、死んだ NAS
+        // を指すローカルのリンクが SMB タイムアウトの間ルートのキューの枠を塞ぐ
+        let path = await FileManagerProbe.queue(for: url).run {
+            CanonicalPath.normalize(url.path)
+        }
+        // isDirectory を明示して URL 生成の stat を避ける(ここは協調スレッド上)
+        let source = URL(fileURLWithPath: path, isDirectory: false)
+        let isSafe = await FileManagerProbe.queue(for: source).run {
+            environment.isSafeForMemoryMapping(source)
         }
         if isSafe {
             return try EPUBPublication(url: url, readStrategy: .mappedIfSafe)
@@ -116,7 +129,7 @@ actor EPUBStagingArea {
                 // なるが、稀な失敗経路なので受け入れる
             }
         }
-        return try await Self.copyQueue.run {
+        return try await copyQueues.queue(forPath: path).run {
             try EPUBPublication(url: url, readStrategy: .alwaysCopy)
         }
     }
@@ -125,7 +138,8 @@ actor EPUBStagingArea {
     /// ステージング不可(呼び出し側が `.alwaysCopy` へ)。path はリンク解決済み
     /// の正規パス(actor 内では塞がる I/O をしない)
     func stagedCopy(forResolvedPath path: String) async -> StagedCopy? {
-        let source = URL(fileURLWithPath: path)
+        // isDirectory を明示して actor 内で stat しない(ディレクトリは直後の itemKind が弾く)
+        let source = URL(fileURLWithPath: path, isDirectory: false)
         // 展開済み EPUB ディレクトリは Washi がフォルダとして読むのでコピーしない
         let kind = await environment.probe.itemKind(at: source)
         guard kind.exists, !kind.isDirectory else { return nil }
@@ -135,8 +149,10 @@ actor EPUBStagingArea {
         if let live = copies[key]?.copy { return live }
         if let running = inFlight[key] { return await running.value }
         let environment = self.environment
+        let copyQueue = copyQueues.queue(for: source)
         let task = Task.detached(priority: .userInitiated) {
-            await Self.stage(source, identity: identity, environment: environment)
+            await Self.stage(source, identity: identity, environment: environment,
+                             copyQueue: copyQueue)
         }
         inFlight[key] = task
         let copy = await task.value
@@ -151,7 +167,8 @@ actor EPUBStagingArea {
     /// コピー本体。コピー前後で元ファイルの同一性が変わっていたら途中で
     /// 差し替えられた恐れがあるので捨てる(捨てたコピーは deinit が消す)
     private static func stage(_ source: URL, identity: BookFileIdentity,
-                              environment: Environment) async -> StagedCopy? {
+                              environment: Environment,
+                              copyQueue: BlockingProbeQueue) async -> StagedCopy? {
         guard let copy = try? await copyQueue.run({
             try blockingStage(source, identity: identity, environment: environment)
         }) else { return nil }
