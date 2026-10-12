@@ -79,7 +79,7 @@ final class EPUBStagingAreaTests: XCTestCase {
         let copy = copy ?? { try FileManager.default.copyItem(at: $0, to: $1) }
         return EPUBStagingArea(environment: .init(
             directory: stagingDirectory,
-            probe: FileManagerProbe(),
+            probe: FileManagerProbe(queues: TestFixtures.rootOnlyProbeQueues()),
             isSafeForMemoryMapping: { _ in isSafe },
             availableCapacity: { _ in availableCapacity },
             copy: { source, destination in
@@ -408,5 +408,71 @@ final class EPUBStagingAreaTests: XCTestCase {
                       "生きている cooViewer の分は残す")
         XCTAssertFalse(FileManager.default.fileExists(atPath: unrelated.path),
                        "pid で始まらない残骸も消える")
+    }
+
+    // MARK: - コピーキューのボリューム分離(設計書 §7.3)
+
+    /// どのパスも「存在する 3 バイトの通常ファイル」と答える偽物(実マウントに触れない)
+    private struct AnyFileProbe: FileSystemProbing {
+        func directoryItems(at directory: URL) async throws -> [DirectoryItem] { [] }
+        func fileExists(atPath path: String) async -> Bool { true }
+        func itemKind(at url: URL) async -> (exists: Bool, isDirectory: Bool) { (true, false) }
+        func identity(at url: URL) async -> BookFileIdentity { BookFileIdentity(modified: 1, size: 3) }
+    }
+
+    /// 応答しない NAS のコピーが幅(2)ぶん塞がっていても、別ボリュームのステージングは
+    /// すぐ終わり、同じ NAS への 3 本目だけが待つ
+    func testCopyQueueIsKeyedBySourceVolume() async throws {
+        let width = 2
+        let release = DispatchSemaphore(value: 0)
+        defer { for _ in 0..<(width + 1) { release.signal() } }
+        let entered = expectation(description: "死んだ NAS のコピーが幅ぶん塞がった")
+        entered.expectedFulfillmentCount = width
+        entered.assertForOverFulfill = false
+        let table = MountTable(mountPoints: ["/", "/Volumes/Dead", "/Volumes/Live"])
+        let area = EPUBStagingArea(environment: .init(
+            directory: stagingDirectory,
+            probe: AnyFileProbe(),
+            isSafeForMemoryMapping: { _ in false },
+            availableCapacity: { _ in .max },
+            copy: { source, destination in
+                if source.path.hasPrefix("/Volumes/Dead/") {
+                    entered.fulfill()
+                    release.wait()
+                }
+                try Data([1, 2, 3]).write(to: destination)
+            },
+            mountTable: MountTableCache(read: { table }, refreshInterval: .zero)))
+
+        let dead = (0..<width).map { index in
+            Task { await area.stagedCopy(forResolvedPath: "/Volumes/Dead/\(index).epub") }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+
+        let extraFinished = expectation(description: "同じ NAS への 3 本目が終わった")
+        extraFinished.isInverted = true
+        let extra = Task {
+            let copy = await area.stagedCopy(forResolvedPath: "/Volumes/Dead/extra.epub")
+            extraFinished.fulfill()
+            return copy
+        }
+        let liveFinished = expectation(description: "別ボリュームのステージングが終わった")
+        let live = Task {
+            let copy = await area.stagedCopy(forResolvedPath: "/Volumes/Live/book.epub")
+            liveFinished.fulfill()
+            return copy
+        }
+        await fulfillment(of: [liveFinished], timeout: 5)
+        await fulfillment(of: [extraFinished], timeout: 0.3)
+        let liveCopy = await live.value
+        XCTAssertEqual(liveCopy?.size, 3)
+
+        for _ in 0..<(width + 1) { release.signal() }
+        for task in dead {
+            let copy = await task.value
+            XCTAssertEqual(copy?.size, 3, "解放後は塞がっていたコピーも届く")
+        }
+        let extraCopy = await extra.value
+        XCTAssertEqual(extraCopy?.size, 3)
     }
 }
