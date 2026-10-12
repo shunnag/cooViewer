@@ -475,9 +475,9 @@ final class ArchiveSourceTests: XCTestCase {
         let encrypted = await source.isEncrypted()
         XCTAssertTrue(encrypted)
         let wrong = await source.checkAndSetPassword("wrong")
-        XCTAssertFalse(wrong)
+        XCTAssertEqual(wrong, .rejected)
         let right = await source.checkAndSetPassword("hunter2")
-        XCTAssertTrue(right)
+        XCTAssertEqual(right, .accepted)
         let entry = try await source.entries()[0]
         let image = try await source.image(for: entry, maxPixelSize: nil)
         XCTAssertEqual(image.width, 3)
@@ -499,7 +499,7 @@ final class ArchiveSourceTests: XCTestCase {
 
         let source = try ArchiveSource(url: zipURL)
         let accepted = await source.checkAndSetPassword("anything")
-        XCTAssertTrue(accepted)
+        XCTAssertEqual(accepted, .accepted)
         let entries = try await source.entries()
         XCTAssertTrue(entries.isEmpty, "本としては空(表示できる画像なし)")
     }

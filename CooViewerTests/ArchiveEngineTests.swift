@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import KaitoKit
 import os
 import XCTest
 @testable import cooViewer
@@ -139,6 +140,9 @@ final class ArchiveEngineTests: XCTestCase {
         for index: Int32 in [-1, 1, .max] {
             XCTAssertNil(engine.name(ofEntry: index))
             XCTAssertNil(engine.contents(ofEntry: index))
+            XCTAssertThrowsError(try engine.readContents(ofEntry: index)) {
+                XCTAssertEqual($0 as? KaitoError, .notFound("entry \(index)"))
+            }
             XCTAssertEqual(engine.uncompressedSize(ofEntry: index), .max)
             XCTAssertFalse(engine.entryHasSize(index))
             XCTAssertFalse(engine.entryIsDirectory(index))
@@ -170,8 +174,17 @@ final class ArchiveEngineTests: XCTestCase {
         XCTAssertTrue(engine.isEncrypted())
         XCTAssertTrue(engine.entryIsEncrypted(index))
         XCTAssertNil(engine.contents(ofEntry: index))
+        // 投げる経路は nil の理由を保つ(パスワード検証の分類に使う。cooViewer-3tfd)
+        XCTAssertThrowsError(try engine.readContents(ofEntry: index)) {
+            XCTAssertEqual($0 as? KaitoError, .passwordRequired)
+        }
+        engine.setPassword("wrong")
+        XCTAssertThrowsError(try engine.readContents(ofEntry: index)) {
+            XCTAssertEqual($0 as? KaitoError, .wrongPassword)
+        }
         engine.setPassword("archive-engine-test")
         XCTAssertEqual(engine.contents(ofEntry: index), payload)
+        XCTAssertEqual(try engine.readContents(ofEntry: index), payload)
     }
 
     func testNativeLazyHeaderDefaultAppliesOnlyToFutureOpens() throws {

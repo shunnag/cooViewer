@@ -30,8 +30,9 @@ protocol BookSource: Sendable {
     /// 含むか。超解像ディスクキャッシュを暗号化して残すかの判定に使う(CWE-312)。
     /// 既定はこのソース自身の暗号化状態。ネスト対応ソースは子の解除状況を OR する
     func containsProtectedContent() async -> Bool
-    /// パスワードを設定し、正しければ true(仕様書 §4.1.3)
-    func checkAndSetPassword(_ password: String) async -> Bool
+    /// パスワードを設定し、検証結果を返す(仕様書 §4.1.3)。読み取り失敗と誤パスワードを
+    /// 区別し、呼び出し側が試行回数と保存パスワードの扱いを変えられるようにする
+    func checkAndSetPassword(_ password: String) async -> PasswordCheck
 
     /// image(for:) を並列に呼んでよいか(actor 直列化が不要なソースのみ true)
     var supportsParallelPageLoads: Bool { get }
@@ -105,7 +106,7 @@ extension BookSource {
     var displayName: String { url.lastPathComponent }
     func isEncrypted() async -> Bool { false }
     func containsProtectedContent() async -> Bool { await isEncrypted() }
-    func checkAndSetPassword(_ password: String) async -> Bool { true }
+    func checkAndSetPassword(_ password: String) async -> PasswordCheck { .accepted }
     var supportsParallelPageLoads: Bool { false }
     func currentlySupportsParallelPageLoads() async -> Bool { supportsParallelPageLoads }
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {}

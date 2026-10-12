@@ -254,9 +254,9 @@ final class NestedArchiveSourceTests: XCTestCase {
         }
         let source = try ArchiveSource(url: zipURL)
         let wrongAccepted = await source.checkAndSetPassword("wrong")
-        XCTAssertFalse(wrongAccepted, "誤パスワードが混在書庫で受理された")
+        XCTAssertEqual(wrongAccepted, .rejected, "誤パスワードが混在書庫で受理された")
         let correctAccepted = await source.checkAndSetPassword("sesame")
-        XCTAssertTrue(correctAccepted)
+        XCTAssertEqual(correctAccepted, .accepted)
     }
 
     /// 暗号化書庫のスプールは平文で書かれず、読み出しは正しく復号されること
@@ -268,7 +268,7 @@ final class NestedArchiveSourceTests: XCTestCase {
         try data.write(to: zipURL)
         let source = try ArchiveSource(url: zipURL)
         let unlocked = await source.checkAndSetPassword("sesame")
-        XCTAssertTrue(unlocked)
+        XCTAssertEqual(unlocked, .accepted)
         // ネットワーク相当のプロファイルでスプールを強制
         await source.applyMediaProfile(MediaProfile(mediaClass: .network))
         await source.beginBackgroundPreparation(spoolSizeLimit: .max)
@@ -331,7 +331,7 @@ final class NestedArchiveSourceTests: XCTestCase {
         let encrypted = await source.isEncrypted()
         XCTAssertTrue(encrypted, "outer が暗号化として認識されること")
         let unlocked = await source.checkAndSetPassword("sesame")
-        XCTAssertTrue(unlocked)
+        XCTAssertEqual(unlocked, .accepted)
 
         // ネスト子のページがメモリ経由で正しく展開できること
         let entries = try await source.entries()
