@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Washi
 
 /// 安全にメモリマップできないボリューム(NAS・外付け・ディスクイメージ)上の
@@ -34,6 +35,8 @@ actor EPUBStagingArea {
         /// コピーのキューを元ファイルのボリュームで分けるためのマウントテーブル
         /// (テストは実マウントに依存しない偽物を注入する)
         var mountTable: MountTableCache = .live
+        /// ディスク使用の方針(テストは数 KB の本で予算の境界を踏めるよう小さな値を注入する)
+        var spacePolicy: SpacePolicy = .standard
 
         /// ディレクトリ名は書庫スプールと同じ <pid>-<uuid> 規則。起動時掃除が
         /// 生存しない pid の残骸として回収する(設計書 §5 後始末)
@@ -62,8 +65,94 @@ actor EPUBStagingArea {
         weak var copy: StagedCopy?
     }
 
-    /// コピー後もステージング先に残す空き(他のキャッシュと OS の作業領域)
-    static let capacityHeadroom: Int64 = 256 << 20
+    /// ステージング先ボリュームのディスク使用方針(純粋な判定。設計書 §5 EPUB のステージング)。
+    /// 二重の歯止めで、どちらかに掛かった本はコピーせず従来の `.alwaysCopy`(RAM)で開く:
+    /// 1. コピー 1 つごと: コピー後も `headroom` の空きを残す(他のキャッシュと OS の作業領域)。
+    /// 2. 生存中コピーの合計(進行中の予約を含む): `totalCap` と空き容量の `1/totalShare`
+    ///    の小さい方に収める。合本を開くと子の冊数ぶんのコピーが同時に生き、次巻の先読みが
+    ///    さらに 1 冊足すため、1 冊ごとの判定だけでは起動ボリュームの空きを数十 GB 削り得る。
+    ///
+    /// 数値の根拠: NAS 上の漫画は FXL EPUB 1 冊 50-500 MB、合本は 10-50 巻が典型。
+    /// - `totalCap` 8 GiB は 200 MB × 40 巻、500 MB × 16 巻を次巻込みで丸ごと収める上限で、
+    ///   超えた巻だけが `.alwaysCopy` に戻る(ステージング導入前と同じ振る舞い)。コピー 1 つは
+    ///   その容量ぶんの dirty な RAM を節約する(実測 75 MB × 4 冊で 1,065 MB → 約 500 MB)が、
+    ///   8 GiB を超えて同時に抱える合本は 16 GB 機の RAM でも元々扱えないため、上限を
+    ///   これ以上広げても節約は増えず、256/512 GB の内蔵ディスクを圧迫するだけになる。
+    /// - 空きの 1/10 は、残り 20 GB のディスクでは予算 2 GB、残り 5 GB では 512 MB と縮み、
+    ///   ステージングが低ディスク警告(数 GB)へ押し込む側に回らないようにする。
+    ///   割る対象はコピー直前に測った現在の空き(完了したコピーの分は既に減っている。
+    ///   進行中の分は台帳側で数える)。
+    /// - `headroom` 256 MiB は従来値のまま最後の防衛線として残す。
+    struct SpacePolicy: Sendable {
+        /// コピー後もステージング先に残す空き
+        var headroom: Int64 = 256 << 20
+        /// 生存中コピー合計の固定上限
+        var totalCap: Int64 = 8 << 30
+        /// 空き容量のうち合計に使ってよい割合の分母(10 = 1/10)
+        var totalShare: Int64 = 10
+
+        static let standard = SpacePolicy()
+
+        /// この空き容量のときの生存中コピー合計の予算
+        func totalBudget(availableCapacity: Int64) -> Int64 {
+            min(totalCap, availableCapacity / max(totalShare, 1))
+        }
+
+        /// 空き容量判定(純粋関数)。不明な空きと負の入力は安全側でコピーしない。
+        /// `liveBytes` は生存中コピーと進行中の予約の合計。差で比べて加算のオーバーフローを避ける
+        func hasRoom(forFileOfSize size: Int, liveBytes: Int64, availableCapacity: Int64?) -> Bool {
+            guard size >= 0, liveBytes >= 0, let availableCapacity,
+                  availableCapacity >= Int64(size) else { return false }
+            let size = Int64(size)
+            guard availableCapacity - size >= headroom else { return false }
+            let budget = totalBudget(availableCapacity: availableCapacity)
+            return size <= budget && liveBytes <= budget - size
+        }
+    }
+
+    /// 生存中コピーと進行中の予約の合計バイト数の台帳。判定と加算を 1 つのロックの中で
+    /// 行うので、同時に始まった 2 つのコピーが両方とも通って予算を超えることはない。
+    /// 予約は `Reservation` の寿命そのもので、コピーの失敗・破棄・最後の利用者の解放の
+    /// どの経路でも票が消えた時点で差し引かれる(`StagedCopy.deinit` は actor 外で走るため、
+    /// actor の状態ではなくこのロックで数える)
+    final class Ledger: Sendable {
+        /// 予約 1 件。コピーが始まる前に取り、成功したら `StagedCopy` が引き継ぐ
+        final class Reservation: Sendable {
+            private let ledger: Ledger
+            private let bytes: Int64
+
+            fileprivate init(ledger: Ledger, bytes: Int64) {
+                self.ledger = ledger
+                self.bytes = bytes
+            }
+
+            deinit { ledger.release(bytes) }
+        }
+
+        let policy: SpacePolicy
+        private let bytes = OSAllocatedUnfairLock<Int64>(initialState: 0)
+
+        init(policy: SpacePolicy) {
+            self.policy = policy
+        }
+
+        /// 生存中コピーと進行中の予約の合計
+        var reservedBytes: Int64 { bytes.withLock { $0 } }
+
+        /// 方針を満たすときだけ予約する。nil は予算外(呼び出し側が `.alwaysCopy` へ)
+        func reserve(forFileOfSize size: Int, availableCapacity: Int64?) -> Reservation? {
+            bytes.withLock { live in
+                guard policy.hasRoom(forFileOfSize: size, liveBytes: live,
+                                     availableCapacity: availableCapacity) else { return nil }
+                live += Int64(size)
+                return Reservation(ledger: self, bytes: Int64(size))
+            }
+        }
+
+        private func release(_ size: Int64) {
+            bytes.withLock { $0 -= size }
+        }
+    }
 
     /// コピーは秒単位で塞がるため、ms 単位の stat を通す FileManagerProbe のキュー
     /// (幅 4)とは別のキューで走らせる。元ファイルのボリュームごとに分け、応答しない
@@ -72,11 +161,15 @@ actor EPUBStagingArea {
     nonisolated private let copyQueues: VolumeProbeQueues
 
     nonisolated private let environment: Environment
+    /// 生存中コピー合計の台帳(コピーと共有し、actor 外の deinit からも差し引く)。
+    /// internal なのはテストが `reservedBytes` を読むため
+    nonisolated let ledger: Ledger
     private var copies: [Key: WeakCopy] = [:]
     private var inFlight: [Key: Task<StagedCopy?, Never>] = [:]
 
     init(environment: Environment) {
         self.environment = environment
+        ledger = Ledger(policy: environment.spacePolicy)
         copyQueues = VolumeProbeQueues(label: "jp.coo.cooViewer.EPUBStaging", width: 2,
                                        mountTable: environment.mountTable)
     }
@@ -91,16 +184,10 @@ actor EPUBStagingArea {
         try? FileManager.default.removeItem(at: environment.directory)
     }
 
-    /// 空き容量判定(純粋関数)。不明なら安全側でコピーしない
-    static func hasRoom(forFileOfSize size: Int, availableCapacity: Int64?) -> Bool {
-        guard let availableCapacity else { return false }
-        return availableCapacity - Int64(size) >= capacityHeadroom
-    }
-
     /// ファイルから EPUB を開く入口。安全なローカルボリュームは従来どおり直接
     /// マップし、それ以外はステージングしたコピーをマップする。ステージング
-    /// できないとき(空き不足・コピー失敗・コピー中の差し替え・展開済み
-    /// ディレクトリ)とコピーの解析に失敗したときは従来の `.alwaysCopy` に戻る
+    /// できないとき(空き不足・合計予算の超過・コピー失敗・コピー中の差し替え・
+    /// 展開済みディレクトリ)とコピーの解析に失敗したときは従来の `.alwaysCopy` に戻る
     /// (部分コピーを開くことはない)
     nonisolated func openPublication(at url: URL) async throws -> EPUBPublication {
         let environment = self.environment
@@ -149,10 +236,11 @@ actor EPUBStagingArea {
         if let live = copies[key]?.copy { return live }
         if let running = inFlight[key] { return await running.value }
         let environment = self.environment
+        let ledger = self.ledger
         let copyQueue = copyQueues.queue(for: source)
         let task = Task.detached(priority: .userInitiated) {
             await Self.stage(source, identity: identity, environment: environment,
-                             copyQueue: copyQueue)
+                             ledger: ledger, copyQueue: copyQueue)
         }
         inFlight[key] = task
         let copy = await task.value
@@ -167,24 +255,29 @@ actor EPUBStagingArea {
     /// コピー本体。コピー前後で元ファイルの同一性が変わっていたら途中で
     /// 差し替えられた恐れがあるので捨てる(捨てたコピーは deinit が消す)
     private static func stage(_ source: URL, identity: BookFileIdentity,
-                              environment: Environment,
+                              environment: Environment, ledger: Ledger,
                               copyQueue: BlockingProbeQueue) async -> StagedCopy? {
         guard let copy = try? await copyQueue.run({
-            try blockingStage(source, identity: identity, environment: environment)
+            try blockingStage(source, identity: identity, environment: environment,
+                              ledger: ledger)
         }) else { return nil }
         guard await environment.probe.identity(at: source) == identity,
               copy.size == identity.size else { return nil }
         return copy
     }
 
+    /// 予約はコピーを始める前に取り、成功したコピーだけが引き継ぐ。失敗・破棄で
+    /// この関数を抜けると票が消えて台帳から差し引かれる
     private static func blockingStage(_ source: URL, identity: BookFileIdentity,
-                                      environment: Environment) throws -> StagedCopy? {
+                                      environment: Environment,
+                                      ledger: Ledger) throws -> StagedCopy? {
         let directory = environment.directory
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
-        guard hasRoom(forFileOfSize: identity.size,
-                      availableCapacity: environment.availableCapacity(directory)) else {
+        guard let reservation = ledger.reserve(
+            forFileOfSize: identity.size,
+            availableCapacity: environment.availableCapacity(directory)) else {
             return nil
         }
         let destination = directory.appendingPathComponent(UUID().uuidString)
@@ -202,7 +295,8 @@ actor EPUBStagingArea {
             // 置き場所は 0700 なので権限変更の失敗で良いコピーを捨てない(nested temp と同じ)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                    ofItemAtPath: destination.path)
-            return StagedCopy(url: destination, size: values.fileSize ?? 0)
+            return StagedCopy(url: destination, size: values.fileSize ?? 0,
+                              reservation: reservation)
         } catch {
             try? FileManager.default.removeItem(at: destination)
             throw error
@@ -216,18 +310,23 @@ actor EPUBStagingArea {
 final class StagedCopy: Sendable {
     let url: URL
     let size: Int
+    /// 台帳の予約。ファイルを消した後に手放し、ディスクが実際に空いてから予算を返す
+    private let reservation: EPUBStagingArea.Ledger.Reservation
 
-    init(url: URL, size: Int) {
+    init(url: URL, size: Int, reservation: EPUBStagingArea.Ledger.Reservation) {
         self.url = url
         self.size = size
+        self.reservation = reservation
     }
 
     deinit {
         // 最後の Data はメインアクター上で手放されることが多いので、unlink は
         // ArchiveSource.deinit と同じく detached の utility タスクへ逃がす
         let url = self.url
+        let reservation = self.reservation
         Task.detached(priority: .utility) {
             try? FileManager.default.removeItem(at: url)
+            withExtendedLifetime(reservation) {}
         }
     }
 
