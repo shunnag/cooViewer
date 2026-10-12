@@ -1289,11 +1289,13 @@ final class ReaderWindowController: NSWindowController {
                !(source is NestedFolderSource),
                await !source.hasSkippedLockedContent() {
                 // 候補選定は再帰走査を含むためメインスレッドから外す
-                // (NAS/HDD でのビーチボール防止。走査があるので非同期)
+                // (NAS/HDD でのビーチボール防止)。死んだマウントでは走査が
+                // SMB タイムアウトまで戻らないので、detached task(協調スレッドを
+                // 奪う)ではなく、そのボリュームのプローブキューで走らせる(設計書 §7.3)
                 let scanURL = bookURL
-                let inner = await Task.detached(priority: .userInitiated) {
+                let inner = await FileManagerProbe.queue(for: scanURL).run {
                     Self.innerBook(in: scanURL)
-                }.value
+                }
                 guard generation == openGeneration else { return }
                 if let inner {
                     // HUD は畳まない: 再帰側の beginOpeningProgress が
@@ -1946,14 +1948,16 @@ final class ReaderWindowController: NSWindowController {
                 ?? String(localized: "This book contains no displayable images.")
             showBookStatusMessage(reason)
             updatePageIndicators(spread: spread)
-            // サブフォルダに画像があるならヒントを添える(走査があるので非同期)
+            // サブフォルダに画像があるならヒントを添える(走査があるので非同期。
+            // 走査はそのボリュームのプローブキューで: 死んだマウントで協調スレッドを
+            // 塞がない 設計書 §7.3)
             if lockedBookReason == nil, !settings.readSubFolder,
                book.source is FolderSource {
                 let url = book.source.url
                 Task { [weak self, weak book] in
-                    let found = await Task.detached {
+                    let found = await FileManagerProbe.queue(for: url).run {
                         FolderSource.subfoldersContainImages(at: url)
-                    }.value
+                    }
                     guard found, let self, let book, book === self.book,
                           book.pageCount == 0 else { return }
                     self.showBookStatusMessage(reason + "\n" + String(localized:
