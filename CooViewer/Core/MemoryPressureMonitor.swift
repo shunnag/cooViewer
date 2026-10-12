@@ -1,3 +1,4 @@
+import Darwin
 import Dispatch
 import Foundation
 import os
@@ -20,6 +21,30 @@ enum MemoryPressureLevel: Sendable, CaseIterable {
         } else {
             return nil
         }
+    }
+
+    /// sysctl `kern.memorystatus_vm_pressure_level` の生値を段階へ写す(設計書 §5):
+    /// 1 normal / 2 warning / 4 critical。xnu のソースでは 3 = urgent(公開 SDK には定義が
+    /// 無く、実際に報告される値でもない)。warning と critical の間の値で上限を緩めないよう
+    /// warning 扱いにする。0(未初期化)と未知の値は normal。
+    init(systemPressureValue value: Int32) {
+        switch value {
+        case 2, 3: self = .warning
+        case 4: self = .critical
+        default: self = .normal
+        }
+    }
+
+    /// システム全体の圧迫段階を sysctl で読む(権限不要・非ブロッキング)。sysctl が失敗した
+    /// か想定外の大きさを返したときは nil(観測なし)。
+    static func readSystemWide() -> MemoryPressureLevel? {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("kern.memorystatus_vm_pressure_level", &value, &size, nil, 0) == 0,
+              size == MemoryLayout<Int32>.size else {
+            return nil
+        }
+        return MemoryPressureLevel(systemPressureValue: value)
     }
 }
 
@@ -104,20 +129,67 @@ final class MemoryPressureObservation: @unchecked Sendable {
     }
 }
 
-/// アプリに一つのメモリ圧迫源。圧迫イベントは utility キューで届くため、現在値の
-/// 更新と読み取りをロックし、変化したときだけアプリ通知を一本送る(設計書 §5)。
-/// 段階は OS が .normal を報告するまで持続する(自前のタイムアウトは持たない)。
+/// 一定間隔で繰り返し実行し、取り消せる予約の注入点(DelayedScheduler の繰り返し版)。
+/// 製品は utility キューの DispatchSourceTimer、テストは記録した tick を手で発火させて
+/// 時計に依存しない。
+struct PeriodicScheduler: Sendable {
+    typealias Cancel = @Sendable () -> Void
+    let schedule: @Sendable (_ interval: Duration, _ leeway: Duration,
+                             _ tick: @escaping @Sendable () -> Void) -> Cancel
+
+    static let dispatchTimer = PeriodicScheduler { interval, leeway, tick in
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + interval.dispatchInterval,
+                       repeating: interval.dispatchInterval, leeway: leeway.dispatchInterval)
+        // MemoryPressureMonitor.init の圧迫源と同じ理由で @Sendable を明示する
+        timer.setEventHandler { @Sendable in tick() }
+        timer.activate()
+        return { timer.cancel() }
+    }
+}
+
+private extension Duration {
+    /// DispatchSourceTimer は DispatchTimeInterval を取る。ミリ秒精度で十分(秒単位の間隔)
+    var dispatchInterval: DispatchTimeInterval { .milliseconds(Int(self / .milliseconds(1))) }
+}
+
+/// アプリに一つのメモリ圧迫源(設計書 §5)。観測源は二つ — システム全体の段階
+/// `kern.memorystatus_vm_pressure_level`(init で種を蒔き、utility キューのタイマーで
+/// 読み直す)と自プロセス宛ての DispatchSource 通知(即時の信号)— で、どちらも
+/// 「最新の観測が現在値」として同じ更新経路に流す。sysctl の normal は先行する通知由来の
+/// warning を打ち消す(システム全体の状態が真)。圧迫通知はプロセスを選んで遷移時にだけ
+/// 届くため、通知だけでは圧迫中の起動や他アプリ起因の圧迫を知れない(経緯は設計書 §5)。
+/// 更新と読み取りはロックし、変化したときだけアプリ通知を一本送る。段階は OS が normal を
+/// 報告するまで持続する(自前のタイムアウトは持たない)。
 final class MemoryPressureMonitor: MemoryPressureProviding, @unchecked Sendable {
     static let shared = MemoryPressureMonitor()
     static let didChangeNotification = Notification.Name("CooViewerMemoryPressureDidChange")
 
+    /// システム段階の読み直し間隔と許容遅延(設計書 §5)。圧迫は数十秒〜分単位で続くので
+    /// 5 秒で追従でき、許容遅延を間隔と同じにして起床を他のタイマーとまとめる(最悪 10 秒)。
+    /// 読み取りは Int32 一つへの sysctl で、停止条件は設けない(本を閉じてもキャッシュと
+    /// アクティビティ窓が段階に反応する)。
+    static let systemPollInterval: Duration = .seconds(5)
+    static let systemPollLeeway: Duration = .seconds(5)
+
     private let state: OSAllocatedUnfairLock<MemoryPressureLevel>
     private let center: NotificationCenter
+    private let readSystemLevel: @Sendable () -> MemoryPressureLevel?
     private let source: any DispatchSourceMemoryPressure
+    /// タイマーの取り消し。self を捕まえる予約は全プロパティの初期化後にしか立てられない
+    /// ため var(PowerStateMonitor.observers と同じ)
+    private var stopPolling: PeriodicScheduler.Cancel?
 
-    init(center: NotificationCenter = .default) {
+    /// `readSystemLevel` の nil は「読めなかった」(観測なし、現在値を保つ)。読めたが
+    /// 解釈できない値は MemoryPressureLevel(systemPressureValue:) が normal に写す。
+    init(center: NotificationCenter = .default,
+         readSystemLevel: @escaping @Sendable () -> MemoryPressureLevel? = MemoryPressureLevel.readSystemWide,
+         scheduler: PeriodicScheduler = .dispatchTimer) {
         self.center = center
-        state = OSAllocatedUnfairLock(initialState: .normal)
+        self.readSystemLevel = readSystemLevel
+        // 最初の消費者が読む前にシステム全体の段階で種を蒔く(起動時点で既に圧迫中なら
+        // 遷移通知は来ない)。初期値なので通知は送らない
+        state = OSAllocatedUnfairLock(initialState: readSystemLevel() ?? .normal)
         source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.normal, .warning, .critical], queue: .global(qos: .utility))
         // @Sendable でクロージャの隔離推論を止める。setEventHandler の引数は @Sendable では
@@ -131,10 +203,15 @@ final class MemoryPressureMonitor: MemoryPressureProviding, @unchecked Sendable 
             self.receive(self.source.data)
         }
         source.activate()
+        // weak で捕まえ、タイマー → 予約 → self → stopPolling → タイマーの循環を断つ
+        stopPolling = scheduler.schedule(Self.systemPollInterval, Self.systemPollLeeway) { [weak self] in
+            self?.pollSystemLevel()
+        }
     }
 
     deinit {
         source.cancel()
+        stopPolling?()
     }
 
     var memoryPressureLevel: MemoryPressureLevel { state.withLock { $0 } }
@@ -142,6 +219,17 @@ final class MemoryPressureMonitor: MemoryPressureProviding, @unchecked Sendable 
     /// 圧迫イベントの受理(任意スレッド)。テストは実圧迫なしにここへ流す。
     func receive(_ event: DispatchSource.MemoryPressureEvent) {
         guard let level = MemoryPressureLevel(event: event) else { return }
+        apply(level)
+    }
+
+    /// タイマーからのシステム段階の読み直し。読めなかったときは現在値を保つ
+    private func pollSystemLevel() {
+        guard let level = readSystemLevel() else { return }
+        apply(level)
+    }
+
+    /// 二つの観測源の合流点: 最新の観測を現在値とし、変わったときだけ通知する
+    private func apply(_ level: MemoryPressureLevel) {
         let changed = state.withLock { current in
             guard current != level else { return false }
             current = level

@@ -164,7 +164,7 @@ final class NoiseReductionTests: XCTestCase {
 
     func testResamplerCachesSeparatelyPerReductionLevel() async {
         // 同サイズでもノイズ低減指定があれば処理され、レベル別にキャッシュされる
-        let resampler = ImageResampler(byteLimit: 8 << 20)
+        let resampler = ImageResampler(byteLimit: 8 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage()
         let size = CGSize(width: source.width, height: source.height)
         let plain = await resampler.resample(
@@ -189,7 +189,7 @@ final class NoiseReductionTests: XCTestCase {
         // 常に完走することで構造的に不要になり、代わりに usedMLFallback/
         // retryPossible の規則(別テストで担保)が一過性フォールバックを弾く。
         // .strong は XCTest で ML 恒久失敗相当のため 7n1.2 の規則でキャッシュされる
-        let resampler = ImageResampler(byteLimit: 8 << 20)
+        let resampler = ImageResampler(byteLimit: 8 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage()
         let size = CGSize(width: 32, height: 32)
         let task = Task {
@@ -211,7 +211,7 @@ final class NoiseReductionTests: XCTestCase {
     /// フォールバック(最終+中間)を捨てる(cooViewer-emx)。XCTest は ML 恒久失敗
     /// 相当なので .strong の結果は 7n1.2 でキャッシュされ、掃除の対象になる
     func testRemoveMLFallbackEntriesClearsCachedFallbacks() async {
-        let resampler = ImageResampler(byteLimit: 32 << 20)
+        let resampler = ImageResampler(byteLimit: 32 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage()
         _ = await resampler.resample(
             source, to: CGSize(width: 40, height: 40), cacheKey: "emx",
@@ -226,7 +226,7 @@ final class NoiseReductionTests: XCTestCase {
     /// 本物のキャッシュ(非フォールバック)は removeMLFallbackEntries で消えない
     /// (過剰削除しない)。.none は ML 非関与なので焼き付けが残る
     func testRemoveMLFallbackEntriesKeepsNonFallback() async {
-        let resampler = ImageResampler(byteLimit: 32 << 20)
+        let resampler = ImageResampler(byteLimit: 32 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage()
         // .none + サイズ変更 → ML 非関与の通常リサンプル(フォールバックでない)
         _ = await resampler.resample(
@@ -244,7 +244,7 @@ final class NoiseReductionTests: XCTestCase {
     /// リサイズごとの再計算防止。cooViewer-kli)。XCTest では ML 恒久失敗相当のため
     /// CI 中間も 7n1.2 規則でキャッシュされ、再利用が構造的に検証できる
     func testStrongNoiseReductionIntermediateReusedAcrossTargetSizes() async {
-        let resampler = ImageResampler(byteLimit: 32 << 20)
+        let resampler = ImageResampler(byteLimit: 32 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage(size: 128)
         _ = await resampler.resample(
             source, to: CGSize(width: 96, height: 96), cacheKey: "nr-reuse",
@@ -268,7 +268,7 @@ final class NoiseReductionTests: XCTestCase {
     /// .strong は reducedSource 内の await(ensureModel のアクタ跳躍)で中断し、
     /// 2本目が line-95 再チェック前に割り込めるので合流が意味を持つ
     func testConcurrentSameKeyResampleCoalescesToOneCompute() async {
-        let resampler = ImageResampler(byteLimit: 8 << 20)
+        let resampler = ImageResampler(byteLimit: 8 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage()
         let size = CGSize(width: 32, height: 32)
         async let first = resampler.resample(
