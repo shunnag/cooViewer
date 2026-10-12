@@ -176,11 +176,11 @@ actor ArchiveSource: BookSource {
     /// 展開係プールの上限。従来は固定 3。各係は独立した書庫の再オープン
     /// (ファイルハンドル + 中央ディレクトリ解析)を伴うので、コア数に応じて
     /// 控えめに増やす(3〜6)。deflate 書庫の並列展開と高速めくりで効く。
-    static func extractorPoolSize(lowPowerMode: Bool,
+    static func extractorPoolSize(conserveEnergy: Bool,
                                   processorCount: Int = ProcessInfo.processInfo.activeProcessorCount) -> Int {
         let normal = min(max(3, processorCount / 2), 6)
-        // 低電力時も最低 2 係を保ち、表示要求が先読みに塞がれないようにする(設計書 §5)。
-        return lowPowerMode ? max(2, normal / 2) : normal
+        // 省エネ時も最低 2 係を保ち、表示要求が先読みに塞がれないようにする(設計書 §5)。
+        return conserveEnergy ? max(2, normal / 2) : normal
     }
 
     /// いまの状態での並列可否: 全ページスプール済み(ローカル読みのみ)か、
@@ -228,7 +228,7 @@ actor ArchiveSource: BookSource {
          engineFactory: ArchiveEngineFactory = .live,
          powerState: any PowerStateProviding = PowerStateMonitor.shared,
          extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
-             ArchiveSource.extractorPoolSize(lowPowerMode: $0)
+             ArchiveSource.extractorPoolSize(conserveEnergy: $0)
          }) throws {
         self.url = url
         self.contentIsSensitive = sensitive
@@ -289,7 +289,7 @@ actor ArchiveSource: BookSource {
          engineFactory: ArchiveEngineFactory = .live,
          powerState: any PowerStateProviding = PowerStateMonitor.shared,
          extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
-             ArchiveSource.extractorPoolSize(lowPowerMode: $0)
+             ArchiveSource.extractorPoolSize(conserveEnergy: $0)
          }) throws {
         self.url = URL(fileURLWithPath: name)
         self.contentIsSensitive = sensitive
@@ -861,7 +861,7 @@ actor ArchiveSource: BookSource {
     /// 展開係の貸し出し。perEntry は空き優先、byGroup は同一グループを同じ係へ
     /// 寄せる(グループ内直列・グループ間並列)。serial は貸し出さない
     private func acquireExtractor(for entryID: Int) -> (Int, ArchiveEntryExtractor)? {
-        let poolSize = extractorPoolSizing(powerState.isLowPowerModeEnabled)
+        let poolSize = extractorPoolSizing(powerState.shouldConserveEnergy)
         switch parallelMode {
         case .serial:
             return nil

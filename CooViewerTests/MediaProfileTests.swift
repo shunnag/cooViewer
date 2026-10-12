@@ -45,7 +45,7 @@ final class MediaProfileTests: XCTestCase {
 
     func testUnknownProfileKeepsLegacyBehavior() {
         // unknown は従来の固定動作と同値であること(判定不能時の回帰防止)
-        let profile = MediaProfile(mediaClass: .unknown, lowPowerMode: false)
+        let profile = MediaProfile(mediaClass: .unknown, conserveEnergy: false)
         XCTAssertEqual(profile.bookPrefetchConcurrency, 4)
         XCTAssertEqual(profile.thumbnailPrefetchConcurrency, 3)
         XCTAssertEqual(profile.defaultPrefetchAhead,
@@ -58,17 +58,17 @@ final class MediaProfileTests: XCTestCase {
 
     func testFastLocalConcurrencyScalesWithCoresWithinBounds() {
         // 高速ローカルの並列度はコア数連動だが下限 6・上限 12 に収める
-        let concurrency = MediaProfile.fastLocalConcurrency(lowPowerMode: false)
+        let concurrency = MediaProfile.fastLocalConcurrency(conserveEnergy: false)
         XCTAssertGreaterThanOrEqual(concurrency, 6)
         XCTAssertLessThanOrEqual(concurrency, 12)
-        let profile = MediaProfile(mediaClass: .fastLocal, lowPowerMode: false)
+        let profile = MediaProfile(mediaClass: .fastLocal, conserveEnergy: false)
         XCTAssertEqual(profile.bookPrefetchConcurrency, concurrency)
         XCTAssertEqual(profile.sourceReadConcurrency, concurrency)
         XCTAssertEqual(profile.thumbnailPrefetchConcurrency, concurrency)
     }
 
     func testFastLocalSkipsSpoolingForRandomAccessFormats() {
-        let profile = MediaProfile(mediaClass: .fastLocal, lowPowerMode: false)
+        let profile = MediaProfile(mediaClass: .fastLocal, conserveEnergy: false)
         XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "zip"))
         XCTAssertFalse(profile.shouldSpoolArchive(fileExtension: "cbz"))
         // solid になり得る形式と分割書庫は高速ローカルでもスプールする
@@ -93,7 +93,7 @@ final class MediaProfileTests: XCTestCase {
 
     func testSlowMediaSpoolEverythingAndThrottle() {
         for mediaClass in [MediaProfile.MediaClass.slowLocal, .network] {
-            let profile = MediaProfile(mediaClass: mediaClass, lowPowerMode: false)
+            let profile = MediaProfile(mediaClass: mediaClass, conserveEnergy: false)
             XCTAssertTrue(profile.shouldSpoolArchive(fileExtension: "zip"))
             XCTAssertLessThanOrEqual(profile.sourceReadConcurrency, 3)
             XCTAssertLessThanOrEqual(profile.bookPrefetchConcurrency, 2)
@@ -104,17 +104,17 @@ final class MediaProfileTests: XCTestCase {
 
     func testSpoolOverrideBeatsAutomaticPolicy() {
         // 高度設定の明示(常に/しない)は自動判定より優先されること
-        var fast = MediaProfile(mediaClass: .fastLocal, lowPowerMode: false)
+        var fast = MediaProfile(mediaClass: .fastLocal, conserveEnergy: false)
         fast.spoolOverride = true
         XCTAssertTrue(fast.shouldSpoolArchive(fileExtension: "zip"),
                       "「常に行う」は高速ローカルの zip でも展開する")
 
-        var slow = MediaProfile(mediaClass: .slowLocal, lowPowerMode: false)
+        var slow = MediaProfile(mediaClass: .slowLocal, conserveEnergy: false)
         slow.spoolOverride = false
         XCTAssertFalse(slow.shouldSpoolArchive(fileExtension: "rar"),
                        "「行わない」は低速媒体の rar でも展開しない")
 
-        var network = MediaProfile(mediaClass: .network, lowPowerMode: false)
+        var network = MediaProfile(mediaClass: .network, conserveEnergy: false)
         network.spoolOverride = nil
         XCTAssertTrue(network.shouldSpoolArchive(fileExtension: "zip"),
                       "nil(自動)はクラスの方針に従う")
@@ -122,8 +122,8 @@ final class MediaProfileTests: XCTestCase {
 
     func testLowPowerModeHalvesAutomaticConcurrencyAndDepth() {
         for mediaClass in [MediaProfile.MediaClass.fastLocal, .slowLocal, .network, .unknown] {
-            let normal = MediaProfile(mediaClass: mediaClass, lowPowerMode: false)
-            let low = MediaProfile(mediaClass: mediaClass, lowPowerMode: true)
+            let normal = MediaProfile(mediaClass: mediaClass, conserveEnergy: false)
+            let low = MediaProfile(mediaClass: mediaClass, conserveEnergy: true)
             let minimum = mediaClass == .fastLocal ? 2 : 1
             XCTAssertEqual(low.bookPrefetchConcurrency, max(minimum, normal.bookPrefetchConcurrency / 2))
             XCTAssertEqual(low.thumbnailPrefetchConcurrency, max(minimum, normal.thumbnailPrefetchConcurrency / 2))
@@ -131,14 +131,14 @@ final class MediaProfileTests: XCTestCase {
             XCTAssertEqual(low.defaultPrefetchBehind, normal.defaultPrefetchBehind / 2)
         }
         for cores in [1, 4, 8, 16, 32] {
-            let normal = MediaProfile.fastLocalConcurrency(lowPowerMode: false, processorCount: cores)
-            XCTAssertEqual(MediaProfile.fastLocalConcurrency(lowPowerMode: true, processorCount: cores),
+            let normal = MediaProfile.fastLocalConcurrency(conserveEnergy: false, processorCount: cores)
+            XCTAssertEqual(MediaProfile.fastLocalConcurrency(conserveEnergy: true, processorCount: cores),
                            max(2, normal / 2))
         }
     }
 
     func testExplicitPrefetchDepthWinsInLowPowerMode() {
-        let profile = MediaProfile(mediaClass: .network, lowPowerMode: true)
+        let profile = MediaProfile(mediaClass: .network, conserveEnergy: true)
         let explicit = profile.prefetchDepth(explicitAhead: 48, explicitBehind: 12)
         XCTAssertEqual(explicit.ahead, 48)
         XCTAssertEqual(explicit.behind, 12)

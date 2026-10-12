@@ -42,11 +42,12 @@ enum ArchiveReaderRole: Sendable, Equatable {
 }
 
 /// 自動並列数は open 時点の電力方針を適用済みの値を入力する純関数(設計書 §5)。
-/// 明示値を使う展開係もこの値から導き、温度ではなく低電力モードだけに連動する。
+/// 明示値を使う展開係もこの値から導き、アプリ側の省エネ判定と同じく
+/// 低電力モードまたは温度圧迫(serious / critical)で絞る。
 struct ArchiveDecodeBudget: Sendable, Equatable {
     let decodeThreads: Int?
     let parallelDecodeMemory: UInt64
-    let powerPolicy: DecodePowerPolicy = .reduceInLowPowerMode
+    let powerPolicy: DecodePowerPolicy = .reduceInLowPowerModeOrThermalPressure
 
     init(role: ArchiveReaderRole, automaticThreads: Int) {
         switch role {
@@ -79,7 +80,7 @@ final class KaitoKitEngine: ArchiveEngine {
 
     private static func options(role: ArchiveReaderRole) -> ReaderOptions {
         ArchiveDecodeBudget(role: role, automaticThreads:
-            ReaderOptions.automaticDecodeThreads(powerPolicy: .reduceInLowPowerMode))
+            ReaderOptions.automaticDecodeThreads(powerPolicy: .reduceInLowPowerModeOrThermalPressure))
             .readerOptions(lazyLocalHeaders: defaultZipLazyLocalHeaders)
     }
 

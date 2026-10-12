@@ -107,6 +107,8 @@ final class ReaderWindowController: NSWindowController {
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
     private var settingsObserver: (any NSObjectProtocol)?
     private var powerStateObserver: (any NSObjectProtocol)?
+    /// ウインドウの隠蔽・アプリの前面性(先読みの実行モードを変える)
+    private var activityObservers: [any NSObjectProtocol] = []
     var slideshowTimer: Timer?
     /// 2 本指スワイプ(ページ間スワイプ)の追跡状態(+Input.swift)
     var swipeTrackingActive = false
@@ -264,6 +266,8 @@ final class ReaderWindowController: NSWindowController {
     /// 先読みの実行番号(ソフト停止用: 旧タスクは処理中の 1 件を完走した
     /// 後、この番号のずれで自然停止する)
     private var preresampleRun = 0
+    /// 直近の計画時の実行モード(可視性・前面性の通知が同じモードなら組み直さない)
+    private var lastPreresampleMode: PreresamplePolicy.Mode?
     /// 表示中スプレッドのエントリ ID 集合(上記判定に使う)
     private var displayedEntryIDs: Set<Int> = []
     private var indicatorLayoutSignature = ""
@@ -340,12 +344,43 @@ final class ReaderWindowController: NSWindowController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.replanForPowerState() }
         }
+        // 隠蔽・最小化・アプリ非表示では先読みを止め、非前面では次の見開きだけに
+        // 絞る(設計書 §5)。可視に戻ったときの再計画もこの一本で行う
+        let activity: [(Notification.Name, AnyObject?)] = [
+            (NSWindow.didChangeOcclusionStateNotification, window),
+            (NSApplication.didBecomeActiveNotification, nil),
+            (NSApplication.didResignActiveNotification, nil),
+        ]
+        activityObservers = activity.map { name, object in
+            NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.replanPreresampleForActivity() }
+            }
+        }
+    }
+
+    /// 可視性・前面性の変化は事前リサンプルだけを組み直す。進行中の 1 ページは
+    /// 完走させ(結果はキャッシュに残る)、次のページ境界で実行番号のずれにより止める。
+    /// 隠蔽通知は可視のまま(部分的な重なり等)でも届くため、モードが前回の計画から
+    /// 変わっていなければ組み直さない
+    private func replanPreresampleForActivity() {
+        guard book.map(currentPreresampleMode(for:)) != lastPreresampleMode else { return }
+        preresampleAdjacentSpread(sparingInFlight: true)
+    }
+
+    /// いまの可視性・前面性・省エネ条件から先読みの実行モードを決める(設計書 §5)
+    private func currentPreresampleMode(for book: Book) -> PreresamplePolicy.Mode {
+        PreresamplePolicy.mode(
+            windowVisible: window?.occlusionState.contains(.visible) ?? false,
+            appActive: NSApp.isActive,
+            conserveEnergy: book.mediaProfile.shouldConserveEnergy)
     }
 
     /// 電力変更は先読みだけを再計画し、表示中ページと既存 reader は保つ(設計書 §5)。
     private func replanForPowerState() {
         guard let book else { return }
         applyAdvancedSettings(to: book)
+        // 省エネ条件の切替で先読み深さを即座に組み直す(次のめくりまで媒体既定値のままにしない)
+        updatePrefetchDepth(book: book, images: readerViewForInput.images)
         book.reschedulePrefetch()
         preresampleAdjacentSpread()
         thumbnailOverlayModel.applyMediaProfile(book.mediaProfile)
@@ -754,22 +789,25 @@ final class ReaderWindowController: NSWindowController {
         // 表示リサンプルの実効ページ数(補間なし/低では事前リサンプル自体が
         // 無いので 0 = 媒体別下限と PageCache 予算だけで決まる)
         var resamplePages = 0
+        let conserveEnergy = book.mediaProfile.shouldConserveEnergy
         if let targets = readerView.predictedResampleSizes(
             for: images.map { CGSize(width: $0.width, height: $0.height) }),
            let firstTarget = targets.first {
+            // ML 品質ではリサンプル先読みが浅いので、デコード先読みも同じ枚数から導く
             resamplePages = PreresamplePolicy.pageBudget(
                 bytesPerPage: Int(firstTarget.width) * Int(firstTarget.height) * 4,
                 physicalMemory: ProcessInfo.processInfo.physicalMemory,
-                lowPowerMode: book.mediaProfile.isLowPowerModeEnabled)
+                usesML: settings.noiseReductionLevel.usesMachineLearning,
+                conserveEnergy: conserveEnergy)
         }
         var normalProfile = book.mediaProfile
-        normalProfile.lowPowerMode = false
+        normalProfile.conserveEnergy = false
         book.prefetchAhead = PreresamplePolicy.decodeAhead(
             resamplePages: resamplePages,
             decodedPageBytes: decodedBytes,
             pageCacheByteLimit: settings.pageCacheByteLimit,
             mediaFloor: normalProfile.defaultPrefetchAhead,
-            lowPowerMode: book.mediaProfile.isLowPowerModeEnabled)
+            conserveEnergy: conserveEnergy)
         book.prefetchBehind = PreresamplePolicy.decodeBehind(
             ahead: book.prefetchAhead)
     }
@@ -1970,7 +2008,9 @@ final class ReaderWindowController: NSWindowController {
     /// trilinear 表示 → リサンプル完成後に差し替えだった)。
     /// 先へ進む量はメモリ予算(PreresamplePolicy: 1 ページの表示サイズ ×
     /// 枚数が物理メモリの 1/8・最大 4GB に収まる数。ページ数上限 64 は
-    /// 小さすぎるページでの保険)まで。近いスプレッドから順に行い、現スプレッドのリサンプル
+    /// 小さすぎるページでの保険)まで。ML 品質は 1 ページ数秒かかるため次の
+    /// 2 見開き、省エネ時・非前面時は次の見開きだけ、ウインドウが見えていなければ
+    /// 行わない(設計書 §5)。近いスプレッドから順に行い、現スプレッドのリサンプル
     /// (scheduleHighQualityResample)と GPU を奪い合わないよう少し遅らせて
     /// 始め、表示が先へ進んでいたら残りを捨てる
     private func preresampleAdjacentSpread(sparingInFlight: Bool = false) {
@@ -1978,9 +2018,9 @@ final class ReaderWindowController: NSWindowController {
         let forward = book.lastMoveForward
         let generation = displayGeneration
         // 実行番号を進めて旧タスクを(ソフト)停止させる。
-        // sparingInFlight(フィルタ切替)と「表示対象を処理中」の場合は
-        // 切らずに完走させ(結果はキャッシュへ)、現在のページの後に
-        // 実行番号チェックで自然停止させる。それ以外は即キャンセル
+        // sparingInFlight(フィルタ切替・可視性/前面性の変化)と「表示対象を
+        // 処理中」の場合は切らずに完走させ(結果はキャッシュへ)、現在のページの
+        // 後に実行番号チェックで自然停止させる。それ以外は即キャンセル
         preresampleRun += 1
         let run = preresampleRun
         let sparesInFlight = sparingInFlight
@@ -1988,6 +2028,13 @@ final class ReaderWindowController: NSWindowController {
         if !sparesInFlight {
             preresampleTask?.cancel()
         }
+        // 見えていないウインドウには始めない。旧タスクは実行番号のずれで次の
+        // ページ境界に止まり、可視に戻った通知が改めてここを呼ぶ
+        let mode = currentPreresampleMode(for: book)
+        lastPreresampleMode = mode
+        guard mode != .paused else { return }
+        let conserveEnergy = mode == .conserving
+        let usesML = settings.noiseReductionLevel.usesMachineLearning
         preresampleTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
@@ -1998,15 +2045,14 @@ final class ReaderWindowController: NSWindowController {
             // 2 枚目の表示処理が先読み 1 ページ分待たされてしまう
             while self.readerViewForInput.isResamplingDisplayedPages,
                   !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(50))
+                await self.readerViewForInput.waitForDisplayedResampleIdle()
             }
             guard !Task.isCancelled, generation == self.displayGeneration,
                   run == self.preresampleRun, book === self.book else { return }
-            let lowPowerMode = book.mediaProfile.isLowPowerModeEnabled
-            let maxPages = PreresamplePolicy.pageLimit(lowPowerMode: lowPowerMode)
+            let maxPages = PreresamplePolicy.pageLimit(usesML: usesML, conserveEnergy: conserveEnergy)
             let predicted = await book.predictedAdjacentSpreads(forward: forward, maxPages: maxPages)
-            // 低電力時は次の見開きだけを処理する(設計書 §5)。
-            let spreads = PreresamplePolicy.spreadsToProcess(predicted, lowPowerMode: lowPowerMode)
+            let spreads = PreresamplePolicy.spreadsToProcess(
+                predicted, usesML: usesML, conserveEnergy: conserveEnergy)
             guard !spreads.isEmpty else { return }
             // 先読み処理中の薄い進行表示(タスク終了時に必ず対で消す)
             self.setPrefetchIndicator(true)
@@ -2042,7 +2088,7 @@ final class ReaderWindowController: NSWindowController {
                     pageLimit = PreresamplePolicy.pageBudget(
                         bytesPerPage: bytesPerPage,
                         physicalMemory: ProcessInfo.processInfo.physicalMemory,
-                        lowPowerMode: lowPowerMode)
+                        usesML: usesML, conserveEnergy: conserveEnergy)
                     limitComputed = true
                     // 予算確定で計画枚数を精緻化(残数表示に反映)
                     self.notePrefetchPlan(
