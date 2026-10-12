@@ -232,7 +232,7 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
         let encrypted = await source.isEncrypted()
         XCTAssertTrue(encrypted)
         let unlocked = await source.checkAndSetPassword("sesame")
-        XCTAssertTrue(unlocked)
+        XCTAssertEqual(unlocked, .accepted)
         let entries = try await source.entries()
         XCTAssertEqual(entries.map(\.pathInBook), [
             "visible.avifs", "\(uniqueName)/000000", "\(uniqueName)/000001",
@@ -289,7 +289,7 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
         let encrypted = await source.isEncrypted()
         XCTAssertTrue(encrypted)
         let unlocked = await source.checkAndSetPassword("sesame")
-        XCTAssertTrue(unlocked)
+        XCTAssertEqual(unlocked, .accepted)
         let entries = try await source.entries()
         XCTAssertEqual(entries.map(\.pathInBook), ["visible.avifs"])
         XCTAssertEqual(entries.map(\.id), [0])

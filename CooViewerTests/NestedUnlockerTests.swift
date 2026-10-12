@@ -8,20 +8,40 @@ import XCTest
 /// コンテンツを含む本を超解像キャッシュ暗号化の対象にする判定の土台になる(CWE-312)。
 final class NestedUnlockerTests: XCTestCase {
     /// テスト用の暗号化子ソース。password と一致すれば解除成功。
+    /// fixedOutcome を与えると、パスワードに関係なくその結果を返す(読み取り失敗の再現)
     private actor MockEncryptedSource: BookSource {
         nonisolated let url = URL(fileURLWithPath: "/tmp/mock-nested")
         nonisolated var supportsDateSort: Bool { false }
         private let password: String
+        private let fixedOutcome: PasswordCheck?
         private var unlocked = false
-        init(password: String) { self.password = password }
+        private(set) var checkCount = 0
+        init(password: String, fixedOutcome: PasswordCheck? = nil) {
+            self.password = password
+            self.fixedOutcome = fixedOutcome
+        }
         func entries() async throws -> [PageEntry] { [] }
         func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
             throw BookSourceError.pageLoadFailed("mock")
         }
         func isEncrypted() async -> Bool { !unlocked }
-        func checkAndSetPassword(_ password: String) async -> Bool {
-            if password == self.password { unlocked = true; return true }
-            return false
+        func checkAndSetPassword(_ password: String) async -> PasswordCheck {
+            checkCount += 1
+            if let fixedOutcome { return fixedOutcome }
+            if password == self.password { unlocked = true; return .accepted }
+            return .rejected
+        }
+    }
+
+    /// provider の呼び出し(ダイアログが出た子の名前と試行番号)を記録する
+    private actor PromptCounter {
+        private(set) var prompts: [(name: String, attempt: Int)] = []
+        var count: Int { prompts.count }
+        private let answer: String?
+        init(answer: String?) { self.answer = answer }
+        func provide(_ name: String, _ attempt: Int) -> NestedPasswordAnswer? {
+            prompts.append((name, attempt))
+            return answer.map { NestedPasswordAnswer(password: $0, saveRequested: false) }
         }
     }
 
@@ -56,6 +76,74 @@ final class NestedUnlockerTests: XCTestCase {
         let sawSkipped = await unlocker.sawSkippedChild
         XCTAssertFalse(sawUnlocked)
         XCTAssertTrue(sawSkipped)
+    }
+
+    // MARK: - 読み取り失敗(cooViewer-3tfd)
+
+    /// 保存パスワードの検証が読み取り失敗なら、既知パスワードもダイアログも試さずに
+    /// その子を外す(死にかけたボリュームへ総当たりしない)。保存値は残る
+    func testUnreadableSavedPasswordSkipsChildWithoutFurtherAttempts() async {
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = PasswordVault.Key.file(path: "/tmp/books/flaky.zip")
+        await vault.save("pw", for: key)
+        let prompts = PromptCounter(answer: "pw")
+        let unlocker = NestedUnlocker(provider: { await prompts.provide($0, $1) },
+                                      knownPasswords: ["a", "b"], vault: vault)
+        let child = MockEncryptedSource(password: "pw", fixedOutcome: .unreadable)
+        let ok = await unlocker.unlock(child, name: "flaky.zip", persistenceKey: key)
+        XCTAssertFalse(ok)
+        let checks = await child.checkCount
+        let promptCount = await prompts.count
+        XCTAssertEqual(checks, 1, "保存パスワードの 1 回で打ち切る")
+        XCTAssertEqual(promptCount, 0, "読めない子にダイアログを出さない")
+        let sawSkipped = await unlocker.sawSkippedChild
+        let sawUnlocked = await unlocker.sawUnlockedChild
+        XCTAssertTrue(sawSkipped)
+        XCTAssertFalse(sawUnlocked)
+        let saved = await vault.password(for: key)
+        XCTAssertEqual(saved, "pw", "保存パスワードは消さない")
+    }
+
+    /// 既知パスワードの試行中に読み取り失敗が返れば、残りの既知パスワードもダイアログも試さない
+    func testUnreadableKnownPasswordStopsAtFirstCheck() async {
+        let prompts = PromptCounter(answer: "pw")
+        let unlocker = NestedUnlocker(provider: { await prompts.provide($0, $1) },
+                                      knownPasswords: ["a", "b", "c"])
+        let child = MockEncryptedSource(password: "pw", fixedOutcome: .unreadable)
+        let ok = await unlocker.unlock(child, name: "flaky.zip")
+        XCTAssertFalse(ok)
+        let checks = await child.checkCount
+        let promptCount = await prompts.count
+        XCTAssertEqual(checks, 1)
+        XCTAssertEqual(promptCount, 0)
+        let sawSkipped = await unlocker.sawSkippedChild
+        XCTAssertTrue(sawSkipped)
+    }
+
+    /// ダイアログの回答が読み取り失敗なら、その子の問い合わせは終えるが、
+    /// キャンセルとは違って他の子への問い合わせは続く
+    func testUnreadableDuringPromptKeepsPromptingForOtherChildren() async {
+        let prompts = PromptCounter(answer: "pw")
+        let unlocker = NestedUnlocker(provider: { await prompts.provide($0, $1) })
+        let flaky = MockEncryptedSource(password: "pw", fixedOutcome: .unreadable)
+        let flakyOK = await unlocker.unlock(flaky, name: "flaky.zip")
+        XCTAssertFalse(flakyOK)
+        let flakyChecks = await flaky.checkCount
+        let promptsAfterFlaky = await prompts.count
+        XCTAssertEqual(flakyChecks, 1, "読めない子に再入力を求めない")
+        XCTAssertEqual(promptsAfterFlaky, 1)
+        let healthy = MockEncryptedSource(password: "pw")
+        let healthyOK = await unlocker.unlock(healthy, name: "healthy.zip")
+        XCTAssertTrue(healthyOK, "別の子はダイアログで解錠できる")
+        // 兄弟は 1 回目(attempt 1)から尋ねられる = 読めない子が試行予算を奪っていない
+        let recorded = await prompts.prompts
+        XCTAssertEqual(recorded.map(\.name), ["flaky.zip", "healthy.zip"])
+        XCTAssertEqual(recorded.map(\.attempt), [1, 1])
+        let sawSkipped = await unlocker.sawSkippedChild
+        let sawUnlocked = await unlocker.sawUnlockedChild
+        XCTAssertTrue(sawSkipped)
+        XCTAssertTrue(sawUnlocked)
     }
 
     // MARK: - PasswordVault 連携(設計書 §2.4 パスワードマネージャー)

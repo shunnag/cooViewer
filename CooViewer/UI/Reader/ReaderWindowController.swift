@@ -1247,6 +1247,15 @@ final class ReaderWindowController: NSWindowController {
                     source: source,
                     reason: String(localized: "Too many failed password attempts."))
                 return
+            case .unreadable:
+                // 読めない本も開けなかった本と同じ空の状態で見せ、次の本へ進める
+                // (§4.17 の無音 beep では保存パスワードが「失敗」したように見える)
+                endOpeningProgress(generation: generation)
+                presentLockedPlaceholder(
+                    source: source,
+                    reason: String(localized:
+                        "This archive could not be read. Check the connection and try opening it again."))
+                return
             }
 
             guard generation == openGeneration else { return }
@@ -1639,6 +1648,8 @@ final class ReaderWindowController: NSWindowController {
         case unlocked
         case cancelled
         case attemptsExceeded
+        /// 保存パスワードの検証プローブが二度続けて読めなかった(cooViewer-3tfd)
+        case unreadable
     }
 
     /// ネスト書庫/PDF 用のパスワード入力コールバック(仕様書 §4.1.3 のネスト版)。
@@ -1740,24 +1751,29 @@ final class ReaderWindowController: NSWindowController {
         let vaultKey = PasswordVault.Key.file(path: source.url.path)
         if settings.passwordVaultEnabled, await source.isEncrypted(),
            let saved = await PasswordVault.shared.password(for: vaultKey) {
-            if await source.checkAndSetPassword(saved) {
+            // 一時的な読み取り失敗は一度だけやり直す(cooViewer-3tfd)
+            switch await SavedPasswordPolicy.verify({ await source.checkAndSetPassword(saved) }) {
+            case .accepted:
                 // 保存済み=同意済み。同じパスワードのネスト子にも保存を展延
                 await source.notePasswordSaveConsent(saved)
                 return .unlocked
+            case .unreadable:
+                // 正否が判っていないので保存パスワードは残し、ダイアログも出さない
+                return .unreadable
+            case .rejected:
+                // パスワードが変更された書庫: 無言で従来のダイアログへ
+                // (試行回数は消費しない。成功時に上書き保存される)
+                break
             }
-            // パスワードが変更された書庫: 無言で従来のダイアログへ
-            // (試行回数は消費しない。成功時に上書き保存される)
         }
-        let maxAttempts = 3
-        var attemptsLeft = maxAttempts
+        var attemptsLeft = 3
+        var prompt = String(localized: "Enter the password to open it.")
         while await source.isEncrypted() {
             guard generation == openGeneration else { return .cancelled }
             guard attemptsLeft > 0 else { return .attemptsExceeded }
             let alert = NSAlert()
             alert.messageText = String(localized: "This archive is password-protected.")
-            alert.informativeText = attemptsLeft == maxAttempts
-                ? String(localized: "Enter the password to open it.")
-                : String(localized: "Wrong password. \(attemptsLeft) attempts left.")
+            alert.informativeText = prompt
             alert.addButton(withTitle: String(localized: "OK"))
             alert.addButton(withTitle: String(localized: "Cancel"))
             let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
@@ -1773,14 +1789,21 @@ final class ReaderWindowController: NSWindowController {
                 // チェック状態は誤入力でも記憶する(ネスト側ダイアログと同じ)
                 settings.passwordVaultSaveByDefault = save
             }
-            if await source.checkAndSetPassword(field.stringValue) {
+            switch await source.checkAndSetPassword(field.stringValue) {
+            case .accepted:
                 if save {
                     await PasswordVault.shared.save(field.stringValue, for: vaultKey)
                     await source.notePasswordSaveConsent(field.stringValue)
                 }
                 return .unlocked
+            case .rejected:
+                attemptsLeft -= 1
+                prompt = String(localized: "Wrong password. \(attemptsLeft) attempts left.")
+            case .unreadable:
+                // 正否が判っていないので試行回数は消費せず、原因を伝えて再入力を待つ
+                prompt = String(localized:
+                    "This archive could not be read. Check the connection and enter the password again.")
             }
-            attemptsLeft -= 1
         }
         return .unlocked
     }

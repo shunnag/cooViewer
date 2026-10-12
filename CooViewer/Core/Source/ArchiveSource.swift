@@ -1032,7 +1032,7 @@ actor ArchiveSource: BookSource {
 
     /// パスワードを設定し、先頭エントリの展開を試して検証する(仕様書 §4.1.3)。
     /// 画像がなくネスト書庫だけの本でも検証できるよう候補もプローブに使う。
-    func checkAndSetPassword(_ password: String) async -> Bool {
+    func checkAndSetPassword(_ password: String) async -> PasswordCheck {
         // プローブは「暗号化されているエントリ」を優先する。旧実装相当の
         // 「先頭エントリで検証」(仕様書 §4.1.3)だと、先頭が非暗号化の混在
         // 書庫で任意のパスワードが「成功」してしまい、保存パスワードの
@@ -1044,14 +1044,18 @@ actor ArchiveSource: BookSource {
         let pool = safe.isEmpty ? candidates : safe
         let probe = pool.first(where: { archive.entryIsEncrypted($0) }) ?? pool.first
         // 画像も書庫/PDF もない書庫は検証しようがない(=本としては空)。
-        // false を返すと正しいパスワードでも「試行超過」になってしまうため通す
-        guard let probe else { return true }
+        // 拒否すると正しいパスワードでも「試行超過」になってしまうため通す
+        guard let probe else { return .accepted }
         archive.setPassword(password)
-        guard archive.contents(ofEntry: probe) != nil else { return false }
+        do {
+            _ = try archive.readContents(ofEntry: probe)
+        } catch {
+            return PasswordCheck.classifyProbeFailure(error)
+        }
         self.password = password
         // ネストした子の解除でも再利用できるよう記録する
         await unlocker.addKnown(password)
-        return true
+        return .accepted
     }
 
     // MARK: - スプール

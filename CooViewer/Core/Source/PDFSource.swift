@@ -237,13 +237,14 @@ actor PDFSource: BookSource {
         document.isEncrypted
     }
 
-    /// 旧実装には無かった PDF パスワード対応(改善)。
-    func checkAndSetPassword(_ password: String) async -> Bool {
+    /// 旧実装には無かった PDF パスワード対応(改善)。PDFKit の unlock は正否しか
+    /// 返さないため、読み取り失敗の区別(unreadable)はない
+    func checkAndSetPassword(_ password: String) async -> PasswordCheck {
         let unlocked = document.unlock(withPassword: password)
         if unlocked {
             storedPassword = password  // プールのレンダラー作成時に引き継ぐ
         }
-        return unlocked
+        return unlocked ? .accepted : .rejected
     }
 }
 
