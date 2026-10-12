@@ -73,6 +73,7 @@ final class EPUBStagingAreaTests: XCTestCase {
     private func makeArea(
         isSafe: Bool = false,
         availableCapacity: Int64? = .max,
+        spacePolicy: EPUBStagingArea.SpacePolicy = .standard,
         copies: Copies = Copies(),
         copy: (@Sendable (URL, URL) throws -> Void)? = nil
     ) -> EPUBStagingArea {
@@ -88,7 +89,19 @@ final class EPUBStagingAreaTests: XCTestCase {
                 XCTAssertEqual(qos_class_self(), QOS_CLASS_USER_INITIATED,
                                "コピーはオープン経路の優先度で走る")
                 try copy(source, destination)
-            }))
+            },
+            spacePolicy: spacePolicy))
+    }
+
+    /// 合計予算だけで判定する方針(余裕 0、空きの全量)。数 KB のテスト用 EPUB で
+    /// 予算の境界を踏むため、予算は「本 `units` 冊ぶん」で与える
+    private func budgetPolicy(units: Int, of url: URL) throws -> EPUBStagingArea.SpacePolicy {
+        let unit = try fileSize(url)
+        return .init(headroom: 0, totalCap: Int64(units * unit), totalShare: 1)
+    }
+
+    private func fileSize(_ url: URL) throws -> Int {
+        try XCTUnwrap(url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
     }
 
     private func stagedFiles() -> [URL] {
@@ -96,14 +109,20 @@ final class EPUBStagingAreaTests: XCTestCase {
             at: stagingDirectory, includingPropertiesForKeys: nil)) ?? []
     }
 
-    /// 背面の unlink を待つ
-    private func waitUntilStagingEmpty(timeout: TimeInterval = 5) async -> Bool {
+    /// 背面のタスク(unlink・台帳の返却)の結果を待つ
+    private func waitUntil(timeout: TimeInterval = 5,
+                           _ condition: @escaping () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if stagedFiles().isEmpty { return true }
+            if condition() { return true }
             try? await Task.sleep(for: .milliseconds(20))
         }
-        return stagedFiles().isEmpty
+        return condition()
+    }
+
+    /// 背面の unlink を待つ
+    private func waitUntilStagingEmpty(timeout: TimeInterval = 5) async -> Bool {
+        await waitUntil(timeout: timeout) { [self] in stagedFiles().isEmpty }
     }
 
     private func assertRegularFile(_ url: URL, file: StaticString = #filePath,
@@ -162,12 +181,23 @@ final class EPUBStagingAreaTests: XCTestCase {
     func testInsufficientSpaceFallsBackWithoutCopying() async throws {
         let url = try writeEPUB(named: "full")
         let copies = Copies()
-        let area = makeArea(availableCapacity: EPUBStagingArea.capacityHeadroom,
+        let area = makeArea(availableCapacity: EPUBStagingArea.SpacePolicy.standard.headroom,
                             copies: copies)
         let publication = try await area.openPublication(at: url)
         XCTAssertEqual(publication.metadata.mainTitle, "full")
         XCTAssertEqual(copies.count, 0, "空き不足ではコピーを始めない")
         XCTAssertTrue(stagedFiles().isEmpty)
+    }
+
+    func testUnknownCapacityFallsBackWithoutCopying() async throws {
+        let url = try writeEPUB(named: "unknown")
+        let copies = Copies()
+        let area = makeArea(availableCapacity: nil, copies: copies)
+        let refused = await area.stagedCopy(forResolvedPath: CanonicalPath.normalize(url.path))
+        XCTAssertNil(refused, "空きが不明ならステージングしない")
+        let publication = try await area.openPublication(at: url)
+        XCTAssertEqual(publication.metadata.mainTitle, "unknown", "alwaysCopy で開く")
+        XCTAssertEqual(copies.count, 0)
     }
 
     func testSourceChangedDuringCopyFallsBack() async throws {
@@ -225,12 +255,209 @@ final class EPUBStagingAreaTests: XCTestCase {
         XCTAssertEqual(copies.count, 0)
     }
 
+    // MARK: - ディスク使用方針(純粋関数)
+
+    func testTotalBudgetIsTheSmallerOfCapAndShareOfAvailable() {
+        let policy = EPUBStagingArea.SpacePolicy.standard
+        XCTAssertEqual(policy.headroom, 256 << 20)
+        XCTAssertEqual(policy.totalCap, 8 << 30)
+        XCTAssertEqual(policy.totalShare, 10)
+        XCTAssertEqual(policy.totalBudget(availableCapacity: 100 << 30), 8 << 30,
+                       "空きが十分なら固定上限")
+        XCTAssertEqual(policy.totalBudget(availableCapacity: 20 << 30), 2 << 30,
+                       "空きが少なければその 1/10")
+        XCTAssertEqual(policy.totalBudget(availableCapacity: 5 << 30), 512 << 20)
+        XCTAssertEqual(policy.totalBudget(availableCapacity: .max), 8 << 30, "オーバーフローしない")
+    }
+
     func testHasRoomRequiresHeadroomAndKnownCapacity() {
-        let headroom = EPUBStagingArea.capacityHeadroom
-        XCTAssertFalse(EPUBStagingArea.hasRoom(forFileOfSize: 1, availableCapacity: nil))
-        XCTAssertFalse(EPUBStagingArea.hasRoom(forFileOfSize: 1, availableCapacity: headroom))
-        XCTAssertTrue(EPUBStagingArea.hasRoom(forFileOfSize: 1, availableCapacity: headroom + 1))
-        XCTAssertTrue(EPUBStagingArea.hasRoom(forFileOfSize: 0, availableCapacity: headroom))
+        let policy = EPUBStagingArea.SpacePolicy.standard
+        let headroom = policy.headroom
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: 1, liveBytes: 0, availableCapacity: nil),
+                       "空きが不明なら安全側でコピーしない")
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: 1, liveBytes: 0, availableCapacity: headroom))
+        XCTAssertTrue(policy.hasRoom(forFileOfSize: 1, liveBytes: 0, availableCapacity: headroom + 1))
+        XCTAssertTrue(policy.hasRoom(forFileOfSize: 0, liveBytes: 0, availableCapacity: headroom))
+    }
+
+    func testHasRoomKeepsLiveTotalWithinBudget() {
+        let policy = EPUBStagingArea.SpacePolicy.standard
+        let book = 300 << 20
+        // 空きが十分: 固定上限 8 GiB が効く
+        let plenty: Int64 = 100 << 30
+        XCTAssertTrue(policy.hasRoom(forFileOfSize: book, liveBytes: (8 << 30) - Int64(book),
+                                     availableCapacity: plenty), "上限ちょうどまでは入る")
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: book, liveBytes: (8 << 30) - Int64(book) + 1,
+                                      availableCapacity: plenty), "1 バイトでも超えれば入らない")
+        // 空きが少ない: 1/10 が効く(20 GiB → 2 GiB)。1 冊ごとの余裕は十分ある
+        let scarce: Int64 = 20 << 30
+        XCTAssertTrue(policy.hasRoom(forFileOfSize: book, liveBytes: (2 << 30) - Int64(book),
+                                     availableCapacity: scarce))
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: book, liveBytes: (2 << 30) - Int64(book) + 1,
+                                      availableCapacity: scarce))
+        // 相互作用: 予算に余りがあっても余裕を割る 1 冊は入らない
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: book, liveBytes: 0,
+                                      availableCapacity: Int64(book) + policy.headroom - 1))
+        // 相互作用: 余裕は足りても予算を超える 1 冊目は入らない(空き 2 GiB → 予算 ~205 MiB)
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: book, liveBytes: 0, availableCapacity: 2 << 30))
+        // 余裕ちょうど: 1 バイトは入り、2 バイトは余裕を割る
+        let headroom = policy.headroom
+        XCTAssertTrue(policy.hasRoom(forFileOfSize: 1, liveBytes: 0, availableCapacity: headroom + 1))
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: 2, liveBytes: 0, availableCapacity: headroom + 1),
+                       "割合以内でも余裕を残す")
+        // 割合と余裕が同時に上限になる点(空き = 余裕 + 余裕/9 → 予算 = 余裕/9 = 余裕を割らない最大)
+        let both = headroom + headroom / 9
+        XCTAssertTrue(policy.hasRoom(forFileOfSize: Int(headroom / 9), liveBytes: 0,
+                                     availableCapacity: both))
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: Int(headroom / 9) + 1, liveBytes: 0,
+                                      availableCapacity: both), "割合と余裕が同時に上限になる")
+        // 端の入力はオーバーフローせず安全側に倒す
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: -1, liveBytes: 0, availableCapacity: .max))
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: 1, liveBytes: -1, availableCapacity: .max))
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: 1, liveBytes: .max, availableCapacity: .max))
+        XCTAssertFalse(policy.hasRoom(forFileOfSize: 1, liveBytes: 0, availableCapacity: .min))
+    }
+
+    // MARK: - 合計予算(台帳)
+
+    func testCopiesUpToBudgetAreStagedAndTheNextFallsBack() async throws {
+        let urls = try ["b1", "b2", "b3"].map { try writeEPUB(named: $0) }
+        let unit = try fileSize(urls[0])
+        XCTAssertEqual(try urls.map(fileSize), [unit, unit, unit], "同じ長さの題名なので同サイズ")
+        let copies = Copies()
+        let area = makeArea(spacePolicy: try budgetPolicy(units: 2, of: urls[0]), copies: copies)
+        var publications: [EPUBPublication] = []
+        for url in urls {
+            publications.append(try await area.openPublication(at: url))
+        }
+        XCTAssertEqual(copies.count, 2, "予算内の 2 冊はステージングし、3 冊目はコピーしない")
+        XCTAssertEqual(stagedFiles().count, 2)
+        XCTAssertEqual(area.ledger.reservedBytes, Int64(2 * unit))
+        XCTAssertEqual(publications.map(\.metadata.mainTitle), ["b1", "b2", "b3"],
+                       "予算外の本も alwaysCopy で開ける")
+        let third = await area.stagedCopy(forResolvedPath: CanonicalPath.normalize(urls[2].path))
+        XCTAssertNil(third, "使用中のコピーは追い出さず、予算外はステージング不可")
+        withExtendedLifetime(publications) {}
+    }
+
+    func testReleasingACopyFreesBudgetForALaterStage() async throws {
+        let first = try writeEPUB(named: "r1")
+        let second = try writeEPUB(named: "r2")
+        let copies = Copies()
+        let area = makeArea(spacePolicy: try budgetPolicy(units: 1, of: first), copies: copies)
+        var held: EPUBPublication? = try await area.openPublication(at: first)
+        let fallback = try await area.openPublication(at: second)
+        XCTAssertEqual(copies.count, 1, "予算は 1 冊ぶんなので 2 冊目はコピーしない")
+        XCTAssertEqual(fallback.metadata.mainTitle, "r2")
+        XCTAssertEqual(held?.metadata.mainTitle, "r1")
+
+        held = nil
+        let freed = await waitUntil { area.ledger.reservedBytes == 0 && self.stagedFiles().isEmpty }
+        XCTAssertTrue(freed, "最後の利用者が手放したらファイルも予算も返る")
+
+        let staged = try await area.openPublication(at: second)
+        XCTAssertEqual(copies.count, 2, "空いた予算で次の本がステージングされる")
+        XCTAssertEqual(stagedFiles().count, 1)
+        XCTAssertEqual(staged.metadata.mainTitle, "r2")
+    }
+
+    func testConcurrentStagingsCannotExceedBudgetTogether() async throws {
+        let first = try writeEPUB(named: "c1")
+        let second = try writeEPUB(named: "c2")
+        let unit = try fileSize(first)
+        let entered = expectation(description: "1 冊目のコピーが始まった")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let copies = Copies()
+        let area = makeArea(spacePolicy: try budgetPolicy(units: 1, of: first), copies: copies,
+                            copy: { source, destination in
+            if source.lastPathComponent == "c1.epub" {
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 10)
+            }
+            try FileManager.default.copyItem(at: source, to: destination)
+        })
+        let inFlight = Task {
+            await area.stagedCopy(forResolvedPath: CanonicalPath.normalize(first.path))
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        XCTAssertEqual(area.ledger.reservedBytes, Int64(unit), "進行中のコピーも予約として数える")
+
+        let other = await area.stagedCopy(forResolvedPath: CanonicalPath.normalize(second.path))
+        XCTAssertNil(other, "予約で予算が埋まっている間、別の本はステージングしない")
+        XCTAssertEqual(copies.count, 1, "予算外の本はコピーを始めない")
+
+        release.signal()
+        let copy = await inFlight.value
+        XCTAssertEqual(copy?.size, unit)
+        XCTAssertEqual(area.ledger.reservedBytes, Int64(unit), "成功した予約は生存中の合計になる")
+        withExtendedLifetime(copy) {}
+    }
+
+    func testFailedCopyReleasesItsReservation() async throws {
+        struct CopyFailed: Error {}
+        let failing = try writeEPUB(named: "f1")
+        let next = try writeEPUB(named: "f2")
+        let copies = Copies()
+        let area = makeArea(spacePolicy: try budgetPolicy(units: 1, of: failing), copies: copies,
+                            copy: { source, destination in
+            if source.lastPathComponent == "f1.epub" { throw CopyFailed() }
+            try FileManager.default.copyItem(at: source, to: destination)
+        })
+        let fallback = try await area.openPublication(at: failing)
+        XCTAssertEqual(fallback.metadata.mainTitle, "f1")
+        XCTAssertEqual(area.ledger.reservedBytes, 0, "失敗したコピーの予約は返す")
+
+        let staged = try await area.openPublication(at: next)
+        XCTAssertEqual(copies.count, 2, "返った予算で次の本がステージングされる")
+        XCTAssertEqual(stagedFiles().count, 1)
+        XCTAssertEqual(staged.metadata.mainTitle, "f2")
+    }
+
+    func testSameIdentityCountsOnceInBudget() async throws {
+        let url = try writeEPUB(named: "s1")
+        let other = try writeEPUB(named: "s2")
+        let third = try writeEPUB(named: "s3")
+        let unit = try fileSize(url)
+        XCTAssertEqual(try [other, third].map(fileSize), [unit, unit], "同じ長さの題名なので同サイズ")
+        let area = makeArea(spacePolicy: try budgetPolicy(units: 2, of: url))
+        let first = try await area.openPublication(at: url)
+        let second = try await area.openPublication(at: url)
+        XCTAssertEqual(area.ledger.reservedBytes, Int64(unit), "共有される 1 コピーは 1 回だけ数える")
+        XCTAssertEqual(stagedFiles().count, 1)
+        XCTAssertEqual(second.metadata.mainTitle, "s1", "2 回目も予算に弾かれずコピーを共有する")
+        // 別の本は残り 1 冊ぶんの予算に入る(同じ本を 2 回数えていたら入らない)
+        let different = try await area.openPublication(at: other)
+        XCTAssertEqual(different.metadata.mainTitle, "s2")
+        XCTAssertEqual(stagedFiles().count, 2)
+        XCTAssertEqual(area.ledger.reservedBytes, Int64(2 * unit))
+        let refused = await area.stagedCopy(forResolvedPath: CanonicalPath.normalize(third.path))
+        XCTAssertNil(refused, "3 冊目は予算外")
+        withExtendedLifetime((first, second, different)) {}
+    }
+
+    func testRejectedCopyReleasesBudgetAfterDeletion() async throws {
+        let rejected = try writeEPUB(named: "d1")
+        let next = try writeEPUB(named: "d2")
+        let copies = Copies()
+        let area = makeArea(spacePolicy: try budgetPolicy(units: 1, of: rejected), copies: copies,
+                            copy: { source, destination in
+            // 失敗を報告しないままサイズの合わないコピーが出来た(stage が捨てる)
+            if source.lastPathComponent == "d1.epub" {
+                try Data([0]).write(to: destination)
+                return
+            }
+            try FileManager.default.copyItem(at: source, to: destination)
+        })
+        let refused = await area.stagedCopy(forResolvedPath: CanonicalPath.normalize(rejected.path))
+        XCTAssertNil(refused, "サイズの合わないコピーは採用しない")
+        let freed = await waitUntil { area.ledger.reservedBytes == 0 && self.stagedFiles().isEmpty }
+        XCTAssertTrue(freed, "捨てたコピーはファイルを消した後に予算を返す")
+
+        let staged = try await area.openPublication(at: next)
+        XCTAssertEqual(copies.count, 2, "返った予算で次の本がステージングされる")
+        XCTAssertEqual(stagedFiles().count, 1)
+        XCTAssertEqual(staged.metadata.mainTitle, "d2")
     }
 
     // MARK: - 共有と寿命
