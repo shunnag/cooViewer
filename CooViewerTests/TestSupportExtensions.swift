@@ -10,8 +10,8 @@ extension Book {
                      sortMode: SortMode = .name,
                      cacheByteLimit: Int = 512 * 1024 * 1024) {
         self.init(source: source,
-                  prepared: Book.prepare(url: source.url, entries: entries,
-                                         sortMode: sortMode, probe: FileManagerProbe()),
+                  prepared: Book.prepare(url: source.url, entries: entries, sortMode: sortMode,
+                                         identity: FileManagerProbe.blockingIdentity(at: source.url)),
                   sortMode: sortMode, cacheByteLimit: cacheByteLimit)
     }
 }

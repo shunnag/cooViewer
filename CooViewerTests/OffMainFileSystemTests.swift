@@ -56,6 +56,11 @@ private final class SlowProbe: FileSystemProbing, @unchecked Sendable {
         return existing.contains(path)
     }
 
+    func itemKind(at url: URL) -> (exists: Bool, isDirectory: Bool) {
+        slowCall()
+        return (existing.contains(url.path), false)
+    }
+
     func identity(at url: URL) -> BookFileIdentity {
         slowCall()
         return BookFileIdentity(modified: 123, size: 456)
@@ -110,7 +115,7 @@ final class SiblingBooksOffMainTests: XCTestCase {
             .map { parent.appendingPathComponent($0).path }
     }
 
-    func testScanMatchesLegacyComputationOnRealFolder() throws {
+    func testScanMatchesLegacyComputationOnRealFolder() async throws {
         let root = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let manager = FileManager.default
@@ -138,7 +143,7 @@ final class SiblingBooksOffMainTests: XCTestCase {
         try manager.createSymbolicLink(at: root.appendingPathComponent("link.txt"),
                                        withDestinationURL: root.appendingPathComponent("readme.txt"))
 
-        let scanned = SiblingBooks.scan(parent: root, probe: FileManagerProbe())
+        let scanned = await SiblingBooks.scan(parent: root, probe: FileManagerProbe())
         XCTAssertEqual(scanned, legacySiblings(parent: root))
         XCTAssertTrue(scanned.contains(root.appendingPathComponent("link to folder").path))
         XCTAssertTrue(scanned.contains(root.appendingPathComponent("flagged.zip").path))
@@ -165,8 +170,9 @@ final class SiblingBooksOffMainTests: XCTestCase {
         let tickAt = try XCTUnwrap(mainTick.withLock { $0 })
         XCTAssertLessThan(tickAt, finished, "走査中にメインアクターの別タスクが走る")
         XCTAssertEqual(probe.record.mainThreadCalls, 0)
-        XCTAssertEqual(paths, SiblingBooks.scan(parent: current.deletingLastPathComponent(),
-                                                probe: SlowProbe(items: ["*": items], delay: 0)))
+        let synchronous = await SiblingBooks.scan(parent: current.deletingLastPathComponent(),
+                                                  probe: SlowProbe(items: ["*": items], delay: 0))
+        XCTAssertEqual(paths, synchronous)
         XCTAssertEqual(paths, ["/stub/parent/a", "/stub/parent/b.zip"])
 
         // 同時要求は 1 回の走査へ合流し、完了後はキャッシュから同期で返る
