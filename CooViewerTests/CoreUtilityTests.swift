@@ -106,11 +106,13 @@ final class PageCacheTests: XCTestCase {
 
     func testCreatedUnderPressureStartsLoweredAndFollowsNotification() async {
         let center = NotificationCenter()
-        let cache = PageCache(byteLimit: oneCost * 8, pressure: FixedMemoryPressure(.warning),
+        let pressure = MutableMemoryPressure(.warning)
+        let cache = PageCache(byteLimit: oneCost * 8, pressure: pressure,
                               center: center)
         XCTAssertEqual(cache.byteLimit, oneCost * 4)
+        pressure.memoryPressureLevel = .critical
         center.post(name: MemoryPressureMonitor.didChangeNotification,
-                    object: FixedMemoryPressure(.critical))
+                    object: pressure)
         // 観測は MainActor へ跳ぶ Task なので完了を待つ
         for _ in 0..<200 where cache.byteLimit != oneCost * 2 {
             try? await Task.sleep(for: .milliseconds(10))
@@ -315,18 +317,40 @@ final class ImageResamplerPressureTests: XCTestCase {
     func testCreatedUnderPressureStartsLoweredAndFollowsNotifications() async {
         let cost = oneCost
         let center = NotificationCenter()
-        let resampler = ImageResampler(byteLimit: cost * 8, pressure: FixedMemoryPressure(.critical),
+        let pressure = MutableMemoryPressure(.critical)
+        let resampler = ImageResampler(byteLimit: cost * 8, pressure: pressure,
                                        center: center)
         var stats = await resampler.stats()
         XCTAssertEqual(stats.limitBytes, cost * 2)
 
         // 通知の object が提供者。actor へ跳ぶので完了を待ってから読む
-        center.post(name: MemoryPressureMonitor.didChangeNotification, object: FixedMemoryPressure(.normal))
+        pressure.memoryPressureLevel = .normal
+        center.post(name: MemoryPressureMonitor.didChangeNotification, object: pressure)
         for _ in 0..<200 where await resampler.stats().limitBytes != cost * 8 {
             try? await Task.sleep(for: .milliseconds(10))
         }
         stats = await resampler.stats()
         XCTAssertEqual(stats.limitBytes, cost * 8)
+    }
+
+    func testDelayedInitialPressureUpdateReadsLatestProviderLevel() async {
+        let pressure = MutableMemoryPressure(.critical)
+        let resampler = ImageResampler(byteLimit: 1 << 20, pressure: pressure,
+                                       center: NotificationCenter())
+        let initialStats = await resampler.stats()
+        XCTAssertEqual(initialStats.limitBytes, 256 << 10)
+        // critical 時点の処理を保存し、normal の処理より後で適用する。
+        let initialUpdate = { @Sendable in
+            await resampler.applyMemoryPressure(from: pressure)
+        }
+        pressure.memoryPressureLevel = .normal
+        await resampler.applyMemoryPressure(from: pressure)
+        let restoredStats = await resampler.stats()
+        XCTAssertEqual(restoredStats.limitBytes, 1 << 20)
+
+        await initialUpdate()
+        let finalStats = await resampler.stats()
+        XCTAssertEqual(finalStats.limitBytes, 1 << 20)
     }
 }
 

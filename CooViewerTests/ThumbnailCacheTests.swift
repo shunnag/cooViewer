@@ -332,11 +332,41 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(afterNormal, afterCritical, "復帰で埋め直しも追い出しもしない")
     }
 
-    func testCreatedUnderPressureStartsLowered() async {
+    func testCreatedUnderPressureStartsLoweredAndFollowsNotifications() async {
+        let center = NotificationCenter()
+        let pressure = MutableMemoryPressure(.critical)
         let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 1 << 20,
-                                   pressure: FixedMemoryPressure(.critical), center: NotificationCenter())
-        let usage = await cache.debugMemoryUsage()
+                                   pressure: pressure, center: center)
+        var usage = await cache.debugMemoryUsage()
         XCTAssertEqual(usage.limit, 256 << 10)
+
+        pressure.memoryPressureLevel = .normal
+        center.post(name: MemoryPressureMonitor.didChangeNotification, object: pressure)
+        for _ in 0..<200 where await cache.debugMemoryUsage().limit != 1 << 20 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        usage = await cache.debugMemoryUsage()
+        XCTAssertEqual(usage.limit, 1 << 20)
+    }
+
+    func testDelayedInitialPressureUpdateReadsLatestProviderLevel() async {
+        let pressure = MutableMemoryPressure(.critical)
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 1 << 20,
+                                   pressure: pressure, center: NotificationCenter())
+        let initialUsage = await cache.debugMemoryUsage()
+        XCTAssertEqual(initialUsage.limit, 256 << 10)
+        // critical 時点の処理を保存し、normal の処理より後で適用する。
+        let initialUpdate = { @Sendable in
+            await cache.applyMemoryPressure(from: pressure)
+        }
+        pressure.memoryPressureLevel = .normal
+        await cache.applyMemoryPressure(from: pressure)
+        let restoredUsage = await cache.debugMemoryUsage()
+        XCTAssertEqual(restoredUsage.limit, 1 << 20)
+
+        await initialUpdate()
+        let finalUsage = await cache.debugMemoryUsage()
+        XCTAssertEqual(finalUsage.limit, 1 << 20)
     }
 
     /// 1枚で予算超過でも最後の1枚は残す(再生成の繰り返し防止)
