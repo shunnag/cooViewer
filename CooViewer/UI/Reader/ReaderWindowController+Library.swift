@@ -37,14 +37,18 @@ extension ReaderWindowController {
                                 marks: book.marks, bookmarks: bookmarks)))
     }
 
-    /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)
-    func restoreBookState(for book: Book, skipPageRestore: Bool) {
+    /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)。
+    /// 保存された並び順への並べ替えはメインアクター外で行われるので、初回描画が
+    /// 復元後の並びになるよう完了を待つ。待つ間に後発のオープンが始まっていたら
+    /// 以降(特に「前回のページへ?」の確認ダイアログ)は行わない
+    func restoreBookState(for book: Book, skipPageRestore: Bool, generation: Int) async {
         let store = history
         let path = book.source.url.path
         if let saved = store.settings(displayName: book.displayName, path: path) {
             if let readMode = saved.readMode { book.readMode = readMode }
             if let sortMode = saved.sortMode, sortMode != book.sortMode {
-                book.setSortMode(sortMode)
+                _ = await book.setSortMode(sortMode).value
+                guard generation == openGeneration else { return }
             }
             book.marks = saved.marks
             // しおりは保存時のページパスで照合し直す(エントリ列の変化に追従)
@@ -56,8 +60,11 @@ extension ReaderWindowController {
                 return resolved
             }
         }
-        // 復元ページは履歴を更新する前に読む(仕様書 §4.1.2: 手順 7 → 8 の順)
-        let restorePage = store.savedPage(forPath: path)
+        // 復元ページは履歴を更新する前に読む(仕様書 §4.1.2: 手順 7 → 8 の順)。
+        // 復元ゲートの実在確認はメインアクター外(上限内なら I/O なし)
+        let inRecents = await store.isWithinRecentLimit(path: path)
+        guard generation == openGeneration else { return }
+        let restorePage = store.savedPage(forPath: path, inRecents: inRecents)
 
         // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)。
         // ページパスが記録されていれば同じファイルのページへ照合し直す
@@ -197,48 +204,69 @@ extension ReaderWindowController {
 
     // MARK: - 同フォルダの次/前の本(仕様書 §4.1.4, §4.3.4)
 
-    /// 親フォルダ内の「本」一覧(名前順、隠しファイル除外)。
-    /// 巻末付近では毎ページ表示ごとに呼ばれる(次の本の事前準備)ため、
-    /// 5 秒間キャッシュしてメインスレッドのディレクトリ走査を抑える
-    /// (NAS/HDD の大きなフォルダで毎ページ数十 ms 止まるのを防ぐ)
-    private func siblingBooks(of currentURL: URL) -> [String] {
+    /// 親フォルダ内の「本」一覧(名前順、隠しファイル除外。SiblingBooks.scan)。
+    /// 巻末付近では毎ページ表示ごとに呼ばれる(次の本の事前準備)ため 5 秒間
+    /// キャッシュし、ミス時の走査はメインアクター外で行う(NAS では stat 1 回が
+    /// 数 ms、死んだマウントでは SMB タイムアウトまで止まる)。キャッシュ命中は
+    /// 中断点なしに同期で返り、進行中の走査には合流する(設計書 §7.3)
+    func siblingBooks(of currentURL: URL) async -> [String] {
         // EPUB モードでも同じ兄弟走査を使う(次/前の本の操作感を揃える)
         let parent = currentURL.deletingLastPathComponent()
         if let cached = cachedSiblings, cached.parent == parent.path,
            Date().timeIntervalSince1970 - cached.timestamp < 5 {
             return cached.paths
         }
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: parent.path)
-        else { return [] }
-        let paths = names
-            .filter { !$0.hasPrefix(".") }
-            .filter { name in
-                let url = parent.appendingPathComponent(name)
-                var isDirectory: ObjCBool = false
-                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-                return isDirectory.boolValue || SupportedTypes.isBookFile(url)
-            }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-            .map { parent.appendingPathComponent($0).path }
-        cachedSiblings = (parent.path, paths, Date().timeIntervalSince1970)
+        if let scan = siblingScan, scan.parent == parent.path {
+            return await scan.task.value
+        }
+        let probe = fileSystemProbe
+        let startedAt = Date().timeIntervalSince1970
+        let task = Task.detached(priority: .userInitiated) {
+            SiblingBooks.scan(parent: parent, probe: probe)
+        }
+        siblingScan = (parent.path, task)
+        let paths = await task.value
+        // 自分の走査だけを畳む(別フォルダの走査は結果を親パス付きで持つので
+        // 混ざらない)。走査開始後に別フォルダの一覧がキャッシュされていたら
+        // (遅い旧フォルダの結果が後から届いた)、新しい方を上書きしない。
+        // 呼び出し側は本・世代の照合で古い一覧を使わない
+        if siblingScan?.task == task { siblingScan = nil }
+        if (cachedSiblings?.timestamp ?? 0) <= startedAt {
+            cachedSiblings = (parent.path, paths, Date().timeIntervalSince1970)
+        }
         return paths
     }
 
     /// 次/前の本へ(端でラップアラウンド。§4.3.4)。openLast=前の本を末尾から開く。
     /// コレクション(合本)内から開いた EPUB では「本」はコレクション自体
     /// なので、基準をコレクションフォルダへ読み替える(設計書 §2.4 EPUB 対応)。
-    /// fromSlideshow は openBookFlow まで一時的に伝播し、タイマーを維持する
+    /// fromSlideshow は openBookFlow まで一時的に伝播し、タイマーを維持する。
+    /// 兄弟一覧の取得を待つ間に別のオープンが始まったり基準の本が変わったら、
+    /// 古い一覧で開かない(その後継フローが復帰フラグも畳む)
+    @discardableResult
     func openAdjacentBook(forward: Bool, openLast: Bool = false,
-                          fromSlideshow: Bool = false) {
+                          fromSlideshow: Bool = false) -> Task<Void, Never>? {
         guard let currentURL =
             epubCollectionContext?.folderURL ?? currentBookFileURL else {
             // 復帰オープンが不成立。この終端は openBook(→openBookFlow の defer)を
             // 通らないため、ここで復帰フラグを消さないと残って didReachBookEdge の
             // ガードを恒久的に塞ぐ(cooViewer-s7j)
             collectionNavigation.returnPending = false
-            return
+            return nil
         }
-        let siblings = siblingBooks(of: currentURL)
+        let generation = openGeneration
+        return Task {
+            let siblings = await siblingBooks(of: currentURL)
+            guard generation == openGeneration,
+                  (epubCollectionContext?.folderURL ?? currentBookFileURL) == currentURL
+            else { return }
+            openAdjacentBook(from: currentURL, siblings: siblings, forward: forward,
+                             openLast: openLast, fromSlideshow: fromSlideshow)
+        }
+    }
+
+    private func openAdjacentBook(from currentURL: URL, siblings: [String],
+                                  forward: Bool, openLast: Bool, fromSlideshow: Bool) {
         guard !siblings.isEmpty,
               let current = siblings.firstIndex(of: currentURL.path) else {
             // 兄弟が無い/現在の本が一覧に見つからない(読書中の外部改名・移動、
@@ -618,12 +646,24 @@ extension ReaderWindowController {
 
     /// 巻末が近づいたら同フォルダの次の書庫をバックグラウンドで開いて
     /// ローカル展開を始める。開く際に openBookFlow が再利用する。
-    func maybePrepareNextBook() {
+    @discardableResult
+    func maybePrepareNextBook() -> Task<Void, Never>? {
         let threshold = settings.prepareNextBookPages  // 0 は無効(設定「高度」)
         guard threshold > 0, let book, book.pageCount > 0,
               book.currentIndex >= book.pageCount - threshold,
-              let currentURL = currentBookFileURL else { return }
-        let siblings = siblingBooks(of: currentURL)
+              let currentURL = currentBookFileURL else { return nil }
+        return Task {
+            let siblings = await siblingBooks(of: currentURL)
+            // 一覧を待つ間に本が替わっていたら旧フォルダの隣を準備しない
+            guard book === self.book else { return }
+            prepareNextBook(for: book, siblings: siblings)
+        }
+    }
+
+    /// 兄弟一覧が揃った後の準備本体。await を含まないので、同じ一覧へ合流した
+    /// 複数回の呼び出しが preparingNextBookPath の照合をすり抜けて二重に
+    /// 準備を始めることはない
+    private func prepareNextBook(for book: Book, siblings: [String]) {
         guard siblings.count > 1,
               let current = siblings.firstIndex(of: book.source.url.path) else { return }
         let nextPath = siblings[(current + 1) % siblings.count]
@@ -685,9 +725,16 @@ extension ReaderWindowController {
 
     // MARK: - 最後に開いた本(仕様書 §4.1.1 #1)
 
-    func openTheLastBook() {
-        guard let recent = history.mostRecentBook() else { return }
-        openBook(at: URL(fileURLWithPath: recent.path))
+    /// 実在判定は履歴側がメインアクター外で行う(消えた本を飛ばす旧挙動のまま)。
+    /// 待つ間に別の本が開かれていたら、古い要求で置き換えない
+    @discardableResult
+    func openTheLastBook() -> Task<Void, Never> {
+        let generation = openGeneration
+        return Task {
+            guard let recent = await history.mostRecentExistingBook(),
+                  generation == openGeneration else { return }
+            openBook(at: URL(fileURLWithPath: recent.path))
+        }
     }
 
     // MARK: - メニュー用アクション
@@ -814,14 +861,35 @@ final class ChapterListMenuDelegate: NSObject, NSMenuDelegate {
     }
 }
 
-/// Open Recent サブメニューを開くたびに履歴から再構築する(仕様書 §7.2)
+/// Open Recent サブメニューを開くたびに履歴から再構築する(仕様書 §7.2)。
+/// menuNeedsUpdate は同期で項目を要求されるため、まず前回判明している実在
+/// 状態で埋め(未判定は一覧どおり表示)、実在の再確認はメインアクター外で
+/// 行って終わったら項目を差し替える。死んだマウントでもメニューが止まらない
 @MainActor
 final class RecentBooksMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = RecentBooksMenuDelegate()
+    private let store: BookHistoryStore
+    /// 再確認の世代。古い再確認が新しい表示を上書きしないため
+    private var refreshGeneration = 0
+
+    init(store: BookHistoryStore = .shared) {
+        self.store = store
+    }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        let shown = store.recentBookPaths()
+        fill(menu, with: shown)
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        Task {
+            let fresh = await store.existingRecentBookPaths()
+            guard generation == refreshGeneration, fresh != shown else { return }
+            fill(menu, with: fresh)
+        }
+    }
+
+    private func fill(_ menu: NSMenu, with paths: [String]) {
         menu.removeAllItems()
-        let paths = BookHistoryStore.shared.recentBookPaths()
         for path in paths {
             let item = menu.addItem(withTitle: (path as NSString).lastPathComponent,
                                     action: #selector(AppDelegate.openRecentBook(_:)),

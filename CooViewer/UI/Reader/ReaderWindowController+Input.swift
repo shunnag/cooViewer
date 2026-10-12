@@ -703,7 +703,7 @@ extension ReaderWindowController {
         case .enlargeViewMode: stepViewMode(enlarge: true)
         case .reduceViewMode: stepViewMode(enlarge: false)
         case .cycleSortMode: cycleSortMode()
-        case .shuffle: book?.setSortMode(.shuffle); refreshAfterJump()
+        case .shuffle: sortBook(.shuffle)
         case .closeWindow: window?.performClose(nil)
         case .toggleFullscreen: window?.toggleFullScreen(nil)
         case .minimizeWindow: window?.performMiniaturize(nil)
@@ -862,8 +862,19 @@ extension ReaderWindowController {
             default: next = .name
             }
         }
-        book.setSortMode(next)
-        refreshAfterJump()
+        sortBook(next)
+    }
+
+    /// 並べ替えはメインアクター外で行われるため、並びが適用されてから表示を
+    /// 更新する。別のモード変更に抜かれて捨てられた結果や、待つ間に替わった
+    /// 本では更新しない(抜いた側が更新する)
+    private func sortBook(_ mode: SortMode) {
+        guard let book else { return }
+        let sorting = book.setSortMode(mode)
+        Task {
+            guard await sorting.value, book === self.book else { return }
+            refreshAfterJump()
+        }
     }
 
     func showContextMenu() {

@@ -167,13 +167,14 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.recentBookPaths(), [a, b])
     }
 
-    func testSavedPageFromRecentAndLastPages() throws {
+    func testSavedPageFromRecentAndLastPages() async throws {
         let a = try makeBookFile("a.zip")
         defaults.set(true, forKey: "AlwaysRememberLastPage")
         store.noteOpened(path: a)
         store.noteClosed(path: a, pageIndex: 42)
         XCTAssertEqual(store.savedPage(forPath: a)?.page, 42)
-        XCTAssertEqual(store.mostRecentBook()?.page, 42)
+        let recent = await store.mostRecentExistingBook()
+        XCTAssertEqual(recent?.page, 42)
     }
 
     func testNoteOpenedPreservesSavedPageForRestore() throws {
@@ -226,19 +227,23 @@ final class BookHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.savedPage(forPath: b)?.page, 7)
     }
 
-    func testRecentsSkipDeletedBooks() throws {
+    func testRecentsSkipDeletedBooks() async throws {
         // 消えた本は一覧・最後の本から飛ばす(旧 §7.2)。一覧自体は保持し、
-        // ドライブ再接続などで実体が戻れば再び現れる
+        // ドライブ再接続などで実体が戻れば再び現れる。実在確認はメインアクター外
+        // (existingRecentBookPaths)で行い、同期の recentBookPaths はその結果を映す
         let a = try makeBookFile("a.zip")
         let b = try makeBookFile("b.zip")
         store.noteOpened(path: b)
         store.noteOpened(path: a)  // a が最新
         try FileManager.default.removeItem(atPath: a)
-        XCTAssertEqual(store.recentBookPaths(), [b])
-        XCTAssertEqual(store.mostRecentBook()?.path, b,
-                       "消えた本を飛ばして次の実在する本へ")
+        let afterDelete = await store.existingRecentBookPaths()
+        XCTAssertEqual(afterDelete, [b])
+        XCTAssertEqual(store.recentBookPaths(), [b], "同期一覧は前回の確認結果を映す")
+        let recent = await store.mostRecentExistingBook()
+        XCTAssertEqual(recent?.path, b, "消えた本を飛ばして次の実在する本へ")
         try Data("x".utf8).write(to: URL(fileURLWithPath: a))  // 復活
-        XCTAssertEqual(store.recentBookPaths(), [a, b])
+        let afterRestore = await store.existingRecentBookPaths()
+        XCTAssertEqual(afterRestore, [a, b])
     }
 
     func testRelocationFollowsMovedBook() throws {

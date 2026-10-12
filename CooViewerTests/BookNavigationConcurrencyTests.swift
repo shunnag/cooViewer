@@ -123,7 +123,7 @@ final class BookNavigationConcurrencyTests: XCTestCase {
         let display = Task { await book.currentSpread() }
         await fulfillment(of: [source.paused], timeout: 2)
 
-        book.setSortMode(.creationDate)
+        await book.setSortMode(.creationDate).value  // 並べ替えはメインアクター外
         await source.resume()
         let completed = await display.value
         XCTAssertEqual(completed.indices, [0])
