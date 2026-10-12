@@ -152,8 +152,11 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   directly, while EPUBs on non-mappable volumes (NAS/removable/disk images) are copied once
   per file identity (symlink-resolved path + size + mtime) into the archive spool and mapped
   read-only. The publication URL stays the original path (book state/recents/census keys
-  unchanged), and any staging or parse failure falls back to Washi's `.alwaysCopy`. Copies
-  are deleted when their last publication goes away, at quit, and by the next launch's cleanup.
+  unchanged), and any staging or parse failure falls back to Washi's `.alwaysCopy`, as does a
+  copy that would break the disk policy (each copy leaves 256 MiB free, and live plus in-flight
+  copies stay within min(8 GiB, 10% of the staging volume's free space measured before each
+  copy); mapped copies are never evicted). Copies are deleted when their last publication goes
+  away, at quit, and by the next launch's cleanup.
 - Washi(`../Washi`、別リポジトリ) — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
   DRM detection, reflowable WKWebView renderer with vertical-writing pagination,
   paper-book page furniture (folio / page number in the bottom margin), light/dark theming,
