@@ -27,6 +27,7 @@ final class EPUBAtlasStoreTests: XCTestCase {
     private final class AtlasStub: EPUBScreenAtlasing {
         let publication: EPUBPublication
         private(set) var invalidateCount = 0
+        var offscreenEnergyPolicy: EPUBOffscreenEnergyPolicy = .followSystem
 
         init(publication: EPUBPublication) {
             self.publication = publication
@@ -53,6 +54,30 @@ final class EPUBAtlasStoreTests: XCTestCase {
         EPUBScreenMetrics(
             viewportSize: CGSize(width: 640, height: 900),
             settings: EPUBReaderSettings())
+    }
+
+    /// 電力方針の変更は保持中の全アトラスへ届き、作り直さない(設計書 §5)
+    func testApplyEnergyPolicyReachesEveryCachedAtlas() async throws {
+        let directory = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var stubs: [AtlasStub] = []
+        let store = EPUBAtlasStore(makeAtlas: {
+            let stub = AtlasStub(publication: $0)
+            stubs.append(stub)
+            return stub
+        })
+        for name in ["first", "second"] {
+            let url = directory.appendingPathComponent("\(name).epub")
+            try Self.epubData(identifier: name, body: "本文").write(to: url)
+            _ = await store.screenPlan(for: url, metrics: metrics)
+        }
+        XCTAssertEqual(stubs.count, 2)
+
+        store.applyEnergyPolicy(.unrestricted)
+        XCTAssertEqual(stubs.map(\.offscreenEnergyPolicy), [.unrestricted, .unrestricted])
+        store.applyEnergyPolicy(.followSystem)
+        XCTAssertEqual(stubs.map(\.offscreenEnergyPolicy), [.followSystem, .followSystem])
+        XCTAssertEqual(stubs.map(\.invalidateCount), [0, 0], "方針の変更でアトラスを捨てない")
     }
 
     func testScreenPlanUsesMatchingPreparsedPublication() async throws {
@@ -172,7 +197,8 @@ final class EPUBAtlasStoreTests: XCTestCase {
         XCTAssertEqual(atlases.count, 2, "file identity が同じなら再検査後も再利用する")
     }
 
-    private nonisolated static func epubData(
+    /// 他の EPUB テスト(EPUBOffscreenSettingsTests)も同じ最小 EPUB を使う
+    nonisolated static func epubData(
         identifier: String, body: String
     ) -> Data {
         let container = """
