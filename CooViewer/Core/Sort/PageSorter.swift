@@ -54,3 +54,15 @@ enum PageSorter {
         }.map(\.element)
     }
 }
+
+/// 並べ替えの実行者。Book はメインアクター外でこれを呼ぶ。テストは遅延する
+/// 偽物へ差し替え、古い完了結果が捨てられることを検証する(設計書 §7.3)
+protocol PageSorting: Sendable {
+    func sorted(_ entries: [PageEntry], mode: SortMode) -> [PageEntry]
+}
+
+struct StandardPageSorter: PageSorting {
+    func sorted(_ entries: [PageEntry], mode: SortMode) -> [PageEntry] {
+        PageSorter.sorted(entries, mode: mode)
+    }
+}

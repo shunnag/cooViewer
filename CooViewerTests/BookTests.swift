@@ -436,7 +436,7 @@ final class BookTests: XCTestCase {
     func testSortChangeResetsToFirstPage() async throws {
         let book = try await makeBook(Array(repeating: portrait, count: 5))
         book.goTo(index: 3)
-        book.setSortMode(.shuffle)
+        await book.setSortMode(.shuffle).value  // 並べ替えはメインアクター外
         XCTAssertEqual(book.currentIndex, 0)             // 旧仕様維持(§13.3)
         XCTAssertEqual(book.pageCount, 5)
     }

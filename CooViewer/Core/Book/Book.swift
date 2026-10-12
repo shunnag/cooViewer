@@ -38,6 +38,7 @@ final class Book {
     let cacheKey: String
 
     private let cache: PageCache
+    private let sorter: any PageSorting
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
     /// 見開き取得は同じ位置・並び・配置条件で完了した結果だけを採用する。
@@ -73,33 +74,64 @@ final class Book {
         case superseded  // 待機中のジャンプ/設定変更により失効。端の処理を行わない
     }
 
-    init(source: any BookSource, entries: [PageEntry],
-         sortMode: SortMode = .name,
-         cacheByteLimit: Int = 512 * 1024 * 1024) {
+    /// 初期ソートと同一性キーはメインアクター外で済ませた結果(prepare)を受け取る。
+    /// 実際に開く経路は open(source:) を使う
+    init(source: any BookSource, prepared: PreparedEntries,
+         sortMode: SortMode = .name, cacheByteLimit: Int = 512 * 1024 * 1024,
+         sorter: any PageSorting = StandardPageSorter()) {
         self.source = source
         self.sortMode = sortMode
-        self.entries = PageSorter.sorted(entries, mode: sortMode)
+        self.entries = prepared.sortedEntries
         self.cache = PageCache(byteLimit: cacheByteLimit)
-        self.cacheKey = Self.makeCacheKey(for: source.url, entries: entries)
+        self.cacheKey = prepared.cacheKey
+        self.sorter = sorter
     }
 
     static func open(source: any BookSource, sortMode: SortMode = .name,
-                     cacheByteLimit: Int = 512 * 1024 * 1024) async throws -> Book {
+                     cacheByteLimit: Int = 512 * 1024 * 1024,
+                     probe: any FileSystemProbing = FileManagerProbe(),
+                     sorter: any PageSorting = StandardPageSorter()) async throws -> Book {
         let entries = try await source.entries()
-        return Book(source: source, entries: entries, sortMode: sortMode,
-                    cacheByteLimit: cacheByteLimit)
+        // 名前順ソート(2 万件で約 100ms)と本ファイルの stat(NAS では数 ms、
+        // 死んだマウントでは SMB タイムアウトまで)はメインアクターを止めない
+        // よう別タスクで済ませる
+        let url = source.url
+        let prepared = await Task.detached(priority: .userInitiated) {
+            prepare(url: url, entries: entries, sortMode: sortMode, probe: probe, sorter: sorter)
+        }.value
+        return Book(source: source, prepared: prepared, sortMode: sortMode,
+                    cacheByteLimit: cacheByteLimit, sorter: sorter)
+    }
+
+    /// init に渡す「メインアクター外で済ませておく計算」の結果
+    struct PreparedEntries: Sendable {
+        let sortedEntries: [PageEntry]
+        let cacheKey: String
+
+        /// 開けなかった本の空プレースホルダ用。ページが無いのでキャッシュキーは
+        /// 使われず、stat を省いてメインアクター上で即座に作れる
+        static func empty(for url: URL) -> PreparedEntries {
+            PreparedEntries(sortedEntries: [],
+                            cacheKey: makeCacheKey(for: url, entries: [], identity: .init()))
+        }
+    }
+
+    nonisolated static func prepare(url: URL, entries: [PageEntry], sortMode: SortMode,
+                                    probe: any FileSystemProbing,
+                                    sorter: any PageSorting = StandardPageSorter())
+        -> PreparedEntries {
+        PreparedEntries(sortedEntries: sorter.sorted(entries, mode: sortMode),
+                        cacheKey: makeCacheKey(for: url, entries: entries,
+                                               identity: probe.identity(at: url)))
     }
 
     /// 本の同一性キー。ファイル情報に加えて**エントリ一覧のダイジェスト**を
     /// 混ぜる: フォルダの本はサブフォルダ内だけの変更や同名上書きで親の
     /// 更新日時が変わらないため、ファイル情報だけでは古いサムネイルが残る。
     /// エントリ側のダイジェストは順序非依存(ソート・シャッフルの影響なし)
-    private static func makeCacheKey(for url: URL, entries: [PageEntry]) -> String {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let modified = (attributes?[.modificationDate] as? Date)?
-            .timeIntervalSince1970 ?? 0
-        let size = attributes?[.size] as? Int ?? 0
-        let seed = "\(url.path)|\(modified)|\(size)"
+    nonisolated static func makeCacheKey(for url: URL, entries: [PageEntry],
+                                         identity: BookFileIdentity) -> String {
+        let seed = "\(url.path)|\(identity.modified)|\(identity.size)"
         // 依存を増やさない簡易ハッシュ(djb2 の 64bit 版を 2 系統)で十分
         var hash1: UInt64 = 5381
         var hash2: UInt64 = 52711
@@ -613,12 +645,34 @@ final class Book {
     }
 
     /// ソート変更。旧仕様通り先頭ページへ戻る(仕様書 §13.3 で「維持」判断)。
-    func setSortMode(_ mode: SortMode) {
+    /// モードは即時に確定し(連打で巡回が進む・保存が要求モードを記録する)、
+    /// 並べ替え本体はメインアクター外で行う。完了までに別のモード変更が入って
+    /// いたら古い結果は捨てる(sortGeneration。同じモードへ戻った場合も世代が
+    /// 違えば捨てる)。どの並びからでも名前順に正規化してから適用するため、
+    /// 途中の並びに依存せず最後のモードの結果になる。返す Task は並びが
+    /// 適用されたかを返し、表示更新・初回描画はこれを待つ
+    @discardableResult
+    func setSortMode(_ mode: SortMode) -> Task<Bool, Never> {
         invalidatePendingNavigation()
         sortMode = mode
-        entries = PageSorter.sorted(entries, mode: mode)
-        currentIndex = 0
+        sortGeneration &+= 1
+        let generation = sortGeneration
+        let snapshot = entries
+        let sorter = sorter
+        return Task {
+            let sorted = await Task.detached(priority: .userInitiated) {
+                sorter.sorted(snapshot, mode: mode)
+            }.value
+            guard generation == sortGeneration else { return false }
+            invalidatePendingNavigation()
+            entries = sorted
+            currentIndex = 0
+            return true
+        }
     }
+
+    /// 並べ替え要求の世代。最後の要求の結果だけを採用する
+    private var sortGeneration = 0
 
     /// 先読みを打ち切る(本の切替時に旧本の I/O・デコードを止める)
     func cancelPrefetch() {

@@ -142,6 +142,11 @@ final class ReaderWindowController: NSWindowController {
     var preparingNextBookPath: String?
     /// 同フォルダの本一覧のキャッシュ(+Library。巻末付近の毎ページ走査対策)
     var cachedSiblings: (parent: String, paths: [String], timestamp: Double)?
+    /// 進行中の兄弟走査(親フォルダ単位の単一飛行。巻末付近の毎ページ呼び出しが
+    /// NAS への走査を並列に積まないため。設計書 §7.3)
+    var siblingScan: (parent: String, task: Task<[String], Never>)?
+    /// ディレクトリ列挙・存在判定の注入点(テストは遅延する偽物へ差し替える)
+    var fileSystemProbe: any FileSystemProbing = FileManagerProbe()
 
     /// ページバーホバーのサムネイルバブル(仕様書 §3.4)
     private let pageBarBubble = NSView()
@@ -1088,20 +1093,26 @@ final class ReaderWindowController: NSWindowController {
         var bookURL = url
         var initialPageURL: URL?
 
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        // 開く対象の stat もメインアクター外(NAS では数 ms、死んだマウントでは
+        // SMB タイムアウトまで止まる)。待つ間に後発のオープンが来たら降りる
+        let (exists, isDirectory) = await Task.detached(priority: .userInitiated) {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            return (exists, isDirectory.boolValue)
+        }.value
+        guard generation == openGeneration else { return }
         guard exists else {
             // ドリルダウンから引き継いだ HUD が残らないように畳む
             endAnyOpeningProgress()
             return
         }
-        if !isDirectory.boolValue, !SupportedTypes.isBookFile(url),
+        if !isDirectory, !SupportedTypes.isBookFile(url),
            SupportedTypes.isImageFile(url.lastPathComponent) {
             bookURL = url.deletingLastPathComponent()
             initialPageURL = url
         }
 
-        let isEPUBFile = !isDirectory.boolValue && SupportedTypes.isEPUB(bookURL)
+        let isEPUBFile = !isDirectory && SupportedTypes.isEPUB(bookURL)
         if let prepared = preparedNextEPUB,
            CanonicalPath.normalize(prepared.path)
             != CanonicalPath.normalize(bookURL.path) {
@@ -1326,7 +1337,8 @@ final class ReaderWindowController: NSWindowController {
             }
             guard generation == openGeneration else { return }
             let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
-            restoreBookState(for: book, skipPageRestore: skipPageRestore)
+            await restoreBookState(for: book, skipPageRestore: skipPageRestore,
+                                   generation: generation)
             guard generation == openGeneration else { return }
 
             // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
@@ -1464,9 +1476,9 @@ final class ReaderWindowController: NSWindowController {
             return .notHandled(preparsed: publication)
         }
         endAnyOpeningProgress()
-        presentReflowableEPUB(publication, url: url,
-                              atPage: atPage, atLastPage: atLastPage, epoch: epoch,
-                              fromSlideshow: fromSlideshow)
+        await presentReflowableEPUB(publication, url: url,
+                                    atPage: atPage, atLastPage: atLastPage, epoch: epoch,
+                                    fromSlideshow: fromSlideshow)
         return .handled
     }
 
@@ -1502,7 +1514,8 @@ final class ReaderWindowController: NSWindowController {
         resetInteractiveCurl()
         saveCurrentBookState()
         dismissEPUBMode()
-        let placeholder = Book(source: source, entries: [])
+        // 空のプレースホルダは stat を省いて作る(ページが無くキャッシュキーは使われない)
+        let placeholder = Book(source: source, prepared: .empty(for: source.url))
         replaceBook(placeholder)
         hideThumbnailOverlay()
         thumbnailOverlayModel.clear()
