@@ -4708,6 +4708,26 @@
         }
       }
     },
+    "This archive could not be read. Check the connection and enter the password again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "書庫を読み込めませんでした。接続を確認してもう一度入力してください。"
+          }
+        }
+      }
+    },
+    "This archive could not be read. Check the connection and try opening it again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "書庫を読み込めませんでした。接続を確認してもう一度開いてください。"
+          }
+        }
+      }
+    },
     "This archive is password-protected.": {
       "localizations": {
         "ja": {

@@ -66,7 +66,7 @@ actor NestedUnlocker {
     /// ダイアログは 1 つずつ順番に行う。actor 再入での多重プロンプト防止)
     private var serialTail: Task<Bool, Never>?
 
-    /// child のロック解除を試みる。成功で true、失敗/キャンセルで false
+    /// child のロック解除を試みる。成功で true、失敗/キャンセル/読み取り失敗で false
     /// (呼び出し側はその子を本から外す。仕様書 §4.17 の黙殺方針)。
     /// persistenceKey は保存パスワードの照会・保存キー(呼び出し側が必ず
     /// 実ファイル/親キー由来で組む — 一時展開パスから作らないこと)。
@@ -86,23 +86,40 @@ actor NestedUnlocker {
     private func performUnlock(_ child: any BookSource, name: String,
                                persistenceKey: PasswordVault.Key) async -> Bool {
         // 保存済みパスワード(照会・失敗とも完全無言 = §4.17 の黙殺と整合)。
-        // vault 由来は過去に同意済みなので同意集合に入れる
-        if let vault, let saved = await vault.password(for: persistenceKey),
-           await child.checkAndSetPassword(saved) {
-            consentedPasswords.insert(saved)
-            // 兄弟の子(特に PDF は checkAndSetPassword が addKnown を呼ばない)
-            // にも展延できるよう既知パスワードとしても記録する
-            addKnown(saved)
-            sawUnlockedChild = true
-            return true
+        // vault 由来は過去に同意済みなので同意集合に入れる。
+        // 読み取り失敗(unreadable)は子が読めないのであってパスワードの問題ではない。
+        // 死にかけたボリュームへ残りのパスワードを順に試したり尋ねたりせず、従来の
+        // 無言スキップと同じ扱いで外す(cooViewer-3tfd)。キャンセルとは違い、
+        // 他の子への問い合わせは止めない
+        if let vault, let saved = await vault.password(for: persistenceKey) {
+            switch await child.checkAndSetPassword(saved) {
+            case .accepted:
+                consentedPasswords.insert(saved)
+                // 兄弟の子(特に PDF は checkAndSetPassword が addKnown を呼ばない)
+                // にも展延できるよう既知パスワードとしても記録する
+                addKnown(saved)
+                sawUnlockedChild = true
+                return true
+            case .unreadable:
+                sawSkippedChild = true
+                return false
+            case .rejected:
+                break
+            }
         }
         for password in knownPasswords {
-            if await child.checkAndSetPassword(password) {
+            switch await child.checkAndSetPassword(password) {
+            case .accepted:
                 if consentedPasswords.contains(password) {
                     await vault?.save(password, for: persistenceKey)
                 }
                 sawUnlockedChild = true
                 return true
+            case .unreadable:
+                sawSkippedChild = true
+                return false
+            case .rejected:
+                continue
             }
         }
         guard let provider, !promptingDisabled else {
@@ -116,7 +133,8 @@ actor NestedUnlocker {
                 sawSkippedChild = true
                 return false
             }
-            if await child.checkAndSetPassword(answer.password) {
+            switch await child.checkAndSetPassword(answer.password) {
+            case .accepted:
                 addKnown(answer.password)
                 if answer.saveRequested {
                     consentedPasswords.insert(answer.password)
@@ -124,6 +142,11 @@ actor NestedUnlocker {
                 }
                 sawUnlockedChild = true
                 return true
+            case .unreadable:
+                sawSkippedChild = true
+                return false
+            case .rejected:
+                continue
             }
         }
         sawSkippedChild = true
