@@ -6,6 +6,14 @@ import XCTest
 /// 単一画像へ還元できない FXL を実 WebKit で描画し、複数冊の寿命競合を検査する。
 @MainActor
 final class EPUBRasterizerPoolTests: XCTestCase {
+    func testPoolRasterizerFactoryConfiguresTwentySecondIdleRelease() throws {
+        let rasterizer = EPUBOffscreenSettings.makeRasterizer(
+            publication: try makePublication(channel: 0))
+        defer { rasterizer.invalidate() }
+
+        XCTAssertEqual(rasterizer.idleReleaseInterval, .seconds(20))
+    }
+
     func testConcurrentPublicationsAllProduceTheirOwnImages() async throws {
         let sources = try (0..<3).map { channel in
             let publication = try makePublication(channel: channel)
