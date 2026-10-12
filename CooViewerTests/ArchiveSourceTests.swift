@@ -145,8 +145,11 @@ final class ArchiveSourceTests: XCTestCase {
     }
 
     func testPowerChangeRestrictsExistingExtractorPoolWithoutReopening() async throws {
-        let normalCount = ArchiveSource.extractorPoolSize(lowPowerMode: false)
-        let reducedCount = ArchiveSource.extractorPoolSize(lowPowerMode: true)
+        try XCTSkipIf(ProcessInfo.processInfo.activeProcessorCount < 3,
+                      "協調スレッドを2本塞いでもテストを進行できるよう、3 CPU以上で実行する")
+        // CIの3 CPUでも協調スレッドを1本残す。本番の数値ではなく縮小の仕組みを検証する。
+        let normalCount = 2
+        let reducedCount = 1
         let png = TestFixtures.pngData(width: 4, height: 6)
         let url = try writeZip(named: "power-pool.zip", entries: (0..<normalCount).map {
             (Array("page-\($0).avifs".utf8), png)
@@ -175,7 +178,9 @@ final class ArchiveSourceTests: XCTestCase {
                     XCTAssertEqual(release.wait(timeout: .now() + 10), .success)
                 }
             })
-        let source = try ArchiveSource(url: url, engineFactory: factory, powerState: power)
+        let source = try ArchiveSource(
+            url: url, persistenceKey: .file(path: url.path), engineFactory: factory, powerState: power,
+            extractorPoolSizing: { $0 ? reducedCount : normalCount })
         let pages = try await source.entries()
         let warmTasks = pages.map { entry in
             Task { try await source.image(for: entry, maxPixelSize: nil) }
