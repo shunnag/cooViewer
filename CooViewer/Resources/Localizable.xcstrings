@@ -12,12 +12,92 @@
         }
       }
     },
+    "Archive decode · each extractor": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "書庫の復号 · 展開係 1 つあたり"
+          }
+        }
+      }
+    },
+    "Archive decode · primary": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "書庫の復号 · 主書庫"
+          }
+        }
+      }
+    },
+    "Critical (limits quartered)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "危機(上限を 1/4 に)"
+          }
+        }
+      }
+    },
+    "Memory pressure": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "メモリ圧迫"
+          }
+        }
+      }
+    },
+    "Normal": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通常"
+          }
+        }
+      }
+    },
     "Open this link outside cooViewer?": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
             "value": "このリンクを cooViewer の外で開きますか?"
+          }
+        }
+      }
+    },
+    "Per opened archive, for new readers. Existing readers keep their opening budgets.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開いた書庫ごと、以後開く reader に適用。開いている reader は open 時の予算を保つ。"
+          }
+        }
+      }
+    },
+    "Resource limits": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "資源上限"
+          }
+        }
+      }
+    },
+    "Warning (limits halved)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "警告(上限を半減)"
           }
         }
       }

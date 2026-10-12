@@ -42,6 +42,7 @@ struct ActivityView: View {
 
     @ViewBuilder private var sections: some View {
         VStack(alignment: .leading, spacing: 20) {
+            resourcesSection(s.resources)
             if let book = s.book {
                 bookSection(book)
                 if let loading = s.loading { loadingSection(loading) }
@@ -132,6 +133,15 @@ struct ActivityView: View {
                        "\(s.spooled) / \(s.total)"
                        + (s.active ? " " + String(localized: "(active)") : ""))
             usageRow(String(localized: "Disk used"), used: s.bytes, limit: s.limitBytes)
+        }
+    }
+
+    /// アプリ全体の資源上限(本を開いていなくても出す): メモリ圧迫の段階(実態)と、
+    /// 以後 open する書庫の先行復号予算(計画。開いた書庫ごと。設計書 §5)
+    private func resourcesSection(_ r: ActivitySnapshot.Resources) -> some View {
+        section(String(localized: "Resource limits")) {
+            ForEach(r.rows, id: \.label) { item in row(item.label, item.value) }
+            Text(r.scopeText).font(.caption).foregroundStyle(.secondary)
         }
     }
 

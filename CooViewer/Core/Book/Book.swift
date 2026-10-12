@@ -192,9 +192,15 @@ final class Book {
     var inFlightLoadCount: Int { inFlightLoads.count }
     /// 表示中スプレッドの枚数(1 か 2)
     var displayedPageCount: Int { lastDisplayCount }
-    /// デコード用ページキャッシュの件数・使用バイト(実態)
-    func pageCacheStats() -> (count: Int, cost: Int) {
-        (cache.count, cache.currentCost)
+    /// デコード用ページキャッシュの件数・使用バイト(実態)と実効上限(圧迫段階適用後)
+    func pageCacheStats() -> (count: Int, cost: Int, limit: Int) {
+        (cache.count, cache.currentCost, cache.byteLimit)
+    }
+
+    /// 圧迫段階をキャッシュへ同期的に適用する。キャッシュ自身も通知で追従するが、
+    /// 先読みの再計画が新しい実効上限を読めるよう呼び出し側が先に適用する(冪等。設計書 §5)
+    func applyMemoryPressure(_ level: MemoryPressureLevel) {
+        cache.applyMemoryPressure(level)
     }
 
     // MARK: - 画像ロード

@@ -173,8 +173,8 @@ final class ReaderView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     /// メモリ圧迫時にカールオーバーレイ(スナップショット 2 枚を保持)を
-    /// 即時解放するための監視
-    private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+    /// 即時解放するための監視(圧迫源はアプリ共通の MemoryPressureMonitor。設計書 §5)
+    private let memoryPressureObservation = MemoryPressureObservation(center: .default)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -195,25 +195,14 @@ final class ReaderView: NSView {
         }
         registerForDraggedTypes([.fileURL])
 
-        let pressure = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .critical], queue: .global(qos: .utility))
-        memoryPressureSource = pressure
-        // @Sendable でクロージャの隔離推論を止める。setEventHandler の引数は @Sendable では
-        // ないため、@MainActor の init 内で書いたこのクロージャは @MainActor 隔離と推論される。
-        // DispatchSource はそれを .global(qos: .utility) で呼ぶので、macOS 26.6 の Swift 並行性
-        // ランタイムがクロージャ入口で隔離アサート(dispatch_assert_queue)に失敗し SIGTRAP する
-        // (本を開く前のランダムクラッシュとして報告)。@Sendable なら非隔離になり内側の
-        // Task へ安全に到達する。
-        pressure.setEventHandler { @Sendable [weak self] in
+        // warning / critical のどちらでもオーバーレイを捨てる(normal 復帰では何もしない)。
+        // 段階は MainActor へ跳んだ後に読む(跳ぶ順序に依存しない)
+        memoryPressureObservation.setHandler({ [weak self] provider in
             Task { @MainActor in
+                guard provider.memoryPressureLevel != .normal else { return }
                 self?.removeCurlOverlay()
             }
-        }
-        pressure.activate()
-    }
-
-    deinit {
-        memoryPressureSource?.cancel()
+        }, provider: MemoryPressureMonitor.shared)
     }
 
     override func viewDidMoveToWindow() {
