@@ -1093,12 +1093,12 @@ final class ReaderWindowController: NSWindowController {
         var bookURL = url
         var initialPageURL: URL?
 
-        // 開く対象の stat もメインアクター外(NAS では数 ms、死んだマウントでは
-        // SMB タイムアウトまで止まる)。待つ間に後発のオープンが来たら降りる
+        // 開く対象の stat もメインアクター外で、他の照会と同じ probe(既定実装は専用
+        // キュー)を通す: NAS では数 ms、死んだマウントでは SMB タイムアウトまで止まり、
+        // 協調スレッドを塞がせない(設計書 §7.3)。待つ間に後発のオープンが来たら降りる
+        let probe = fileSystemProbe
         let (exists, isDirectory) = await Task.detached(priority: .userInitiated) {
-            var isDirectory: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            return (exists, isDirectory.boolValue)
+            await probe.itemKind(at: url)
         }.value
         guard generation == openGeneration else { return }
         guard exists else {

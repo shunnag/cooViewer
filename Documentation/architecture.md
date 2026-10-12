@@ -396,6 +396,7 @@ ReaderWindowController は段階変化で先読み深さを一度組み直す(�
 間は事前リサンプルを始めず、進行中は次のページ境界で止め、可視に戻ったとき一度再計画する。
 見えてはいるがアプリが非前面のときは省エネ扱い(次の見開きだけ)で止めない。
 電力・温度通知では先読みを再計画し、表示中ページ・EPUB の WebKit QoS・開いている reader の並列数は変えず、新しい reader の open から電力状態を反映する。
+温度圧迫にはヒステリシスを持たせる(`PowerStateMonitor.thermalReleaseHold` = 45 秒): serious 以上になれば即座に省エネへ入るが、抜けるのは fair 以下が 45 秒続いた後にする。ファンレス機で fair と serious を数十秒周期で往復しても、先読みの再計画と ML 事前リサンプルの破棄を繰り返さないためである。低電力モードは両方向とも即時で、アプリ通知は派生判定が実際に変わるときだけ送る。これはアプリ側の絞りにだけ効き、KaitoKit が reader open 時に評価する自身の `DecodePowerPolicy` と、Washi が自前で OS 状態を見る `EPUBOffscreenEnergyPolicy.followSystem` には関与しない。
 EPUB の画面外 WebKit 処理(census・画面サムネイル・FXL 委譲)だけは Washi の `EPUBOffscreenEnergyPolicy.followSystem`
 を選び(`EPUBOffscreenSettings`、設定と生成ファクトリは `CooViewer/Core/EPUBOffscreenSettings.swift` に集約し、リーダーの `EPUBReaderView` と `EPUBAtlasStore` の全アトラスに適用)、同じ省エネ条件の間は
 項目/ジョブごとに 50 ms 休み、未開始の census は critical の間だけ延期する(QoS は下げず、ページ数と画像は同一)。
@@ -522,6 +523,11 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   前回確認した実在状態(未確認は表示)で即時に埋め、背面の再確認後に差し替える。入口は
   `FileSystemProbing` / `PageSorting` で差し替え可能にし、テストは遅延する偽物で
   メインアクターが止まらないことと古い結果が捨てられることを確認する。
+  既定の `FileManagerProbe` は塞がる FileManager 呼び出し(列挙・存在判定・開く対象の
+  種別 stat・同一性の stat)を協調プールの外、幅 4 の専用
+  キュー(`BlockingProbeQueue`: OperationQueue、超過分はスレッドを持たずに待つ)で走らせ、
+  continuation で橋渡しするため、死んだマウントにぶら下がった呼び出しが協調スレッドを
+  奪って書庫 actor やデコードを止めることはない。
 - 複雑な FXL EPUB の WebKit ラスタライズは専用の2枠を使い、レンダラの
   保持も2個までに制限する。同じ出版物の要求は同じ枠へ合流し、別冊の枠を
   待機ページで埋めない。使用中/待機中の要求があるレンダラは追い出さず、
