@@ -7,7 +7,7 @@ final class ArchiveDecodeBudgetTests: XCTestCase {
         for auto in [1, 4, 16] {
             let budget = ArchiveDecodeBudget(role: .primary, automaticThreads: auto)
             XCTAssertNil(budget.decodeThreads)
-            XCTAssertEqual(budget.powerPolicy, .reduceInLowPowerMode)
+            XCTAssertEqual(budget.powerPolicy, .reduceInLowPowerModeOrThermalPressure)
             XCTAssertEqual(budget.parallelDecodeMemory, 256 << 20)
         }
     }
@@ -18,18 +18,18 @@ final class ArchiveDecodeBudgetTests: XCTestCase {
             for (auto, threads) in zip([1, 4, 16], expected) {
                 let budget = ArchiveDecodeBudget(role: .extractor(poolSize: pool), automaticThreads: auto)
                 XCTAssertEqual(budget.decodeThreads, threads, "auto=\(auto)、pool=\(pool)")
-                XCTAssertEqual(budget.powerPolicy, .reduceInLowPowerMode)
+                XCTAssertEqual(budget.powerPolicy, .reduceInLowPowerModeOrThermalPressure)
                 XCTAssertEqual(budget.parallelDecodeMemory, 128 << 20)
             }
         }
     }
 
     func testNormalAndLowPowerBudgetsUseTheirOpeningState() {
-        for lowPowerMode in [false, true] {
-            let pool = ArchiveSource.extractorPoolSize(lowPowerMode: lowPowerMode, processorCount: 16)
-            let auto = lowPowerMode ? 4 : 16
+        for conserveEnergy in [false, true] {
+            let pool = ArchiveSource.extractorPoolSize(conserveEnergy: conserveEnergy, processorCount: 16)
+            let auto = conserveEnergy ? 4 : 16
             let budget = ArchiveDecodeBudget(role: .extractor(poolSize: pool), automaticThreads: auto)
-            XCTAssertEqual(pool, lowPowerMode ? 3 : 6)
+            XCTAssertEqual(pool, conserveEnergy ? 3 : 6)
             XCTAssertEqual(budget.decodeThreads, 2)
         }
         let singleCore = ArchiveDecodeBudget(role: .extractor(poolSize: 2), automaticThreads: 1)
@@ -41,7 +41,7 @@ final class ArchiveDecodeBudgetTests: XCTestCase {
             let budget = ArchiveDecodeBudget(role: role, automaticThreads: 16)
             let options = budget.readerOptions(lazyLocalHeaders: false)
             XCTAssertEqual(options.decodeThreads, budget.decodeThreads)
-            XCTAssertEqual(options.decodePowerPolicy, .reduceInLowPowerMode)
+            XCTAssertEqual(options.decodePowerPolicy, .reduceInLowPowerModeOrThermalPressure)
             XCTAssertFalse(options.lazyLocalHeaders)
             var defaults = ReadLimits()
             defaults.parallelDecodeMemory = budget.parallelDecodeMemory
@@ -51,8 +51,8 @@ final class ArchiveDecodeBudgetTests: XCTestCase {
 
     func testExtractorPoolShrinksInLowPowerMode() {
         for cores in [1, 4, 8, 16, 32] {
-            let normal = ArchiveSource.extractorPoolSize(lowPowerMode: false, processorCount: cores)
-            XCTAssertEqual(ArchiveSource.extractorPoolSize(lowPowerMode: true, processorCount: cores),
+            let normal = ArchiveSource.extractorPoolSize(conserveEnergy: false, processorCount: cores)
+            XCTAssertEqual(ArchiveSource.extractorPoolSize(conserveEnergy: true, processorCount: cores),
                            max(2, normal / 2))
         }
     }

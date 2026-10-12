@@ -272,34 +272,88 @@ final class PreresamplePolicyTests: XCTestCase {
             PreresamplePolicy.maxPages)
     }
 
-    func testLowPowerPreresampleCapsPagesAndScalesMemoryBudget() {
-        XCTAssertEqual(PreresamplePolicy.pageLimit(lowPowerMode: true), 4)
-        XCTAssertEqual(PreresamplePolicy.pageLimit(lowPowerMode: false), 64)
+    func testPreresamplePageLimitsByQualityAndEnergy() {
+        // (ML, 省エネ) → 枚数 / 見開き数(設計書 §5)
+        XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: false, conserveEnergy: false), 64)
+        XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: false, conserveEnergy: true), 4)
+        XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: true, conserveEnergy: false), 4)
+        XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: true, conserveEnergy: true), 2)
+        XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: false, conserveEnergy: false), 64)
+        XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: false, conserveEnergy: true), 1)
+        XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: true, conserveEnergy: false), 2)
+        XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: true, conserveEnergy: true), 1)
+    }
+
+    func testPreresampleMemoryBudgetScalesWithPageLimit() {
         for memory: UInt64 in [2 << 30, 8 << 30, 64 << 30] {
-            XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: memory, lowPowerMode: true),
-                           PreresamplePolicy.byteBudget(physicalMemory: memory) / 16)
-            XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 1 << 20,
-                physicalMemory: memory, lowPowerMode: true), 4)
+            let normal = PreresamplePolicy.byteBudget(physicalMemory: memory)
+            for usesML in [false, true] {
+                for conserve in [false, true] {
+                    let limit = PreresamplePolicy.pageLimit(usesML: usesML, conserveEnergy: conserve)
+                    XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: memory, usesML: usesML,
+                                                                conserveEnergy: conserve),
+                                   normal / (PreresamplePolicy.maxPages / limit),
+                                   "ML=\(usesML) conserve=\(conserve)")
+                    // 小さなページでは枚数上限、巨大ページでは予算が効く
+                    XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 1 << 20,
+                        physicalMemory: memory, usesML: usesML, conserveEnergy: conserve), limit)
+                }
+            }
         }
         XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 400 << 20,
-            physicalMemory: 2 << 30, lowPowerMode: true), 1)
+            physicalMemory: 2 << 30, conserveEnergy: true), 1)
+        XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 400 << 20,
+            physicalMemory: 2 << 30, usesML: true), 1)
     }
 
-    func testLowPowerPreresampleProcessesOnlyNextSpread() {
+    func testPreresampleSpreadsFollowSpreadAndPageLimits() {
         let predicted = [[2, 3], [4, 5], [6, 7]]
-        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, lowPowerMode: true), [[2, 3]])
-        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, lowPowerMode: false), predicted)
-        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1, 2, 3, 4, 5]], lowPowerMode: true), [[1, 2, 3, 4]])
-        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([], lowPowerMode: true), [])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, usesML: false, conserveEnergy: false), predicted)
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, usesML: false, conserveEnergy: true), [[2, 3]])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, usesML: true, conserveEnergy: false),
+                       [[2, 3], [4, 5]])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, usesML: true, conserveEnergy: true), [[2, 3]])
+        // 単ページ始まりでも見開き数で数える(ML 通常は 2 見開き、省エネは 1 見開き)
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1], [2, 3], [4, 5]], usesML: true, conserveEnergy: false),
+                       [[1], [2, 3]])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1], [2, 3], [4, 5]], usesML: false, conserveEnergy: true),
+                       [[1]])
+        // 見開きは分割しない: 枚数予算に収まらない見開きは丸ごと落として打ち切る
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1, 2, 3]], usesML: true, conserveEnergy: true), [])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1, 2, 3, 4, 5]], usesML: false, conserveEnergy: true), [])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([], usesML: true, conserveEnergy: true), [])
     }
 
-    func testLowPowerDecodeAheadHalvesWithExistingMinimum() {
+    func testPreresampleModeGate() {
+        typealias Mode = PreresamplePolicy.Mode
+        // 不可視は常に停止、可視かつ非前面または省エネは次の見開きだけ、残る 1 通りだけが通常
+        for appActive in [false, true] {
+            for conserve in [false, true] {
+                XCTAssertEqual(PreresamplePolicy.mode(windowVisible: false, appActive: appActive,
+                                                      conserveEnergy: conserve), Mode.paused)
+            }
+        }
+        XCTAssertEqual(PreresamplePolicy.mode(windowVisible: true, appActive: false, conserveEnergy: false),
+                       Mode.conserving)
+        XCTAssertEqual(PreresamplePolicy.mode(windowVisible: true, appActive: false, conserveEnergy: true),
+                       Mode.conserving)
+        XCTAssertEqual(PreresamplePolicy.mode(windowVisible: true, appActive: true, conserveEnergy: true),
+                       Mode.conserving)
+        XCTAssertEqual(PreresamplePolicy.mode(windowVisible: true, appActive: true, conserveEnergy: false),
+                       Mode.normal)
+    }
+
+    func testNoiseReductionLevelsUsingML() {
+        XCTAssertEqual(NoiseReductionLevel.allCases.filter(\.usesMachineLearning), [.strong, .maximum])
+    }
+
+    func testConserveEnergyDecodeAheadHalvesWithExistingMinimum() {
         XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 24,
             decodedPageBytes: 100 << 20, pageCacheByteLimit: 2 << 30,
-            mediaFloor: 12, lowPowerMode: true), 14)
+            mediaFloor: 12, conserveEnergy: true), 14)
         XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 0,
             decodedPageBytes: 0, pageCacheByteLimit: 0,
-            mediaFloor: 2, lowPowerMode: true), 2)
+            mediaFloor: 2, conserveEnergy: true), 2)
     }
 
     func testDecodeBehindIsQuarterOfAhead() {

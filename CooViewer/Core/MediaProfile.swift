@@ -23,20 +23,21 @@ struct MediaProfile: Sendable, Equatable {
     /// 「明示は自動に勝つ」の整合規則(設計書 キャッシュ節)
     var spoolOverride: Bool?
 
-    /// nil は現在の電力状態、テストは明示値で実行機から分離する(設計書 §5)。
-    var lowPowerMode: Bool?
-    var isLowPowerModeEnabled: Bool {
-        lowPowerMode ?? PowerStateMonitor.shared.isLowPowerModeEnabled
+    /// nil は現在の省エネ条件(低電力モードまたは温度圧迫)、テストは明示値で
+    /// 実行機から分離する(設計書 §5)。
+    var conserveEnergy: Bool?
+    var shouldConserveEnergy: Bool {
+        conserveEnergy ?? PowerStateMonitor.shared.shouldConserveEnergy
     }
 
     static let unknown = MediaProfile(mediaClass: .unknown)
 
     init(mediaClass: MediaClass, measuredMBPerSec: Double? = nil,
-         spoolOverride: Bool? = nil, lowPowerMode: Bool? = nil) {
+         spoolOverride: Bool? = nil, conserveEnergy: Bool? = nil) {
         self.mediaClass = mediaClass
         self.measuredMBPerSec = measuredMBPerSec
         self.spoolOverride = spoolOverride
-        self.lowPowerMode = lowPowerMode
+        self.conserveEnergy = conserveEnergy
     }
 
     // MARK: - ベンチマークのしきい値
@@ -82,20 +83,20 @@ struct MediaProfile: Sendable, Equatable {
     /// 2 コア残し、下限は従来値の 6・上限 12(同時デコードのメモリ膨張を抑える)。
     /// M1(8コア)は 6 のままで回帰なし、Pro/Max ほど広がる。
     static var fastLocalConcurrency: Int {
-        fastLocalConcurrency(lowPowerMode: PowerStateMonitor.shared.isLowPowerModeEnabled)
+        fastLocalConcurrency(conserveEnergy: PowerStateMonitor.shared.shouldConserveEnergy)
     }
 
-    static func fastLocalConcurrency(lowPowerMode: Bool,
+    static func fastLocalConcurrency(conserveEnergy: Bool,
                                      processorCount: Int = ProcessInfo.processInfo.activeProcessorCount) -> Int {
         let normal = min(max(6, processorCount - 2), 12)
-        return lowPowerMode ? max(2, normal / 2) : normal
+        return conserveEnergy ? max(2, normal / 2) : normal
     }
 
     /// フォルダの本の同時読み取り上限(サムネイルのセル読みも含む全読者)。
     /// HDD ではシーク嵐を防ぎ、SSD では並列デコードを活かす
     var sourceReadConcurrency: Int {
         switch mediaClass {
-        case .fastLocal: Self.fastLocalConcurrency(lowPowerMode: isLowPowerModeEnabled)
+        case .fastLocal: Self.fastLocalConcurrency(conserveEnergy: shouldConserveEnergy)
         case .slowLocal: 2
         case .network: 3
         case .unknown: 64  // 実質無制限(従来動作)
@@ -106,22 +107,22 @@ struct MediaProfile: Sendable, Equatable {
     /// fastLocal は読み取りゲート(6)と揃え、多コアの並列デコードを活かす
     var bookPrefetchConcurrency: Int {
         let normal = switch mediaClass {
-        case .fastLocal: Self.fastLocalConcurrency(lowPowerMode: false)
+        case .fastLocal: Self.fastLocalConcurrency(conserveEnergy: false)
         case .unknown: 4  // 従来の固定値
         case .slowLocal: 1
         case .network: 2
         }
-        return isLowPowerModeEnabled ? max(mediaClass == .fastLocal ? 2 : 1, normal / 2) : normal
+        return shouldConserveEnergy ? max(mediaClass == .fastLocal ? 2 : 1, normal / 2) : normal
     }
 
     /// サムネイル一覧の先読み並列度
     var thumbnailPrefetchConcurrency: Int {
         let normal = switch mediaClass {
-        case .fastLocal: Self.fastLocalConcurrency(lowPowerMode: false)
+        case .fastLocal: Self.fastLocalConcurrency(conserveEnergy: false)
         case .slowLocal, .network: 2
         case .unknown: 3  // 従来の固定値
         }
-        return isLowPowerModeEnabled ? max(mediaClass == .fastLocal ? 2 : 1, normal / 2) : normal
+        return shouldConserveEnergy ? max(mediaClass == .fastLocal ? 2 : 1, normal / 2) : normal
     }
 
     /// 先読み深さの既定値(高度設定 OFF のときだけ使う。遅い媒体ほど
@@ -132,7 +133,7 @@ struct MediaProfile: Sendable, Equatable {
         case .slowLocal: 16
         case .network: 20
         }
-        return isLowPowerModeEnabled ? max(2, normal / 2) : normal
+        return shouldConserveEnergy ? max(2, normal / 2) : normal
     }
 
     var defaultPrefetchBehind: Int {
@@ -140,7 +141,7 @@ struct MediaProfile: Sendable, Equatable {
         case .fastLocal, .unknown: ReadingResourceDefaults.prefetchBehind
         case .slowLocal, .network: 4
         }
-        return isLowPowerModeEnabled ? normal / 2 : normal
+        return shouldConserveEnergy ? normal / 2 : normal
     }
 
     /// 高度設定の明示値は電力による自動調整に勝つ(設計書 §5)。

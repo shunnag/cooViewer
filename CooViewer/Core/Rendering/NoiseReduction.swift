@@ -56,6 +56,12 @@ enum NoiseReductionLevel: Int, CaseIterable {
     var cappedForOriginalSize: NoiseReductionLevel {
         self == .maximum ? .strong : self
     }
+
+    /// CoreML モデルを走らせる段階(強=ノイズ除去、最高=×4 超解像)。1 ページ数秒の
+    /// GPU / Neural Engine 計算になるため、先読みの深さを別建てで決める(設計書 §5)
+    var usesMachineLearning: Bool {
+        self == .strong || self == .maximum
+    }
 }
 
 /// ML 高画質化の適用範囲。メイン表示は常に含まれ、選択で
