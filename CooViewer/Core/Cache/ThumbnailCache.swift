@@ -85,8 +85,13 @@ actor ThumbnailCache {
         pressureObservation = observation
         // 通知は圧迫源の utility キューで届くので actor へ跳び、跳んだ後に現在値を読む
         observation.setHandler({ [weak self] provider in
-            Task { await self?.applyMemoryPressure(provider.memoryPressureLevel) }
+            Task { await self?.applyMemoryPressure(from: provider) }
         }, provider: pressure)
+    }
+
+    /// actor へ跳んだ後に現在値を読み、遅れて届いた処理も最新の段階を適用する。
+    func applyMemoryPressure(from provider: any MemoryPressureProviding) {
+        applyMemoryPressure(provider.memoryPressureLevel)
     }
 
     /// 圧迫段階の変化: メモリ層の実効上限を置き直し、下げたときはそこまで追い出す。

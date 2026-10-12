@@ -4,6 +4,20 @@ import os
 import XCTest
 @testable import cooViewer
 
+/// 本番の監視器と同じく、一つの提供者の現在値をロックで読み書きする。
+final class MutableMemoryPressure: MemoryPressureProviding, Sendable {
+    private let state: OSAllocatedUnfairLock<MemoryPressureLevel>
+
+    init(_ level: MemoryPressureLevel) {
+        state = OSAllocatedUnfairLock(initialState: level)
+    }
+
+    var memoryPressureLevel: MemoryPressureLevel {
+        get { state.withLock { $0 } }
+        set { state.withLock { $0 = newValue } }
+    }
+}
+
 /// メモリ圧迫源と予算ポリシーの検証(設計書 §5、§7.6)
 final class MemoryPressureMonitorTests: XCTestCase {
     func testEffectiveLimitTruthTable() {
