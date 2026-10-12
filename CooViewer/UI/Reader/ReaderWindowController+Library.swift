@@ -679,9 +679,7 @@ extension ReaderWindowController {
             Task(priority: .utility) {
                 defer { preparingNextBookPath = nil }
                 let publication = await Task.detached(priority: .utility) {
-                    try? EPUBPublication(
-                        url: nextURL,
-                        readStrategy: VolumeMappingPolicy.epubReadStrategy(for: nextURL))
+                    try? await EPUBStagingArea.shared.openPublication(at: nextURL)
                 }.value
                 guard let publication, self.book === preparingForBook else { return }
                 preparedNextEPUB = (nextPath, publication)

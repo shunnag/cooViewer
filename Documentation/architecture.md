@@ -182,6 +182,8 @@ CooViewer/
 │   │   ├── EPUBSource.swift        — actor。固定レイアウト EPUB(Washi。単一画像
 │   │   │                             ページの直接デコード+複雑ページの WebKit
 │   │   │                             ラスタライズ。§2.4 EPUB 対応)
+│   │   ├── EPUBStagingArea.swift   — actor。ファイルからの EPUB オープン入口。マップ不可
+│   │   │                             ボリュームの本をローカルへ 1 回コピーしてマップ(§5)
 │   │   └── NestedUnlocker.swift    — actor。ネスト書庫のパスワード解除係(1 冊で共有)
 │   ├── Book/
 │   │   ├── Book.swift              — @MainActor。ページ列・現在位置・見開き(§4.2)・
@@ -404,8 +406,28 @@ EPUB の画面外 WebKit 処理(census・画面サムネイル・FXL 委譲)だ�
 (継続ベースの合図。キャンセルは即座に待ちを解く)で行う。
 
 後始末: スプールは ArchiveSource 解放時に削除し、起動時に**生存していない PID の
-残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策)。サムネイルの旧キー
-フォルダも起動時トリムで回収する。
+残骸を掃除**する(旧実装の temp 残り問題 §4.17 の対策。`ArchiveSource.removeStaleSpoolDirectories`)。
+サムネイルの旧キーフォルダも起動時トリムで回収する。
+
+**EPUB のステージング**: `VolumeMappingPolicy` が安全でないと判定した
+ボリューム(NAS/SMB・外付け・ディスクイメージ)上の EPUB は、Washi の `.alwaysCopy`
+(本全体を dirty な Data で保持)に頼らず、`EPUBStagingArea` が
+`tmp/cooViewer-spool/<pid>-<uuid>-epub/<uuid>.epub`(0700/0600)へ**一度だけストリーミング
+コピー**し、そのコピーをメモリマップして `EPUBPublication(data:displayURL:)` で開く。
+表示 URL は元ファイルのままなので本の状態・最近の本・census・パスワードのキーは変わらない。
+ファイルからの EPUB オープン入口(EPUBSource・合本の子・代理ページ・次巻先読み・解析合流・
+ネスト EPUB の temp・サムネイルアトラス)がここを通り、同じ実体(正規化パス+サイズ+更新日時)は
+1 コピーを共有する(書庫内 EPUB のメモリ経路 `EPUBPublication(data:)` は対象外)。
+シンボリックリンクは開く前に実体へ解決し、安全性判定・同一性・コピーは実体に対して行う
+(リンク自体をコピーすると切断される媒体を参照し続け、権限変更が元ファイルに届くため。
+コピー後も通常ファイルであることを確認する)。コピーの寿命はマップした Data の deallocator が
+握る(その本を開いた publication が全て解放された時点で、ArchiveSource と同じく detached の
+utility タスクでファイルを消す)。空き容量不足(`volumeAvailableCapacityForImportantUsage`、
+余裕 256 MiB)・コピー失敗・コピー中の差し替え・サイズ不一致・展開済みディレクトリ・コピーの
+解析失敗は従来の `.alwaysCopy` に戻る(壊れた本は 2 回読むことになるが受容)。安全なローカル
+ボリュームは従来どおり直接 `.mappedIfSafe`。実測(Debug、75 MB の FXL 4 冊を合本で開き 3 回
+めくり+次巻+1 回めくり、ディスクイメージから)のピーク footprint は master 1,065/1,081 MB →
+約 500 MB(ローカルのマップ時 625 MB)。
 
 **高度な設定(2026-08 追加)**: 上表の既定値は設定タブ「高度」で調整できる。
 マスタースイッチ `AdvancedSettingsEnabled` が OFF の間は保存値を無視して既定値で
