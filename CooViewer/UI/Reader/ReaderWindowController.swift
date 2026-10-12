@@ -107,6 +107,7 @@ final class ReaderWindowController: NSWindowController {
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
     private var settingsObserver: (any NSObjectProtocol)?
     private var powerStateObserver: (any NSObjectProtocol)?
+    private var memoryPressureObserver: (any NSObjectProtocol)?
     /// ウインドウの隠蔽・アプリの前面性(先読みの実行モードを変える)
     private var activityObservers: [any NSObjectProtocol] = []
     var slideshowTimer: Timer?
@@ -254,6 +255,10 @@ final class ReaderWindowController: NSWindowController {
     var preresamplingEntryIDValue: Int? { preresamplingEntryID }
     /// アクティビティ窓向け: 表示中スプレッドのリサンプルが進行中か
     var displayResampleActiveValue: Bool { displayResampleActive }
+    /// 事前リサンプルの実行モード(アクティビティ窓の計画が実際と同じ入力を使うため)
+    var currentPreresampleModeValue: PreresamplePolicy.Mode? {
+        book.map(currentPreresampleMode(for:))
+    }
     /// アクティビティ窓向け: 開いている本の書庫ソース(スプール統計用。
     /// フォルダ/PDF/ネスト統合では nil)
     var currentArchiveSource: ArchiveSource? { book?.source as? ArchiveSource }
@@ -344,6 +349,13 @@ final class ReaderWindowController: NSWindowController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.replanForPowerState() }
         }
+        // 圧迫源は本やキャッシュより先に起動しておく(shared は遅延生成)
+        _ = MemoryPressureMonitor.shared
+        memoryPressureObserver = NotificationCenter.default.addObserver(
+            forName: MemoryPressureMonitor.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.replanForMemoryPressure() }
+        }
         // 隠蔽・最小化・アプリ非表示では先読みを止め、非前面では次の見開きだけに
         // 絞る(設計書 §5)。可視に戻ったときの再計画もこの一本で行う
         let activity: [(Notification.Name, AnyObject?)] = [
@@ -389,6 +401,16 @@ final class ReaderWindowController: NSWindowController {
             guard let self, self.book === book else { return }
             book.reschedulePrefetch()
         }
+    }
+
+    /// 圧迫段階の変化はデコード先読みの深さだけを一度組み直す(設計書 §5)。
+    /// PageCache 自身の追従は MainActor へ跳ぶ Task なので順序が保証されない。先に同期で
+    /// 適用して、計画が新しい実効上限を読むようにする(二重適用は冪等)
+    private func replanForMemoryPressure() {
+        guard let book else { return }
+        book.applyMemoryPressure(MemoryPressureMonitor.shared.memoryPressureLevel)
+        updatePrefetchDepth(book: book, images: readerViewForInput.images)
+        book.reschedulePrefetch()
     }
 
     /// 版面余白プリセット(EPUBPageMargins: 0=狭い/1=標準/2=広い)→ Washi の
@@ -798,14 +820,16 @@ final class ReaderWindowController: NSWindowController {
                 bytesPerPage: Int(firstTarget.width) * Int(firstTarget.height) * 4,
                 physicalMemory: ProcessInfo.processInfo.physicalMemory,
                 usesML: settings.noiseReductionLevel.usesMachineLearning,
-                conserveEnergy: conserveEnergy)
+                conserveEnergy: conserveEnergy,
+                memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel)
         }
         var normalProfile = book.mediaProfile
         normalProfile.conserveEnergy = false
+        // 予算は本のキャッシュの実効上限(設定値に圧迫段階を適用済み。設計書 §5)
         book.prefetchAhead = PreresamplePolicy.decodeAhead(
             resamplePages: resamplePages,
             decodedPageBytes: decodedBytes,
-            pageCacheByteLimit: settings.pageCacheByteLimit,
+            pageCacheByteLimit: book.pageCacheStats().limit,
             mediaFloor: normalProfile.defaultPrefetchAhead,
             conserveEnergy: conserveEnergy)
         book.prefetchBehind = PreresamplePolicy.decodeBehind(
@@ -2088,7 +2112,8 @@ final class ReaderWindowController: NSWindowController {
                     pageLimit = PreresamplePolicy.pageBudget(
                         bytesPerPage: bytesPerPage,
                         physicalMemory: ProcessInfo.processInfo.physicalMemory,
-                        usesML: usesML, conserveEnergy: conserveEnergy)
+                        usesML: usesML, conserveEnergy: conserveEnergy,
+                        memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel)
                     limitComputed = true
                     // 予算確定で計画枚数を精緻化(残数表示に反映)
                     self.notePrefetchPlan(

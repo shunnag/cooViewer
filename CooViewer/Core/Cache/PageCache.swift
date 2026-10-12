@@ -1,10 +1,10 @@
 import CoreGraphics
-import Dispatch
 import Foundation
 
 /// デコード済みページ画像の LRU キャッシュ(仕様書 §4.5.1 の cacheArray に相当)。
 /// 旧実装の「枚数基準(設定値+4)」を廃し、バイト基準で管理する
-/// (設計書「キャッシュ・先読み設計」)。メモリ圧迫通知で自動トリムする。
+/// (設計書「キャッシュ・先読み設計」)。メモリ圧迫の段階に応じて実効上限を下げ、
+/// normal に戻るまで保つ(設計書 §5)。
 /// Book が単独所有するメモリ索引なので同じ MainActor に置く。
 /// 取得・失効・読み込み登録の間に await を挟まず、設定変更との競合を防ぐ(設計書 §7.3)。
 @MainActor
@@ -13,30 +13,43 @@ final class PageCache {
     private var order: [Int] = []  // 末尾が最新(MRU)
     private var costs: [Int: Int] = [:]
     private var totalCost = 0
-    private var byteLimit: Int
-    private var pressureSource: (any DispatchSourceMemoryPressure)?
+    /// 設定上の上限(高度設定の明示値はここに入る)。圧迫中もこれは変えない
+    private(set) var configuredByteLimit: Int
+    /// 実効上限 = MemoryBudgetPolicy(configured, 圧迫段階)。先読み計画もこれを読む
+    private(set) var byteLimit: Int
+    /// 最後に適用した圧迫段階(設定上の上限を変えても実効上限に掛け続ける)
+    private var pressureLevel: MemoryPressureLevel
+    private let pressureObservation: MemoryPressureObservation
 
-    init(byteLimit: Int) {
-        self.byteLimit = max(1, byteLimit)
-        let source = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .critical], queue: .global(qos: .utility))
-        self.pressureSource = source  // self を閉包に渡す前に全プロパティを初期化する
-        // @Sendable でクロージャの隔離推論を止める(ReaderView のメモリ圧ハンドラ参照:
-        // 非 Sendable な setEventHandler に actor 隔離のクロージャを渡すと utility キューでの
-        // 発火時に隔離アサートで SIGTRAP する。macOS 26.6 のクラッシュ)。
-        source.setEventHandler { @Sendable [weak self] in
-            Task { @MainActor in self?.trimToHalf() }
-        }
-        source.activate()
+    init(byteLimit: Int,
+         pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared,
+         center: NotificationCenter = .default) {
+        configuredByteLimit = max(1, byteLimit)
+        // 圧迫中に開いた本は最初から下げた上限で始める
+        pressureLevel = pressure.memoryPressureLevel
+        self.byteLimit = MemoryBudgetPolicy.effectiveLimit(
+            configured: configuredByteLimit, level: pressureLevel)
+        let observation = MemoryPressureObservation(center: center)
+        pressureObservation = observation
+        // 通知は圧迫源の utility キューで届くので MainActor へ跳び、跳んだ後に現在値を読む
+        observation.setHandler({ [weak self] provider in
+            Task { @MainActor in self?.applyMemoryPressure(provider.memoryPressureLevel) }
+        }, provider: pressure)
     }
 
-    deinit {
-        pressureSource?.cancel()
-    }
-
+    /// 明示設定は設定上の上限を定めるだけで、圧迫中なら実効上限は引き続き下がる(設計書 §5)
     func setByteLimit(_ newLimit: Int) {
-        byteLimit = max(1, newLimit)
+        configuredByteLimit = max(1, newLimit)
+        byteLimit = MemoryBudgetPolicy.effectiveLimit(configured: configuredByteLimit, level: pressureLevel)
         evictIfNeeded()
+    }
+
+    /// 圧迫段階の変化: 実効上限を置き直し、下げたときはそこまで追い出す。
+    /// normal への復帰は上限を戻すだけで埋め直さない(先読みが順次埋める。設計書 §5)
+    func applyMemoryPressure(_ level: MemoryPressureLevel) {
+        pressureLevel = level
+        byteLimit = MemoryBudgetPolicy.effectiveLimit(configured: configuredByteLimit, level: level)
+        if level != .normal { evictIfNeeded() }
     }
 
     func image(for id: Int) -> CGImage? {
@@ -68,14 +81,6 @@ final class PageCache {
 
     var count: Int { storage.count }
     var currentCost: Int { totalCost }
-
-    /// メモリ圧迫時: 使用量を半分まで削る
-    func trimToHalf() {
-        let target = totalCost / 2
-        while totalCost > target, order.count > 1 {
-            removeEntry(order[0])
-        }
-    }
 
     private func removeEntry(_ id: Int) {
         guard storage[id] != nil else { return }
