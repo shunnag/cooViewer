@@ -166,7 +166,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testUrgentGenerationReachesSourceAtInteractivePriority() async throws {
         // urgent の生成タスクは userInitiated 起動 → 源へ届く時点でも userInitiated
         // 以上(基底が床なのでエスカレーションで下がらない)。直 await で決定論的
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = PriorityRecordingSource()
         let entry = try await source.entries()[0]
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "u", urgent: true)
@@ -178,7 +178,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testNonUrgentGenerationStaysBelowInteractive() async throws {
         // 先読み(urgent:false)は utility のまま。テスト本体から await すると
         // エスカレーションで判定が壊れるため、記録アクター越しにサイドチャネル観測
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = PriorityRecordingSource()
         let entry = try await source.entries()[0]
         let probe = Task.detached(priority: .utility) {
@@ -195,7 +195,7 @@ final class ThumbnailCacheTests: XCTestCase {
     }
 
     func testSecondRequestHitsMemoryCache() async throws {
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = CountingSource()
         let entry = try await source.entries()[0]
 
@@ -214,11 +214,11 @@ final class ThumbnailCacheTests: XCTestCase {
     func testFreshInstanceHitsDiskCache() async throws {
         let source = CountingSource()
         let entry = try await source.entries()[0]
-        _ = await ThumbnailCache(diskRoot: diskRoot)
+        _ = await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             .thumbnail(for: entry, in: source, bookKey: "book1")
 
         // メモリを持たない新インスタンス=ディスクから復元(ソースは呼ばれない)
-        let fresh = ThumbnailCache(diskRoot: diskRoot)
+        let fresh = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let image = await fresh.thumbnail(for: entry, in: source, bookKey: "book1")
         XCTAssertNotNil(image)
         let loads = await source.loadCount
@@ -230,7 +230,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testDiskCacheFolderFreshenedOnReadSurvivesTrim() async throws {
         let source = CountingSource()
         let entry = try await source.entries()[0]
-        _ = await ThumbnailCache(diskRoot: diskRoot)
+        _ = await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             .thumbnail(for: entry, in: source, bookKey: "book1")  // ディスクへ
         let folder = diskRoot.appendingPathComponent("book1")
         // 40 日前へ戻す(全ページキャッシュ済みで読み取りだけの状況を再現)
@@ -238,7 +238,7 @@ final class ThumbnailCacheTests: XCTestCase {
             [.modificationDate: Date().addingTimeInterval(-40 * 86400)],
             ofItemAtPath: folder.path)
         // 新セッションで読む → ディスクヒットでフォルダを freshen する
-        let fresh = ThumbnailCache(diskRoot: diskRoot)
+        let fresh = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         _ = await fresh.thumbnail(for: entry, in: source, bookKey: "book1")
         let mtime = try FileManager.default
             .attributesOfItem(atPath: folder.path)[.modificationDate] as? Date
@@ -263,7 +263,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testTwoResolutionBucketsCoexistOnDisk() async throws {
         let source = CountingSource()
         let entry = try await source.entries()[0]
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "b",
                                   targetPixelSize: 200)  // → 256
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "b",
@@ -280,7 +280,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testMemoryByteBudgetEvictsOldest() async throws {
         let source = BigMultiSource(count: 5, side: 200)  // 1枚 ≈ 200×4×200 ≈ 160KB
         let entries = try await source.entries()
-        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 400_000)  // ~2.5枚
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 400_000, pressure: FixedMemoryPressure())  // ~2.5枚
         for e in entries {
             _ = await cache.thumbnail(for: e, in: source, bookKey: "big",
                                       targetPixelSize: 500)
@@ -373,7 +373,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testMemoryByteBudgetKeepsLastEntryWhenOversized() async throws {
         let source = BigMultiSource(count: 3, side: 300)
         let entries = try await source.entries()
-        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 1000)  // 1枚未満
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 1000, pressure: FixedMemoryPressure())  // 1枚未満
         for e in entries {
             _ = await cache.thumbnail(for: e, in: source, bookKey: "big2",
                                       targetPixelSize: 500)
@@ -387,7 +387,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testPermanentFailureSurvivesBucketChange() async throws {
         let source = FailingSource()
         let entry = try await source.entries()[0]
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "f",
                                   targetPixelSize: 200)  // 256, 失敗1
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "f",
@@ -405,20 +405,20 @@ final class ThumbnailCacheTests: XCTestCase {
     func testUnreadOldDiskFolderIsTrimmed() async throws {
         let source = CountingSource()
         let entry = try await source.entries()[0]
-        _ = await ThumbnailCache(diskRoot: diskRoot)
+        _ = await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             .thumbnail(for: entry, in: source, bookKey: "book2")
         let folder = diskRoot.appendingPathComponent("book2")
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(-40 * 86400)],
             ofItemAtPath: folder.path)
         // 読まずに trim(freshen されない)→ 消える
-        await ThumbnailCache(diskRoot: diskRoot).trimDiskCache(olderThanDays: 30)
+        await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure()).trimDiskCache(olderThanDays: 30)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
     }
 
     func testConcurrentRequestsShareOneGeneration() async throws {
         // 併走する同一サムネイル要求は 1 回の生成を共有する(in-flight 共有)
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = CountingSource()
         let entry = try await source.entries()[0]
         async let first = cache.thumbnail(for: entry, in: source, bookKey: "dedup")
@@ -432,7 +432,7 @@ final class ThumbnailCacheTests: XCTestCase {
 
     func testGenerationSurvivesCancelledWaiter() async throws {
         // 待ち手をキャンセルしても生成は完走し、後続要求が結果を得られる
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = CountingSource()
         let entry = try await source.entries()[0]
         let waiter = Task {
@@ -452,7 +452,7 @@ final class ThumbnailCacheTests: XCTestCase {
         // 恒久記録され、以後は画面に入り直すたびに展開し直さない(ネガティブ
         // キャッシュ)。1 回目は再挑戦を許す — 多数 PDF の同時オープン直後の
         // 一時失敗を恒久プレースホルダにしないため
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = FailingSource()
         let entry = try await source.entries()[0]
 
@@ -470,7 +470,7 @@ final class ThumbnailCacheTests: XCTestCase {
         // 1 回の完走失敗では恒久記録しない。複数の待ち手が同じ失敗生成に
         // 合流していても失敗は 1 回として数える(待ち手単位で数えると
         // 1 回の失敗で即恒久化してしまう)
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = FlakyOnceSource()
         let entry = try await source.entries()[0]
 
@@ -492,7 +492,7 @@ final class ThumbnailCacheTests: XCTestCase {
         // (稀な一時要因で 2 回失敗したページがセッション中ずっと欠けたままに
         // ならないように)
         let cache = ThumbnailCache(diskRoot: diskRoot,
-                                   failureTTL: .milliseconds(50))
+                                   failureTTL: .milliseconds(50), pressure: FixedMemoryPressure())
         let source = FailingSource()
         let entry = try await source.entries()[0]
 
@@ -512,7 +512,7 @@ final class ThumbnailCacheTests: XCTestCase {
         // 「待っても表示されない」の再発防止: 一時失敗が続いて一旦恒久記録に
         // 達しても、TTL 後の再要求(セルの再挑戦・開き直し)で必ず回復する
         let cache = ThumbnailCache(diskRoot: diskRoot,
-                                   failureTTL: .milliseconds(50))
+                                   failureTTL: .milliseconds(50), pressure: FixedMemoryPressure())
         let source = FlakyNTimesSource(failures: 3)
         let entry = try await source.entries()[0]
 
@@ -528,7 +528,7 @@ final class ThumbnailCacheTests: XCTestCase {
     func testGenerationConcurrencyIsGated() async throws {
         // 多数のセルが一斉に生成要求しても、実生成の同時実行は 4 に絞られる
         // (多数の PDF 文書の並列レンダリング暴走の防止)
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = ConcurrencyProbeSource()
         let entries = try await source.entries()
 
@@ -545,7 +545,7 @@ final class ThumbnailCacheTests: XCTestCase {
     }
 
     func testTrimDiskCacheRemovesOldBooks() async throws {
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
         let source = CountingSource()
         let entry = try await source.entries()[0]
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "oldbook")
@@ -656,7 +656,7 @@ final class ThumbnailCancellationTests: XCTestCase {
         let entries = try await source.entries()
         let diskRoot = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: diskRoot) }
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
 
         let blocker = Task {
             await cache.thumbnail(for: entries[0], in: source, bookKey: "cxl")
@@ -711,7 +711,7 @@ final class ThumbnailWaiterHandoffTests: XCTestCase {
         let entries = try await source.entries()
         let diskRoot = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: diskRoot) }
-        let cache = ThumbnailCache(diskRoot: diskRoot)
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
 
         let blocker = Task {
             await cache.thumbnail(for: entries[0], in: source, bookKey: "handoff")
@@ -740,7 +740,7 @@ final class ThumbnailWaiterHandoffTests: XCTestCase {
         for round in 0..<10 {
             let diskRoot = try TestFixtures.makeTempDir()
             defer { try? FileManager.default.removeItem(at: diskRoot) }
-            let cache = ThumbnailCache(diskRoot: diskRoot)
+            let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             let abandoned = Task {
                 await cache.thumbnail(for: entry, in: source, bookKey: "rapid")
             }

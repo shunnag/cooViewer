@@ -34,7 +34,7 @@ final class PageCacheTests: XCTestCase {
     }
 
     func testEvictsOldestWhenOverByteLimit() {
-        let cache = PageCache(byteLimit: oneCost * 2)  // 2 枚分
+        let cache = PageCache(byteLimit: oneCost * 2, pressure: FixedMemoryPressure())  // 2 枚分
         cache.insert(image(), for: 1)
         cache.insert(image(), for: 2)
         cache.insert(image(), for: 3)
@@ -47,7 +47,7 @@ final class PageCacheTests: XCTestCase {
     }
 
     func testAccessMovesEntryToMostRecentlyUsed() {
-        let cache = PageCache(byteLimit: oneCost * 2)
+        let cache = PageCache(byteLimit: oneCost * 2, pressure: FixedMemoryPressure())
         cache.insert(image(), for: 1)
         cache.insert(image(), for: 2)
         _ = cache.image(for: 1)          // 1 を MRU に
@@ -59,7 +59,7 @@ final class PageCacheTests: XCTestCase {
     }
 
     func testByteLimitReductionEvicts() {
-        let cache = PageCache(byteLimit: oneCost * 3)
+        let cache = PageCache(byteLimit: oneCost * 3, pressure: FixedMemoryPressure())
         cache.insert(image(), for: 1)
         cache.insert(image(), for: 2)
         cache.insert(image(), for: 3)
@@ -72,7 +72,7 @@ final class PageCacheTests: XCTestCase {
 
     func testSingleOversizedImageIsKept() {
         // 上限を超える 1 枚でも保持する(再デコードの繰り返し防止)
-        let cache = PageCache(byteLimit: 1)
+        let cache = PageCache(byteLimit: 1, pressure: FixedMemoryPressure())
         cache.insert(image(), for: 1)
         let first = cache.image(for: 1)
         XCTAssertNotNil(first)
@@ -241,7 +241,7 @@ final class ImageResamplerTests: XCTestCase {
 
     func testByteLimitEvictsOldestKeepsNewest() async {
         // 32x32 RGBA(4KB)2 枚分の上限に 3 枚入れると最古が落ちる
-        let resampler = ImageResampler(byteLimit: 32 * 32 * 4 * 2 + 512)
+        let resampler = ImageResampler(byteLimit: 32 * 32 * 4 * 2 + 512, pressure: FixedMemoryPressure())
         let source = image(width: 64, height: 64)
         let first = await resampler.resample(
             source, to: CGSize(width: 32, height: 32),
