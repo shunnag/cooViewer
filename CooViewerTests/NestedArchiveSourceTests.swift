@@ -458,7 +458,7 @@ final class NestedArchiveSourceTests: XCTestCase {
         let source = try ArchiveSource(url: url)
         let entries = try await source.entries()
         let cacheRoot = tempDir.appendingPathComponent("thumbs")
-        let cache = ThumbnailCache(diskRoot: cacheRoot)
+        let cache = ThumbnailCache(diskRoot: cacheRoot, pressure: FixedMemoryPressure())
 
         let outerResult = await cache.thumbnail(for: entries[0], in: source, bookKey: "K")
         let nestedResult = await cache.thumbnail(for: entries[1], in: source, bookKey: "K")

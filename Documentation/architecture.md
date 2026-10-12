@@ -390,7 +390,8 @@ cooViewer-9vha で解決): 主書庫 = clamp(物理メモリ / 64, 64 MiB, 256 M
 
 **メモリ圧迫(2026-10 改訂)**: 圧迫源はアプリに一つ(`MemoryPressureMonitor`:
 `DispatchSource.makeMemoryPressureSource` を `.normal / .warning / .critical` で一本だけ張り、
-段階が変わったときだけ `didChangeNotification` を送る。段階は OS が normal を報告するまで持続)。
+システム全体の段階も下記の方法で読み、段階が変わったときだけ `didChangeNotification` を送る。
+段階は OS が normal を報告するまで持続)。
 純関数 `MemoryBudgetPolicy.effectiveLimit(configured:level:)` が設定上の上限を実効上限へ写し
 (normal = そのまま / warning = 1/2 / critical = 1/4、下限 1 バイト)、`PageCache`・
 `ImageResampler` の LRU・`ThumbnailCache` のメモリ層が段階変化で実効上限まで追い出し、
@@ -401,6 +402,26 @@ normal 復帰では上限を戻すだけで埋め直さない(先読みが順次
 その上でも実効上限を下げる。ReaderView のカールオーバーレイ解放も同じ通知で駆動し、
 ReaderWindowController は段階変化で先読み深さを一度組み直す(電力変更の観測と同型)。
 テストは `FixedMemoryPressure` と注入した NotificationCenter で実圧迫なしに駆動する。
+
+**段階の観測源は二つ**(2026-10 追補): DispatchSource の通知に加えて、システム全体の段階
+`sysctl kern.memorystatus_vm_pressure_level`(1 normal / 2 warning / 4 critical。xnu のソースでは
+3 = urgent — 公開 SDK には定義が無く実際に報告される値でもないが、warning と critical の間の
+値で上限を緩めないよう warning 扱い。他は normal)を init で種として読み、以後 utility
+キューの低頻度タイマー(5 秒間隔・許容遅延 5 秒。読み取りはスタック上の Int32 一つへの sysctl で確保も主スレッドも
+使わず、停止条件は設けない — 本を開いていなくてもサムネイル・リサンプルのキャッシュと
+アクティビティ窓が段階に反応する)で読み直す。カーネルは memorystatus の圧迫通知を
+**遷移時にだけ、しかもプロセスを選んで**(大口消費者から)配るため、(a) 既に圧迫中に
+起動したアプリは次の遷移まで段階を知れず、(b) 別アプリ(ブラウザ・VM・Xcode)が大口
+消費者のときは本アプリに通知が来ないことがある。実測(16 GB M2 Pro、macOS 27.2):
+別プロセスが 8 GiB の非圧縮メモリを保持し sysctl が 40 ステップの実行中ずっと 2(warning)
+を報告していたのに、アクティビティ窓は「メモリ圧迫: 通常」のまま、デコードキャッシュの
+上限も 2.4 GB から半減しなかった(起動前から圧迫していた場合も、途中から始めた場合も)。
+組み合わせ規則は「どちらの源でも最新の観測が現在値」: sysctl の normal は先行する通知由来
+の warning を打ち消し(システム全体の状態が真)、sysctl の warning の後の critical 通知は
+そのまま critical。同じ値の繰り返しと読めなかった回は無通知で、`didChangeNotification` は
+従来どおり変化時だけ送る。読み取り(`readSystemLevel`)とタイマー(`PeriodicScheduler`)は
+注入点で、テストは実機の状態に触れずに種・読み直し・合流を検証する。
+
 省エネ時(低電力モードまたは温度圧迫)は自動の先読み並列度・深さと展開係数を半減し、
 事前リサンプルは次の見開き(非 ML は最大 4 ページ、ML は 2 ページ)に絞るが、高度設定の
 明示値を優先する。ML 品質(強/最高)は 1 ページ数秒の GPU / Neural Engine 計算のため、通常時も
