@@ -11,6 +11,10 @@ protocol ArchiveEngine: AnyObject {
     func numberOfEntries() -> Int32
     func name(ofEntry index: Int32) -> String?
     func contents(ofEntry index: Int32) -> Data?
+    /// 失敗理由を保ったまま展開する。パスワード検証のプローブが、読み取り失敗
+    /// (`KaitoError.io` 等)と誤パスワードを区別するために使う(cooViewer-3tfd)。
+    /// 既定は `contents(ofEntry:)` の nil を「見つからない」として投げる
+    func readContents(ofEntry index: Int32) throws -> Data
     /// 展開後サイズ。サイズ不明または無効な番号では `Int64.max` を返す。
     func uncompressedSize(ofEntry index: Int32) -> Int64
     func entryHasSize(_ index: Int32) -> Bool
@@ -22,6 +26,17 @@ protocol ArchiveEngine: AnyObject {
 
     static var defaultZipLazyLocalHeaders: Bool { get }
     static func setDefaultZipLazyLocalHeaders(_ enabled: Bool)
+}
+
+extension ArchiveEngine {
+    /// nil しか返せないエンジン(テストの偽エンジン)向けの既定。環境要因ではない
+    /// エラーにして、プローブの分類では従来どおり誤パスワード側に落とす
+    func readContents(ofEntry index: Int32) throws -> Data {
+        guard let data = contents(ofEntry: index) else {
+            throw KaitoError.notFound("entry \(index)")
+        }
+        return data
+    }
 }
 
 /// 設定・CLI・監査で共通の識別子。保存値との互換のため文字列形式を維持する。
@@ -147,9 +162,14 @@ final class KaitoKitEngine: ArchiveEngine {
     }
 
     func contents(ofEntry index: Int32) -> Data? {
-        guard let entry = entry(at: index),
-              !entry.isEncrypted || reader.password != nil else { return nil }
-        return try? readAll(entry)
+        try? readContents(ofEntry: index)
+    }
+
+    /// 従来の nil 条件(無効な番号・未設定パスワード)も KaitoError で表す
+    func readContents(ofEntry index: Int32) throws -> Data {
+        guard let entry = entry(at: index) else { throw KaitoError.notFound("entry \(index)") }
+        guard !entry.isEncrypted || reader.password != nil else { throw KaitoError.passwordRequired }
+        return try readAll(entry)
     }
 
     /// 互換層と同じ確保上限・256 KiB 単位・宣言サイズ不足時の失敗を保つ。
@@ -273,5 +293,40 @@ enum ArchiveEngineDiagnostics {
     /// XCTest ごとにプロセス累積値を分離するためのテスト専用リセット。
     static func resetForTesting() {
         state.withLock { $0 = State() }
+    }
+}
+
+extension PasswordCheck {
+    /// プローブ展開の失敗を分類する(cooViewer-3tfd)。環境要因と断定できるものだけを
+    /// unreadable にし、残りは従来どおり誤パスワード(rejected)として扱う。
+    /// - `KaitoError.io`: FileByteSource の open/pread の errno(NAS/SMB の切断・
+    ///   スリープ)。暗号化形式の復号経路から io は投げられない。
+    /// - `CancellationError`: オープン取消。正否は判定できていない。
+    ///
+    /// KaitoKit の誤パスワード報告(各形式。rejected に落ちる根拠):
+    /// - zip ZipCrypto: 検査値 1 byte の不一致は wrongPassword(ZipCrypto.swift)。誤通過時の
+    ///   展開中の malformed / truncated / checksumMismatch も ZipPasswordAmbiguousDecompressor
+    ///   が wrongPassword へ正規化する(ZipReader.swift 冒頭。不完全エントリは除く)。
+    /// - zip WinZip AES: 検証値 2 byte の不一致と HMAC 不一致が wrongPassword(WinZipAES.swift)。
+    ///   AE-1 の CRC 不一致だけは checksumMismatch。
+    /// - RAR5: 検査値一致なら wrongPassword 確定(RAR5Crypto.swift)。検査値なし・不一致の
+    ///   復号では RARPasswordAmbiguousDecompressor が malformed / truncated を、CRC・BLAKE2sp
+    ///   不一致は mismatchIsWrongPassword が wrongPassword へ(RAR5Reader.swift、RAR5Integrity.swift)。
+    /// - RAR4: 独立した検査値がなく、ヘッダ CRC 不一致・構造エラー・CRC 不一致を wrongPassword
+    ///   へ正規化する(RAR4VolumeParser.swift、RAR4Reader.swift の checksumMismatchIsWrongPassword)。
+    /// - 7z AES: 認証タグがないため、暗号化 folder の malformed / truncated / checksumMismatch を
+    ///   wrongPasswordIfStructural が wrongPassword へ(SevenZipFolderPipeline.swift)。
+    /// - StuffIt X / StuffIt 5: 検証値(2 byte / MD5 先頭 5 byte)の不一致が wrongPassword
+    ///   (StuffItXCrypto.swift、StuffItCrypto.swift)。StuffIt X は検証値衝突時の展開失敗を
+    ///   正規化しないため、誤パスワードが truncated / checksumMismatch のまま届き得る。
+    ///
+    /// truncated を unreadable にしない理由: 上記のとおり誤パスワード由来の truncated が
+    /// StuffIt X(衝突)と WinZip AES(検証値衝突後の展開)で残り、KaitoKitEngine.readAll も
+    /// 宣言サイズ不足を truncated で報告する。「誤パスワードからは生じない」と示せないため、
+    /// 書き込み途中のファイル等で試行回数を消費する残余は受け入れて rejected に留める。
+    static func classifyProbeFailure(_ error: Error) -> PasswordCheck {
+        if error is CancellationError { return .unreadable }
+        if case .io? = error as? KaitoError { return .unreadable }
+        return .rejected
     }
 }

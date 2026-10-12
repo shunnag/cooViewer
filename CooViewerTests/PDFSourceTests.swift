@@ -149,7 +149,7 @@ extension PDFSourceTests {
         let encrypted = await source.isEncrypted()
         XCTAssertTrue(encrypted)
         let unlocked = await source.checkAndSetPassword("sesame")
-        XCTAssertTrue(unlocked)
+        XCTAssertEqual(unlocked, .accepted)
         let entries = try await source.entries()
         // 並列に複数要求してもプール(独立文書)側の解錠で描画できること
         try await withThrowingTaskGroup(of: CGImage.self) { group in
