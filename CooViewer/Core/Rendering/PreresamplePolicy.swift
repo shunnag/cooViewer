@@ -43,19 +43,25 @@ enum PreresamplePolicy {
 
     /// メモリ予算(バイト)。物理メモリの 1/8、上限 4GB。
     /// 枚数を絞るときは予算も枚数 / 64 に比例させ、表示中ページの予算は変えない(設計書 §5)。
-    static func byteBudget(physicalMemory: UInt64, usesML: Bool = false,
-                           conserveEnergy: Bool = false) -> Int {
+    /// メモリ圧迫中はリサンプル LRU の実効上限と同じ係数(1/2・1/4)で縮め、先読み結果が
+    /// 下がった LRU に収まらず互いに追い出し合うのを防ぐ
+    /// 既定値は持たない: 省略すると実際の先読み(ML・省エネで 4/2 ページ)と食い違う
+    /// 計画を黙って作れてしまうため、呼び出し側に毎回明示させる
+    static func byteBudget(physicalMemory: UInt64, usesML: Bool, conserveEnergy: Bool,
+                           memoryPressure: MemoryPressureLevel) -> Int {
         let normal = min(4 << 30, Int(clamping: physicalMemory / 8))
-        return normal / (maxPages / pageLimit(usesML: usesML, conserveEnergy: conserveEnergy))
+        let scaled = normal / (maxPages / pageLimit(usesML: usesML, conserveEnergy: conserveEnergy))
+        return MemoryBudgetPolicy.effectiveLimit(configured: scaled, level: memoryPressure)
     }
 
     /// bytesPerPage(表示ピクセルサイズの RGBA バイト数)から、予算内で
     /// 先行リサンプルしてよいページ数を返す(1...maxPages)
     static func pageBudget(bytesPerPage: Int, physicalMemory: UInt64,
-                           usesML: Bool = false, conserveEnergy: Bool = false) -> Int {
+                           usesML: Bool, conserveEnergy: Bool,
+                           memoryPressure: MemoryPressureLevel) -> Int {
         guard bytesPerPage > 0 else { return 1 }
         let budget = byteBudget(physicalMemory: physicalMemory, usesML: usesML,
-                                conserveEnergy: conserveEnergy)
+                                conserveEnergy: conserveEnergy, memoryPressure: memoryPressure)
         return min(pageLimit(usesML: usesML, conserveEnergy: conserveEnergy),
                    max(1, budget / bytesPerPage))
     }

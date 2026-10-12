@@ -290,6 +290,55 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(count, 1)
     }
 
+    /// 圧迫段階でメモリ層の実効上限を下げて追い出し、normal まで保ち、戻すときは中身を
+    /// 触らない(設計書 §5)。ディスク層は対象外
+    func testMemoryPressureLowersMemoryLimitUntilNormal() async throws {
+        let source = BigMultiSource(count: 12, side: 200)  // 1枚 ≈ 160KB
+        let entries = try await source.entries()
+        let configured = 200 * 4 * 200 * 8 + 1000
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: configured,
+                                   pressure: FixedMemoryPressure(), center: NotificationCenter())
+        for e in entries.prefix(8) {
+            _ = await cache.thumbnail(for: e, in: source, bookKey: "pressure", targetPixelSize: 500)
+        }
+        var usage = await cache.debugMemoryUsage()
+        XCTAssertEqual(usage.limit, configured)
+        let before = await cache.debugMemoryCount()
+        XCTAssertEqual(before, 8)
+
+        await cache.applyMemoryPressure(.warning)
+        usage = await cache.debugMemoryUsage()
+        XCTAssertEqual(usage.limit, configured / 2)
+        XCTAssertLessThanOrEqual(usage.bytes, usage.limit)
+        let afterWarning = await cache.debugMemoryCount()
+        XCTAssertLessThan(afterWarning, before, "実効上限まで古い順に追い出す")
+        // 圧迫中の生成は下げた上限を超えない
+        for e in entries.suffix(4) {
+            _ = await cache.thumbnail(for: e, in: source, bookKey: "pressure", targetPixelSize: 500)
+        }
+        usage = await cache.debugMemoryUsage()
+        XCTAssertLessThanOrEqual(usage.bytes, usage.limit)
+
+        await cache.applyMemoryPressure(.critical)
+        usage = await cache.debugMemoryUsage()
+        XCTAssertEqual(usage.limit, configured / 4)
+        XCTAssertLessThanOrEqual(usage.bytes, usage.limit)
+        let afterCritical = await cache.debugMemoryCount()
+
+        await cache.applyMemoryPressure(.normal)
+        usage = await cache.debugMemoryUsage()
+        XCTAssertEqual(usage.limit, configured)
+        let afterNormal = await cache.debugMemoryCount()
+        XCTAssertEqual(afterNormal, afterCritical, "復帰で埋め直しも追い出しもしない")
+    }
+
+    func testCreatedUnderPressureStartsLowered() async {
+        let cache = ThumbnailCache(diskRoot: diskRoot, byteLimit: 1 << 20,
+                                   pressure: FixedMemoryPressure(.critical), center: NotificationCenter())
+        let usage = await cache.debugMemoryUsage()
+        XCTAssertEqual(usage.limit, 256 << 10)
+    }
+
     /// 1枚で予算超過でも最後の1枚は残す(再生成の繰り返し防止)
     func testMemoryByteBudgetKeepsLastEntryWhenOversized() async throws {
         let source = BigMultiSource(count: 3, side: 300)

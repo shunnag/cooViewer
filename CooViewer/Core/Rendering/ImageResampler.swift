@@ -1,5 +1,4 @@
 import CoreGraphics
-import Dispatch
 import Foundation
 
 /// 表示ピクセルサイズへの高品質リサンプル(設計書 §5 描画品質)。
@@ -8,7 +7,7 @@ import Foundation
 /// (任意)で事前リサンプルした等倍画像を作る。
 /// 結果はバイト基準の LRU に保持する: 現スプレッド+先行リサンプル
 /// (PreresamplePolicy の予算・最大 4GB)+ルーペ超解像が互いに
-/// 追い出し合わない量を確保しつつ、メモリ圧迫通知で半分に自動トリムする。
+/// 追い出し合わない量を確保しつつ、メモリ圧迫の段階で実効上限を下げる(設計書 §5)。
 actor ImageResampler {
     static let shared = ImageResampler()
 
@@ -32,15 +31,17 @@ actor ImageResampler {
     /// モデルが .ready へ回復したら removeMLFallbackEntries で捨て、本物の ML で
     /// 作り直させる(cooViewer-emx)。追い出し時は removeEntry が同期して外す
     private var mlFallbackKeys: Set<String> = []
-    /// 合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
+    /// 設定上の合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
     /// リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため、
     /// 行き来で作り直さずに済むよう広めに確保する(旧: 1/6・最大 4.5GB は
     /// アクティビティ窓でデコードキャッシュ 16GB に比べ使用率が高く、
-    /// 大容量メモリ機でキャップが早く効いていた)。メモリ圧時は trimToHalf が
-    /// 半減させる安全弁があるため、先読み予算(1/8・最大 4GB)+表示・ルーペ分に
-    /// 余裕を持たせても実使用は圧に応じて縮む
-    private let byteLimit: Int
-    private var pressureSource: (any DispatchSourceMemoryPressure)?
+    /// 大容量メモリ機でキャップが早く効いていた)。メモリ圧迫時は実効上限を
+    /// 1/2・1/4 に下げて保つ安全弁があるため、先読み予算(1/8・最大 4GB)+
+    /// 表示・ルーペ分に余裕を持たせても実使用は圧に応じて縮む(設計書 §5)
+    private let configuredByteLimit: Int
+    /// 実効上限 = MemoryBudgetPolicy(configured, 圧迫段階)
+    private var byteLimit: Int
+    private let pressureObservation: MemoryPressureObservation
     private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
     private lazy var lanczos: LanczosDownscaler? = LanczosDownscaler()
     private lazy var noiseReducer: NoiseReducer? = NoiseReducer()
@@ -59,23 +60,26 @@ actor ImageResampler {
     }
 
     init(byteLimit: Int = min(
-        12 << 30,
-        Int(clamping: ProcessInfo.processInfo.physicalMemory) / 5)) {
-        self.byteLimit = max(1, byteLimit)
-        let source = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .critical], queue: .global(qos: .utility))
-        self.pressureSource = source
-        // @Sendable でクロージャの隔離推論を止める(ReaderView のメモリ圧ハンドラ参照:
-        // 非 Sendable な setEventHandler に actor 隔離のクロージャを渡すと utility キューでの
-        // 発火時に隔離アサートで SIGTRAP する。macOS 26.6 のクラッシュ)。
-        source.setEventHandler { @Sendable [weak self] in
-            Task { await self?.trimToHalf() }
-        }
-        source.activate()
+            12 << 30,
+            Int(clamping: ProcessInfo.processInfo.physicalMemory) / 5),
+         pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared,
+         center: NotificationCenter = .default) {
+        configuredByteLimit = max(1, byteLimit)
+        self.byteLimit = MemoryBudgetPolicy.effectiveLimit(
+            configured: configuredByteLimit, level: pressure.memoryPressureLevel)
+        let observation = MemoryPressureObservation(center: center)
+        pressureObservation = observation
+        // 通知は圧迫源の utility キューで届くので actor へ跳び、跳んだ後に現在値を読む
+        observation.setHandler({ [weak self] provider in
+            Task { await self?.applyMemoryPressure(provider.memoryPressureLevel) }
+        }, provider: pressure)
     }
 
-    deinit {
-        pressureSource?.cancel()
+    /// 圧迫段階の変化: 実効上限を置き直し、下げたときはそこまで追い出す。
+    /// normal への復帰は上限を戻すだけで埋め直さない(設計書 §5)
+    func applyMemoryPressure(_ level: MemoryPressureLevel) {
+        byteLimit = MemoryBudgetPolicy.effectiveLimit(configured: configuredByteLimit, level: level)
+        if level != .normal { evictIfNeeded() }
     }
 
     /// image を pixelSize(デバイスピクセル)へリサンプルする。
@@ -332,8 +336,12 @@ actor ImageResampler {
         costs[key] = cost
         totalCost += cost
         order.append(key)
-        // 上限超過分を古い順に破棄。1 枚だけで超過する場合はその 1 枚は保持
-        // (再リサンプルの繰り返しを防ぐ)
+        evictIfNeeded()
+    }
+
+    /// 上限超過分を古い順に破棄。1 枚だけで超過する場合はその 1 枚は保持
+    /// (再リサンプルの繰り返しを防ぐ)
+    private func evictIfNeeded() {
         while totalCost > byteLimit, order.count > 1 {
             removeEntry(order[0])
         }
@@ -347,14 +355,6 @@ actor ImageResampler {
             order.remove(at: index)
         }
         mlFallbackKeys.remove(key)  // 追い出したキーは回復対象から外す(emx)
-    }
-
-    /// メモリ圧迫時: 使用量を半分まで削る
-    func trimToHalf() {
-        let target = totalCost / 2
-        while totalCost > target, order.count > 1 {
-            removeEntry(order[0])
-        }
     }
 
     /// MetalFX による拡大(2 倍超の段階適用は MetalFXUpscaler 内でテクスチャの

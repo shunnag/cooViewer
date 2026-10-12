@@ -38,9 +38,20 @@ struct ActivitySnapshot: Sendable, Equatable {
         let usedBytes: Int
         let limitBytes: Int
     }
+    /// 事前リサンプルの計画。実際の先読みと同じ入力(ML 品質か・省エネ扱いか・圧迫段階)で
+    /// PreresamplePolicy を再計算する(設計書 §5)。入力を省くと ML の 4/2 ページが 64 と
+    /// 表示される食い違いが起きるため、既定値は持たせない
     struct PrefetchPlan: Sendable, Equatable {
-        let pageBudget: Int       // 計画: PreresamplePolicy 再計算
-        let byteBudget: Int
+        let pageBudget: Int       // 計画: pageLimit(ML / 省エネ)
+        let byteBudget: Int       // 計画: byteBudget(同じ入力 + 圧迫段階)
+
+        init(physicalMemory: UInt64, usesML: Bool, conserveEnergy: Bool,
+             memoryPressure: MemoryPressureLevel) {
+            pageBudget = PreresamplePolicy.pageLimit(usesML: usesML, conserveEnergy: conserveEnergy)
+            byteBudget = PreresamplePolicy.byteBudget(
+                physicalMemory: physicalMemory, usesML: usesML, conserveEnergy: conserveEnergy,
+                memoryPressure: memoryPressure)
+        }
     }
     struct Spool: Sendable, Equatable {
         let spooled: Int
@@ -56,12 +67,49 @@ struct ActivitySnapshot: Sendable, Equatable {
         let diskBytes: Int64
         let encrypted: Bool
     }
+    /// アプリ全体の資源上限(本を開いていなくても映す。設計書 §5): メモリ圧迫の段階(実態。
+    /// 各キャッシュの実効上限を決める)と、以後 open する書庫の先行復号予算(計画。開いた
+    /// 書庫ごと・開いている reader は open 時の値を固定しているので実態ではない)
+    struct Resources: Sendable, Equatable {
+        struct Row: Sendable, Equatable {
+            let label: String
+            let value: String     // 計画=📐 / 実態=● を含む表示文字列
+        }
+        let pressure: MemoryPressureLevel
+        let primaryDecodeBytes: Int     // 主書庫 1 つあたり
+        let extractorDecodeBytes: Int   // 展開係 1 つあたり
+
+        /// ArchiveDecodeBudget の純関数をそのまま映す(スレッド数は不要なので組み立てない)
+        init(physicalMemory: UInt64, pressure: MemoryPressureLevel) {
+            self.pressure = pressure
+            primaryDecodeBytes = Int(clamping: ArchiveDecodeBudget.parallelDecodeMemory(
+                role: .primary, physicalMemory: physicalMemory, memoryPressure: pressure))
+            extractorDecodeBytes = Int(clamping: ArchiveDecodeBudget.parallelDecodeMemory(
+                role: .extractor(poolSize: 1), physicalMemory: physicalMemory, memoryPressure: pressure))
+        }
+
+        var rows: [Row] {
+            [Row(label: String(localized: "Memory pressure"), value: "● " + pressure.displayName),
+             Row(label: String(localized: "Archive decode · primary"),
+                 value: "📐 " + Self.byteText(primaryDecodeBytes)),
+             Row(label: String(localized: "Archive decode · each extractor"),
+                 value: "📐 " + Self.byteText(extractorDecodeBytes))]
+        }
+
+        var scopeText: String {
+            String(localized: "Per opened archive, for new readers. Existing readers keep their opening budgets.")
+        }
+
+        private static func byteText(_ bytes: Int) -> String {
+            ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+        }
+    }
     struct Memory: Sendable, Equatable {
         let physical: Int64
         let resident: Int64?      // 取れないときは nil(行を出さない)
         let pageCacheCount: Int
         let pageCacheBytes: Int
-        let pageCacheLimit: Int
+        let pageCacheLimit: Int   // 実効上限(圧迫段階適用後)
         let displayCap: Int?      // 実態(最後に適用された値)
         let zoomScale: Double
     }
@@ -74,11 +122,27 @@ struct ActivitySnapshot: Sendable, Equatable {
     var spool: Spool?
     var ml: ML
     var memory: Memory?
+    var resources: Resources
 
-    /// 本を開いていない時の空スナップショット(ML の導入状態だけは常に映す)
-    static func empty(ml: ML) -> ActivitySnapshot {
+    /// 本を開いていない時の空スナップショット(ML の導入状態と資源上限は常に映す)
+    static func empty(ml: ML,
+                      physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory,
+                      pressure: MemoryPressureLevel = MemoryPressureMonitor.shared.memoryPressureLevel
+    ) -> ActivitySnapshot {
         ActivitySnapshot(book: nil, loading: nil, resample: nil, lru: nil,
-                         prefetchPlan: nil, spool: nil, ml: ml, memory: nil)
+                         prefetchPlan: nil, spool: nil, ml: ml, memory: nil,
+                         resources: Resources(physicalMemory: physicalMemory, pressure: pressure))
+    }
+}
+
+extension MemoryPressureLevel {
+    /// アクティビティ窓の表示名(括弧内はキャッシュの実効上限への影響)
+    var displayName: String {
+        switch self {
+        case .normal: String(localized: "Normal")
+        case .warning: String(localized: "Warning (limits halved)")
+        case .critical: String(localized: "Critical (limits quartered)")
+        }
     }
 }
 
@@ -175,10 +239,14 @@ final class ActivityMonitor: ObservableObject {
         let lru = ActivitySnapshot.LRU(count: stats.count, usedBytes: stats.usedBytes,
                                        limitBytes: stats.limitBytes)
 
+        let pressureLevel = MemoryPressureMonitor.shared.memoryPressureLevel
+        // 実際の先読みと同じ判定(controller の currentPreresampleMode)。paused(不可視)は
+        // 始めないので、再開時の最小計画 = 省エネ扱いの数字を出す
         let prefetchPlan = ActivitySnapshot.PrefetchPlan(
-            pageBudget: PreresamplePolicy.maxPages,
-            byteBudget: PreresamplePolicy.byteBudget(
-                physicalMemory: ProcessInfo.processInfo.physicalMemory))
+            physicalMemory: ProcessInfo.processInfo.physicalMemory,
+            usesML: settings.noiseReductionLevel.usesMachineLearning,
+            conserveEnergy: controller.currentPreresampleModeValue != .normal,
+            memoryPressure: pressureLevel)
 
         var spool: ActivitySnapshot.Spool?
         if let archive = controller.currentArchiveSource {
@@ -194,13 +262,15 @@ final class ActivityMonitor: ObservableObject {
             resident: MemoryFootprint.residentBytes(),
             pageCacheCount: cacheStats.count,
             pageCacheBytes: cacheStats.cost,
-            pageCacheLimit: settings.pageCacheByteLimit,
+            pageCacheLimit: cacheStats.limit,
             displayCap: book.displayPixelCap,
             zoomScale: Double(view.currentZoomScale))
 
-        return ActivitySnapshot(book: bookInfo, loading: loading, resample: resample,
-                                lru: lru, prefetchPlan: prefetchPlan, spool: spool,
-                                ml: ml, memory: memory)
+        return ActivitySnapshot(
+            book: bookInfo, loading: loading, resample: resample,
+            lru: lru, prefetchPlan: prefetchPlan, spool: spool, ml: ml, memory: memory,
+            resources: ActivitySnapshot.Resources(
+                physicalMemory: ProcessInfo.processInfo.physicalMemory, pressure: pressureLevel))
     }
 
     // MARK: - 表示名の整形
