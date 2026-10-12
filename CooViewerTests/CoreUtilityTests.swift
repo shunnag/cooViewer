@@ -732,4 +732,108 @@ final class InnerBookSelectionTests: XCTestCase {
         try Data("x".utf8).write(to: dir.appendingPathComponent("note.txt"))
         XCTAssertNil(ReaderWindowController.innerBook(in: dir))
     }
+
+    // MARK: - 再帰走査(プローブキューへ移しても結果は変えない 設計書 §7.3)
+
+    private func writeImage(_ relativePath: String, under dir: URL) throws {
+        let url = dir.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([0x89]).write(to: url)
+    }
+
+    func testRecursiveScansFindImagesDeepInTheTree() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeImage("a/b/c/page.png", under: dir)
+        XCTAssertTrue(FolderSource.subfoldersContainImages(at: dir))
+        XCTAssertTrue(ReaderWindowController.folderLeadsToBookContent(at: dir))
+
+        // 本(書庫)はドリル先の判定だけが数える
+        let books = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: books) }
+        try FileManager.default.createDirectory(
+            at: books.appendingPathComponent("v1"), withIntermediateDirectories: true)
+        try Data([0x50, 0x4B]).write(to: books.appendingPathComponent("v1/book.zip"))
+        XCTAssertFalse(FolderSource.subfoldersContainImages(at: books))
+        XCTAssertTrue(ReaderWindowController.folderLeadsToBookContent(at: books))
+    }
+
+    func testRecursiveScansSkipHiddenItemsAndPackages() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeImage(".hidden/page.png", under: dir)
+        try writeImage("sub/.page.png", under: dir)
+        try writeImage("tool.app/Contents/icon.png", under: dir)
+        try Data("x".utf8).write(to: dir.appendingPathComponent("sub/note.txt"))
+        XCTAssertFalse(FolderSource.subfoldersContainImages(at: dir))
+        XCTAssertFalse(ReaderWindowController.folderLeadsToBookContent(at: dir))
+        XCTAssertFalse(FolderSource.subfoldersContainImages(at: dir.appendingPathComponent("none")),
+                       "列挙できないフォルダは false")
+        XCTAssertFalse(ReaderWindowController.folderLeadsToBookContent(
+            at: dir.appendingPathComponent("none")))
+    }
+
+    /// 2000 項目で走査をやめたとき、ドリル先の判定は true(開いてみる側へ倒す)、
+    /// hidden フラグ付きの項目は再帰走査(`.skipsHiddenFiles`)が落とすが、直下の候補選定は
+    /// 旧来のドット始まり除外だけを維持する
+    func testHiddenFlagsAreSkippedRecursivelyButTopLevelDrillFiltersOnlyDots() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for name in ["flagged.zip", "flagged.png"] {
+            var file = dir.appendingPathComponent(name)
+            try Data([0x50, 0x4B]).write(to: file)
+            var values = URLResourceValues()
+            values.isHidden = true
+            try file.setResourceValues(values)
+        }
+        XCTAssertEqual(ReaderWindowController.innerBook(in: dir)?.lastPathComponent, "flagged.zip")
+        XCTAssertFalse(FolderSource.subfoldersContainImages(at: dir))
+        XCTAssertFalse(ReaderWindowController.folderLeadsToBookContent(at: dir))
+    }
+
+    func testInnerBookUsesNaturalNameOrder() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data([0x50, 0x4B]).write(to: dir.appendingPathComponent("volume10.zip"))
+        try writeImage("volume2/deep/page.png", under: dir)
+        XCTAssertEqual(ReaderWindowController.innerBook(in: dir)?.lastPathComponent, "volume2",
+                       "数字は自然順(2 < 10)")
+    }
+
+    /// 空フォルダのヒントは false(ヒントを出さない)
+    func testRecursiveScansStopAt2000ItemsWithTheirOwnDefaults() throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let junk = dir.appendingPathComponent("junk")
+        try FileManager.default.createDirectory(at: junk, withIntermediateDirectories: true)
+        // junk フォルダ自身で 1 項目。ファイル 1999 個までは上限に届かない
+        for index in 0..<1999 {
+            try Data().write(to: junk.appendingPathComponent("n\(index).txt"))
+        }
+        XCTAssertFalse(ReaderWindowController.folderLeadsToBookContent(at: dir),
+                       "2000 項目ちょうどは走査を終えて false")
+        XCTAssertFalse(FolderSource.subfoldersContainImages(at: dir))
+
+        try Data().write(to: junk.appendingPathComponent("n1999.txt"))
+        XCTAssertTrue(ReaderWindowController.folderLeadsToBookContent(at: dir),
+                      "2001 項目目で打ち切り、候補として許容する")
+        XCTAssertFalse(FolderSource.subfoldersContainImages(at: dir),
+                       "同じ打ち切りでもヒントは出さない")
+    }
+
+    /// 呼び出し側が使うプローブキュー経由でも同じ結果になる
+    func testRecursiveScansRunOnTheVolumeProbeQueue() async throws {
+        let dir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeImage("02_series/vol1/p1.png", under: dir)
+        let inner = await FileManagerProbe.queue(for: dir).run {
+            ReaderWindowController.innerBook(in: dir)
+        }
+        XCTAssertEqual(inner?.lastPathComponent, "02_series")
+        let found = await FileManagerProbe.queue(for: dir).run {
+            FolderSource.subfoldersContainImages(at: dir)
+        }
+        XCTAssertTrue(found)
+    }
 }

@@ -74,6 +74,8 @@ final class FileSystemProbeQueueTests: XCTestCase {
         let width = 4
         let hungCalls = max(8, ProcessInfo.processInfo.activeProcessorCount * 2)
         let (probe, entered) = makeProbe(width: width, expectedEntries: width)
+        // 途中で失敗しても塞がったスレッドを残さない
+        defer { for _ in 0..<hungCalls { probe.release.signal() } }
         let paths = (0..<hungCalls).map { "/dead/mount/\($0)" + ($0.isMultiple(of: 2) ? ".zip" : ".txt") }
         let calls = paths.map { path in Task { await probe.fileExists(atPath: path) } }
         await fulfillment(of: [entered], timeout: 5)
@@ -103,6 +105,7 @@ final class FileSystemProbeQueueTests: XCTestCase {
 
     func testThrowingAndValueResultsCrossTheQueue() async throws {
         let (probe, entered) = makeProbe(width: 3, expectedEntries: 3)
+        defer { for _ in 0..<3 { probe.release.signal() } }
         let listing = Task { try await probe.directoryItems(at: URL(fileURLWithPath: "/dead/mount")) }
         let identity = Task { await probe.identity(at: URL(fileURLWithPath: "/dead/mount/42")) }
         let kind = Task { await probe.itemKind(at: URL(fileURLWithPath: "/dead/mount/folder")) }
@@ -129,7 +132,7 @@ final class FileSystemProbeQueueTests: XCTestCase {
         try Data("hello".utf8).write(to: file)
         let folder = root.appendingPathComponent("folder")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let probe = FileManagerProbe()
+        let probe = FileManagerProbe(queues: TestFixtures.rootOnlyProbeQueues())
 
         let items = try await probe.directoryItems(at: root)
         XCTAssertEqual(Set(items), [DirectoryItem(name: "book.zip", isDirectory: false),
