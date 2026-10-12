@@ -5,12 +5,12 @@ import Washi
 /// (設計書 §5 電力方針・§7.3)。Washi の既定は両方とも「従来どおり」なので、
 /// 利用側で明示しない限り何も変わらない。
 enum EPUBOffscreenSettings {
-    /// 低電力モードまたは温度圧迫(serious / critical)で census の項目とサムネイルの
-    /// ジョブを 50 ms ずつ間隔を空け、未開始の census は critical の間だけ延期する。
-    /// アプリ本体の `PowerStateMonitor.shouldConserveEnergy` と同じ条件だが、Washi が
-    /// OS 状態を直接評価するため温度圧迫の保持(ヒステリシス)は掛からない。
-    /// QoS は下げず結果も変わらない(設計書 §5)。
-    static let energyPolicy: EPUBOffscreenEnergyPolicy = .followSystem
+    /// いまの電力方針を Washi 向けに写した値。生成時に適用し、方針の変更は
+    /// `PowerStateMonitor.didChangeNotification` を受けた ReaderWindowController が
+    /// 生きているビューとアトラスへ渡し直す(設計書 §5)。
+    static var energyPolicy: EPUBOffscreenEnergyPolicy {
+        PowerStateMonitor.shared.powerPolicy.offscreenEnergyPolicy
+    }
 
     /// FXL ラスタライザが最後の描画からこの時間アイドルなら不可視ウインドウと
     /// WebContent プロセスを畳み、次の描画で作り直す。Washi の census /
@@ -42,5 +42,18 @@ enum EPUBOffscreenSettings {
         let rasterizer = EPUBPageRasterizer(publication: publication)
         rasterizer.idleReleaseInterval = rasterizerIdleReleaseInterval
         return rasterizer
+    }
+}
+
+extension PowerPolicy {
+    /// Washi の画面外処理へ同じ方針を写す(設計書 §5)。`.followSystem` は低電力モード
+    /// または温度圧迫(serious / critical)で census の項目とサムネイルのジョブを 50 ms ずつ
+    /// 間隔を空け、未開始の census は critical の間だけ延期する。Washi が OS 状態を直接
+    /// 評価するため温度圧迫の保持(ヒステリシス)は掛からない。
+    /// Washi に「低電力モードだけ」の方針は無いので、`.lowPowerModeOnly` でも温度圧迫中は
+    /// ジョブの間隔が空く。この間隔はジョブを少し離して実行するだけで、QoS もページ数も
+    /// 画像も変えないため、結果は方針に関わらず同じになる。
+    var offscreenEnergyPolicy: EPUBOffscreenEnergyPolicy {
+        self == .alwaysFullSpeed ? .unrestricted : .followSystem
     }
 }

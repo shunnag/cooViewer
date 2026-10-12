@@ -139,7 +139,11 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   thermal pressure (`thermalState` serious/critical; thermal pressure enters immediately but is
   released only after 45 s below serious — `PowerStateMonitor.thermalReleaseHold`, cooViewer's own
   throttling only), passed to KaitoKit as
-  `.reduceInLowPowerModeOrThermalPressure`; ML render qualities pre-resample at most the next two
+  `.reduceInLowPowerModeOrThermalPressure`; the user can pick the policy in Settings › Advanced
+  (`PowerPolicy` key: default LPM-or-thermal, LPM-only, or always full speed —
+  `PowerPolicy.conserves` is the single decision point, mapped to KaitoKit's `DecodePowerPolicy`
+  at reader open and to Washi's `EPUBOffscreenEnergyPolicy`; memory-pressure limits still
+  apply); ML render qualities pre-resample at most the next two
   spreads (≤ 4 pages, next spread only when conserving or the app is inactive), and pre-resampling
   pauses while the reader window is occluded/minimized/hidden;
   filename encoding auto-detection uses KaitoKit's `EncodingPolicy.automatic`

@@ -181,6 +181,7 @@ struct SettingsView: View {
 
     // 高度な設定(ReadingResourceDefaults と同値の既定)
     @AppStorage("AdaptiveMediaTuning") private var adaptiveMediaTuning = true
+    @AppStorage("PowerPolicy") private var powerPolicy = PowerPolicy.default
     @AppStorage("ZipLazyLocalHeaders") private var zipLazyLocalHeaders = true
     @AppStorage("AdvancedSpoolPolicy") private var advSpoolPolicy = 0
     @AppStorage("AdvancedSettingsEnabled") private var advancedEnabled = false
@@ -422,6 +423,12 @@ struct SettingsView: View {
         ]
         case .advanced: [
             String(localized: "Adapt to media speed (SSD / HDD / network)"),
+            String(localized: "Power saving:"),
+            String(localized: "Reduce in Low Power Mode or under thermal pressure (default)"),
+            String(localized: "Reduce only in Low Power Mode"),
+            String(localized: "Always full speed"),
+            // 行のラベルに現れない検索語(バッテリー・温度・CPU)を拾う
+            String(localized: "Battery, thermal, CPU"),
             String(localized: "Open ZIP archives faster"),
             String(localized: "Use advanced settings"),
             String(localized: "Memory & Cache"),
@@ -932,6 +939,25 @@ struct SettingsView: View {
                        isOn: $adaptiveMediaTuning)
                 Text(String(localized:
                     "Detects where the book is stored and tunes reading, prefetch, and archive spooling. Explicit values below always take precedence. Takes effect when the next book is opened."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // 省エネの方針(設計書 §5)。マスタースイッチの外に置く: 既定は従来どおりで、
+            // 自動調整と同じく常に有効な単独の設定
+            Section {
+                Picker(String(localized: "Power saving:"), selection: $powerPolicy) {
+                    Text(String(localized: "Reduce in Low Power Mode or under thermal pressure (default)"))
+                        .tag(PowerPolicy.lowPowerModeOrThermal)
+                    Text(String(localized: "Reduce only in Low Power Mode"))
+                        .tag(PowerPolicy.lowPowerModeOnly)
+                    Text(String(localized: "Always full speed"))
+                        .tag(PowerPolicy.alwaysFullSpeed)
+                }
+                .onChange(of: powerPolicy) { _, newValue in
+                    SettingsStore.shared.powerPolicy = newValue
+                }
+                Text(String(localized:
+                    "Halves prefetch depth, parallel decoding, and ML pre-resampling to save battery and reduce heat. Memory pressure limits always apply. Prefetch changes immediately; archives that are already open follow from the next time they are opened."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

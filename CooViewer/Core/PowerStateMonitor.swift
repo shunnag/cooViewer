@@ -18,26 +18,64 @@ struct PowerConditions: Sendable, Equatable {
     }
 }
 
-/// 書庫の自動復号とアプリの先読みは、低電力モードまたは温度圧迫で一緒に絞る(設計書 §5)。
-/// 判定は一つに集約し、各消費者が別々の条件を組み立てないようにする。
+/// どの条件で省エネに入るかのユーザー設定(設定「高度」。設計書 §5)。
+/// 保存値は UserDefaults キー `PowerPolicy` の rawValue 文字列で、未設定・未知の値は
+/// 従来どおりの既定に読む。先読み深さ・事前リサンプル・展開係の数・KaitoKit の復号
+/// 並列数・Washi の画面外処理は全てこの一つの方針から導き、消費者ごとの分岐を持たない。
+enum PowerPolicy: String, CaseIterable, Sendable {
+    /// 低電力モードまたは温度圧迫(serious / critical。解除は 45 秒の保持付き)で控える。
+    /// 2.0b45 より後の挙動そのままで、既定。
+    case lowPowerModeOrThermal
+    /// 低電力モードのときだけ控え、温度は見ない(2.0b45 までの挙動)。
+    case lowPowerModeOnly
+    /// 電力・温度では控えない。メモリ圧迫による上限(キャッシュ・復号予算)は別系統で
+    /// 引き続き効く。
+    case alwaysFullSpeed
+
+    static let `default` = PowerPolicy.lowPowerModeOrThermal
+
+    /// 全消費者が使う唯一の省エネ判定(設計書 §5)。条件を集めるのは提供者、
+    /// 判定するのはこの関数だけ。
+    func conserves(_ conditions: PowerConditions) -> Bool {
+        switch self {
+        case .lowPowerModeOrThermal:
+            conditions.isLowPowerModeEnabled || conditions.isThermalPressureActive
+        case .lowPowerModeOnly:
+            conditions.isLowPowerModeEnabled
+        case .alwaysFullSpeed:
+            false
+        }
+    }
+}
+
+/// 書庫の自動復号とアプリの先読みは、同じ条件と同じ方針で一緒に絞る(設計書 §5)。
+/// 判定は `PowerPolicy.conserves` の一つに集約し、各消費者が別々の条件を組み立てない。
 protocol PowerStateProviding: Sendable {
     var isLowPowerModeEnabled: Bool { get }
     var isThermalPressureActive: Bool { get }
+    var powerPolicy: PowerPolicy { get }
+    /// 既定実装で十分だが、監視器はロック 1 回で一貫した値を返すために上書きする
+    var shouldConserveEnergy: Bool { get }
 }
 
 extension PowerStateProviding {
-    /// 全消費者が使う唯一の省エネ判定(設計書 §5)。
-    var shouldConserveEnergy: Bool { isLowPowerModeEnabled || isThermalPressureActive }
+    var shouldConserveEnergy: Bool {
+        powerPolicy.conserves(PowerConditions(isLowPowerModeEnabled: isLowPowerModeEnabled,
+                                              isThermalPressureActive: isThermalPressureActive))
+    }
 }
 
-/// テストは実行機の電力・温度状態に依存せず、提供者を差し替えられる。
+/// テストは実行機の電力・温度状態と設定に依存せず、提供者を差し替えられる。
 struct FixedPowerState: PowerStateProviding {
     let isLowPowerModeEnabled: Bool
     let isThermalPressureActive: Bool
+    let powerPolicy: PowerPolicy
 
-    init(isLowPowerModeEnabled: Bool = false, isThermalPressureActive: Bool = false) {
+    init(isLowPowerModeEnabled: Bool = false, isThermalPressureActive: Bool = false,
+         powerPolicy: PowerPolicy = .default) {
         self.isLowPowerModeEnabled = isLowPowerModeEnabled
         self.isThermalPressureActive = isThermalPressureActive
+        self.powerPolicy = powerPolicy
     }
 }
 
@@ -75,14 +113,20 @@ final class PowerStateMonitor: PowerStateProviding, @unchecked Sendable {
     private struct State {
         /// OS から読んだ生の条件
         var conditions: PowerConditions
-        /// 保持込みの温度圧迫判定。生の値が false に戻っても保持時間の間は true のまま
+        /// 保持込みの温度圧迫判定。生の値が false に戻っても保持時間の間は true のまま。
+        /// 方針が温度を見なくても追跡は続け、方針を戻した瞬間から正しく効くようにする
         var thermalHeld: Bool
+        /// ユーザー設定の方針(設定の保存と同時に SettingsStore が流し込む)
+        var policy: PowerPolicy
         /// 進行中の解除予約。取り消し手段は予約を立てた後に入る(その間に発火・
         /// 取り消された予約は id が一致しないので無視される)
         var release: (id: UInt64, cancel: DelayedScheduler.Cancel?)?
         var nextReleaseID: UInt64 = 0
 
-        var shouldConserve: Bool { conditions.isLowPowerModeEnabled || thermalHeld }
+        var shouldConserve: Bool {
+            policy.conserves(PowerConditions(isLowPowerModeEnabled: conditions.isLowPowerModeEnabled,
+                                             isThermalPressureActive: thermalHeld))
+        }
     }
 
     private let state: OSAllocatedUnfairLock<State>
@@ -93,13 +137,14 @@ final class PowerStateMonitor: PowerStateProviding, @unchecked Sendable {
 
     init(center: NotificationCenter = .default,
          readState: @escaping @Sendable () -> PowerConditions = { PowerConditions.current() },
-         scheduler: DelayedScheduler = .task) {
+         scheduler: DelayedScheduler = .task,
+         policy: PowerPolicy = .default) {
         self.center = center
         self.readState = readState
         self.scheduler = scheduler
         let initial = readState()
         state = OSAllocatedUnfairLock(initialState: State(
-            conditions: initial, thermalHeld: initial.isThermalPressureActive))
+            conditions: initial, thermalHeld: initial.isThermalPressureActive, policy: policy))
         // 電力と温度のどちらの変化も同じ更新経路に流し、アプリ通知も一本にする(設計書 §5)。
         for name in [Notification.Name.NSProcessInfoPowerStateDidChange,
                      ProcessInfo.thermalStateDidChangeNotification] {
@@ -118,6 +163,24 @@ final class PowerStateMonitor: PowerStateProviding, @unchecked Sendable {
 
     var isLowPowerModeEnabled: Bool { state.withLock { $0.conditions.isLowPowerModeEnabled } }
     var isThermalPressureActive: Bool { state.withLock { $0.thermalHeld } }
+    var shouldConserveEnergy: Bool { state.withLock { $0.shouldConserve } }
+
+    /// 方針の変更は、派生判定が変わらなくても通知する。OS 条件の変化は判定が変わる
+    /// ときだけ通知するが、方針は判定以外にも Washi の画面外方針(全速 ↔ システム追従)
+    /// を決めるため、生きているビューがそれを引き直す契機が要る(設計書 §5)。
+    /// KaitoKit の復号並列数は reader の open 時に固定されるので、開いている書庫には
+    /// 次に開いたときから反映する。
+    var powerPolicy: PowerPolicy {
+        get { state.withLock { $0.policy } }
+        set {
+            let changed = state.withLock { state in
+                guard state.policy != newValue else { return false }
+                state.policy = newValue
+                return true
+            }
+            if changed { center.post(name: Self.didChangeNotification, object: self) }
+        }
+    }
 
     private func update() {
         // 読み取りもロック内で行い、同時に届いた通知の処理順と観測した OS 状態の順を揃える

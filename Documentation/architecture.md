@@ -363,6 +363,18 @@ Dock から `showWindow` で再表示する経路では同じ読書内容へ戻�
 serious / critical)」に揃え、`ArchiveReader` は `.reduceInLowPowerModeOrThermalPressure` とする
 (2.0b45 までは低電力モードだけに連動し温度は無視していた。省エネ判定は
 `PowerStateProviding.shouldConserveEnergy` の一つに集約し、消費者が別々の条件を組まない)。
+方針はユーザーが設定「高度」の「省電力」で選べる(`PowerPolicy`、新設キー `PowerPolicy` に
+rawValue 文字列で保存。未設定・未知値は既定): 既定の「低電力モードと高温時に控える」/
+「低電力モードのときだけ控える」(`.lowPowerModeOnly`)/「常に全速」(`.alwaysFullSpeed`。
+メモリ圧迫の上限は引き続き効く)。判定は `PowerPolicy.conserves(条件)` の一点で、
+`PowerStateMonitor` が設定値を保持して先読み・事前リサンプル・展開係に同じ答えを返し、
+KaitoKit へは `DecodePowerPolicy`(`.reduceInLowPowerModeOrThermalPressure` /
+`.reduceInLowPowerMode` / `.alwaysUseAllCores`)、Washi へは `EPUBOffscreenEnergyPolicy`
+(全速のみ `.unrestricted`、ほかは `.followSystem`。Washi に低電力モードだけの方針は無く、
+その間隔空けは結果を変えない)として写す。設定の変更は判定が同じでも
+`PowerStateMonitor.didChangeNotification` を送り、先読みの再計画と生きている EPUB
+ビュー・アトラスの方針差し替えを即時に行う。KaitoKit は reader の open 時に方針を固定
+するため、開いている書庫には次に開いたときから反映する。
 先行復号の保持予算(`ReadLimits.parallelDecodeMemory`)は
 開いた書庫(`ArchiveSource`)ごとに **物理メモリに比例**させる(`ArchiveDecodeBudget`、
 cooViewer-9vha で解決): 主書庫 = clamp(物理メモリ / 64, 64 MiB, 256 MiB)、展開係はその半分
@@ -398,10 +410,14 @@ ReaderWindowController は段階変化で先読み深さを一度組み直す(�
 間は事前リサンプルを始めず、進行中は次のページ境界で止め、可視に戻ったとき一度再計画する。
 見えてはいるがアプリが非前面のときは省エネ扱い(次の見開きだけ)で止めない。
 電力・温度通知では先読みを再計画し、表示中ページ・EPUB の WebKit QoS・開いている reader の並列数は変えず、新しい reader の open から電力状態を反映する。
-温度圧迫にはヒステリシスを持たせる(`PowerStateMonitor.thermalReleaseHold` = 45 秒): serious 以上になれば即座に省エネへ入るが、抜けるのは fair 以下が 45 秒続いた後にする。ファンレス機で fair と serious を数十秒周期で往復しても、先読みの再計画と ML 事前リサンプルの破棄を繰り返さないためである。低電力モードは両方向とも即時で、アプリ通知は派生判定が実際に変わるときだけ送る。これはアプリ側の絞りにだけ効き、KaitoKit が reader open 時に評価する自身の `DecodePowerPolicy` と、Washi が自前で OS 状態を見る `EPUBOffscreenEnergyPolicy.followSystem` には関与しない。
-EPUB の画面外 WebKit 処理(census・画面サムネイル・FXL 委譲)だけは Washi の `EPUBOffscreenEnergyPolicy.followSystem`
-を選び(`EPUBOffscreenSettings`、設定と生成ファクトリは `CooViewer/Core/EPUBOffscreenSettings.swift` に集約し、リーダーの `EPUBReaderView` と `EPUBAtlasStore` の全アトラスに適用)、同じ省エネ条件の間は
-項目/ジョブごとに 50 ms 休み、未開始の census は critical の間だけ延期する(QoS は下げず、ページ数と画像は同一)。
+温度圧迫にはヒステリシスを持たせる(`PowerStateMonitor.thermalReleaseHold` = 45 秒): serious 以上になれば即座に省エネへ入るが、抜けるのは fair 以下が 45 秒続いた後にする。ファンレス機で fair と serious を数十秒周期で往復しても、先読みの再計画と ML 事前リサンプルの破棄を繰り返さないためである。低電力モードは両方向とも即時で、OS 条件によるアプリ通知は派生判定が実際に変わるときだけ送る(ユーザーが方針を変えたときは常に送る)。方針が温度を見ない間も保持の追跡は続け、既定へ戻した瞬間から効く。これはアプリ側の絞りにだけ効き、KaitoKit が reader open 時に評価する自身の `DecodePowerPolicy` と、Washi が自前で OS 状態を見る `EPUBOffscreenEnergyPolicy.followSystem` には関与しない。
+EPUB の画面外 WebKit 処理(census・画面サムネイル・FXL 委譲)は、方針が常に全速なら Washi の
+`EPUBOffscreenEnergyPolicy.unrestricted`、ほかの二つなら `.followSystem` を選び(`EPUBOffscreenSettings`、
+写像と生成ファクトリは `CooViewer/Core/EPUBOffscreenSettings.swift` に集約し、リーダーの `EPUBReaderView` と
+`EPUBAtlasStore` の全アトラスに適用)、同じ省エネ条件の間は項目/ジョブごとに 50 ms 休み、未開始の census は
+critical の間だけ延期する(QoS は下げず、ページ数と画像は同一)。Washi に低電力限定の方針はないため
+`.lowPowerModeOnly` でも温度による間隔調整は残るが、結果は変わらない。方針の変更は生きているビューと
+アトラスへ `replanForPowerState` が渡し直す。
 先読みが表示中スプレッドのリサンプル完了を待つのはポーリングではなく `IdleSignal`
 (継続ベースの合図。キャンセルは即座に待ちを解く)で行う。
 
