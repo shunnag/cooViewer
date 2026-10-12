@@ -375,7 +375,7 @@ $(SRCROOT)/Frameworks/KaitoKit.framework/Modules
 ```sh
 git -C ../KaitoKit switch main
 git -C ../KaitoKit pull --ff-only
-git -C ../KaitoKit describe --tags --exact-match   # 公開済みの tag（例: v0.14.0）であること
+git -C ../KaitoKit describe --tags --exact-match   # 公開済みの tag（例: v0.14.1）であること
 rm -rf Frameworks/KaitoKit.framework
 ```
 
