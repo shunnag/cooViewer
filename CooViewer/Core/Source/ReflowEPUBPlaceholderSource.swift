@@ -22,9 +22,9 @@ struct ReflowEPUBPlaceholderSource: BookSource {
 
     var supportsDateSort: Bool { false }
 
-    init(url: URL) throws {
-        guard let publication = try? EPUBPublication(
-            url: url, readStrategy: VolumeMappingPolicy.epubReadStrategy(for: url)) else {
+    init(url: URL) async throws {
+        guard let publication = try? await EPUBStagingArea.shared.openPublication(at: url)
+        else {
             throw BookSourceError.unreadable(url)
         }
         try self.init(publication: publication, url: url)

@@ -10,15 +10,13 @@ final class EPUBParseCoalescer {
     private var inFlight: [String: Task<Result<EPUBPublication, any Error>, Never>] = [:]
     /// 解析失敗を保持するため、テストから失敗を注入できる実パース
     /// (cooViewer-oxr.41)。
-    private let parse: @Sendable (URL) throws -> EPUBPublication
+    private let parse: @Sendable (URL) async throws -> EPUBPublication
     /// 合流成立を決定論的に観測するテスト用フック(cooViewer-oxr.41)。
     private let onCoalescedRequest: @Sendable () -> Void
 
     init(
-        parse: @escaping @Sendable (URL) throws -> EPUBPublication = { url in
-            try EPUBPublication(
-                url: url,
-                readStrategy: VolumeMappingPolicy.epubReadStrategy(for: url))
+        parse: @escaping @Sendable (URL) async throws -> EPUBPublication = { url in
+            try await EPUBStagingArea.shared.openPublication(at: url)
         },
         onCoalescedRequest: @escaping @Sendable () -> Void = {}
     ) {
@@ -45,7 +43,7 @@ final class EPUBParseCoalescer {
         let task = Task.detached(priority: .userInitiated) {
             () -> Result<EPUBPublication, any Error> in
             do {
-                return .success(try parse(url))
+                return .success(try await parse(url))
             } catch {
                 return .failure(error)
             }

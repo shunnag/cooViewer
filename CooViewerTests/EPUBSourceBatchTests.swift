@@ -208,7 +208,7 @@ final class EPUBSourceBatchTests: XCTestCase {
         let url = try makeEPUB(
             named: "spread", imageOnly: true, fixedLayout: true,
             spreads: ["left", "right", "left"])
-        let source = try EPUBSource(url: url)
+        let source = try await EPUBSource(url: url)
         let first = await source.layoutSinglePageIndices()
         let second = await source.layoutSinglePageIndices()
         XCTAssertEqual(first, [0])
