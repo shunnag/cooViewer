@@ -272,6 +272,36 @@ final class PreresamplePolicyTests: XCTestCase {
             PreresamplePolicy.maxPages)
     }
 
+    func testLowPowerPreresampleCapsPagesAndScalesMemoryBudget() {
+        XCTAssertEqual(PreresamplePolicy.pageLimit(lowPowerMode: true), 4)
+        XCTAssertEqual(PreresamplePolicy.pageLimit(lowPowerMode: false), 64)
+        for memory: UInt64 in [2 << 30, 8 << 30, 64 << 30] {
+            XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: memory, lowPowerMode: true),
+                           PreresamplePolicy.byteBudget(physicalMemory: memory) / 16)
+            XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 1 << 20,
+                physicalMemory: memory, lowPowerMode: true), 4)
+        }
+        XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 400 << 20,
+            physicalMemory: 2 << 30, lowPowerMode: true), 1)
+    }
+
+    func testLowPowerPreresampleProcessesOnlyNextSpread() {
+        let predicted = [[2, 3], [4, 5], [6, 7]]
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, lowPowerMode: true), [[2, 3]])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(predicted, lowPowerMode: false), predicted)
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1, 2, 3, 4, 5]], lowPowerMode: true), [[1, 2, 3, 4]])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess([], lowPowerMode: true), [])
+    }
+
+    func testLowPowerDecodeAheadHalvesWithExistingMinimum() {
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 24,
+            decodedPageBytes: 100 << 20, pageCacheByteLimit: 2 << 30,
+            mediaFloor: 12, lowPowerMode: true), 14)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 0,
+            decodedPageBytes: 0, pageCacheByteLimit: 0,
+            mediaFloor: 2, lowPowerMode: true), 2)
+    }
+
     func testDecodeBehindIsQuarterOfAhead() {
         XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 12), 3)
         XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 33), 8)

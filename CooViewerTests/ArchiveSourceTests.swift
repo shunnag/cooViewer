@@ -107,7 +107,100 @@ final class ArchiveSourceTests: XCTestCase {
         // プールは成長してもコア数連動の上限まで
         let extractorCount = await source.extractorCount
         XCTAssertGreaterThanOrEqual(extractorCount, 1)
-        XCTAssertLessThanOrEqual(extractorCount, ArchiveSource.extractorPoolSize)
+        XCTAssertLessThanOrEqual(extractorCount, ArchiveSource.extractorPoolSize(lowPowerMode: false))
+    }
+
+    func testFactoryReceivesPrimaryAndExtractorRolesForFileAndData() async throws {
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let data = TestFixtures.storedZip(entries: [(Array("page.avifs".utf8), png)])
+        let url = try writeZip(data, name: "roles.cbr")
+        for lowPowerMode in [false, true] {
+            let roles = OSAllocatedUnfairLock(initialState: [ArchiveReaderRole]())
+            let factory = ArchiveEngineFactory(
+                openFile: { kind, path, role in
+                    roles.withLock { $0.append(role) }
+                    return try ArchiveEngineFactory.live.openFile(kind, path, role)
+                },
+                openData: { kind, data, role in
+                    roles.withLock { $0.append(role) }
+                    return try ArchiveEngineFactory.live.openData(kind, data, role)
+                })
+            let power = FixedPowerState(isLowPowerModeEnabled: lowPowerMode)
+            let sources = [
+                try ArchiveSource(url: url, engineFactory: factory, powerState: power),
+                try ArchiveSource(data: data, name: "roles.cbz", nestingDepth: 0, unlocker: NestedUnlocker(),
+                                  persistenceKey: .file(path: url.path),
+                                  engineFactory: factory, powerState: power)
+            ]
+            let poolSize = ArchiveSource.extractorPoolSize(lowPowerMode: lowPowerMode)
+            for source in sources {
+                let entry = try await source.entries()[0]
+                let image = try await source.image(for: entry, maxPixelSize: nil)
+                XCTAssertEqual(image.width, 4)
+                XCTAssertEqual(image.height, 6)
+            }
+            XCTAssertEqual(roles.withLock { $0 }, [.primary, .primary,
+                .extractor(poolSize: poolSize), .extractor(poolSize: poolSize)])
+        }
+    }
+
+    func testPowerChangeRestrictsExistingExtractorPoolWithoutReopening() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.activeProcessorCount < 3,
+                      "協調スレッドを2本塞いでもテストを進行できるよう、3 CPU以上で実行する")
+        // CIの3 CPUでも協調スレッドを1本残す。本番の数値ではなく縮小の仕組みを検証する。
+        let normalCount = 2
+        let reducedCount = 1
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        let url = try writeZip(named: "power-pool.zip", entries: (0..<normalCount).map {
+            (Array("page-\($0).avifs".utf8), png)
+        })
+        let state = OSAllocatedUnfairLock(initialState: (low: false, used: Set<Int>()))
+        let opens = OSAllocatedUnfairLock(initialState: 0)
+        let center = NotificationCenter()
+        let power = PowerStateMonitor(center: center, readState: { state.withLock { $0.low } })
+        let warmed = expectation(description: "通常時の全係を同時使用")
+        warmed.expectedFulfillmentCount = normalCount
+        let reduced = expectation(description: "低電力時の枠内の係を同時使用")
+        reduced.expectedFulfillmentCount = reducedCount
+        let release = DispatchSemaphore(value: 0)
+        defer { for _ in 0..<normalCount { release.signal() } }
+        let factory = ArchiveEngineFactory(
+            openFile: ArchiveEngineFactory.live.openFile,
+            openData: { kind, data, role in
+                guard let engine = try ArchiveEngineFactory.live.openData(kind, data, role) else { return nil }
+                guard case .extractor = role else { return engine }
+                let id = opens.withLock { $0 += 1; return $0 }
+                return PoolTestArchiveEngine(engine: engine, pauseOnce: false) {
+                    let (low, firstUse) = state.withLock {
+                        ($0.low, $0.used.insert(id).inserted)
+                    }
+                    if firstUse { (low ? reduced : warmed).fulfill() }
+                    XCTAssertEqual(release.wait(timeout: .now() + 10), .success)
+                }
+            })
+        let source = try ArchiveSource(
+            url: url, persistenceKey: .file(path: url.path), engineFactory: factory, powerState: power,
+            extractorPoolSizing: { $0 ? reducedCount : normalCount })
+        let pages = try await source.entries()
+        let warmTasks = pages.map { entry in
+            Task { try await source.image(for: entry, maxPixelSize: nil) }
+        }
+        await fulfillment(of: [warmed], timeout: 3)
+        for _ in 0..<normalCount { release.signal() }
+        for task in warmTasks { _ = try await task.value }
+        state.withLock { $0 = (low: true, used: []) }
+        center.post(name: .NSProcessInfoPowerStateDidChange, object: nil)
+        let lowTasks = pages.map { entry in
+            Task { try await source.image(for: entry, maxPixelSize: nil) }
+        }
+        await fulfillment(of: [reduced], timeout: 3)
+        XCTAssertEqual(state.withLock { $0.used }, Set(1...reducedCount))
+        for _ in 0..<normalCount { release.signal() }
+        for task in lowTasks { _ = try await task.value }
+        XCTAssertEqual(state.withLock { $0.used }, Set(1...reducedCount))
+        XCTAssertEqual(opens.withLock { $0 }, normalCount)
+        let retainedCount = await source.extractorCount
+        XCTAssertEqual(retainedCount, normalCount)
     }
 
     func testSerialZipReadsKeepPoolMinimal() async throws {
@@ -136,13 +229,13 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertFalse(ArchiveSource.shouldMemoryMap(url: fileURL))
         let calls = OSAllocatedUnfairLock(initialState: [String]())
         let factory = ArchiveEngineFactory(
-            openFile: { kind, path in
+            openFile: { kind, path, role in
                 calls.withLock { $0.append("file") }
-                return try ArchiveEngineFactory.live.openFile(kind, path)
+                return try ArchiveEngineFactory.live.openFile(kind, path, role)
             },
-            openData: { kind, data in
+            openData: { kind, data, role in
                 calls.withLock { $0.append("data") }
-                return try ArchiveEngineFactory.live.openData(kind, data)
+                return try ArchiveEngineFactory.live.openData(kind, data, role)
             })
         for route in 0..<3 {
             ArchiveEngineDiagnostics.resetForTesting()
@@ -179,10 +272,10 @@ final class ArchiveSourceTests: XCTestCase {
         let opens = OSAllocatedUnfairLock(initialState: 0)
         let factory = ArchiveEngineFactory(
             openFile: ArchiveEngineFactory.live.openFile,
-            openData: { kind, data in
+            openData: { kind, data, role in
                 let ordinal = opens.withLock { $0 += 1; return $0 }
                 guard ordinal == 1 else { return nil }
-                return try ArchiveEngineFactory.live.openData(kind, data)
+                return try ArchiveEngineFactory.live.openData(kind, data, role)
             })
         let source = try ArchiveSource(url: url, engineFactory: factory)
         for (offset, entry) in try await source.entries().enumerated() {
@@ -216,10 +309,10 @@ final class ArchiveSourceTests: XCTestCase {
         let opens = OSAllocatedUnfairLock(initialState: 0)
         let factory = ArchiveEngineFactory(
             openFile: ArchiveEngineFactory.live.openFile,
-            openData: { kind, data in
+            openData: { kind, data, role in
                 let ordinal = opens.withLock { $0 += 1; return $0 }
                 if ordinal == 2 { withUnsafeCurrentTask { $0?.cancel() } }
-                guard let engine = try ArchiveEngineFactory.live.openData(kind, data) else { return nil }
+                guard let engine = try ArchiveEngineFactory.live.openData(kind, data, role) else { return nil }
                 return PoolTestArchiveEngine(engine: engine)
             })
         let source = try ArchiveSource(url: url, engineFactory: factory)
@@ -250,15 +343,15 @@ final class ArchiveSourceTests: XCTestCase {
         let opens = OSAllocatedUnfairLock(initialState: 0)
         let factory = ArchiveEngineFactory(
             openFile: ArchiveEngineFactory.live.openFile,
-            openData: { kind, data in
+            openData: { kind, data, role in
                 let ordinal = opens.withLock { $0 += 1; return $0 }
                 // image() 入口の検査を通過後、KaitoKit を開く直前にキャンセルする。
                 // actor 待機中にキャンセルされる競合を、時間待ちなしで再現する。
                 if ordinal == 3 { withUnsafeCurrentTask { $0?.cancel() } }
-                let engine = try ArchiveEngineFactory.live.openData(kind, data)
+                let engine = try ArchiveEngineFactory.live.openData(kind, data, role)
                 if ordinal == 3 {
                     XCTAssertTrue(Task.isCancelled)
-                    XCTAssertNil(engine, "KaitoKit 0.11.0 の実際のキャンセル契約を通す")
+                    XCTAssertNil(engine, "KaitoKit の実際のキャンセル契約を通す")
                     cancelledOpen.fulfill()
                 }
                 if ordinal >= 4 { regrown.fulfill() }
@@ -644,7 +737,7 @@ final class ArchiveSourceTests: XCTestCase {
             }
         }
         let count = await source.extractorCount
-        XCTAssertLessThanOrEqual(count, ArchiveSource.extractorPoolSize)
+        XCTAssertLessThanOrEqual(count, ArchiveSource.extractorPoolSize(lowPowerMode: false))
     }
 
     func testFastLocalSkipsSpoolForIndependentSevenZip() async throws {
@@ -804,19 +897,21 @@ private extension ArchiveSource {
 private final class PoolTestArchiveEngine: ArchiveEngine {
     private let engine: any ArchiveEngine
     private var pause: (() -> Void)?
+    private let pauseOnce: Bool
 
-    init(engine: any ArchiveEngine, pause: (() -> Void)? = nil) {
+    init(engine: any ArchiveEngine, pauseOnce: Bool = true, pause: (() -> Void)? = nil) {
         self.engine = engine
+        self.pauseOnce = pauseOnce
         self.pause = pause
     }
 
-    init?(file path: String) { return nil }
-    init?(data: Data) { return nil }
+    init?(file path: String, role: ArchiveReaderRole) { return nil }
+    init?(data: Data, role: ArchiveReaderRole) { return nil }
 
     func contents(ofEntry index: Int32) -> Data? {
         guard !Task.isCancelled else { return nil }
         let once = pause
-        pause = nil
+        if pauseOnce { pause = nil }
         once?()
         return engine.contents(ofEntry: index)
     }
@@ -833,9 +928,6 @@ private final class PoolTestArchiveEngine: ArchiveEngine {
     func isEncrypted() -> Bool { engine.isEncrypted() }
     func setPassword(_ password: String) { engine.setPassword(password) }
     func solidGroup(ofEntry index: Int32) -> Int32 { engine.solidGroup(ofEntry: index) }
-    func extractEntry(_ index: Int32, to directory: String) -> Bool {
-        engine.extractEntry(index, to: directory)
-    }
     static var defaultZipLazyLocalHeaders: Bool { KaitoKitEngine.defaultZipLazyLocalHeaders }
     static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(enabled)

@@ -18,8 +18,8 @@ final class ArchiveEngineTests: XCTestCase {
 
     /// 列挙開始時に不正な件数を返し、KaitoKit 側の列挙失敗を再現する。
     private final class EnumerationFailureEngine: ArchiveEngine {
-        init?(file path: String) {}
-        init?(data: Data) {}
+        init?(file path: String, role: ArchiveReaderRole) {}
+        init?(data: Data, role: ArchiveReaderRole) {}
 
         func numberOfEntries() -> Int32 { -1 }
         func name(ofEntry index: Int32) -> String? { nil }
@@ -31,7 +31,6 @@ final class ArchiveEngineTests: XCTestCase {
         func isEncrypted() -> Bool { false }
         func setPassword(_ password: String) {}
         func solidGroup(ofEntry index: Int32) -> Int32 { -1 }
-        func extractEntry(_ index: Int32, to directory: String) -> Bool { false }
 
         static var defaultZipLazyLocalHeaders: Bool { true }
         static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
@@ -40,8 +39,8 @@ final class ArchiveEngineTests: XCTestCase {
     /// 契約上の名前欠落を再現し、後続の正規ページまで列挙する。
     private final class MissingNameEngine: ArchiveEngine {
         init() {}
-        init?(file path: String) {}
-        init?(data: Data) {}
+        init?(file path: String, role: ArchiveReaderRole) {}
+        init?(data: Data, role: ArchiveReaderRole) {}
         func numberOfEntries() -> Int32 { 3 }
         func name(ofEntry index: Int32) -> String? { index == 1 ? nil : "page-\(index).avifs" }
         func contents(ofEntry index: Int32) -> Data? { TestFixtures.pngData(width: 2, height: 3) }
@@ -52,7 +51,6 @@ final class ArchiveEngineTests: XCTestCase {
         func isEncrypted() -> Bool { false }
         func setPassword(_ password: String) {}
         func solidGroup(ofEntry index: Int32) -> Int32 { -1 }
-        func extractEntry(_ index: Int32, to directory: String) -> Bool { false }
         static var defaultZipLazyLocalHeaders: Bool { true }
         static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
     }
@@ -114,6 +112,144 @@ final class ArchiveEngineTests: XCTestCase {
         }
     }
 
+    func testNativeNamesStripAllDirectorySeparatorsAndPreserveFileNames() throws {
+        var data = TestFixtures.storedZip(entries: [
+            (Array("folder///".utf8), Data()),
+            (Array("windows\\\\".utf8), Data()),
+            (Array("folder/page.bin".utf8), Data([1, 2, 3]))
+        ])
+        let signature = Data([0x50, 0x4b, 0x01, 0x02])
+        let first = try XCTUnwrap(data.range(of: signature))
+        let second = try XCTUnwrap(data.range(of: signature, in: first.upperBound..<data.endIndex))
+        // ZIP は末尾バックスラッシュだけではディレクトリと見なさないため、DOS 属性を付ける。
+        data[second.lowerBound + 38] = 0x10
+        let engine = try XCTUnwrap(KaitoKitEngine(data: data, role: .primary))
+        XCTAssertEqual(engine.numberOfEntries(), 3)
+        XCTAssertTrue(engine.entryIsDirectory(0))
+        XCTAssertTrue(engine.entryIsDirectory(1))
+        XCTAssertEqual(engine.name(ofEntry: 0), "folder")
+        XCTAssertEqual(engine.name(ofEntry: 1), "windows")
+        XCTAssertEqual(engine.name(ofEntry: 2), "folder/page.bin")
+        XCTAssertEqual(engine.contents(ofEntry: 2), Data([1, 2, 3]))
+    }
+
+    func testNativeOutOfRangeEntriesKeepFailureSentinels() throws {
+        let data = TestFixtures.storedZip(entries: [(Array("page.bin".utf8), Data([1]))])
+        let engine = try XCTUnwrap(KaitoKitEngine(data: data, role: .primary))
+        for index: Int32 in [-1, 1, .max] {
+            XCTAssertNil(engine.name(ofEntry: index))
+            XCTAssertNil(engine.contents(ofEntry: index))
+            XCTAssertEqual(engine.uncompressedSize(ofEntry: index), .max)
+            XCTAssertFalse(engine.entryHasSize(index))
+            XCTAssertFalse(engine.entryIsDirectory(index))
+            XCTAssertFalse(engine.entryIsEncrypted(index))
+            XCTAssertEqual(engine.solidGroup(ofEntry: index), -1)
+        }
+        XCTAssertEqual(engine.solidGroup(ofEntry: 0), -1)
+    }
+
+    func testNativeUnknownSizeUsesSentinelAndReadsUntilEnd() throws {
+        let payload = Data(repeating: 65, count: 300_000)
+        let data = unknownSizeRAR5(payload: payload)
+        let url = tempDir.appendingPathComponent("unknown.rar")
+        try data.write(to: url)
+        for engine in [try XCTUnwrap(KaitoKitEngine(data: data, role: .primary)),
+                       try XCTUnwrap(KaitoKitEngine(file: url.path, role: .extractor(poolSize: 3)))] {
+            XCTAssertEqual(engine.numberOfEntries(), 1)
+            XCTAssertFalse(engine.entryHasSize(0))
+            XCTAssertEqual(engine.uncompressedSize(ofEntry: 0), .max)
+            XCTAssertEqual(engine.contents(ofEntry: 0), payload)
+        }
+    }
+
+    func testNativeEncryptedEntryWithoutPasswordReturnsNil() throws {
+        let payload = Data("暗号化エントリ".utf8)
+        let url = try makeEncryptedZIP(payload: payload)
+        let engine = try XCTUnwrap(KaitoKitEngine(file: url.path, role: .primary))
+        let index = try XCTUnwrap(firstFileIndex(in: engine))
+        XCTAssertTrue(engine.isEncrypted())
+        XCTAssertTrue(engine.entryIsEncrypted(index))
+        XCTAssertNil(engine.contents(ofEntry: index))
+        engine.setPassword("archive-engine-test")
+        XCTAssertEqual(engine.contents(ofEntry: index), payload)
+    }
+
+    func testNativeLazyHeaderDefaultAppliesOnlyToFutureOpens() throws {
+        let original = KaitoKitEngine.defaultZipLazyLocalHeaders
+        defer { KaitoKitEngine.setDefaultZipLazyLocalHeaders(original) }
+        let data = TestFixtures.storedZip(entries: [(Array("page.bin".utf8), Data([1]))])
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(true)
+        let engine = try XCTUnwrap(KaitoKitEngine(data: data, role: .primary))
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(false)
+        XCTAssertEqual(engine.contents(ofEntry: 0), Data([1]))
+        var damaged = data
+        damaged[0] = 0
+        XCTAssertNil(KaitoKitEngine(data: damaged, role: .primary))
+        KaitoKitEngine.setDefaultZipLazyLocalHeaders(true)
+        XCTAssertNotNil(KaitoKitEngine(data: damaged, role: .primary))
+    }
+
+    func testNativeDeclaredSizeAboveMemoryLimitReturnsNil() throws {
+        var data = TestFixtures.storedZip(entries: [(Array("page.bin".utf8), Data([1]))])
+        let directory = try XCTUnwrap(data.range(of: Data([0x50, 0x4b, 0x01, 0x02])))
+        let declared: UInt32 = (1 << 30) + 1
+        for offset in 0..<4 {
+            data[22 + offset] = UInt8(truncatingIfNeeded: declared >> (8 * offset))
+            data[directory.lowerBound + 24 + offset] = UInt8(truncatingIfNeeded: declared >> (8 * offset))
+        }
+        let engine = try XCTUnwrap(KaitoKitEngine(data: data, role: .primary))
+        XCTAssertEqual(engine.uncompressedSize(ofEntry: 0), Int64(declared))
+        XCTAssertNil(engine.contents(ofEntry: 0))
+    }
+
+    func testNativeTruncatedDeclaredSizeReturnsNil() throws {
+        let data = unknownSizeRAR5(payload: Data([1, 2, 3]), declaredSize: 4)
+        let engine = try XCTUnwrap(KaitoKitEngine(data: data, role: .primary))
+        XCTAssertTrue(engine.entryHasSize(0))
+        XCTAssertEqual(engine.uncompressedSize(ofEntry: 0), 4)
+        XCTAssertNil(engine.contents(ofEntry: 0))
+    }
+
+    /// サイズ不明フラグを持つ格納 RAR5 を手組みし、外部ツールなしで検証する。
+    private func unknownSizeRAR5(payload: Data, declaredSize: UInt64? = nil) -> Data {
+        func vint(_ value: UInt64) -> Data {
+            var remaining = value
+            var bytes = Data()
+            repeat {
+                let byte = UInt8(remaining & 0x7f)
+                remaining >>= 7
+                bytes.append(byte | (remaining > 0 ? 0x80 : 0))
+            } while remaining > 0
+            return bytes
+        }
+        func block(type: UInt64, fields: Data, payload: Data = Data()) -> Data {
+            var body = vint(type)
+            body.append(vint(payload.isEmpty ? 0 : 2))
+            if !payload.isEmpty { body.append(vint(UInt64(payload.count))) }
+            body.append(fields)
+            var covered = vint(UInt64(body.count))
+            covered.append(body)
+            var result = Data()
+            result.appendLE32(TestFixtures.crc32(covered))
+            result.append(covered)
+            result.append(payload)
+            return result
+        }
+        let name = Data("unknown.bin".utf8)
+        var fields = vint(declaredSize == nil ? 8 : 0) // サイズ不明フラグ、CRC なし。
+        fields.append(vint(declaredSize ?? 0))
+        fields.append(vint(0)) // 属性。
+        fields.append(vint(0)) // 格納方式。
+        fields.append(vint(1)) // Unix。
+        fields.append(vint(UInt64(name.count)))
+        fields.append(name)
+        var result = Data([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00])
+        result.append(block(type: 1, fields: vint(0)))
+        result.append(block(type: 2, fields: fields, payload: payload))
+        result.append(block(type: 5, fields: vint(0)))
+        return result
+    }
+
     /// 本体の既定引数で KaitoKit が選ばれる(設計書 §2.4)。
     func testArchiveSourceDefaultsToKaitoKit() throws {
         let url = try makeCBZFixture()
@@ -138,13 +274,13 @@ final class ArchiveEngineTests: XCTestCase {
         try XCTSkipUnless(ArchiveSource.shouldMemoryMap(url: fixture), "mmap 対象のローカルボリュームが必要")
         let routes = OSAllocatedUnfairLock(initialState: [String]())
         let factory = ArchiveEngineFactory(
-            openFile: { _, path in
+            openFile: { _, path, role in
                 routes.withLock { $0.append("file") }
-                return EnumerationFailureEngine(file: path)
+                return EnumerationFailureEngine(file: path, role: role)
             },
-            openData: { _, data in
+            openData: { _, data, role in
                 routes.withLock { $0.append("data") }
-                return EnumerationFailureEngine(data: data)
+                return EnumerationFailureEngine(data: data, role: role)
             })
         XCTAssertThrowsError(try ArchiveSource(url: fixture, engineFactory: factory)) { error in
             self.assertUnreadable(error, url: fixture)
@@ -168,8 +304,8 @@ final class ArchiveEngineTests: XCTestCase {
     func testMissingEntryNameKeepsRemainingPages() async throws {
         let fixture = try makeCBZFixture()
         let factory = ArchiveEngineFactory(
-            openFile: { _, _ in MissingNameEngine() },
-            openData: { _, _ in MissingNameEngine() })
+            openFile: { _, _, role in MissingNameEngine() },
+            openData: { _, _, role in MissingNameEngine() })
         let sources = [
             try ArchiveSource(url: fixture, engineFactory: factory),
             try ArchiveSource(
@@ -193,12 +329,12 @@ final class ArchiveEngineTests: XCTestCase {
         let fixture = tempDir.appendingPathComponent("failed.rar")
         let routes = OSAllocatedUnfairLock(initialState: [String]())
         let factory = ArchiveEngineFactory(
-            openFile: { _, _ in
+            openFile: { _, _, role in
                 routes.withLock { $0.append("file") }
                 if throwsOnOpen { throw StubOpenError.rejected }
                 return nil
             },
-            openData: { _, _ in
+            openData: { _, _, role in
                 routes.withLock { $0.append("data") }
                 if throwsOnOpen { throw StubOpenError.rejected }
                 return nil
@@ -241,12 +377,12 @@ final class ArchiveEngineTests: XCTestCase {
             ArchiveEngineDiagnostics.resetForTesting()
             let routes = OSAllocatedUnfairLock(initialState: [String]())
             let factory = ArchiveEngineFactory(
-                openFile: { _, _ in
+                openFile: { _, _, role in
                     routes.withLock { $0.append("file") }
                     if throwsOnOpen { throw StubOpenError.rejected }
                     return nil
                 },
-                openData: { _, _ in
+                openData: { _, _, role in
                     routes.withLock { $0.append("data") }
                     if throwsOnOpen { throw StubOpenError.rejected }
                     return nil
@@ -272,12 +408,12 @@ final class ArchiveEngineTests: XCTestCase {
             ArchiveEngineDiagnostics.resetForTesting()
             let routes = OSAllocatedUnfairLock(initialState: [String]())
             let factory = ArchiveEngineFactory(
-                openFile: { actualKind, path in
+                openFile: { actualKind, path, role in
                     XCTAssertEqual(actualKind, kind)
                     routes.withLock { $0.append("file") }
-                    return try ArchiveEngineFactory.live.openFile(actualKind, path)
+                    return try ArchiveEngineFactory.live.openFile(actualKind, path, role)
                 },
-                openData: { actualKind, _ in
+                openData: { actualKind, _, role in
                     XCTAssertEqual(actualKind, kind)
                     routes.withLock { $0.append("data") }
                     if throwsOnData { throw StubOpenError.rejected }
@@ -409,7 +545,7 @@ final class ArchiveEngineTests: XCTestCase {
     private func open(_ kind: ArchiveEngineKind, file url: URL,
                       context: String) throws -> any ArchiveEngine {
         let engine: (any ArchiveEngine)? = switch kind {
-        case .kaitokit: KaitoKitEngine(file: url.path)
+        case .kaitokit: KaitoKitEngine(file: url.path, role: .primary)
         }
         return try XCTUnwrap(engine, "\(context):\(kind.rawValue) file open")
     }
@@ -417,7 +553,7 @@ final class ArchiveEngineTests: XCTestCase {
     private func open(_ kind: ArchiveEngineKind, data: Data,
                       context: String) throws -> any ArchiveEngine {
         let engine: (any ArchiveEngine)? = switch kind {
-        case .kaitokit: KaitoKitEngine(data: data)
+        case .kaitokit: KaitoKitEngine(data: data, role: .primary)
         }
         return try XCTUnwrap(engine, "\(context):\(kind.rawValue) data open")
     }

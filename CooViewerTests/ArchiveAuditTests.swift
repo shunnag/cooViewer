@@ -93,8 +93,8 @@ final class ArchiveAuditTests: XCTestCase {
     func testEntrypointUsesApplicationPolicyWithoutFallback() throws {
         for name in ["book.zip", "span.zip", "span.z01", "book.rar"] { try write(Data(), name) }
         let factory = ArchiveEngineFactory(
-            openFile: { _, _ in StubEngine(mode: .file) },
-            openData: { _, _ in StubEngine(mode: .data) })
+            openFile: { _, _, role in StubEngine(mode: .file) },
+            openData: { _, _, role in StubEngine(mode: .data) })
         let urls = try ArchiveAudit.archiveURLs(in: root.standardizedFileURL)
         let records = try collect(factory: factory).records
         for record in records {
@@ -105,8 +105,8 @@ final class ArchiveAuditTests: XCTestCase {
             XCTAssertEqual(record.entries.first?.name, mapped ? "data" : "file")
         }
         let failureFactory = ArchiveEngineFactory(
-            openFile: { _, _ in throw StubError.open },
-            openData: { _, _ in nil })
+            openFile: { _, _, role in throw StubError.open },
+            openData: { _, _, role in nil })
         let failures = try collect(factory: failureFactory)
         XCTAssertTrue(failures.records.allSatisfy { $0.status == .openFailed })
         XCTAssertFalse(failures.summary.succeeded)
@@ -122,10 +122,10 @@ final class ArchiveAuditTests: XCTestCase {
         ]
         for (mode, status) in cases {
             let factory = ArchiveEngineFactory(
-                openFile: { _, path in
+                openFile: { _, path, role in
                     StubEngine(mode: path.hasSuffix("book.rar") ? mode : .file)
                 },
-                openData: { _, _ in nil })
+                openData: { _, _, role in nil })
             let result = try collect(factory: factory)
             XCTAssertEqual(result.records[0].status, status)
             XCTAssertEqual(result.records[1].status, .ok)
@@ -137,10 +137,10 @@ final class ArchiveAuditTests: XCTestCase {
                 XCTAssertEqual(result.records[0].contentsSHA256, "unreadable")
             }
         }
-        let exceptionFactory = ArchiveEngineFactory(openFile: { _, _ in
+        let exceptionFactory = ArchiveEngineFactory(openFile: { _, _, role in
             NSException(name: .genericException, reason: "監査 open 試験").raise()
             return nil
-        }, openData: { _, _ in nil })
+        }, openData: { _, _, role in nil })
         let result = try collect(factory: exceptionFactory)
         XCTAssertTrue(result.records.allSatisfy { $0.status == .openFailed })
         XCTAssertTrue(result.records.allSatisfy { $0.error?.contains("監査 open 試験") == true })
@@ -150,13 +150,13 @@ final class ArchiveAuditTests: XCTestCase {
         try write(Data(), "book.rar")
         for mode in [StubEngine.Mode.encrypted, .mixedEncrypted] {
             let factory = ArchiveEngineFactory(
-                openFile: { _, _ in StubEngine(mode: mode) }, openData: { _, _ in nil })
+                openFile: { _, _, role in StubEngine(mode: mode) }, openData: { _, _, role in nil })
             let result = try collect(factory: factory)
             XCTAssertTrue(result.summary.succeeded)
             XCTAssertTrue(result.records.allSatisfy { $0.encrypted && $0.contentsSHA256 == nil })
         }
         let factory = ArchiveEngineFactory(
-            openFile: { _, _ in StubEngine(mode: .mustNotRead) }, openData: { _, _ in nil })
+            openFile: { _, _, role in StubEngine(mode: .mustNotRead) }, openData: { _, _, role in nil })
         let result = try collect(factory: factory, includeHashes: false)
         XCTAssertTrue(result.summary.succeeded)
         XCTAssertTrue(result.records.allSatisfy { $0.contentsSHA256 == nil })
@@ -183,8 +183,8 @@ final class ArchiveAuditTests: XCTestCase {
     func testEmptyArchiveSingleEngineAndCodable() throws {
         try write(Data(), "empty.rar")
         var records: [ArchiveAuditRecord] = []
-        let factory = ArchiveEngineFactory(openFile: { _, _ in StubEngine(mode: .empty) },
-                                           openData: { _, _ in nil })
+        let factory = ArchiveEngineFactory(openFile: { _, _, role in StubEngine(mode: .empty) },
+                                           openData: { _, _, role in nil })
         let summary = try ArchiveAudit(engineFactory: factory).run(
             root: root, engines: [.kaitokit], includeHashes: true,
             onArchive: { records += $0 })
@@ -312,8 +312,8 @@ final class ArchiveAuditTests: XCTestCase {
         }
         let mode: Mode
         init(mode: Mode) { self.mode = mode }
-        init?(file path: String) { mode = .file }
-        init?(data: Data) { mode = .data }
+        init?(file path: String, role: ArchiveReaderRole) { mode = .file }
+        init?(data: Data, role: ArchiveReaderRole) { mode = .data }
         func numberOfEntries() -> Int32 {
             switch mode { case .empty: 0; case .negativeCount: -1; default: 2 }
         }
@@ -339,7 +339,6 @@ final class ArchiveAuditTests: XCTestCase {
         func isEncrypted() -> Bool { mode == .encrypted }
         func setPassword(_ password: String) { XCTFail("監査でパスワードを設定しました") }
         func solidGroup(ofEntry index: Int32) -> Int32 { -1 }
-        func extractEntry(_ index: Int32, to directory: String) -> Bool { false }
         static var defaultZipLazyLocalHeaders: Bool { true }
         static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
     }

@@ -25,7 +25,7 @@ bd dolt push          # Push beads data to remote
 
 ## 書庫エンジン(PR 2、bd cooViewer-6lrc)
 
-- 書庫の読み込み・名前の文字コード判定は KaitoKit のみ。エンジンの自動フォールバックは撤去済み。
+- 書庫の読み込み・名前の文字コード判定はネイティブ KaitoKit `ArchiveReader` のみ。主書庫/展開係の復号予算と低電力モード連動は設計書 §5 に従う。エンジンの自動フォールバックは撤去済み。
 - mmap の open 失敗時は file 入口で一度再試行し、列挙失敗は unreadable とする。
 - 旧書庫・文字コード判定エンジンの framework・submodule・ライセンス資産は PR 2 で撤去済み。
 - サブモジュールは不要。KaitoKit / Washi は兄弟チェックアウトからビルドし、Sparkle は Fetch Sparkle フェーズで取得する。

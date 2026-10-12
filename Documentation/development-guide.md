@@ -331,7 +331,7 @@ KaitoKit は cooViewer と同じ親ディレクトリに置く独立 SwiftPM リ
 
 ファイル名の文字コード判定は KaitoKit 自身の `EncodingPolicy.automatic`
 (既定 `likelyLanguage: "ja"`、2026-09-15 の KaitoKit PR #24 で 39 言語・54 legacy
-候補)で行い、cooViewer は `KaitoArchiveDelegate` の名前判定フックを実装しない。
+候補)で行い、cooViewer はネイティブ `ArchiveReader` を直接使い、delegate による名前判定は行わない。
 判定精度の測定値と残差は KaitoKit の
 `Documentation/verification/2026-09-14-name-encoding-languages.md` を参照。
 
@@ -356,11 +356,13 @@ CooViewer.xcodeproj の Run Script フェーズから自動実行される。配
 KAITOKIT_SOURCE_DIR=/path/to/KaitoKit Scripts/build-kaitokit-framework.sh
 ```
 
-フレームワークには `KaitoKit` と `KaitoKitCompat` の両モジュールが
-`Modules/` 以下に入る。`KaitoKitCompat` の interface が `KaitoKit` を import
-するため、利用側には通常の framework search path に加えて次の include path
-(`-I` 相当)が必要になる。これはアプリ・テストが継承するプロジェクト設定にあり、
-テストターゲットも KaitoKit.framework を明示的にリンクしている。
+cooViewer は `KaitoKit.ArchiveReader` を直接使う。主書庫は自動並列数・256 MiB、
+展開係は open 時の自動並列数をプール幅で分けた明示並列数・128 MiB とし、
+電力方針は `.reduceInLowPowerMode` に揃える(設計書 §5)。ZIP の lazy local header
+設定はアプリ側のプロセス共通値から open 時に `ReaderOptions` へ渡す。
+フレームワークの `Modules/` を探す次の include path (`-I` 相当)は
+アプリ・テストが継承するプロジェクト設定にあり、テストターゲットも
+KaitoKit.framework を明示的にリンクしている。
 
 ```text
 $(SRCROOT)/Frameworks/KaitoKit.framework/Modules
@@ -373,7 +375,7 @@ $(SRCROOT)/Frameworks/KaitoKit.framework/Modules
 ```sh
 git -C ../KaitoKit switch main
 git -C ../KaitoKit pull --ff-only
-git -C ../KaitoKit describe --tags --exact-match   # 公開済みの tag（例: v0.11.0）であること
+git -C ../KaitoKit describe --tags --exact-match   # 公開済みの tag（例: v0.14.1）であること
 rm -rf Frameworks/KaitoKit.framework
 ```
 
