@@ -27,11 +27,14 @@ actor ThumbnailCache {
     private var order: [String] = []  // 末尾が最新(MRU)
     private var costs: [String: Int] = [:]
     private var totalCost = 0
-    /// メモリ上限(バイト予算)。256px≈171KB で ~560 枚、512px≈682KB で ~140 枚
+    /// 設定上のメモリ上限(バイト予算)。256px≈171KB で ~560 枚、512px≈682KB で ~140 枚
     /// (どのセルサイズでも 2 画面超)。旧: 固定 400 枚は 200px 前提でしか合わず、
     /// セル追従で大きいサムネを載せるとメモリが膨れた(cooViewer-vbv。
     /// ImageResampler と同じバイト予算方式)。テストは init で小さく差し替える
-    private let byteLimit: Int
+    private let configuredByteLimit: Int
+    /// 実効上限 = MemoryBudgetPolicy(configured, 圧迫段階)。ディスク層は対象外(設計書 §5)
+    private var byteLimit: Int
+    private let pressureObservation: MemoryPressureObservation
 
     /// 生成に失敗したページ(壊れ画像・パスワード付きネスト書庫等)の記録。
     /// これがないと画面に入るたびに毎回展開し直してしまい、solid 書庫や
@@ -68,12 +71,29 @@ actor ThumbnailCache {
     private let diskRoot: URL
 
     init(diskRoot: URL? = nil, failureTTL: Duration = .seconds(300),
-         byteLimit: Int = 96 << 20) {
+         byteLimit: Int = 96 << 20,
+         pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared,
+         center: NotificationCenter = .default) {
         self.diskRoot = diskRoot ?? FileManager.default
             .userDomainDirectory(.cachesDirectory)
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails-v2")
         self.failureTTL = failureTTL
-        self.byteLimit = max(1, byteLimit)
+        configuredByteLimit = max(1, byteLimit)
+        self.byteLimit = MemoryBudgetPolicy.effectiveLimit(
+            configured: configuredByteLimit, level: pressure.memoryPressureLevel)
+        let observation = MemoryPressureObservation(center: center)
+        pressureObservation = observation
+        // 通知は圧迫源の utility キューで届くので actor へ跳び、跳んだ後に現在値を読む
+        observation.setHandler({ [weak self] provider in
+            Task { await self?.applyMemoryPressure(provider.memoryPressureLevel) }
+        }, provider: pressure)
+    }
+
+    /// 圧迫段階の変化: メモリ層の実効上限を置き直し、下げたときはそこまで追い出す。
+    /// normal への復帰は上限を戻すだけで埋め直さない(設計書 §5)
+    func applyMemoryPressure(_ level: MemoryPressureLevel) {
+        byteLimit = MemoryBudgetPolicy.effectiveLimit(configured: configuredByteLimit, level: level)
+        if level != .normal { evictIfNeeded() }
     }
 
     /// 生成中の共有タスクと待ち手数(重複要求は同じ生成を待つ)。
@@ -267,6 +287,8 @@ actor ThumbnailCache {
 
     /// 検証用: メモリキャッシュの枚数(バイト予算 LRU の追い出し確認。vbv)
     func debugMemoryCount() -> Int { memory.count }
+    /// 検証用: メモリ層の使用量と実効上限(圧迫段階の適用確認)
+    func debugMemoryUsage() -> (bytes: Int, limit: Int) { (totalCost, byteLimit) }
 
     /// 検証用: 内部状態の要約(--dump-thumbnail-stats。欠けセルの原因判別)
     func debugStats() async -> String {
@@ -325,6 +347,10 @@ actor ThumbnailCache {
         costs[key] = cost
         totalCost += cost
         order.append(key)
+        evictIfNeeded()
+    }
+
+    private func evictIfNeeded() {
         while totalCost > byteLimit, order.count > 1 {
             removeEntry(order[0])
         }

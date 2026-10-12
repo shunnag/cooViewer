@@ -131,8 +131,10 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
   `ArchiveSource` (actor over `ArchiveEngine`: native KaitoKit `ArchiveReader` only, no engine fallback;
-  per-opened-archive decode-ahead budgets (primary 256 MiB / extractors 128 MiB each; not a
-  per-book or app-wide cap, nested/collection children count separately) and energy-conserving
+  per-opened-archive decode-ahead budgets proportional to RAM (primary = clamp(RAM/64, 64 MiB,
+  256 MiB), extractors half of that each — 256/128 MiB on ≥ 16 GB Macs, 128/64 MiB on 8 GB;
+  readers opened under memory pressure get 1/2 or 1/4; not a per-book or app-wide cap,
+  nested/collection children count separately; shown in the Activity window) and energy-conserving
   prefetch adaptation per design §5: one `shouldConserveEnergy` decision = Low Power Mode OR
   thermal pressure (`thermalState` serious/critical), passed to KaitoKit as
   `.reduceInLowPowerModeOrThermalPressure`; ML render qualities pre-resample at most the next two

@@ -78,16 +78,55 @@ final class PageCacheTests: XCTestCase {
         XCTAssertNotNil(first)
     }
 
-    func testTrimToHalfDropsOldEntries() {
-        let cache = PageCache(byteLimit: oneCost * 4)
-        for id in 1...4 {
-            cache.insert(image(), for: id)
+    /// 圧迫段階で実効上限を下げて追い出し、normal まで保ち、戻すときは中身を触らない(設計書 §5)
+    func testMemoryPressureLowersEffectiveLimitUntilNormal() {
+        let cache = PageCache(byteLimit: oneCost * 8, pressure: FixedMemoryPressure(),
+                              center: NotificationCenter())
+        for id in 1...8 { cache.insert(image(), for: id) }
+        XCTAssertEqual(cache.byteLimit, oneCost * 8)
+
+        cache.applyMemoryPressure(.warning)
+        XCTAssertEqual(cache.byteLimit, oneCost * 4)
+        XCTAssertEqual(cache.configuredByteLimit, oneCost * 8)
+        XCTAssertEqual(cache.count, 4)
+        XCTAssertNil(cache.image(for: 4))
+        XCTAssertNotNil(cache.image(for: 8))
+        // 圧迫中の挿入は下げた上限を超えない
+        for id in 9...12 { cache.insert(image(), for: id) }
+        XCTAssertLessThanOrEqual(cache.currentCost, oneCost * 4)
+
+        cache.applyMemoryPressure(.critical)
+        XCTAssertEqual(cache.byteLimit, oneCost * 2)
+        XCTAssertEqual(cache.count, 2)
+
+        cache.applyMemoryPressure(.normal)
+        XCTAssertEqual(cache.byteLimit, oneCost * 8)
+        XCTAssertEqual(cache.count, 2, "復帰で埋め直しも追い出しもしない")
+    }
+
+    func testCreatedUnderPressureStartsLoweredAndFollowsNotification() async {
+        let center = NotificationCenter()
+        let cache = PageCache(byteLimit: oneCost * 8, pressure: FixedMemoryPressure(.warning),
+                              center: center)
+        XCTAssertEqual(cache.byteLimit, oneCost * 4)
+        center.post(name: MemoryPressureMonitor.didChangeNotification,
+                    object: FixedMemoryPressure(.critical))
+        // 観測は MainActor へ跳ぶ Task なので完了を待つ
+        for _ in 0..<200 where cache.byteLimit != oneCost * 2 {
+            try? await Task.sleep(for: .milliseconds(10))
         }
-        cache.trimToHalf()
-        let count = cache.count
-        XCTAssertEqual(count, 2)
-        let newest = cache.image(for: 4)
-        XCTAssertNotNil(newest)
+        XCTAssertEqual(cache.byteLimit, oneCost * 2)
+    }
+
+    /// 明示設定は設定上の上限を定めるだけで、圧迫中は実効上限が引き続き下がる
+    func testExplicitLimitChangeKeepsPressureFactor() {
+        let cache = PageCache(byteLimit: oneCost * 4, pressure: FixedMemoryPressure(.warning),
+                              center: NotificationCenter())
+        cache.setByteLimit(oneCost * 2)
+        XCTAssertEqual(cache.configuredByteLimit, oneCost * 2)
+        XCTAssertEqual(cache.byteLimit, oneCost)
+        cache.applyMemoryPressure(.normal)
+        XCTAssertEqual(cache.byteLimit, oneCost * 2)
     }
 }
 
@@ -223,32 +262,141 @@ final class ImageResamplerTests: XCTestCase {
     }
 }
 
+/// 各キャッシュが圧迫段階で実効上限を下げ・保ち・戻すことの検証(設計書 §5)。
+/// 実圧迫は使わず、注入した提供者と通知センターだけで駆動する
+final class ImageResamplerPressureTests: XCTestCase {
+    private func image(side: Int) -> CGImage {
+        try! ImageDecoding.decode(TestFixtures.pngData(width: side, height: side))
+    }
+
+    /// 1 枚ぶんのキャッシュコスト(64px の RGBA 縮小結果)
+    private var oneCost: Int {
+        let sample = ImageResampler.cgResample(image(side: 128), width: 64, height: 64)!
+        return sample.bytesPerRow * sample.height
+    }
+
+    private func fill(_ resampler: ImageResampler, keys: Range<Int>) async {
+        for key in keys {
+            _ = await resampler.resample(image(side: 128), to: CGSize(width: 64, height: 64),
+                                         cacheKey: "p\(key)", upscaleWithMetalFX: false)
+        }
+    }
+
+    func testWarningAndCriticalLowerLimitAndEvict() async {
+        let cost = oneCost
+        let resampler = ImageResampler(byteLimit: cost * 8, pressure: FixedMemoryPressure(),
+                                       center: NotificationCenter())
+        await fill(resampler, keys: 0..<8)
+        var stats = await resampler.stats()
+        XCTAssertEqual(stats.count, 8)
+        XCTAssertEqual(stats.limitBytes, cost * 8)
+
+        await resampler.applyMemoryPressure(.warning)
+        stats = await resampler.stats()
+        XCTAssertEqual(stats.limitBytes, cost * 4)
+        XCTAssertEqual(stats.count, 4, "実効上限まで古い順に追い出す")
+        // 圧迫中の追加は下げた上限を超えない
+        await fill(resampler, keys: 8..<12)
+        stats = await resampler.stats()
+        XCTAssertLessThanOrEqual(stats.usedBytes, cost * 4)
+
+        await resampler.applyMemoryPressure(.critical)
+        stats = await resampler.stats()
+        XCTAssertEqual(stats.limitBytes, cost * 2)
+        XCTAssertEqual(stats.count, 2)
+
+        // normal: 設定上限へ戻すだけで中身は触らない
+        await resampler.applyMemoryPressure(.normal)
+        stats = await resampler.stats()
+        XCTAssertEqual(stats.limitBytes, cost * 8)
+        XCTAssertEqual(stats.count, 2)
+    }
+
+    func testCreatedUnderPressureStartsLoweredAndFollowsNotifications() async {
+        let cost = oneCost
+        let center = NotificationCenter()
+        let resampler = ImageResampler(byteLimit: cost * 8, pressure: FixedMemoryPressure(.critical),
+                                       center: center)
+        var stats = await resampler.stats()
+        XCTAssertEqual(stats.limitBytes, cost * 2)
+
+        // 通知の object が提供者。actor へ跳ぶので完了を待ってから読む
+        center.post(name: MemoryPressureMonitor.didChangeNotification, object: FixedMemoryPressure(.normal))
+        for _ in 0..<200 where await resampler.stats().limitBytes != cost * 8 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        stats = await resampler.stats()
+        XCTAssertEqual(stats.limitBytes, cost * 8)
+    }
+}
+
 final class PreresamplePolicyTests: XCTestCase {
     func testPageBudgetCapsAtMaxPages() {
         // 30MB/ページ・16GB 機: 予算 2GB → 68 ページ相当だが上限 64
         XCTAssertEqual(PreresamplePolicy.pageBudget(
-            bytesPerPage: 30 << 20, physicalMemory: 16 << 30), 64)
+            bytesPerPage: 30 << 20, physicalMemory: 16 << 30,
+            usesML: false, conserveEnergy: false, memoryPressure: .normal), 64)
     }
 
     func testPageBudgetShrinksForLargePages() {
         // 200MB/ページ(6K 級ウインドウ)→ 4GB / 200MB = 20 ページ
         XCTAssertEqual(PreresamplePolicy.pageBudget(
-            bytesPerPage: 200 << 20, physicalMemory: 64 << 30), 20)
+            bytesPerPage: 200 << 20, physicalMemory: 64 << 30,
+            usesML: false, conserveEnergy: false, memoryPressure: .normal), 20)
     }
 
     func testPageBudgetFloorsAtOne() {
         // 2GB 機: 予算 256MB < 400MB/ページ → 最低 1 ページは先読みする
         XCTAssertEqual(PreresamplePolicy.pageBudget(
-            bytesPerPage: 400 << 20, physicalMemory: 2 << 30), 1)
+            bytesPerPage: 400 << 20, physicalMemory: 2 << 30,
+            usesML: false, conserveEnergy: false, memoryPressure: .normal), 1)
         XCTAssertEqual(PreresamplePolicy.pageBudget(
-            bytesPerPage: 0, physicalMemory: 8 << 30), 1)
+            bytesPerPage: 0, physicalMemory: 8 << 30,
+            usesML: false, conserveEnergy: false, memoryPressure: .normal), 1)
+    }
+
+    /// 通常時(非 ML・省エネなし・圧迫なし)の予算
+    private func normalBudget(_ physicalMemory: UInt64) -> Int {
+        PreresamplePolicy.byteBudget(physicalMemory: physicalMemory, usesML: false,
+                                     conserveEnergy: false, memoryPressure: .normal)
     }
 
     func testByteBudgetScalesWithMemory() {
         // 8GB 機 1GB・16GB 機 2GB(いずれも 1/8)、大容量機は 4GB で頭打ち
-        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 8 << 30), 1 << 30)
-        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 16 << 30), 2 << 30)
-        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30), 4 << 30)
+        XCTAssertEqual(normalBudget(8 << 30), 1 << 30)
+        XCTAssertEqual(normalBudget(16 << 30), 2 << 30)
+        XCTAssertEqual(normalBudget(64 << 30), 4 << 30)
+    }
+
+    /// 圧迫中の先読み予算はリサンプル LRU の実効上限と同じ係数で縮み、LRU(物理の 1/5・
+    /// 最大 12GB)の実効上限を超えない(先読み結果が互いに追い出し合わない。設計書 §5)
+    func testPreresampleBudgetShrinksWithMemoryPressureAndFitsLoweredLRU() {
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 8 << 30, usesML: false,
+                                                    conserveEnergy: false, memoryPressure: .warning),
+                       512 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 8 << 30, usesML: false,
+                                                    conserveEnergy: false, memoryPressure: .critical),
+                       256 << 20)
+        XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30, usesML: true,
+                                                    conserveEnergy: false, memoryPressure: .critical),
+                       (4 << 30) / 16 / 4)
+        // 100MB/ページ・8GB 機: 通常 10 ページ → critical では 2 ページ
+        XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 100 << 20, physicalMemory: 8 << 30,
+                                                    usesML: false, conserveEnergy: false,
+                                                    memoryPressure: .normal), 10)
+        XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 100 << 20, physicalMemory: 8 << 30,
+                                                    usesML: false, conserveEnergy: false,
+                                                    memoryPressure: .critical), 2)
+        for memory: UInt64 in [8 << 30, 16 << 30, 64 << 30, 128 << 30] {
+            let lruConfigured = min(12 << 30, Int(clamping: memory) / 5)
+            for level in MemoryPressureLevel.allCases {
+                XCTAssertLessThanOrEqual(
+                    PreresamplePolicy.byteBudget(physicalMemory: memory, usesML: false,
+                                                 conserveEnergy: false, memoryPressure: level),
+                    MemoryBudgetPolicy.effectiveLimit(configured: lruConfigured, level: level),
+                    "\(memory >> 30) GB \(level)")
+            }
+        }
     }
 
     func testDecodeAheadCoversResamplePrefetch() {
@@ -286,24 +434,26 @@ final class PreresamplePolicyTests: XCTestCase {
 
     func testPreresampleMemoryBudgetScalesWithPageLimit() {
         for memory: UInt64 in [2 << 30, 8 << 30, 64 << 30] {
-            let normal = PreresamplePolicy.byteBudget(physicalMemory: memory)
+            let normal = normalBudget(memory)
             for usesML in [false, true] {
                 for conserve in [false, true] {
                     let limit = PreresamplePolicy.pageLimit(usesML: usesML, conserveEnergy: conserve)
                     XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: memory, usesML: usesML,
-                                                                conserveEnergy: conserve),
+                                                                conserveEnergy: conserve,
+                                                                memoryPressure: .normal),
                                    normal / (PreresamplePolicy.maxPages / limit),
                                    "ML=\(usesML) conserve=\(conserve)")
                     // 小さなページでは枚数上限、巨大ページでは予算が効く
                     XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 1 << 20,
-                        physicalMemory: memory, usesML: usesML, conserveEnergy: conserve), limit)
+                        physicalMemory: memory, usesML: usesML, conserveEnergy: conserve,
+                        memoryPressure: .normal), limit)
                 }
             }
         }
         XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 400 << 20,
-            physicalMemory: 2 << 30, conserveEnergy: true), 1)
+            physicalMemory: 2 << 30, usesML: false, conserveEnergy: true, memoryPressure: .normal), 1)
         XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 400 << 20,
-            physicalMemory: 2 << 30, usesML: true), 1)
+            physicalMemory: 2 << 30, usesML: true, conserveEnergy: false, memoryPressure: .normal), 1)
     }
 
     func testPreresampleSpreadsFollowSpreadAndPageLimits() {

@@ -41,28 +41,55 @@ enum ArchiveReaderRole: Sendable, Equatable {
     case extractor(poolSize: Int)
 }
 
-/// 自動並列数は open 時点の電力方針を適用済みの値を入力する純関数(設計書 §5)。
+/// 自動並列数・物理メモリ・メモリ圧迫段階は open 時点の値を入力する純関数(設計書 §5)。
 /// 明示値を使う展開係もこの値から導き、アプリ側の省エネ判定と同じく
 /// 低電力モードまたは温度圧迫(serious / critical)で絞る。
+/// 開いた reader は KaitoKit が設定を固定するため、電力方針と同じく以後の open から反映する。
 struct ArchiveDecodeBudget: Sendable, Equatable {
     let decodeThreads: Int?
     let parallelDecodeMemory: UInt64
     let powerPolicy: DecodePowerPolicy = .reduceInLowPowerModeOrThermalPressure
 
-    init(role: ArchiveReaderRole, automaticThreads: Int) {
+    /// 主書庫の先行復号予算の下限・上限(展開係はその半分)。
+    static let minimumPrimaryDecodeMemory: UInt64 = 64 << 20
+    static let maximumPrimaryDecodeMemory: UInt64 = 256 << 20
+
+    init(role: ArchiveReaderRole, automaticThreads: Int,
+         physicalMemory: UInt64, memoryPressure: MemoryPressureLevel) {
         switch role {
         case .primary:
             decodeThreads = nil
-            // 開いた書庫ごとに主 256 + 展開係最大 6×128 MiB ≒ 1 GiB まで先行復号の保持を抑える。
-            // 書庫内の書庫・合本の子・次の本は別に数え、物理メモリには比例しない(設計書 §5)。
-            parallelDecodeMemory = 256 << 20
         case .extractor(let poolSize):
             let auto = max(1, automaticThreads)
             // 2 を下限にして RAR5 先行復号・7z LZMA2 分割並列を維持する。
             // 自動値が 1 の機械では 1 とし、主書庫と同じ電力制約を守る。
             decodeThreads = min(auto, max(2, auto / max(1, poolSize)))
-            parallelDecodeMemory = 128 << 20
         }
+        parallelDecodeMemory = Self.parallelDecodeMemory(
+            role: role, physicalMemory: physicalMemory, memoryPressure: memoryPressure)
+    }
+
+    /// 先行復号の保持予算(開いた書庫ごと。設計書 §5)。
+    /// 主書庫 = clamp(物理メモリ / 64, 64 MiB, 256 MiB)、展開係はその半分。
+    /// - 上限 256 MiB は 16 GB でちょうど到達するので、16 GB 以上の Mac は従来の
+    ///   256 / 128 MiB のまま(主 256 + 展開係最大 6×128 ≒ 1 GiB / 書庫)。
+    /// - 1/64 にすると書庫 1 つの合計(主 + 6 展開係 = 主の 4 倍)が物理メモリの 1/16 に
+    ///   収まる: 8 GB では 128 + 6×64 = 512 MiB で、ページキャッシュ 15%・リサンプル 1/5
+    ///   と合わせても OS とほかのアプリに半分以上を残せる。
+    /// - 下限 64 MiB は RAR5 / 7z solid ストリームの先行復号が数ページぶん働く最小量
+    ///   (これ未満では展開係の並列が待ちばかりになる)。
+    /// - 圧迫中に開く reader はキャッシュと同じ 1/2・1/4 の係数で更に絞る。
+    ///   予算は復号処理ごとに適用されるため厳密な上限ではない(KaitoKit の仕様)。
+    static func parallelDecodeMemory(role: ArchiveReaderRole, physicalMemory: UInt64,
+                                     memoryPressure: MemoryPressureLevel) -> UInt64 {
+        let primary = min(maximumPrimaryDecodeMemory,
+                          max(minimumPrimaryDecodeMemory, physicalMemory / 64))
+        let configured = switch role {
+        case .primary: primary
+        case .extractor: primary / 2
+        }
+        return UInt64(MemoryBudgetPolicy.effectiveLimit(
+            configured: Int(clamping: configured), level: memoryPressure))
     }
 
     func readerOptions(lazyLocalHeaders: Bool) -> ReaderOptions {
@@ -78,9 +105,14 @@ final class KaitoKitEngine: ArchiveEngine {
     private let limits: ReadLimits
     private static let lazyLocalHeaders = OSAllocatedUnfairLock(initialState: true)
 
+    /// 電力状態と同じく、物理メモリと圧迫段階も open 時点の値を固定する(設計書 §5)。
     private static func options(role: ArchiveReaderRole) -> ReaderOptions {
-        ArchiveDecodeBudget(role: role, automaticThreads:
-            ReaderOptions.automaticDecodeThreads(powerPolicy: .reduceInLowPowerModeOrThermalPressure))
+        ArchiveDecodeBudget(
+            role: role,
+            automaticThreads: ReaderOptions.automaticDecodeThreads(
+                powerPolicy: .reduceInLowPowerModeOrThermalPressure),
+            physicalMemory: ProcessInfo.processInfo.physicalMemory,
+            memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel)
             .readerOptions(lazyLocalHeaders: defaultZipLazyLocalHeaders)
     }
 
