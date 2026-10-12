@@ -52,7 +52,7 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         model.present(book: book)
         XCTAssertEqual(model.snapshot.entries, book.entries)
 
-        book.setSortMode(.literalName)
+        await book.setSortMode(.literalName).value  // 並べ替えはメインアクター外
         // 前提の確認: 並びが実際に変わっている(変わらなければテスト自体が無効)
         XCTAssertNotEqual(model.snapshot.entries, book.entries)
 

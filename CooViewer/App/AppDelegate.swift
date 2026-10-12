@@ -187,12 +187,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             readerWindowController?.openBook(
                 at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
-                  !AutomatedRun.isXCTest, !didOpenDocumentAtLaunch,
-                  let recent = BookHistoryStore.shared.mostRecentBook() {
+                  !AutomatedRun.isXCTest, !didOpenDocumentAtLaunch {
             // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)。
             // XCTest のホストとしての起動では開かない: ユーザーの実データに
-            // 触れない・履歴を汚さない・モーダルでテストを止めないため
-            readerWindowController?.openBook(at: URL(fileURLWithPath: recent.path))
+            // 触れない・履歴を汚さない・モーダルでテストを止めないため。
+            // 実在確認(死んだ NAS では SMB タイムアウトまで返らない)はメイン
+            // アクター外で行い、待つ間に書類が開かれていたら譲る
+            Task { @MainActor in
+                guard let recent = await BookHistoryStore.shared.mostRecentExistingBook(),
+                      !self.didOpenDocumentAtLaunch,
+                      let controller = self.readerWindowController,
+                      !controller.isOpeningBook, controller.currentBookFileURL == nil
+                else { return }
+                controller.openBook(at: URL(fileURLWithPath: recent.path))
+            }
         }
         if arguments.contains("--show-thumbnails") {
             // 本のロード完了を待ってからサムネイルオーバーレイを開く
