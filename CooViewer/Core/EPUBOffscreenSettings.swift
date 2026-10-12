@@ -7,7 +7,8 @@ import Washi
 enum EPUBOffscreenSettings {
     /// 低電力モードまたは温度圧迫(serious / critical)で census の項目とサムネイルの
     /// ジョブを 50 ms ずつ間隔を空け、未開始の census は critical の間だけ延期する。
-    /// アプリ本体の `PowerStateMonitor.shouldConserveEnergy` と同じ条件で、
+    /// アプリ本体の `PowerStateMonitor.shouldConserveEnergy` と同じ条件だが、Washi が
+    /// OS 状態を直接評価するため温度圧迫の保持(ヒステリシス)は掛からない。
     /// QoS は下げず結果も変わらない(設計書 §5)。
     static let energyPolicy: EPUBOffscreenEnergyPolicy = .followSystem
 
