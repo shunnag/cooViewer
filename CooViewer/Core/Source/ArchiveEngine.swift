@@ -56,21 +56,35 @@ enum ArchiveReaderRole: Sendable, Equatable {
     case extractor(poolSize: Int)
 }
 
-/// 自動並列数・物理メモリ・メモリ圧迫段階は open 時点の値を入力する純関数(設計書 §5)。
-/// 明示値を使う展開係もこの値から導き、アプリ側の省エネ判定と同じく
-/// 低電力モードまたは温度圧迫(serious / critical)で絞る。
+extension PowerPolicy {
+    /// KaitoKit の復号並列数へ同じ方針を写す(設計書 §5)。KaitoKit は reader の open 時に
+    /// 評価して固定するため、開いている書庫には次に開いたときから反映する。
+    var decodePowerPolicy: DecodePowerPolicy {
+        switch self {
+        case .lowPowerModeOrThermal: .reduceInLowPowerModeOrThermalPressure
+        case .lowPowerModeOnly: .reduceInLowPowerMode
+        case .alwaysFullSpeed: .alwaysUseAllCores
+        }
+    }
+}
+
+/// 自動並列数・物理メモリ・メモリ圧迫段階・電力方針は open 時点の値を入力する純関数
+/// (設計書 §5)。明示値を使う展開係もこの値から導き、アプリ側の省エネ判定と同じ
+/// 方針(既定は低電力モードまたは温度圧迫 serious / critical)で絞る。
 /// 開いた reader は KaitoKit が設定を固定するため、電力方針と同じく以後の open から反映する。
 struct ArchiveDecodeBudget: Sendable, Equatable {
     let decodeThreads: Int?
     let parallelDecodeMemory: UInt64
-    let powerPolicy: DecodePowerPolicy = .reduceInLowPowerModeOrThermalPressure
+    let powerPolicy: DecodePowerPolicy
 
     /// 主書庫の先行復号予算の下限・上限(展開係はその半分)。
     static let minimumPrimaryDecodeMemory: UInt64 = 64 << 20
     static let maximumPrimaryDecodeMemory: UInt64 = 256 << 20
 
     init(role: ArchiveReaderRole, automaticThreads: Int,
-         physicalMemory: UInt64, memoryPressure: MemoryPressureLevel) {
+         physicalMemory: UInt64, memoryPressure: MemoryPressureLevel,
+         powerPolicy: PowerPolicy) {
+        self.powerPolicy = powerPolicy.decodePowerPolicy
         switch role {
         case .primary:
             decodeThreads = nil
@@ -120,14 +134,16 @@ final class KaitoKitEngine: ArchiveEngine {
     private let limits: ReadLimits
     private static let lazyLocalHeaders = OSAllocatedUnfairLock(initialState: true)
 
-    /// 電力状態と同じく、物理メモリと圧迫段階も open 時点の値を固定する(設計書 §5)。
+    /// 電力状態・電力方針と同じく、物理メモリと圧迫段階も open 時点の値を固定する(設計書 §5)。
     private static func options(role: ArchiveReaderRole) -> ReaderOptions {
-        ArchiveDecodeBudget(
+        let powerPolicy = PowerStateMonitor.shared.powerPolicy
+        return ArchiveDecodeBudget(
             role: role,
             automaticThreads: ReaderOptions.automaticDecodeThreads(
-                powerPolicy: .reduceInLowPowerModeOrThermalPressure),
+                powerPolicy: powerPolicy.decodePowerPolicy),
             physicalMemory: ProcessInfo.processInfo.physicalMemory,
-            memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel)
+            memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel,
+            powerPolicy: powerPolicy)
             .readerOptions(lazyLocalHeaders: defaultZipLazyLocalHeaders)
     }
 

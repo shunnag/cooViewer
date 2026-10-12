@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard AutomatedRun.isArchiveAudit else { return }
         SettingsStore.shared.registerDefaults()
         SettingsStore.shared.applyArchiveParserSettings()
+        SettingsStore.shared.applyPowerPolicy()
         exit(ArchiveAuditCommand.run(arguments: CommandLine.arguments))
     }
 
@@ -65,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         SettingsStore.shared.registerDefaults()
         SettingsStore.shared.applyArchiveParserSettings()
+        SettingsStore.shared.applyPowerPolicy()
         applyArchiveEngineArgumentOverride()
         // 旧形式の本の状態(BookSettings/RecentItems/LastPages)を v2 へ
         // 一括インポート(初回のみ。旧キーは 1.x 用に凍結保持)

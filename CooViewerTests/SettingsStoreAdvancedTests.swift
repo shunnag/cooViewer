@@ -7,6 +7,8 @@ final class SettingsStoreAdvancedTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: SettingsStore!
     private var suiteName: String!
+    /// 実行機の電力・温度状態と共有監視器に依存しない隔離した受け手
+    private var powerMonitor: PowerStateMonitor!
     private var originalKaitoZipLazyLocalHeaders = true
 
     override func setUp() async throws {
@@ -14,7 +16,10 @@ final class SettingsStoreAdvancedTests: XCTestCase {
             originalKaitoZipLazyLocalHeaders = KaitoKitEngine.defaultZipLazyLocalHeaders
             suiteName = "advanced-test-\(UUID().uuidString)"
             defaults = UserDefaults(suiteName: suiteName)!
-            store = SettingsStore(defaults: defaults)
+            powerMonitor = PowerStateMonitor(center: NotificationCenter(), readState: {
+                PowerConditions(isLowPowerModeEnabled: false, isThermalPressureActive: false)
+            })
+            store = SettingsStore(defaults: defaults, powerMonitor: powerMonitor)
         }
     }
 
@@ -23,6 +28,7 @@ final class SettingsStoreAdvancedTests: XCTestCase {
             KaitoKitEngine.setDefaultZipLazyLocalHeaders(originalKaitoZipLazyLocalHeaders)
             defaults.removePersistentDomain(forName: suiteName)
             store = nil
+            powerMonitor = nil
             defaults = nil
         }
     }
@@ -108,6 +114,47 @@ final class SettingsStoreAdvancedTests: XCTestCase {
 
         XCTAssertTrue(defaults.bool(forKey: "ZipLazyLocalHeaders"))
         XCTAssertTrue(KaitoKitEngine.defaultZipLazyLocalHeaders)
+    }
+
+    /// 電力方針(新設キー `PowerPolicy`)は未設定なら従来どおりの既定で、キーも書かない(設計書 §5)
+    func testPowerPolicyDefaultsToLowPowerModeOrThermalWhenUnset() {
+        store.registerDefaults()
+        XCTAssertEqual(store.powerPolicy, .lowPowerModeOrThermal)
+        XCTAssertNil(defaults.object(forKey: "PowerPolicy"))
+    }
+
+    func testPowerPolicyRoundTripsAsStringAndReachesMonitor() {
+        for policy in [PowerPolicy.lowPowerModeOnly, .alwaysFullSpeed, .lowPowerModeOrThermal] {
+            store.powerPolicy = policy
+            XCTAssertEqual(store.powerPolicy, policy)
+            XCTAssertEqual(defaults.string(forKey: "PowerPolicy"), policy.rawValue)
+            XCTAssertEqual(powerMonitor.powerPolicy, policy, "保存と同時に監視器へ届く")
+        }
+        XCTAssertEqual(PowerPolicy.lowPowerModeOrThermal.rawValue, "lowPowerModeOrThermal")
+        XCTAssertEqual(PowerPolicy.lowPowerModeOnly.rawValue, "lowPowerModeOnly")
+        XCTAssertEqual(PowerPolicy.alwaysFullSpeed.rawValue, "alwaysFullSpeed")
+    }
+
+    /// 未知の値(将来の版・手書き)は既定に読み、書き戻さない
+    func testPowerPolicyUnknownValueReadsAsDefaultWithoutRewriting() {
+        for raw in ["", "turbo", "LOWPOWERMODEONLY"] {
+            defaults.set(raw, forKey: "PowerPolicy")
+            XCTAssertEqual(store.powerPolicy, .lowPowerModeOrThermal, raw)
+            XCTAssertEqual(defaults.string(forKey: "PowerPolicy"), raw)
+        }
+        defaults.set(2, forKey: "PowerPolicy")
+        XCTAssertEqual(store.powerPolicy, .lowPowerModeOrThermal, "数値も未知扱い")
+    }
+
+    /// 起動時の適用は保存値(未設定なら既定)を監視器へ渡す
+    func testApplyPowerPolicyPushesSavedValueToMonitor() {
+        powerMonitor.powerPolicy = .alwaysFullSpeed
+        store.applyPowerPolicy()
+        XCTAssertEqual(powerMonitor.powerPolicy, .lowPowerModeOrThermal)
+
+        defaults.set(PowerPolicy.lowPowerModeOnly.rawValue, forKey: "PowerPolicy")
+        store.applyPowerPolicy()
+        XCTAssertEqual(powerMonitor.powerPolicy, .lowPowerModeOnly)
     }
 
     /// KaitoKit の文字列往復と、保存しない CLI 上書きの契約(設計書 §2.4)。
