@@ -222,7 +222,7 @@ extension ReaderWindowController {
         let probe = fileSystemProbe
         let startedAt = Date().timeIntervalSince1970
         let task = Task.detached(priority: .userInitiated) {
-            SiblingBooks.scan(parent: parent, probe: probe)
+            await SiblingBooks.scan(parent: parent, probe: probe)
         }
         siblingScan = (parent.path, task)
         let paths = await task.value

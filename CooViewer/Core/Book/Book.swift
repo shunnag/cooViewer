@@ -97,7 +97,9 @@ final class Book {
         // よう別タスクで済ませる
         let url = source.url
         let prepared = await Task.detached(priority: .userInitiated) {
-            prepare(url: url, entries: entries, sortMode: sortMode, probe: probe, sorter: sorter)
+            let identity = await probe.identity(at: url)
+            return prepare(url: url, entries: entries, sortMode: sortMode,
+                           identity: identity, sorter: sorter)
         }.value
         return Book(source: source, prepared: prepared, sortMode: sortMode,
                     cacheByteLimit: cacheByteLimit, sorter: sorter)
@@ -116,13 +118,14 @@ final class Book {
         }
     }
 
+    /// identity は呼び出し側が probe で取っておく(stat だけが await を要し、
+    /// ソートとキー計算は同期の純関数のまま)
     nonisolated static func prepare(url: URL, entries: [PageEntry], sortMode: SortMode,
-                                    probe: any FileSystemProbing,
+                                    identity: BookFileIdentity,
                                     sorter: any PageSorting = StandardPageSorter())
         -> PreparedEntries {
         PreparedEntries(sortedEntries: sorter.sorted(entries, mode: sortMode),
-                        cacheKey: makeCacheKey(for: url, entries: entries,
-                                               identity: probe.identity(at: url)))
+                        cacheKey: makeCacheKey(for: url, entries: entries, identity: identity))
     }
 
     /// 本の同一性キー。ファイル情報に加えて**エントリ一覧のダイジェスト**を

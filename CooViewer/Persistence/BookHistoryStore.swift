@@ -372,7 +372,7 @@ final class BookHistoryStore {
         let checked = await Task.detached(priority: .userInitiated) {
             var checked: [String: Bool] = [:]
             for path in paths {
-                let exists = probe.fileExists(atPath: path)
+                let exists = await probe.fileExists(atPath: path)
                 checked[path] = exists
                 if exists { break }
             }
@@ -399,7 +399,11 @@ final class BookHistoryStore {
         let preceding = Array(paths[..<index])
         let probe = fileSystem
         let existingBefore = await Task.detached(priority: .userInitiated) {
-            preceding.filter { probe.fileExists(atPath: $0) }.count
+            var count = 0
+            for path in preceding {
+                if await probe.fileExists(atPath: path) { count += 1 }
+            }
+            return count
         }.value
         return existingBefore < limit
     }
@@ -411,8 +415,11 @@ final class BookHistoryStore {
         let paths = loadRecents().map(\.path)
         let probe = fileSystem
         let task = Task.detached(priority: .userInitiated) {
-            Dictionary(paths.map { ($0, probe.fileExists(atPath: $0)) },
-                       uniquingKeysWith: { first, _ in first })
+            var existence: [String: Bool] = [:]
+            for path in paths where existence[path] == nil {
+                existence[path] = await probe.fileExists(atPath: path)
+            }
+            return existence
         }
         recentExistenceRefresh = task
         let existence = await task.value

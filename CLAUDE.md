@@ -136,7 +136,9 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   readers opened under memory pressure get 1/2 or 1/4; not a per-book or app-wide cap,
   nested/collection children count separately; shown in the Activity window) and energy-conserving
   prefetch adaptation per design §5: one `shouldConserveEnergy` decision = Low Power Mode OR
-  thermal pressure (`thermalState` serious/critical), passed to KaitoKit as
+  thermal pressure (`thermalState` serious/critical; thermal pressure enters immediately but is
+  released only after 45 s below serious — `PowerStateMonitor.thermalReleaseHold`, cooViewer's own
+  throttling only), passed to KaitoKit as
   `.reduceInLowPowerModeOrThermalPressure`; ML render qualities pre-resample at most the next two
   spreads (≤ 4 pages, next spread only when conserving or the app is inactive), and pre-resampling
   pauses while the reader window is occluded/minimized/hidden;
