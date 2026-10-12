@@ -427,7 +427,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
         if let epubView {
             view = epubView
         } else {
-            view = EPUBReaderView()
+            view = EPUBOffscreenSettings.makeReaderView()
             view.settings = currentEPUBReaderSettings()
             view.delegate = self
             view.translatesAutoresizingMaskIntoConstraints = false

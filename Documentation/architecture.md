@@ -396,6 +396,9 @@ ReaderWindowController は段階変化で先読み深さを一度組み直す(�
 間は事前リサンプルを始めず、進行中は次のページ境界で止め、可視に戻ったとき一度再計画する。
 見えてはいるがアプリが非前面のときは省エネ扱い(次の見開きだけ)で止めない。
 電力・温度通知では先読みを再計画し、表示中ページ・EPUB の WebKit QoS・開いている reader の並列数は変えず、新しい reader の open から電力状態を反映する。
+EPUB の画面外 WebKit 処理(census・画面サムネイル・FXL 委譲)だけは Washi の `EPUBOffscreenEnergyPolicy.followSystem`
+を選び(`EPUBOffscreenSettings`、設定と生成ファクトリは `CooViewer/Core/EPUBOffscreenSettings.swift` に集約し、リーダーの `EPUBReaderView` と `EPUBAtlasStore` の全アトラスに適用)、同じ省エネ条件の間は
+項目/ジョブごとに 50 ms 休み、未開始の census は critical の間だけ延期する(QoS は下げず、ページ数と画像は同一)。
 先読みが表示中スプレッドのリサンプル完了を待つのはポーリングではなく `IdleSignal`
 (継続ベースの合図。キャンセルは即座に待ちを解く)で行う。
 
@@ -524,6 +527,9 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   待機ページで埋めない。使用中/待機中の要求があるレンダラは追い出さず、
   空きができてからアイドルの LRU を入れ替える。破棄時はソースごとの所有者 ID を
   外し、他ソースや進行中の描画が使わなくなってから `invalidate()` する。
+  保持中のレンダラも最後の描画から 20 秒アイドルなら Washi が不可視ウインドウと
+  WebContent プロセスだけを畳み、次の描画で作り直す(`idleReleaseInterval`、
+  Washi の census / サムネイルの解放間隔と同じ。本を閉じたときの `invalidate()` は従来どおり)。
 
 ### 7.4 エラーの扱い
 
