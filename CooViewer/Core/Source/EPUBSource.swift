@@ -289,7 +289,7 @@ private enum FXLRasterizerPool {
         // 許可は2枠。自分はまだ未登録なので、他の使用中レンダラは高々1個。
         // 保持上限に達していれば必ずアイドルを1個以上選べる。
         assert(rasterizers.count < capacity)
-        let entry = Entry(rasterizer: EPUBPageRasterizer(publication: publication))
+        let entry = Entry(rasterizer: EPUBOffscreenSettings.makeRasterizer(publication: publication))
         rasterizers[key] = entry
         pin(key, entry: entry, owner: owner)
         return entry

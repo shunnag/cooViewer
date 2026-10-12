@@ -51,7 +51,7 @@ final class EPUBAtlasStore {
     /// 検証できるよう、アトラス生成器と単調時計を差し替え可能にする。
     init(
         makeAtlas: @escaping @MainActor (EPUBPublication) -> any EPUBScreenAtlasing = {
-            EPUBScreenAtlas(publication: $0)
+            EPUBOffscreenSettings.makeAtlas(publication: $0)
         },
         identityRecheckInterval: TimeInterval = 5,
         now: @escaping @MainActor () -> TimeInterval = {
