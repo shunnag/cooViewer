@@ -108,7 +108,7 @@ final class EPUBCollectionTests: XCTestCase {
         """.write(to: root.appendingPathComponent("OEBPS/ch1.xhtml"),
                   atomically: true, encoding: .utf8)
 
-        let source = try ReflowEPUBPlaceholderSource(url: root)
+        let source = try await ReflowEPUBPlaceholderSource(url: root)
         let entries = try await source.entries()
         XCTAssertEqual(entries.count, 1, "代理ページは 1 ページだけ")
         XCTAssertEqual(entries[0].reflowEPUBURL, root)

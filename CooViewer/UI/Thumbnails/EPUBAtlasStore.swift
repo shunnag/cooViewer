@@ -138,9 +138,7 @@ final class EPUBAtlasStore {
                 publication = supplied
             } else {
                 publication = await Task.detached(priority: .userInitiated) {
-                    try? EPUBPublication(
-                        url: url,
-                        readStrategy: VolumeMappingPolicy.epubReadStrategy(for: url))
+                    try? await EPUBStagingArea.shared.openPublication(at: url)
                 }.value
             }
             guard let publication, !publication.isFixedLayout,

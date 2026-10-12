@@ -36,9 +36,11 @@ actor EPUBSource: BookSource {
         Task { @MainActor in FXLRasterizerPool.release(key, owner: owner) }
     }
 
-    init(url: URL) throws {
-        try self.init(publication: EPUBPublication(
-            url: url, readStrategy: VolumeMappingPolicy.epubReadStrategy(for: url)), url: url)
+    /// ファイルから開く。マップできないボリュームの本はローカルへステージングした
+    /// コピーをマップする(設計書 §5 EPUB のステージング)
+    init(url: URL) async throws {
+        let publication = try await EPUBStagingArea.shared.openPublication(at: url)
+        try self.init(publication: publication, url: url)
     }
 
     /// メモリ上で開いた OCF を固定レイアウト本として受け取る。

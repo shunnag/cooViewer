@@ -218,6 +218,23 @@ actor ArchiveSource: BookSource {
         FileManager.default.temporaryDirectory.appendingPathComponent("cooViewer-spool")
     }
 
+    /// 起動時掃除: 生きている cooViewer の pid で始まらないスプール残骸(書庫
+    /// スプール・ネスト temp・EPUB ステージング)を消す(設計書 §5 後始末)。
+    /// 生存判定を kill(pid,0)==0 だけで行うと、OS の pid 再利用で無関係な同一
+    /// ユーザープロセスがその pid を握っているときに『生存』と誤判定し、暗号化
+    /// 祖先由来の復号済み平文スプールが回収されず残留する(監査 #4)。そのため
+    /// 呼び出し側が実在する cooViewer の pid 集合を渡す
+    nonisolated static func removeStaleSpoolDirectories(in root: URL, livePids: Set<pid_t>) {
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil) else { return }
+        for child in children {
+            let pid = child.lastPathComponent.split(separator: "-").first
+                .flatMap { pid_t($0) }
+            if let pid, livePids.contains(pid) { continue }
+            try? FileManager.default.removeItem(at: child)
+        }
+    }
+
     /// persistenceKey: 保存パスワードのキー(必ず実ファイルの正規化パス、
     /// またはネストなら親キー由来で組む。デフォルト値を持たせないのは、
     /// 一時展開パス(url が temp)から作った無意味なキーが静かに紛れ込むのを
@@ -638,9 +655,8 @@ actor ArchiveSource: BookSource {
                 // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
                 // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
                 guard let fileURL = writeNestedTemp(candidate, data: data),
-                      let filePublication = try? EPUBPublication(
-                        url: fileURL,
-                        readStrategy: VolumeMappingPolicy.epubReadStrategy(for: fileURL)),
+                      let filePublication = try? await EPUBStagingArea.shared
+                        .openPublication(at: fileURL),
                       let epub = try? EPUBSource(
                         publication: filePublication, url: fileURL,
                         precomputedImageOnlyPageInfos: imageOnlyPageInfos) else {

@@ -42,7 +42,7 @@ enum BookSourceFactory {
                 // OCF/package を読み直さない(cooViewer-oxr.42、設計書 §2.4)。
                 return try EPUBSource(publication: preparsedEPUB, url: url)
             }
-            return try EPUBSource(url: url)
+            return try await EPUBSource(url: url)
         }
         if SupportedTypes.isArchive(url) {
             return try ArchiveSource(url: url, unlocker: unlocker,
