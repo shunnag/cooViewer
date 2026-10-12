@@ -52,7 +52,8 @@ struct ArchiveDecodeBudget: Sendable, Equatable {
         switch role {
         case .primary:
             decodeThreads = nil
-            // 主 256 + 展開係最大 6×128 MiB ≒ 1 GiB/冊に先行復号の保持を抑える。
+            // 開いた書庫ごとに主 256 + 展開係最大 6×128 MiB ≒ 1 GiB まで先行復号の保持を抑える。
+            // 書庫内の書庫・合本の子・次の本は別に数え、物理メモリには比例しない(設計書 §5)。
             parallelDecodeMemory = 256 << 20
         case .extractor(let poolSize):
             let auto = max(1, automaticThreads)
