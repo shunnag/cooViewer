@@ -153,10 +153,8 @@ actor NestedFolderSource: BookSource {
         } else if SupportedTypes.isEPUB(candidate.fileURL) {
             // コレクションの子 EPUB は一度だけ解析し、その Publication と画像のみ
             // 判定結果を子ソースへ渡す(cooViewer-oxr.42/44、設計書 §2.4)。
-            guard let publication = try? EPUBPublication(
-                url: candidate.fileURL,
-                readStrategy: VolumeMappingPolicy.epubReadStrategy(
-                    for: candidate.fileURL)),
+            guard let publication = try? await EPUBStagingArea.shared
+                    .openPublication(at: candidate.fileURL),
                 !publication.isDRMProtected else { return nil }
             if publication.isFixedLayout {
                 guard let epub = try? EPUBSource(

@@ -6,8 +6,9 @@ struct DirectoryItem: Sendable, Hashable {
     let isDirectory: Bool
 }
 
-/// 本ファイルの同一性(サムネイルキャッシュキーの材料)。stat できなければ 0
-struct BookFileIdentity: Sendable, Equatable {
+/// 本ファイルの同一性(サムネイルキャッシュキーと EPUB ステージングの合流キーの
+/// 材料)。stat できなければ 0
+struct BookFileIdentity: Sendable, Hashable {
     var modified: TimeInterval = 0
     var size: Int = 0
 }

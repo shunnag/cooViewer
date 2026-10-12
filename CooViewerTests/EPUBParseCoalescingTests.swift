@@ -27,7 +27,8 @@ final class EPUBParseCoalescingTests: XCTestCase {
             parse: { _ in
                 counter.increment()
                 parseStarted.signal()
-                gate.wait()
+                // 解析クロージャは非同期なので、ゲートは待機ヘルパで待つ
+                _ = await Self.waitForSignal(gate)
                 throw InjectedParseError.failed
             },
             onCoalescedRequest: { requestCoalesced.signal() })

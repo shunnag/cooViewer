@@ -112,25 +112,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task.detached(priority: .utility) {
             // 旧 PNG サムネイルキャッシュは丸ごと削除(v2 HEIC で作り直す)
             ThumbnailCache.removeLegacyCacheDirectory()
-            let root = ArchiveSource.spoolRoot()
-            if let children = try? FileManager.default.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: nil) {
-                // 生存判定を kill(pid,0)==0 だけで行うと、OS の pid 再利用で
-                // 無関係な同一ユーザープロセスがその pid を握っているときに
-                // 『生存』と誤判定し、暗号化祖先由来の復号済み平文スプールが
-                // 回収されず残留する(監査 #4)。実際に生きている cooViewer の
-                // pid 集合と照合する(Debug の ad-hoc ビルドも同じ bundle id)
-                let livePids = Set(NSRunningApplication.runningApplications(
-                    withBundleIdentifier: "jp.coo.cooViewer")
-                    .map { $0.processIdentifier })
-                for child in children {
-                    let pid = child.lastPathComponent.split(separator: "-").first
-                        .flatMap { pid_t($0) }
-                    // 生きている cooViewer の分だけ残す
-                    if let pid, livePids.contains(pid) { continue }
-                    try? FileManager.default.removeItem(at: child)
-                }
-            }
+            // 実際に生きている cooViewer の pid 集合と照合する(Debug の ad-hoc
+            // ビルドも同じ bundle id。pid 再利用の誤判定については
+            // removeStaleSpoolDirectories の注記)
+            let livePids = Set(NSRunningApplication.runningApplications(
+                withBundleIdentifier: "jp.coo.cooViewer")
+                .map { $0.processIdentifier })
+            ArchiveSource.removeStaleSpoolDirectories(
+                in: ArchiveSource.spoolRoot(), livePids: livePids)
             let cacheDays = await SettingsStore.shared.thumbnailCacheDays
             await ThumbnailCache.shared.trimDiskCache(olderThanDays: cacheDays)
             // 超解像キャッシュもサムネイルと同じ保持日数で回収する
@@ -667,6 +656,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         readerWindowController?.saveStateBeforeTermination()
+        // 開いたままの EPUB のステージングコピーは参照が残り deinit で消えないので、
+        // 次回起動の掃除を待たずここで消す(設計書 §5 後始末。書庫スプールは従来どおり)
+        EPUBStagingArea.shared.removeDirectoryAtTermination()
     }
 
     /// Dock アイコンクリック等での再オープン(ウインドウを閉じた後の再表示)

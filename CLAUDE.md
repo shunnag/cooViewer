@@ -147,7 +147,13 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   retry the file entrypoint once, while enumeration failures remain unreadable),
   `PDFSource` (actor over PDFKit, point-size rendering),
   `EPUBSource` (actor over Washi; fixed-layout EPUB → image pipeline, direct image
-  extraction for single-image pages, WebKit rasterization fallback).
+  extraction for single-image pages, WebKit rasterization fallback). Every file-based
+  EPUB open goes through `EPUBStagingArea.openPublication`: safe local volumes map the file
+  directly, while EPUBs on non-mappable volumes (NAS/removable/disk images) are copied once
+  per file identity (symlink-resolved path + size + mtime) into the archive spool and mapped
+  read-only. The publication URL stays the original path (book state/recents/census keys
+  unchanged), and any staging or parse failure falls back to Washi's `.alwaysCopy`. Copies
+  are deleted when their last publication goes away, at quit, and by the next launch's cleanup.
 - Washi(`../Washi`、別リポジトリ) — standalone EPUB 3 toolkit package (OCF/OPF/nav parsing, font deobfuscation,
   DRM detection, reflowable WKWebView renderer with vertical-writing pagination,
   paper-book page furniture (folio / page number in the bottom margin), light/dark theming,
