@@ -277,6 +277,12 @@ final class ThumbnailOverlayModel: ObservableObject {
         focusCurrentIndex(currentIndex, displayedIndices: displayedIndices)
     }
 
+    /// 電力変更で先読み幅を更新し、表示セルの要求はそのまま保つ(設計書 §5)。
+    func applyMediaProfile(_ profile: MediaProfile) {
+        snapshot.prefetchConcurrency = profile.thumbnailPrefetchConcurrency
+        prefetchAroundScreen()
+    }
+
     /// 先読みだけを止める(オーバーレイを閉じたときに呼ぶ)。低速媒体で
     /// 閉じた後もサムネイル読みがページ表示と帯域を奪い合うのを防ぐ。
     /// 次に開いたときは present が先読みを再開する。停止中は設定スライダの

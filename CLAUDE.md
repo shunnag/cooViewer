@@ -100,7 +100,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
 ## Code conventions
 
 - Swift 6 language mode with strict concurrency; UI is `@MainActor`, sources that wrap
-  non-thread-safe libraries (KaitoArchive, PDFDocument) are actors.
+  non-thread-safe libraries (ArchiveReader, PDFDocument) are actors.
 - Comments in Japanese **only** (no English duplicates), citing the spec (`仕様書 §n`)
   or design doc (`設計書 §n`) for any behavior that mirrors or deliberately deviates
   from the legacy app. Prefer explaining *why* (spec, avoided bug, performance)
@@ -130,7 +130,8 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
 ## Architecture (new app)
 
 - `CooViewer/Core/Source/` — `BookSource` protocol + `FolderSource` (immutable, parallel),
-  `ArchiveSource` (actor over `ArchiveEngine`: KaitoKit only, no engine fallback;
+  `ArchiveSource` (actor over `ArchiveEngine`: native KaitoKit `ArchiveReader` only, no engine fallback;
+  primary/extractor decode budgets and low-power-mode prefetch adaptation per design §5;
   filename encoding auto-detection uses KaitoKit's `EncodingPolicy.automatic`
   (39 languages / 54 legacy code pages, no delegate override); failed memory-map opens
   retry the file entrypoint once, while enumeration failures remain unreadable),

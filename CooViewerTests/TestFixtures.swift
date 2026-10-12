@@ -11,10 +11,11 @@ extension ArchiveSource {
     /// コンパイル時に防いでいるため、省略形はテストにのみ置く
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
          preferredEngine: ArchiveEngineKind = .kaitokit,
-         engineFactory: ArchiveEngineFactory = .live) throws {
+         engineFactory: ArchiveEngineFactory = .live,
+         powerState: any PowerStateProviding = FixedPowerState(isLowPowerModeEnabled: false)) throws {
         try self.init(url: url, nestingDepth: nestingDepth, unlocker: unlocker,
                       persistenceKey: .file(path: url.path),
-                      preferredEngine: preferredEngine, engineFactory: engineFactory)
+                      preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState)
     }
 }
 

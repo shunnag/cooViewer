@@ -25,6 +25,8 @@ actor ArchiveSource: BookSource {
     /// ネスト子と展開係も同じエンジンで生成する。
     private let preferredEngine: ArchiveEngineKind
     private let engineFactory: ArchiveEngineFactory
+    private let powerState: any PowerStateProviding
+    private let extractorPoolSizing: @Sendable (Bool) -> Int
     /// メモリ背景(暗号化親のネスト子)。非 nil のとき disk を読まず、
     /// 展開プールもこの共有 NSData から再オープンする(平文を temp に置かない)
     private let sourceData: Data?
@@ -174,8 +176,11 @@ actor ArchiveSource: BookSource {
     /// 展開係プールの上限。従来は固定 3。各係は独立した書庫の再オープン
     /// (ファイルハンドル + 中央ディレクトリ解析)を伴うので、コア数に応じて
     /// 控えめに増やす(3〜6)。deflate 書庫の並列展開と高速めくりで効く。
-    static var extractorPoolSize: Int {  // テスト参照のため internal
-        min(max(3, ProcessInfo.processInfo.activeProcessorCount / 2), 6)
+    static func extractorPoolSize(lowPowerMode: Bool,
+                                  processorCount: Int = ProcessInfo.processInfo.activeProcessorCount) -> Int {
+        let normal = min(max(3, processorCount / 2), 6)
+        // 低電力時も最低 2 係を保ち、表示要求が先読みに塞がれないようにする(設計書 §5)。
+        return lowPowerMode ? max(2, normal / 2) : normal
     }
 
     /// いまの状態での並列可否: 全ページスプール済み(ローカル読みのみ)か、
@@ -220,7 +225,11 @@ actor ArchiveSource: BookSource {
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
          persistenceKey: PasswordVault.Key, sensitive: Bool = false,
          preferredEngine: ArchiveEngineKind = .kaitokit,
-         engineFactory: ArchiveEngineFactory = .live) throws {
+         engineFactory: ArchiveEngineFactory = .live,
+         powerState: any PowerStateProviding = PowerStateMonitor.shared,
+         extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
+             ArchiveSource.extractorPoolSize(lowPowerMode: $0)
+         }) throws {
         self.url = url
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
@@ -228,6 +237,8 @@ actor ArchiveSource: BookSource {
         self.persistenceKey = persistenceKey
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
+        self.powerState = powerState
+        self.extractorPoolSizing = extractorPoolSizing
         // ローカル固定ボリュームの単一ファイル書庫は mmap 経由で開く(open+全列挙が
         // 実測 −30%: 中央ディレクトリ走査の syscall・stdio シーク破棄が消える。
         // cooViewer-01h)。sourceData に載せることで展開プールも同じマップを共有し
@@ -275,7 +286,11 @@ actor ArchiveSource: BookSource {
     init(data: Data, name: String, nestingDepth: Int, unlocker: NestedUnlocker,
          persistenceKey: PasswordVault.Key, sensitive: Bool = true,
          preferredEngine: ArchiveEngineKind = .kaitokit,
-         engineFactory: ArchiveEngineFactory = .live) throws {
+         engineFactory: ArchiveEngineFactory = .live,
+         powerState: any PowerStateProviding = PowerStateMonitor.shared,
+         extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
+             ArchiveSource.extractorPoolSize(lowPowerMode: $0)
+         }) throws {
         self.url = URL(fileURLWithPath: name)
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
@@ -283,6 +298,8 @@ actor ArchiveSource: BookSource {
         self.persistenceKey = persistenceKey
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
+        self.powerState = powerState
+        self.extractorPoolSizing = extractorPoolSizing
         let opened = try Self.open(
             data: data, name: name, nestingDepth: nestingDepth,
             preferredEngine: preferredEngine, factory: engineFactory)
@@ -421,7 +438,7 @@ actor ArchiveSource: BookSource {
                              factory: ArchiveEngineFactory) throws
         -> any ArchiveEngine {
         do {
-            guard let archive = try factory.openFile(kind, path) else {
+            guard let archive = try factory.openFile(kind, path, .primary) else {
                 throw EngineOpenError.returnedNil(kind, "file")
             }
             return archive
@@ -437,7 +454,7 @@ actor ArchiveSource: BookSource {
                              factory: ArchiveEngineFactory) throws
         -> any ArchiveEngine {
         do {
-            guard let archive = try factory.openData(kind, data) else {
+            guard let archive = try factory.openData(kind, data, .primary) else {
                 throw EngineOpenError.returnedNil(kind, "data")
             }
             return archive
@@ -646,7 +663,8 @@ actor ArchiveSource: BookSource {
             guard let nested = try? ArchiveSource(
                 data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
                 unlocker: unlocker, persistenceKey: childKey, sensitive: true,
-                preferredEngine: preferredEngine, engineFactory: engineFactory)
+                preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
+                extractorPoolSizing: extractorPoolSizing)
             else { return false }
             child = nested
         } else {
@@ -654,7 +672,8 @@ actor ArchiveSource: BookSource {
                   let nested = try? ArchiveSource(
                     url: fileURL, nestingDepth: nestingDepth + 1,
                     unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
-                    preferredEngine: preferredEngine, engineFactory: engineFactory)
+                    preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
+                    extractorPoolSizing: extractorPoolSizing)
             else { return false }
             child = nested
         }
@@ -813,7 +832,7 @@ actor ArchiveSource: BookSource {
 
     private func pageContent(for entry: PageEntry) throws -> PageContent {
         // actor の順番待ちの間に取り消された要求は、展開係の生成や展開に進まない
-        // (KaitoKit 0.11 では取消し済みの Task からの open は中央ディレクトリを読んでから失敗する)
+        // KaitoKit の open が取消しを検査する前にも、不要な係の生成をここで抑える(設計書 §3.1)。
         try Task.checkCancellation()
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return .child(children[sourceIndex], childEntry)
@@ -842,17 +861,18 @@ actor ArchiveSource: BookSource {
     /// 展開係の貸し出し。perEntry は空き優先、byGroup は同一グループを同じ係へ
     /// 寄せる(グループ内直列・グループ間並列)。serial は貸し出さない
     private func acquireExtractor(for entryID: Int) -> (Int, ArchiveEntryExtractor)? {
+        let poolSize = extractorPoolSizing(powerState.isLowPowerModeEnabled)
         switch parallelMode {
         case .serial:
             return nil
         case .perEntry:
-            return acquireIdleOrGrownExtractor()
+            return acquireIdleOrGrownExtractor(poolSize: poolSize)
         case .byGroup(let groupOf):
             guard let group = groupOf[entryID] else {
                 // 独立エントリはどの係でもよい
-                return acquireIdleOrGrownExtractor()
+                return acquireIdleOrGrownExtractor(poolSize: poolSize)
             }
-            if let assigned = groupExtractorAssignment[group],
+            if let assigned = groupExtractorAssignment[group], assigned < poolSize,
                extractorBusyCounts.indices.contains(assigned) {
                 extractorBusyCounts[assigned] += 1
                 return (assigned, extractors[assigned])
@@ -860,7 +880,7 @@ actor ArchiveSource: BookSource {
             // 未割り当てグループに係を紐付ける。プールがグループ数より少ない
             // ときは相乗りになり、その係上で 2 グループが交互になると block 頭
             // からの再展開が起き得る(従来の全体巻き戻しより常に軽い)
-            guard let (index, extractor) = acquireIdleOrGrownExtractor() else { return nil }
+            guard let (index, extractor) = acquireIdleOrGrownExtractor(poolSize: poolSize) else { return nil }
             // キャンセル時の一時的な相乗り先をグループの恒久割当へ残さない。
             if !Task.isCancelled { groupExtractorAssignment[group] = index }
             return (index, extractor)
@@ -868,13 +888,16 @@ actor ArchiveSource: BookSource {
     }
 
     /// 空き優先・全員使用中のときだけ成長・成長不能時はいちばん空いている係に相乗り
-    private func acquireIdleOrGrownExtractor() -> (Int, ArchiveEntryExtractor)? {
-        if let idle = extractorBusyCounts.indices.first(
+    private func acquireIdleOrGrownExtractor(poolSize: Int) -> (Int, ArchiveEntryExtractor)? {
+        // 電力変更で縮んだ枠の外の reader は保持し、実行中要求の完了後は貸し出さない。
+        // 復帰時は再利用でき、既存 reader の並列設定は変えない(設計書 §5)。
+        let available = extractorBusyCounts.indices.prefix(poolSize)
+        if let idle = available.first(
             where: { extractorBusyCounts[$0] == 0 }) {
             extractorBusyCounts[idle] += 1
             return (idle, extractors[idle])
         }
-        if !extractorGrowthDisabled, extractors.count < Self.extractorPoolSize {
+        if !extractorGrowthDisabled, extractors.count < poolSize {
             // エントリ数の一致を検証してから採用する(開いた後にファイルが
             // 差し替えられた場合、一覧と食い違う内容を展開しないため)。
             // メモリ背景(暗号化親のネスト子)は共有 NSData から再オープンし、
@@ -885,12 +908,12 @@ actor ArchiveSource: BookSource {
                 grown = ArchiveEntryExtractor(data: sourceData, password: password,
                                               expectedEntryCount: expected,
                                               engineKind: archiveEngineKind,
-                                              factory: engineFactory)
+                                              factory: engineFactory, poolSize: poolSize)
             } else {
                 grown = ArchiveEntryExtractor(url: url, password: password,
                                               expectedEntryCount: expected,
                                               engineKind: archiveEngineKind,
-                                              factory: engineFactory)
+                                              factory: engineFactory, poolSize: poolSize)
             }
             if let extractor = grown {
                 extractors.append(extractor)
@@ -901,7 +924,7 @@ actor ArchiveSource: BookSource {
         }
         guard !extractors.isEmpty else { return nil }
         var index = 0
-        for i in extractorBusyCounts.indices
+        for i in available
             where extractorBusyCounts[i] < extractorBusyCounts[index] { index = i }
         extractorBusyCounts[index] += 1
         return (index, extractors[index])
@@ -1145,10 +1168,10 @@ actor ArchiveEntryExtractor {
     /// 差し替えられていた場合に、一覧と食い違う内容を展開しないための検証
     /// (エントリ数が同じ差し替えまでは検出しない割り切り。PDF 側と同じ)
     init?(url: URL, password: String?, expectedEntryCount: Int32,
-          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory) {
+          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory, poolSize: Int) {
         let opened: (any ArchiveEngine)?
         do {
-            opened = try factory.openFile(engineKind, url.path)
+            opened = try factory.openFile(engineKind, url.path, .extractor(poolSize: poolSize))
         } catch {
             return nil
         }
@@ -1163,10 +1186,10 @@ actor ArchiveEntryExtractor {
     /// メモリ背景版(暗号化親のネスト子。共有 NSData から独立ハンドルを開く。
     /// 平文を disk に置かずに並列展開する。cooViewer-6ax)
     init?(data: Data, password: String?, expectedEntryCount: Int32,
-          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory) {
+          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory, poolSize: Int) {
         let opened: (any ArchiveEngine)?
         do {
-            opened = try factory.openData(engineKind, data)
+            opened = try factory.openData(engineKind, data, .extractor(poolSize: poolSize))
         } catch {
             return nil
         }

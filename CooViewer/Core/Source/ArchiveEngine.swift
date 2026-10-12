@@ -1,12 +1,12 @@
 import Foundation
-import KaitoKitCompat
+import KaitoKit
 import os
 
 /// 書庫の読み込みと展開を actor 内へ閉じ込める最小境界(設計書 §2.4)。
 /// 非スレッド安全な実体は `ArchiveSource` または展開係の actor が一つずつ所有する。
 protocol ArchiveEngine: AnyObject {
-    init?(file path: String)
-    init?(data: Data)
+    init?(file path: String, role: ArchiveReaderRole)
+    init?(data: Data, role: ArchiveReaderRole)
 
     func numberOfEntries() -> Int32
     func name(ofEntry index: Int32) -> String?
@@ -19,7 +19,6 @@ protocol ArchiveEngine: AnyObject {
     func isEncrypted() -> Bool
     func setPassword(_ password: String)
     func solidGroup(ofEntry index: Int32) -> Int32
-    func extractEntry(_ index: Int32, to directory: String) -> Bool
 
     static var defaultZipLazyLocalHeaders: Bool { get }
     static func setDefaultZipLazyLocalHeaders(_ enabled: Bool)
@@ -36,66 +35,167 @@ enum ArchiveEngineKind: String, CaseIterable, Sendable {
     }
 }
 
-/// KaitoKit の互換面を書庫エンジン境界へ収めるアダプター(設計書 §2.4)。
+/// 主書庫と展開係では、同時に抱える復号処理の予算を分ける(設計書 §5)。
+enum ArchiveReaderRole: Sendable, Equatable {
+    case primary
+    case extractor(poolSize: Int)
+}
+
+/// 自動並列数は open 時点の電力方針を適用済みの値を入力する純関数(設計書 §5)。
+/// 明示値を使う展開係もこの値から導き、温度ではなく低電力モードだけに連動する。
+struct ArchiveDecodeBudget: Sendable, Equatable {
+    let decodeThreads: Int?
+    let parallelDecodeMemory: UInt64
+    let powerPolicy: DecodePowerPolicy = .reduceInLowPowerMode
+
+    init(role: ArchiveReaderRole, automaticThreads: Int) {
+        switch role {
+        case .primary:
+            decodeThreads = nil
+            // 主 256 + 展開係最大 6×128 MiB ≒ 1 GiB/冊に先行復号の保持を抑える。
+            parallelDecodeMemory = 256 << 20
+        case .extractor(let poolSize):
+            let auto = max(1, automaticThreads)
+            // 2 を下限にして RAR5 先行復号・7z LZMA2 分割並列を維持する。
+            // 自動値が 1 の機械では 1 とし、主書庫と同じ電力制約を守る。
+            decodeThreads = min(auto, max(2, auto / max(1, poolSize)))
+            parallelDecodeMemory = 128 << 20
+        }
+    }
+
+    func readerOptions(lazyLocalHeaders: Bool) -> ReaderOptions {
+        ReaderOptions(limits: ReadLimits(parallelDecodeMemory: parallelDecodeMemory),
+                      lazyLocalHeaders: lazyLocalHeaders,
+                      decodeThreads: decodeThreads, decodePowerPolicy: powerPolicy)
+    }
+}
+
+/// ネイティブ API を既存の nil/false 契約へ収める(設計書 §2.4、§5)。
 final class KaitoKitEngine: ArchiveEngine {
-    private let archive: KaitoKitCompat.KaitoArchive
+    private let reader: ArchiveReader
+    private let limits: ReadLimits
+    private static let lazyLocalHeaders = OSAllocatedUnfairLock(initialState: true)
 
-    init?(file path: String) {
-        guard let archive = KaitoKitCompat.KaitoArchive(file: path) else { return nil }
-        self.archive = archive
+    private static func options(role: ArchiveReaderRole) -> ReaderOptions {
+        ArchiveDecodeBudget(role: role, automaticThreads:
+            ReaderOptions.automaticDecodeThreads(powerPolicy: .reduceInLowPowerMode))
+            .readerOptions(lazyLocalHeaders: defaultZipLazyLocalHeaders)
     }
 
-    init?(data: Data) {
-        guard let archive = KaitoKitCompat.KaitoArchive(data: data) else { return nil }
-        self.archive = archive
+    init?(file path: String, role: ArchiveReaderRole) {
+        let options = Self.options(role: role)
+        guard let reader = try? ArchiveReader.open(url: URL(fileURLWithPath: path),
+                                                   options: options) else { return nil }
+        self.reader = reader
+        limits = options.limits
     }
 
-    func numberOfEntries() -> Int32 { archive.numberOfEntries() }
-    func name(ofEntry index: Int32) -> String? { archive.name(ofEntry: index) }
-    func contents(ofEntry index: Int32) -> Data? { archive.contents(ofEntry: index) }
+    init?(data: Data, role: ArchiveReaderRole) {
+        let options = Self.options(role: role)
+        guard let reader = try? ArchiveReader.open(data: data, options: options) else { return nil }
+        self.reader = reader
+        limits = options.limits
+    }
+
+    private func entry(at index: Int32) -> ArchiveEntry? {
+        guard index >= 0, reader.entries.indices.contains(Int(index)) else { return nil }
+        return reader.entries[Int(index)]
+    }
+
+    func numberOfEntries() -> Int32 { Int32(exactly: reader.entries.count) ?? .max }
+
+    func name(ofEntry index: Int32) -> String? {
+        guard let entry = entry(at: index) else { return nil }
+        guard entry.kind == .directory else { return entry.name }
+        var name = entry.name
+        while name.last == "/" || name.last == "\\" { name.removeLast() }
+        return name
+    }
+
+    func contents(ofEntry index: Int32) -> Data? {
+        guard let entry = entry(at: index),
+              !entry.isEncrypted || reader.password != nil else { return nil }
+        return try? readAll(entry)
+    }
+
+    /// 互換層と同じ確保上限・256 KiB 単位・宣言サイズ不足時の失敗を保つ。
+    /// サイズ不明の場合も、上限を確かめてから結果バッファを増やす(設計書 §2.4)。
+    private func readAll(_ entry: ArchiveEntry) throws -> Data {
+        let stream = try reader.stream(entry)
+        if let declaredSize = entry.uncompressedSize {
+            guard declaredSize <= limits.maxInMemorySize,
+                  let size = Int(exactly: declaredSize) else {
+                throw KaitoError.limitExceeded("in-memory entry size")
+            }
+            var result = Data(count: size)
+            try result.withUnsafeMutableBytes { storage in
+                var written = 0
+                while written < size {
+                    let upperBound = min(size, written + 256 * 1_024)
+                    let count = try stream.read(into: UnsafeMutableRawBufferPointer(
+                        rebasing: storage[written..<upperBound]))
+                    guard count > 0 else { throw KaitoError.truncated }
+                    written += count
+                }
+            }
+            return result
+        }
+        var result = Data()
+        result.reserveCapacity(Int(min(limits.maxInMemorySize, 256 * 1_024)))
+        var buffer = [UInt8](repeating: 0, count: 256 * 1_024)
+        while true {
+            let count = try buffer.withUnsafeMutableBytes { try stream.read(into: $0) }
+            guard count > 0 else { break }
+            let (nextSize, overflow) = UInt64(result.count).addingReportingOverflow(UInt64(count))
+            guard !overflow, nextSize <= limits.maxInMemorySize else {
+                throw KaitoError.limitExceeded("in-memory entry size")
+            }
+            result.append(contentsOf: buffer[..<count])
+        }
+        return result
+    }
+
     func uncompressedSize(ofEntry index: Int32) -> Int64 {
-        guard archive.entryHasSize(index) else { return .max }
-        return archive.uncompressedSize(ofEntry: index)
+        guard let size = entry(at: index)?.uncompressedSize else { return .max }
+        return Int64(exactly: size) ?? .max
     }
-    func entryHasSize(_ index: Int32) -> Bool { archive.entryHasSize(index) }
-    func entryIsDirectory(_ index: Int32) -> Bool { archive.entryIsDirectory(index) }
-    func entryIsEncrypted(_ index: Int32) -> Bool { archive.entryIsEncrypted(index) }
-    func isEncrypted() -> Bool { archive.isEncrypted() }
-    func setPassword(_ password: String) { archive.setPassword(password) }
-    func solidGroup(ofEntry index: Int32) -> Int32 { archive.solidGroup(ofEntry: index) }
-    func extractEntry(_ index: Int32, to directory: String) -> Bool {
-        archive.extractEntry(index, to: directory)
-    }
-
-    static var defaultZipLazyLocalHeaders: Bool {
-        KaitoKitCompat.KaitoArchive.defaultZipLazyLocalHeaders
+    func entryHasSize(_ index: Int32) -> Bool { entry(at: index)?.uncompressedSize != nil }
+    func entryIsDirectory(_ index: Int32) -> Bool { entry(at: index)?.kind == .directory }
+    func entryIsEncrypted(_ index: Int32) -> Bool { entry(at: index)?.isEncrypted ?? false }
+    func isEncrypted() -> Bool { reader.entries.contains { $0.isEncrypted } }
+    func setPassword(_ password: String) { reader.password = password }
+    func solidGroup(ofEntry index: Int32) -> Int32 {
+        guard let group = entry(at: index)?.solidGroup else { return -1 }
+        return Int32(exactly: group) ?? -1
     }
 
+    // 開いた reader の設定は固定し、変更は以後の open へ反映する(設計書 §7.5)。
+    static var defaultZipLazyLocalHeaders: Bool { lazyLocalHeaders.withLock { $0 } }
     static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {
-        KaitoKitCompat.KaitoArchive.setDefaultZipLazyLocalHeaders(enabled)
+        lazyLocalHeaders.withLock { $0 = enabled }
     }
 }
 
 /// KaitoKit の生成窓口。テストでは open 失敗や列挙失敗を注入できる。
 /// クロージャは不変で、生成した非スレッド安全な実体を呼び出し側 actor が所有する。
 struct ArchiveEngineFactory: Sendable {
-    typealias FileOpener = @Sendable (ArchiveEngineKind, String) throws
+    typealias FileOpener = @Sendable (ArchiveEngineKind, String, ArchiveReaderRole) throws
         -> (any ArchiveEngine)?
-    typealias DataOpener = @Sendable (ArchiveEngineKind, Data) throws
+    typealias DataOpener = @Sendable (ArchiveEngineKind, Data, ArchiveReaderRole) throws
         -> (any ArchiveEngine)?
 
     let openFile: FileOpener
     let openData: DataOpener
 
     static let live = ArchiveEngineFactory(
-        openFile: { kind, path in
+        openFile: { kind, path, role in
             switch kind {
-            case .kaitokit: KaitoKitEngine(file: path)
+            case .kaitokit: KaitoKitEngine(file: path, role: role)
             }
         },
-        openData: { kind, data in
+        openData: { kind, data, role in
             switch kind {
-            case .kaitokit: KaitoKitEngine(data: data)
+            case .kaitokit: KaitoKitEngine(data: data, role: role)
             }
         }
     )
