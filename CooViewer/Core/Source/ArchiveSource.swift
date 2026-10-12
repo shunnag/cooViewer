@@ -26,6 +26,7 @@ actor ArchiveSource: BookSource {
     private let preferredEngine: ArchiveEngineKind
     private let engineFactory: ArchiveEngineFactory
     private let powerState: any PowerStateProviding
+    private let extractorPoolSizing: @Sendable (Bool) -> Int
     /// メモリ背景(暗号化親のネスト子)。非 nil のとき disk を読まず、
     /// 展開プールもこの共有 NSData から再オープンする(平文を temp に置かない)
     private let sourceData: Data?
@@ -225,7 +226,10 @@ actor ArchiveSource: BookSource {
          persistenceKey: PasswordVault.Key, sensitive: Bool = false,
          preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live,
-         powerState: any PowerStateProviding = PowerStateMonitor.shared) throws {
+         powerState: any PowerStateProviding = PowerStateMonitor.shared,
+         extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
+             ArchiveSource.extractorPoolSize(lowPowerMode: $0)
+         }) throws {
         self.url = url
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
@@ -234,6 +238,7 @@ actor ArchiveSource: BookSource {
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
         self.powerState = powerState
+        self.extractorPoolSizing = extractorPoolSizing
         // ローカル固定ボリュームの単一ファイル書庫は mmap 経由で開く(open+全列挙が
         // 実測 −30%: 中央ディレクトリ走査の syscall・stdio シーク破棄が消える。
         // cooViewer-01h)。sourceData に載せることで展開プールも同じマップを共有し
@@ -282,7 +287,10 @@ actor ArchiveSource: BookSource {
          persistenceKey: PasswordVault.Key, sensitive: Bool = true,
          preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live,
-         powerState: any PowerStateProviding = PowerStateMonitor.shared) throws {
+         powerState: any PowerStateProviding = PowerStateMonitor.shared,
+         extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
+             ArchiveSource.extractorPoolSize(lowPowerMode: $0)
+         }) throws {
         self.url = URL(fileURLWithPath: name)
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
@@ -291,6 +299,7 @@ actor ArchiveSource: BookSource {
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
         self.powerState = powerState
+        self.extractorPoolSizing = extractorPoolSizing
         let opened = try Self.open(
             data: data, name: name, nestingDepth: nestingDepth,
             preferredEngine: preferredEngine, factory: engineFactory)
@@ -654,7 +663,8 @@ actor ArchiveSource: BookSource {
             guard let nested = try? ArchiveSource(
                 data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
                 unlocker: unlocker, persistenceKey: childKey, sensitive: true,
-                preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState)
+                preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
+                extractorPoolSizing: extractorPoolSizing)
             else { return false }
             child = nested
         } else {
@@ -662,7 +672,8 @@ actor ArchiveSource: BookSource {
                   let nested = try? ArchiveSource(
                     url: fileURL, nestingDepth: nestingDepth + 1,
                     unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
-                    preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState)
+                    preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
+                    extractorPoolSizing: extractorPoolSizing)
             else { return false }
             child = nested
         }
@@ -850,7 +861,7 @@ actor ArchiveSource: BookSource {
     /// 展開係の貸し出し。perEntry は空き優先、byGroup は同一グループを同じ係へ
     /// 寄せる(グループ内直列・グループ間並列)。serial は貸し出さない
     private func acquireExtractor(for entryID: Int) -> (Int, ArchiveEntryExtractor)? {
-        let poolSize = Self.extractorPoolSize(lowPowerMode: powerState.isLowPowerModeEnabled)
+        let poolSize = extractorPoolSizing(powerState.isLowPowerModeEnabled)
         switch parallelMode {
         case .serial:
             return nil
