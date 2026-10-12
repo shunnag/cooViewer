@@ -87,7 +87,7 @@ extension ReaderWindowController {
                 await self.refreshDisplay()
                 return
             }
-            self.presentReflowableEPUB(
+            await self.presentReflowableEPUB(
                 publication, url: url,
                 atPage: (explicitLocator == nil && atFirst) ? 0 : nil,
                 atLastPage: explicitLocator == nil && !forward && !atFirst,
@@ -135,10 +135,10 @@ extension ReaderWindowController {
                 NSSound.beep()
                 return
             }
-            self.presentReflowableEPUB(publication, url: url,
-                                       atLocator: locator,
-                                       collectionContext: newContext,
-                                       epoch: presentEpoch)
+            await self.presentReflowableEPUB(publication, url: url,
+                                             atLocator: locator,
+                                             collectionContext: newContext,
+                                             epoch: presentEpoch)
         }
     }
 

@@ -40,7 +40,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                                atLocator: EPUBLocator? = nil,
                                collectionContext: EPUBCollectionContext? = nil,
                                epoch: Int,
-                               fromSlideshow: Bool = false) {
+                               fromSlideshow: Bool = false) async {
         // 入口: この提示が最後に要求されたものでなければ旧本の teardown を始めない
         // (合本内 EPUB↔EPUB の横断連打で last-request-wins を保証。openGeneration は
         // 合本内移動で動かないため専用の epubPresentEpoch で照合する)
@@ -59,9 +59,10 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             locator = EPUBLocator(spineIndex: min(max(0, atPage), spineCount - 1),
                                   progression: 0)
         } else {
-            locator = restoredEPUBLocator(for: url, publication: publication)
+            locator = await restoredEPUBLocator(for: url, publication: publication)
         }
-        // cooViewer-oxr.23: 復元確認の modal が run loop を回している間は、旧
+        // cooViewer-oxr.23: 復元確認の modal が run loop を回している間(と復元
+        // ゲートの実在確認を待つ間)は、旧
         // publication と旧 URL を一切差し替えない。旧ビューの callback が新しい
         // 本へ保存される混線を防ぎ、最新要求だけが以下の状態を変更する（設計書 §2.4）。
         guard epubPresentEpoch == epoch else { return }
@@ -175,9 +176,11 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
     /// GoToLastPageMode(0=確認/1=自動/2=無効。§7.3)を通す。
     /// リフローに固定ページ番号は無いため、確認ダイアログは全体進行率で示す
     private func restoredEPUBLocator(for url: URL,
-                                     publication: EPUBPublication) -> EPUBLocator? {
-        guard settings.goToLastPageMode < 2,
-              let saved = history.savedReflowPosition(forPath: url.path)
+                                     publication: EPUBPublication) async -> EPUBLocator? {
+        guard settings.goToLastPageMode < 2 else { return nil }
+        // 復元ゲートの実在確認はメインアクター外(上限内なら I/O なし)
+        let inRecents = await history.isWithinRecentLimit(path: url.path)
+        guard let saved = history.savedReflowPosition(forPath: url.path, inRecents: inRecents)
         else { return nil }
         let locator = EPUBLocator(spineIndex: saved.spineIndex,
                                   progression: saved.progression,

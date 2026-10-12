@@ -37,9 +37,20 @@ final class BookHistoryStore {
     /// 防ぐ(open 時失敗→session 空状態→close 時回復→save が空で上書き、の遮断)
     private var unreadableObserved: Set<String> = []
     private var recentsCache: [RecentEntry]?
+    /// 存在判定の注入点。最近の一覧の実在確認は NAS/死んだマウントで止まり得る
+    /// ため、メインアクター外のタスクから使う
+    private let fileSystem: any FileSystemProbing
+    /// 最近の一覧の、前回確認できた実在状態(正規化パス → 実在)。未確認は
+    /// 「一覧に載っている=最後に見たときは在った」とみなす
+    private var recentExistence: [String: Bool] = [:]
+    /// 進行中の実在確認(単一飛行。メニューと起動オープンが同時に要求しても
+    /// 一度しか走らせない)
+    private var recentExistenceRefresh: Task<[String: Bool], Never>?
 
-    init(defaults: UserDefaults = .standard, directory: URL? = nil) {
+    init(defaults: UserDefaults = .standard, directory: URL? = nil,
+         fileSystem: any FileSystemProbing = FileManagerProbe()) {
         self.defaults = defaults
+        self.fileSystem = fileSystem
         self.directory = directory ?? FileManager.default
             .userDomainDirectory(.applicationSupportDirectory)
             .appendingPathComponent("jp.coo.cooViewer/BookStates")
@@ -316,25 +327,100 @@ final class BookHistoryStore {
         recents.insert(RecentEntry(
             path: path, lastOpened: Date().timeIntervalSince1970), at: 0)
         writeRecents(Array(recents.prefix(50)))
+        recentExistence[path] = true  // 今開いた本は在る(再確認を待たず表示へ戻す)
     }
 
-    /// 実在する本だけを返す(旧 §7.2 の「解決できないエントリは飛ばす」)。
+    /// 表示上限(OpenRecentLimit。保持自体は 50 件)
+    var openRecentLimit: Int {
+        defaults.object(forKey: "OpenRecentLimit") as? Int ?? 10
+    }
+
+    /// 保持中の最近の一覧(正規化パス、新しい順)。実在確認はしない
+    func recentPaths() -> [String] { loadRecents().map(\.path) }
+
+    /// 最近の一覧(旧 §7.2 の「解決できないエントリは飛ばす」を、前回確認できた
+    /// 実在状態で適用。同期・ファイルシステムに触れない)。未確認の本は
+    /// 「一覧に載っている=最後に見たときは在った」として表示する。実在の
+    /// 再確認は existingRecentBookPaths がメインアクター外で行う。
     /// 一覧自体は書き換えない: 外付け/ネットワークの本はマウントし直せば戻る
     func recentBookPaths() -> [String] {
-        let limit = defaults.object(forKey: "OpenRecentLimit") as? Int ?? 10
+        let limit = openRecentLimit
         guard limit > 0 else { return [] }
         return loadRecents().lazy
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
+            .filter { self.recentExistence[$0.path] ?? true }
             .prefix(limit).map(\.path)
     }
 
-    func mostRecentBook() -> (path: String, page: Int)? {
-        // 消えた本を飛ばして最初に実在する本(旧挙動: 次の本へフォールバック)
-        guard let first = loadRecents().first(where: {
-            FileManager.default.fileExists(atPath: $0.path)
-        }) else { return nil }
-        let page = loadState(forNormalizedPath: first.path)?.lastPageIndex ?? 0
-        return (first.path, page)
+    /// 実在する本だけの一覧。全エントリ(≤50)の実在確認をメインアクター外で
+    /// 行い、結果を recentExistence に残して recentBookPaths() が次回から使う。
+    /// 確認中に一覧へ加わった本(=今開いた本)は未確認なので在るものとして扱う
+    func existingRecentBookPaths() async -> [String] {
+        let limit = openRecentLimit
+        guard limit > 0 else { return [] }
+        let existence = await refreshRecentExistence()
+        return loadRecents().lazy
+            .filter { existence[$0.path] ?? true }
+            .prefix(limit).map(\.path)
+    }
+
+    /// 最後に開いた本(消えた本は飛ばして最初に実在する本。旧挙動)。実在確認は
+    /// 新しい順に 1 件ずつメインアクター外で行い、見つかり次第やめる
+    /// (起動時に 50 件を stat し尽くさない)
+    func mostRecentExistingBook() async -> (path: String, page: Int)? {
+        let paths = loadRecents().map(\.path)
+        let probe = fileSystem
+        let checked = await Task.detached(priority: .userInitiated) {
+            var checked: [String: Bool] = [:]
+            for path in paths {
+                let exists = probe.fileExists(atPath: path)
+                checked[path] = exists
+                if exists { break }
+            }
+            return checked
+        }.value
+        recentExistence.merge(checked) { _, latest in latest }
+        guard let first = paths.first(where: { checked[$0] == true }) else { return nil }
+        let page = loadState(forNormalizedPath: first)?.lastPageIndex ?? 0
+        return (first, page)
+    }
+
+    /// savedPage / savedReflowPosition の復元ゲート「表示上限内の最近の一覧に
+    /// 在るか」(旧 recentBookPaths().contains(path) と同値)。開こうとしている本
+    /// 自身は在るものとして扱う。一覧内の素の位置が上限未満なら、先行する実在
+    /// エントリも上限未満なので I/O なしで true。上限以上のときだけ先行エントリの
+    /// 実在をメインアクター外で数える(消えた本が前にあれば繰り上がる)
+    func isWithinRecentLimit(path rawPath: String) async -> Bool {
+        let limit = openRecentLimit
+        guard limit > 0 else { return false }
+        let path = normalize(rawPath)
+        let paths = loadRecents().map(\.path)
+        guard let index = paths.firstIndex(of: path) else { return false }
+        if index < limit { return true }
+        let preceding = Array(paths[..<index])
+        let probe = fileSystem
+        let existingBefore = await Task.detached(priority: .userInitiated) {
+            preceding.filter { probe.fileExists(atPath: $0) }.count
+        }.value
+        return existingBefore < limit
+    }
+
+    /// 保持中の全エントリ(最大 50)の実在をメインアクター外で確認し、結果で
+    /// recentExistence を置き換える。同時要求は進行中の確認へ合流する
+    private func refreshRecentExistence() async -> [String: Bool] {
+        if let inFlight = recentExistenceRefresh { return await inFlight.value }
+        let paths = loadRecents().map(\.path)
+        let probe = fileSystem
+        let task = Task.detached(priority: .userInitiated) {
+            Dictionary(paths.map { ($0, probe.fileExists(atPath: $0)) },
+                       uniquingKeysWith: { first, _ in first })
+        }
+        recentExistenceRefresh = task
+        let existence = await task.value
+        if recentExistenceRefresh == task { recentExistenceRefresh = nil }
+        // 丸ごと置き換える(一覧から外れたパスを残さない)。確認中に touchRecents が
+        // 書いた true は消えるが、未確認は在るものとして扱うので表示は変わらない
+        recentExistence = existence
+        return existence
     }
 
     func noteOpened(path rawPath: String) {
@@ -382,13 +468,13 @@ final class BookHistoryStore {
         }
     }
 
-    /// リフロー EPUB の保存位置(savedPage と同じ復元可否ゲート)
-    func savedReflowPosition(forPath rawPath: String)
+    /// リフロー EPUB の保存位置(savedPage と同じ復元可否ゲート)。
+    /// inRecents は isWithinRecentLimit(path:) の結果
+    func savedReflowPosition(forPath rawPath: String, inRecents: Bool)
         -> (spineIndex: Int, progression: Double, idref: String?)? {
         let path = normalize(rawPath)
         guard let state = loadState(forNormalizedPath: path),
               let position = state.lastReflowPosition else { return nil }
-        let inRecents = recentBookPaths().contains(path)
         guard inRecents || state.rememberBeyondRecents == true else { return nil }
         return (position.spineIndex, position.progression, position.idref)
     }
@@ -477,16 +563,17 @@ final class BookHistoryStore {
     /// 保存ページの探索(仕様書 §4.1.2 手順 7)。
     /// 旧仕様どおり、最近の一覧に残っている本はいつでも、外れた本は
     /// AlwaysRememberLastPage が ON のときだけ復元できる(§7.3)。
-    /// page==0 は「復帰なし」と不可分のため返さない
-    func savedPage(forPath rawPath: String) -> (page: Int, pagePath: String?)? {
+    /// page==0 は「復帰なし」と不可分のため返さない。
+    /// inRecents は isWithinRecentLimit(path:) の結果(「最近の一覧に残っている」
+    /// は表示上限 OpenRecentLimit 内で判定する。保持自体は 50 件。旧仕様の
+    /// 「一覧から外れたら要 AlwaysRemember」と一致。実在確認を伴うため呼び出し側が
+    /// メインアクター外で済ませて渡す)
+    func savedPage(forPath rawPath: String, inRecents: Bool) -> (page: Int, pagePath: String?)? {
         let path = normalize(rawPath)
-        // 「最近の一覧に残っている」は表示上限(OpenRecentLimit)内で判定する
-        // (保持自体は 50 件。旧仕様の「一覧から外れたら要 AlwaysRemember」と一致)
         guard let state = loadState(forNormalizedPath: path),
               let page = state.lastPageIndex, page > 0 else { return nil }
         // 一覧内ならいつでも、外れた本は「閉じた時点で」AlwaysRememberLastPage が
         // ON だった場合のみ(旧 LastPages の write-time 意味論 §7.3)
-        let inRecents = recentBookPaths().contains(path)
         guard inRecents || state.rememberBeyondRecents == true else { return nil }
         return (page, state.lastPagePath)
     }
