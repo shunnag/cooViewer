@@ -50,12 +50,12 @@ private final class ThermalFixture {
     private let recorded = OSAllocatedUnfairLock(initialState: [Bool]())
     private var token: (any NSObjectProtocol)?
 
-    init() {
+    init(policy: PowerPolicy = .default) {
         let (thermal, lowPower, recorded) = (thermal, lowPower, recorded)
         monitor = PowerStateMonitor(center: center, readState: {
             PowerConditions(isLowPowerModeEnabled: lowPower.withLock { $0 },
                             isThermalPressureActive: PowerConditions.isThermalPressure(thermal.withLock { $0 }))
-        }, scheduler: scheduler.scheduler)
+        }, scheduler: scheduler.scheduler, policy: policy)
         let monitor = monitor
         token = center.addObserver(forName: PowerStateMonitor.didChangeNotification,
                                    object: nil, queue: nil) { _ in
@@ -257,18 +257,107 @@ final class PowerStateMonitorTests: XCTestCase {
         XCTAssertEqual(published.withLock { $0 }, [true, false])
     }
 
-    func testShouldConserveEnergyIsLowPowerOrThermalPressure() {
-        for lowPower in [false, true] {
-            for thermal in [false, true] {
-                let fixed = FixedPowerState(isLowPowerModeEnabled: lowPower, isThermalPressureActive: thermal)
-                XCTAssertEqual(fixed.shouldConserveEnergy, lowPower || thermal, "low=\(lowPower) thermal=\(thermal)")
-                let monitor = PowerStateMonitor(center: NotificationCenter(), readState: {
-                    Conditions(isLowPowerModeEnabled: lowPower, isThermalPressureActive: thermal)
-                })
-                XCTAssertEqual(monitor.shouldConserveEnergy, lowPower || thermal)
+    /// 条件 × 方針の全組み合わせ: 純関数・固定提供者・監視器の三者が同じ答えを返す(設計書 §5)
+    func testPolicyDecidesConservationForEveryConditionCombination() {
+        for policy in PowerPolicy.allCases {
+            for lowPower in [false, true] {
+                for thermal in [false, true] {
+                    let expected = switch policy {
+                    case .lowPowerModeOrThermal: lowPower || thermal
+                    case .lowPowerModeOnly: lowPower
+                    case .alwaysFullSpeed: false
+                    }
+                    let conditions = Conditions(isLowPowerModeEnabled: lowPower, isThermalPressureActive: thermal)
+                    let label = "\(policy) low=\(lowPower) thermal=\(thermal)"
+                    XCTAssertEqual(policy.conserves(conditions), expected, label)
+                    let fixed = FixedPowerState(isLowPowerModeEnabled: lowPower, isThermalPressureActive: thermal,
+                                                powerPolicy: policy)
+                    XCTAssertEqual(fixed.shouldConserveEnergy, expected, label)
+                    let monitor = PowerStateMonitor(center: NotificationCenter(), readState: { conditions },
+                                                    policy: policy)
+                    XCTAssertEqual(monitor.shouldConserveEnergy, expected, label)
+                    XCTAssertEqual(monitor.powerPolicy, policy)
+                }
             }
         }
         XCTAssertFalse(FixedPowerState().shouldConserveEnergy)
+        XCTAssertEqual(FixedPowerState().powerPolicy, .lowPowerModeOrThermal, "既定は従来どおり")
+        XCTAssertEqual(PowerPolicy.default, .lowPowerModeOrThermal)
+    }
+
+    /// 既定は温度圧迫だけでも控え、低電力モードだけの方針は温度を見ない
+    func testThermalOnlyPressureConservesUnderDefaultButNotUnderLowPowerModeOnly() {
+        let standard = ThermalFixture()
+        standard.setThermal(.serious)
+        XCTAssertTrue(standard.monitor.shouldConserveEnergy)
+        XCTAssertEqual(standard.published, [true])
+
+        let lowPowerOnly = ThermalFixture(policy: .lowPowerModeOnly)
+        lowPowerOnly.setThermal(.serious)
+        XCTAssertFalse(lowPowerOnly.monitor.shouldConserveEnergy)
+        XCTAssertTrue(lowPowerOnly.monitor.isThermalPressureActive, "生の条件は追跡し続ける")
+        XCTAssertEqual(lowPowerOnly.published, [], "判定が変わらないので通知しない")
+        lowPowerOnly.setLowPower(true)
+        XCTAssertTrue(lowPowerOnly.monitor.shouldConserveEnergy)
+        XCTAssertEqual(lowPowerOnly.published, [true])
+    }
+
+    func testAlwaysFullSpeedNeverConserves() {
+        let fixture = ThermalFixture(policy: .alwaysFullSpeed)
+        fixture.setLowPower(true)
+        fixture.setThermal(.critical)
+        XCTAssertFalse(fixture.monitor.shouldConserveEnergy)
+        XCTAssertTrue(fixture.monitor.isLowPowerModeEnabled)
+        XCTAssertTrue(fixture.monitor.isThermalPressureActive)
+        XCTAssertEqual(fixture.published, [], "判定は false のまま")
+        fixture.setThermal(.nominal)
+        fixture.scheduler.fire()
+        fixture.setLowPower(false)
+        XCTAssertEqual(fixture.published, [])
+    }
+
+    /// 方針の変更は判定が同じでも通知する(Washi の方針写像が判定ではなく方針に依存するため)。
+    /// 同じ値の再設定は通知しない
+    func testChangingPolicyPostsChangeNotificationAndAppliesImmediately() {
+        let fixture = ThermalFixture()
+        fixture.setThermal(.serious)
+        XCTAssertEqual(fixture.published, [true])
+
+        fixture.monitor.powerPolicy = .lowPowerModeOnly
+        XCTAssertEqual(fixture.monitor.powerPolicy, .lowPowerModeOnly)
+        XCTAssertEqual(fixture.published, [true, false], "温度だけの圧迫は方針変更で即座に解ける")
+        fixture.monitor.powerPolicy = .lowPowerModeOnly
+        XCTAssertEqual(fixture.published, [true, false], "同じ方針の再設定は通知しない")
+
+        fixture.monitor.powerPolicy = .alwaysFullSpeed
+        XCTAssertEqual(fixture.published, [true, false, false], "判定が変わらなくても方針の変更は通知する")
+
+        fixture.monitor.powerPolicy = .lowPowerModeOrThermal
+        XCTAssertTrue(fixture.monitor.shouldConserveEnergy, "追跡し続けた温度圧迫を戻した瞬間から反映する")
+        XCTAssertEqual(fixture.published, [true, false, false, true])
+    }
+
+    /// 既定の方針では 45 秒の解除保持がそのまま効き、保持中に方針を切り替えても保持は進む
+    func testThermalReleaseHoldStillAppliesUnderDefaultPolicy() {
+        let fixture = ThermalFixture(policy: .lowPowerModeOrThermal)
+        fixture.setThermal(.serious)
+        fixture.setThermal(.fair)
+        XCTAssertTrue(fixture.monitor.shouldConserveEnergy, "保持中は省エネのまま")
+        XCTAssertEqual(fixture.scheduler.pending.map(\.delay), [PowerStateMonitor.thermalReleaseHold])
+        XCTAssertEqual(fixture.published, [true])
+
+        // 保持中に温度を見ない方針へ切り替えると判定は即座に false、保持の予約は生きたまま
+        fixture.monitor.powerPolicy = .lowPowerModeOnly
+        XCTAssertFalse(fixture.monitor.shouldConserveEnergy)
+        XCTAssertEqual(fixture.scheduler.liveCount, 1)
+        fixture.monitor.powerPolicy = .lowPowerModeOrThermal
+        XCTAssertTrue(fixture.monitor.shouldConserveEnergy)
+        XCTAssertEqual(fixture.published, [true, false, true])
+
+        fixture.scheduler.fire()
+        XCTAssertFalse(fixture.monitor.shouldConserveEnergy)
+        XCTAssertFalse(fixture.monitor.isThermalPressureActive)
+        XCTAssertEqual(fixture.published, [true, false, true, false])
     }
 
     func testThermalPressureStartsAtSerious() {

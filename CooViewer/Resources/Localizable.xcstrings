@@ -5810,6 +5810,66 @@
           }
         }
       }
+    },
+    "Power saving:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "省電力:"
+          }
+        }
+      }
+    },
+    "Reduce in Low Power Mode or under thermal pressure (default)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "低電力モードと高温時に控える(標準)"
+          }
+        }
+      }
+    },
+    "Reduce only in Low Power Mode": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "低電力モードのときだけ控える"
+          }
+        }
+      }
+    },
+    "Always full speed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "常に全速"
+          }
+        }
+      }
+    },
+    "Battery, thermal, CPU": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "バッテリー・温度・CPU"
+          }
+        }
+      }
+    },
+    "Halves prefetch depth, parallel decoding, and ML pre-resampling to save battery and reduce heat. Memory pressure limits always apply. Prefetch changes immediately; archives that are already open follow from the next time they are opened.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先読みの深さ・並列デコード・ML 事前リサンプルを半分に控え、バッテリーと発熱を抑えます。メモリ圧迫による制限は常に有効です。先読みはすぐに切り替わり、開いている書庫には次に開いたときから反映されます。"
+          }
+        }
+      }
     }
   },
   "version": "1.1"

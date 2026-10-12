@@ -6,12 +6,15 @@ import AppKit
 final class SettingsStore {
     static let shared = SettingsStore()
     private let defaults: UserDefaults
+    /// 電力方針の受け手。テストは隔離した監視器を渡し、共有の状態に触れない(設計書 §5)
+    private let powerMonitor: PowerStateMonitor
     /// スナップショット CLI の 1 実行だけに使う上書き。UserDefaults へは書かず、
     /// A/B 撮影後も通常起動の選択を変えない(設計書 §2.4 検証可能性)。
     private var archiveEngineOverride: ArchiveEngineKind?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, powerMonitor: PowerStateMonitor = .shared) {
         self.defaults = defaults
+        self.powerMonitor = powerMonitor
     }
 
     /// 揮発性既定値(旧 registerDefaults 相当。仕様書 §6.1)
@@ -404,6 +407,26 @@ final class SettingsStore {
     /// 起動時、書庫生成より先に保存値(未設定なら ON)を KaitoKit へ渡す。
     func applyArchiveParserSettings() {
         KaitoKitEngine.setDefaultZipLazyLocalHeaders(zipLazyLocalHeaders)
+    }
+
+    /// 省エネに入る条件の方針(新設キー `PowerPolicy`、rawValue 文字列。設計書 §5)。
+    /// 未設定・未知の値は従来どおりの既定。保存と同時に監視器(既定は PowerStateMonitor.shared)へ流し込み、
+    /// 先読み・事前リサンプル・展開係・EPUB の画面外処理は即時に、KaitoKit の復号並列数は
+    /// 次に開く書庫から従う。旧版との往復で選択が残るよう、未知値は書き戻さない
+    var powerPolicy: PowerPolicy {
+        get {
+            defaults.string(forKey: "PowerPolicy")
+                .flatMap(PowerPolicy.init(rawValue:)) ?? .default
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: "PowerPolicy")
+            powerMonitor.powerPolicy = newValue
+        }
+    }
+
+    /// 起動時、本や書庫を開くより先に保存値を監視器へ渡す。
+    func applyPowerPolicy() {
+        powerMonitor.powerPolicy = powerPolicy
     }
 
     /// 書庫スプールの方針(高度設定の三択)。

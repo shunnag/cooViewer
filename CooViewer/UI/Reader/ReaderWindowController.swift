@@ -393,7 +393,12 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 電力変更は先読みだけを再計画し、表示中ページと既存 reader は保つ(設計書 §5)。
+    /// 方針の変更は Washi の画面外方針も変えるため、生きている EPUB ビューとアトラスへ渡す
+    /// (Washi は次のジョブから反映し、進行中の census を捨てない)。
     private func replanForPowerState() {
+        let offscreenPolicy = EPUBOffscreenSettings.energyPolicy
+        epubView?.offscreenEnergyPolicy = offscreenPolicy
+        EPUBAtlasStore.shared.applyEnergyPolicy(offscreenPolicy)
         guard let book else { return }
         applyAdvancedSettings(to: book)
         // 省エネ条件の切替で先読み深さを即座に組み直す(次のめくりまで媒体既定値のままにしない)

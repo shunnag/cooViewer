@@ -44,6 +44,51 @@ final class SettingsSearchTests: XCTestCase {
         XCTAssertTrue(SettingsSearch.filter(query: "存在しない語", entries: entries).isEmpty)
     }
 
+    /// 「省電力」の行の索引語(英語の原文キー)。SettingsView.searchTerms(for: .advanced) と
+    /// 同じ鍵で、Localizable.xcstrings の日本語訳を lproj から直接読む
+    private static let powerSavingKeys = [
+        "Power saving:",
+        "Reduce in Low Power Mode or under thermal pressure (default)",
+        "Reduce only in Low Power Mode",
+        "Always full speed",
+        "Battery, thermal, CPU",
+    ]
+
+    /// 「省電力」の行が実際の「高度」ペインの索引に載っている(設計書 §5)
+    @MainActor
+    func testRealAdvancedIndexContainsPowerSavingRow() {
+        let terms = SettingsView.searchTerms(for: .advanced)
+        for key in Self.powerSavingKeys {
+            XCTAssertTrue(terms.contains(String(localized: String.LocalizationValue(key))), key)
+        }
+    }
+
+    /// 自明な語(省電力・電力・温度・バッテリー / power・thermal・battery・CPU)で見つかる。
+    /// 実行機の言語に依存しないよう、日英の訳を lproj から解決して索引を組む
+    func testPowerSavingRowIsFoundByObviousTermsInJapaneseAndEnglish() throws {
+        let app = Bundle(for: SettingsStore.self)
+        let queries = [
+            "ja": ["省電力", "電力", "温度", "バッテリー", "CPU"],
+            "en": ["power", "thermal", "battery", "CPU"],
+        ]
+        for (language, words) in queries {
+            let bundle = app.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:))
+            if language == "ja" { XCTAssertNotNil(bundle, "ja.lproj がアプリに無い") }
+            let terms = Self.powerSavingKeys.map {
+                bundle?.localizedString(forKey: $0, value: $0, table: nil) ?? $0
+            }
+            if language == "ja" {
+                XCTAssertNotEqual(terms, Self.powerSavingKeys, "日本語訳が解決されていない")
+            }
+            let entry = SettingsSearch.Entry(id: SettingsPane.advanced.rawValue, title: "", terms: terms)
+            for word in words {
+                let matches = SettingsSearch.filter(query: word, entries: [entry])
+                XCTAssertEqual(matches.map(\.id), [SettingsPane.advanced.rawValue], "\(language): \(word)")
+                XCTAssertFalse(matches.first?.matchedTerms.isEmpty ?? true, "\(language): \(word)")
+            }
+        }
+    }
+
     /// 実際の索引が全ペインを網羅していること(新ペイン追加時の追従漏れ検出)
     @MainActor
     func testRealIndexCoversEveryPane() {

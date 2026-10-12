@@ -13,6 +13,8 @@ protocol EPUBScreenAtlasing: AnyObject, Sendable {
                    metrics: EPUBScreenMetrics, isDark: Bool,
                    width: CGFloat) async -> CGImage?
     func invalidate()
+    /// 電力方針の変更を生きているアトラスへ渡すため(設計書 §5)
+    var offscreenEnergyPolicy: EPUBOffscreenEnergyPolicy { get set }
 }
 
 extension EPUBScreenAtlas: EPUBScreenAtlasing {}
@@ -61,6 +63,12 @@ final class EPUBAtlasStore {
         self.makeAtlas = makeAtlas
         self.identityRecheckInterval = max(0, identityRecheckInterval)
         self.now = now
+    }
+
+    /// 電力方針の変更を保持中の全アトラスへ適用する。次のジョブから反映され、
+    /// 進行中の census もサムネイルも捨てない(設計書 §5)
+    func applyEnergyPolicy(_ policy: EPUBOffscreenEnergyPolicy) {
+        for cached in atlases.values { cached.atlas.offscreenEnergyPolicy = policy }
     }
 
     /// 項目別ページ数と本固有の画面内ページ数を一括取得する。
