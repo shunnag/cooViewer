@@ -76,7 +76,10 @@ final class ReaderView: NSView {
     var onResampleActivityChanged: ((Bool) -> Void)?
     /// 表示中スプレッドのリサンプルが進行中か(先読みが ML キューを
     /// 先取りしないための待機判定にも使う)
-    private(set) var isResamplingDisplayedPages = false
+    var isResamplingDisplayedPages: Bool { displayedResampleIdle.isBusy }
+    /// 先読みが「表示中スプレッドのリサンプル完了」を待つための信号。
+    /// 50ms ポーリングで起き続けないよう、完了時にまとめて起こす(設計書 §5)
+    private let displayedResampleIdle = IdleSignal()
     /// ルーペ表示専用の高解像度画像(ページ index → 画像)。通常表示には使わない
     private var loupeHighResImages: [Int: CGImage] = [:]
     private var resampleTask: Task<Void, Never>?
@@ -723,8 +726,14 @@ final class ReaderView: NSView {
     /// 事前引き当て済み・HDR ページ等)では false の再通知が予約解除の
     /// 唯一の手段になる(抑制するとスピナーが出っぱなしになる)
     private func setResampleActivity(_ active: Bool) {
-        isResamplingDisplayedPages = active
+        displayedResampleIdle.setBusy(active)
         onResampleActivityChanged?(active)
+    }
+
+    /// 表示中スプレッドのリサンプルが終わるまで待つ。進行中でなければ即時に戻り、
+    /// 待機中のキャンセルはその場で抜ける(呼び出し側が isCancelled を確認する)
+    func waitForDisplayedResampleIdle() async {
+        await displayedResampleIdle.waitUntilIdle()
     }
 
     private func applyResampled(_ image: CGImage, size: CGSize,

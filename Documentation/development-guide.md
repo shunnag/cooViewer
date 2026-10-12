@@ -358,7 +358,8 @@ KAITOKIT_SOURCE_DIR=/path/to/KaitoKit Scripts/build-kaitokit-framework.sh
 
 cooViewer は `KaitoKit.ArchiveReader` を直接使う。主書庫は自動並列数・256 MiB、
 展開係は open 時の自動並列数をプール幅で分けた明示並列数・128 MiB とし、
-電力方針は `.reduceInLowPowerMode` に揃える(設計書 §5)。ZIP の lazy local header
+電力方針は `.reduceInLowPowerModeOrThermalPressure`(低電力モードまたは温度圧迫)に
+揃える(設計書 §5)。ZIP の lazy local header
 設定はアプリ側のプロセス共通値から open 時に `ReaderOptions` へ渡す。
 フレームワークの `Modules/` を探す次の include path (`-I` 相当)は
 アプリ・テストが継承するプロジェクト設定にあり、テストターゲットも

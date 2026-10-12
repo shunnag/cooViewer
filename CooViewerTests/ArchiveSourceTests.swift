@@ -107,14 +107,21 @@ final class ArchiveSourceTests: XCTestCase {
         // プールは成長してもコア数連動の上限まで
         let extractorCount = await source.extractorCount
         XCTAssertGreaterThanOrEqual(extractorCount, 1)
-        XCTAssertLessThanOrEqual(extractorCount, ArchiveSource.extractorPoolSize(lowPowerMode: false))
+        XCTAssertLessThanOrEqual(extractorCount, ArchiveSource.extractorPoolSize(conserveEnergy: false))
     }
 
     func testFactoryReceivesPrimaryAndExtractorRolesForFileAndData() async throws {
         let png = TestFixtures.pngData(width: 4, height: 6)
         let data = TestFixtures.storedZip(entries: [(Array("page.avifs".utf8), png)])
         let url = try writeZip(data, name: "roles.cbr")
-        for lowPowerMode in [false, true] {
+        // 低電力・温度圧迫のどちらでも、両方でも、展開係のプール幅は同じ省エネ判定に従う(設計書 §5)
+        let powerStates = [
+            FixedPowerState(),
+            FixedPowerState(isLowPowerModeEnabled: true),
+            FixedPowerState(isThermalPressureActive: true),
+            FixedPowerState(isLowPowerModeEnabled: true, isThermalPressureActive: true),
+        ]
+        for power in powerStates {
             let roles = OSAllocatedUnfairLock(initialState: [ArchiveReaderRole]())
             let factory = ArchiveEngineFactory(
                 openFile: { kind, path, role in
@@ -125,14 +132,13 @@ final class ArchiveSourceTests: XCTestCase {
                     roles.withLock { $0.append(role) }
                     return try ArchiveEngineFactory.live.openData(kind, data, role)
                 })
-            let power = FixedPowerState(isLowPowerModeEnabled: lowPowerMode)
             let sources = [
                 try ArchiveSource(url: url, engineFactory: factory, powerState: power),
                 try ArchiveSource(data: data, name: "roles.cbz", nestingDepth: 0, unlocker: NestedUnlocker(),
                                   persistenceKey: .file(path: url.path),
                                   engineFactory: factory, powerState: power)
             ]
-            let poolSize = ArchiveSource.extractorPoolSize(lowPowerMode: lowPowerMode)
+            let poolSize = ArchiveSource.extractorPoolSize(conserveEnergy: power.shouldConserveEnergy)
             for source in sources {
                 let entry = try await source.entries()[0]
                 let image = try await source.image(for: entry, maxPixelSize: nil)
@@ -157,7 +163,9 @@ final class ArchiveSourceTests: XCTestCase {
         let state = OSAllocatedUnfairLock(initialState: (low: false, used: Set<Int>()))
         let opens = OSAllocatedUnfairLock(initialState: 0)
         let center = NotificationCenter()
-        let power = PowerStateMonitor(center: center, readState: { state.withLock { $0.low } })
+        let power = PowerStateMonitor(center: center, readState: {
+            PowerConditions(isLowPowerModeEnabled: state.withLock { $0.low }, isThermalPressureActive: false)
+        })
         let warmed = expectation(description: "通常時の全係を同時使用")
         warmed.expectedFulfillmentCount = normalCount
         let reduced = expectation(description: "低電力時の枠内の係を同時使用")
@@ -737,7 +745,7 @@ final class ArchiveSourceTests: XCTestCase {
             }
         }
         let count = await source.extractorCount
-        XCTAssertLessThanOrEqual(count, ArchiveSource.extractorPoolSize(lowPowerMode: false))
+        XCTAssertLessThanOrEqual(count, ArchiveSource.extractorPoolSize(conserveEnergy: false))
     }
 
     func testFastLocalSkipsSpoolForIndependentSevenZip() async throws {
