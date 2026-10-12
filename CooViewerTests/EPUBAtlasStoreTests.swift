@@ -8,6 +8,17 @@ import XCTest
 /// 解析済み publication の再利用と、同名 EPUB 差替え時のアトラス更新を検証する。
 @MainActor
 final class EPUBAtlasStoreTests: XCTestCase {
+    func testStoreAtlasFactoryFollowsSystemEnergyPolicy() throws {
+        let publication = try EPUBPublication(
+            data: Self.epubData(identifier: "energy-policy", body: "本文"),
+            displayURL: URL(fileURLWithPath: "/test/energy-policy.epub"))
+        let atlas = EPUBOffscreenSettings.makeAtlas(publication: publication)
+        defer { atlas.invalidate() }
+
+        XCTAssertEqual(atlas.offscreenEnergyPolicy, .followSystem)
+        XCTAssertTrue(atlas.publication === publication)
+    }
+
     @MainActor
     private final class TestClock {
         var value: TimeInterval = 100

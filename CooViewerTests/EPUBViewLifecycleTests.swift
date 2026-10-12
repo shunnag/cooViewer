@@ -8,6 +8,13 @@ import XCTest
 /// EPUB 表示を離れた後のビュー寿命を検証する(cooViewer-oxr.79、設計書 §2.4)。
 @MainActor
 final class EPUBViewLifecycleTests: XCTestCase {
+    func testControllerReaderFactoryFollowsSystemEnergyPolicy() {
+        let view = EPUBOffscreenSettings.makeReaderView()
+        defer { view.cancelPageCensus() }
+
+        XCTAssertEqual(view.offscreenEnergyPolicy, .followSystem)
+    }
+
     func testNonFinitePercentageDoesNotChangeEPUBPosition() throws {
         let controller = ReaderWindowController(window: nil)
         let view = EPUBReaderView()

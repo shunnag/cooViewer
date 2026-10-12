@@ -169,7 +169,11 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   overlay via the `EPUBScreenThumbnailSource` adapter). Offscreen WebKit work
   (rasterizer/census/thumbnails) must run its jobs at explicit `.userInitiated`
   priority — issuing the first JS call at a low inherited QoS (e.g. `.utility`
-  prefetch) hangs the reply forever (measured).
+  prefetch) hangs the reply forever (measured). Its energy policy, lifetime,
+  and factories are set in one place (`CooViewer/Core/EPUBOffscreenSettings.swift`):
+  the reader view and every `EPUBAtlasStore` atlas use Washi's `.followSystem`
+  pacing, and the FXL rasterizer pool gives each rasterizer a 20 s `idleReleaseInterval`
+  (matching Washi's census/thumbnail idle release; `invalidate()` on close is unchanged).
 - `CooViewer/Core/Book/` — `Book` (@MainActor: sorted entries, current index, spread
   pairing per §4.2, prefetch), `PageLayout`/`PageMarks` (spread decision, legacy "N"/"N-M"
   mark strings), `ReadMode`.
