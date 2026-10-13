@@ -138,7 +138,7 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   prefetch adaptation per design §5: one `shouldConserveEnergy` decision = Low Power Mode OR
   thermal pressure (`thermalState` serious/critical; thermal pressure enters immediately but is
   released only after 45 s below serious — `PowerStateMonitor.thermalReleaseHold`, cooViewer's own
-  throttling only), passed to KaitoKit as
+  throttling only), passed to KaitoKit by default as
   `.reduceInLowPowerModeOrThermalPressure`; the user can pick the policy in Settings › Advanced
   (`PowerPolicy` key: default LPM-or-thermal, LPM-only, or always full speed —
   `PowerPolicy.conserves` is the single decision point, mapped to KaitoKit's `DecodePowerPolicy`
@@ -186,8 +186,9 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   priority — issuing the first JS call at a low inherited QoS (e.g. `.utility`
   prefetch) hangs the reply forever (measured). Its energy policy, lifetime,
   and factories are set in one place (`CooViewer/Core/EPUBOffscreenSettings.swift`):
-  the reader view and every `EPUBAtlasStore` atlas use Washi's `.followSystem`
-  pacing, and the FXL rasterizer pool gives each rasterizer a 20 s `idleReleaseInterval`
+  the reader view and every `EPUBAtlasStore` atlas use the PowerPolicy-derived Washi
+  pacing (`.unrestricted` for "always full speed", otherwise `.followSystem`), and the
+  FXL rasterizer pool gives each rasterizer a 20 s `idleReleaseInterval`
   (matching Washi's census/thumbnail idle release; `invalidate()` on close is unchanged).
 - `CooViewer/Core/Book/` — `Book` (@MainActor: sorted entries, current index, spread
   pairing per §4.2, prefetch), `PageLayout`/`PageMarks` (spread decision, legacy "N"/"N-M"

@@ -1,5 +1,6 @@
 import AppKit
 import os
+import Washi
 import XCTest
 
 @testable import cooViewer
@@ -63,6 +64,58 @@ private final class SlowProbe: FileSystemProbing, @unchecked Sendable {
 
     func identity(at url: URL) -> BookFileIdentity {
         slowCall()
+        return BookFileIdentity(modified: 123, size: 456)
+    }
+}
+
+/// 最初の照会で止まり resume() まで返さない偽物(待ちの最中に状態を変える検証用。
+/// SlowProbe の時間待ちと違い、タイミングに依存しない)。以後の照会は即時に返る
+private final class PausedProbe: FileSystemProbing, @unchecked Sendable {
+    let started = XCTestExpectation(description: "最初の照会が止まった")
+    private let release = DispatchSemaphore(value: 0)
+    private let items: [DirectoryItem]
+    private let existing: Set<String>
+    private let state = OSAllocatedUnfairLock(initialState: (pausePending: true, mainThreadCalls: 0))
+
+    init(items: [DirectoryItem] = [], existing: Set<String> = []) {
+        self.items = items
+        self.existing = existing
+    }
+
+    var mainThreadCalls: Int { state.withLock { $0.mainThreadCalls } }
+
+    func resume() { release.signal() }
+
+    private func pauseOnFirstCall() {
+        let onMain = Thread.isMainThread
+        let first = state.withLock { state in
+            if onMain { state.mainThreadCalls += 1 }
+            let first = state.pausePending
+            state.pausePending = false
+            return first
+        }
+        guard first else { return }
+        started.fulfill()
+        _ = release.wait(timeout: .now() + 5)
+    }
+
+    func directoryItems(at directory: URL) throws -> [DirectoryItem] {
+        pauseOnFirstCall()
+        return items
+    }
+
+    func fileExists(atPath path: String) -> Bool {
+        pauseOnFirstCall()
+        return existing.contains(path)
+    }
+
+    func itemKind(at url: URL) -> (exists: Bool, isDirectory: Bool) {
+        pauseOnFirstCall()
+        return (existing.contains(url.path), false)
+    }
+
+    func identity(at url: URL) -> BookFileIdentity {
+        pauseOnFirstCall()
         return BookFileIdentity(modified: 123, size: 456)
     }
 }
@@ -221,6 +274,161 @@ final class SiblingBooksOffMainTests: XCTestCase {
         XCTAssertEqual(controller.openGeneration, generation, "一覧待ちの間に替わった本では開かない")
         XCTAssertTrue(controller.book === replacement)
     }
+
+    /// 合本内の EPUB→EPUB 移動(openCollectionEPUB)は openGeneration も folderURL も
+    /// 動かさず epubPresentEpoch だけ進める。一覧待ちの間にそれが起きた古い
+    /// 「次/前の本」は開かず、呼び出し元が立てた復帰フラグも自分で畳む
+    func testAdjacentNavigationIgnoresPresentationSupersededDuringListing() async throws {
+        let probe = SlowProbe(items: ["*": [DirectoryItem(name: "book.zip", isDirectory: false),
+                                            DirectoryItem(name: "next.zip", isDirectory: false)]],
+                              delay: 0.3)
+        let controller = ReaderWindowController(window: nil, history: try makeHistory())
+        controller.fileSystemProbe = probe
+        let book = try await Book.open(source: NamedEntriesSource(
+            url: URL(fileURLWithPath: "/fixture/old/book.zip"), names: ["1.png"]))
+        controller.replaceBook(book)
+        let generation = controller.openGeneration
+        // openCollectionEntry の巻端処理と同じく、要求前に復帰フラグが立つ
+        controller.collectionNavigation.returnPending = true
+        let navigation = try XCTUnwrap(controller.openAdjacentBook(forward: true))
+        await fulfillment(of: [probe.started], timeout: 2)
+        controller.epubPresentEpoch += 1  // 別の巻への横断ジャンプが確定した
+        await navigation.value
+        XCTAssertEqual(controller.openGeneration, generation,
+                       "提示エポックが進んだ古い要求では次の本を開かない")
+        XCTAssertTrue(controller.book === book)
+        XCTAssertFalse(controller.collectionNavigation.returnPending,
+                       "失効した要求が立てた復帰フラグを残さない(巻端ナビが塞がる)")
+    }
+
+    /// 失効した要求は、後発の次/前の本要求が立てた復帰フラグには触らない
+    func testStaleAdjacentNavigationKeepsNewerRequestsReturnFlag() async throws {
+        let probe = SlowProbe(items: ["*": [DirectoryItem(name: "book.zip", isDirectory: false)]],
+                              delay: 0.3)
+        let controller = ReaderWindowController(window: nil, history: try makeHistory())
+        controller.fileSystemProbe = probe
+        let book = try await Book.open(source: NamedEntriesSource(
+            url: URL(fileURLWithPath: "/fixture/old/book.zip"), names: ["1.png"]))
+        controller.replaceBook(book)
+        controller.collectionNavigation.returnPending = true
+        let stale = try XCTUnwrap(controller.openAdjacentBook(forward: true))
+        await fulfillment(of: [probe.started], timeout: 2)
+        controller.epubPresentEpoch += 1
+        // 後発の要求(番号が進む)。走査は進行中のものへ合流する
+        controller.collectionNavigation.returnPending = true
+        controller.adjacentBookRequest &+= 1
+        await stale.value
+        XCTAssertTrue(controller.collectionNavigation.returnPending,
+                      "後発要求のフラグは失効した要求が消さない")
+    }
+
+    /// 要求時に復帰フラグが立っていなかった要求は、走査中に別の所有者が立てた
+    /// フラグを失効時に消さない(自分のものだけを畳む)
+    func testStaleAdjacentNavigationDoesNotClearReturnItDidNotOwn() async throws {
+        let probe = PausedProbe(items: [DirectoryItem(name: "book.zip", isDirectory: false),
+                                        DirectoryItem(name: "next.zip", isDirectory: false)])
+        let controller = ReaderWindowController(window: nil, history: try makeHistory())
+        controller.fileSystemProbe = probe
+        let book = try await Book.open(source: NamedEntriesSource(
+            url: URL(fileURLWithPath: "/fixture/old/book.zip"), names: ["1.png"]))
+        controller.replaceBook(book)
+        XCTAssertFalse(controller.collectionNavigation.returnPending)
+        let generation = controller.openGeneration
+        let navigation = try XCTUnwrap(controller.openAdjacentBook(forward: true))
+        await fulfillment(of: [probe.started], timeout: 2)
+        controller.epubPresentEpoch += 1  // 合本内の横断ジャンプで失効
+        controller.collectionNavigation.returnPending = true  // 別の所有者が立てた
+        probe.resume()
+        await navigation.value
+        XCTAssertEqual(controller.openGeneration, generation, "旧走査から隣接本を開かない")
+        XCTAssertTrue(controller.book === book)
+        XCTAssertTrue(controller.collectionNavigation.returnPending,
+                      "自分が立てていないフラグは消さない")
+    }
+}
+
+// MARK: - EPUB 復元ゲートの実在確認待ち
+
+@MainActor
+final class EPUBRestoreOffMainTests: XCTestCase {
+    private func makePublication(displayURL: URL) throws -> EPUBPublication {
+        let container = """
+        <?xml version="1.0"?>
+        <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles><rootfile full-path="OEBPS/package.opf"
+            media-type="application/oebps-package+xml"/></rootfiles>
+        </container>
+        """
+        let package = """
+        <?xml version="1.0"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
+          unique-identifier="uid">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="uid">restore-test</dc:identifier>
+            <dc:title>復元</dc:title><dc:language>ja</dc:language>
+          </metadata>
+          <manifest><item id="c" href="c.xhtml"
+            media-type="application/xhtml+xml"/></manifest>
+          <spine><itemref idref="c"/></spine>
+        </package>
+        """
+        let chapter = """
+        <html xmlns="http://www.w3.org/1999/xhtml"><head><title>本文</title></head>
+          <body><p>本文</p></body></html>
+        """
+        return try EPUBPublication(data: TestFixtures.storedZip(entries: [
+            (Array("mimetype".utf8), Data("application/epub+zip".utf8)),
+            (Array("META-INF/container.xml".utf8), Data(container.utf8)),
+            (Array("OEBPS/package.opf".utf8), Data(package.utf8)),
+            (Array("OEBPS/c.xhtml".utf8), Data(chapter.utf8)),
+        ]), displayURL: displayURL)
+    }
+
+    /// 復元ゲートの実在確認(死んだマウントでは SMB タイムアウトまで続く)を待つ間に
+    /// 別の本の提示が確定したら、古い提示は確認ダイアログも復元も行わない。
+    /// GoToLastPage=1(自動)で判定する: 修正前は保存位置を返し、修正後は nil
+    func testSupersededPresentationSkipsRestoreAfterRecentCheck() async throws {
+        let defaults = UserDefaults.standard
+        var arguments = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        let originalArguments = arguments
+        arguments["GoToLastPage"] = 1
+        defaults.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
+        defer { defaults.setVolatileDomain(originalArguments, forName: UserDefaults.argumentDomain) }
+
+        let tempDir = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let suite = UserDefaults(suiteName: "test.cooViewer.epub-restore-off-main.\(UUID())")!
+        suite.set(1, forKey: "OpenRecentLimit")
+        let epub = tempDir.appendingPathComponent("novel.epub")
+        let other = tempDir.appendingPathComponent("other.zip")
+        // 先行エントリ other は不在扱い(stat は止まる偽物に委ねる)
+        let probe = PausedProbe(existing: [])
+        let history = BookHistoryStore(defaults: suite,
+                                       directory: tempDir.appendingPathComponent("BookStates"),
+                                       fileSystem: probe)
+        history.noteOpened(path: epub.path)
+        history.noteClosedReflow(path: epub.path, spineIndex: 0, progression: 0.5)
+        history.noteOpened(path: other.path)  // epub を上限(1)の外へ押し出す → 実在確認が走る
+        let publication = try makePublication(displayURL: epub)
+        let controller = ReaderWindowController(window: nil, history: history)
+
+        let epoch = controller.epubPresentEpoch
+        let restoring = Task {
+            await controller.restoredEPUBLocator(for: epub, publication: publication,
+                                                 epoch: epoch)
+        }
+        await fulfillment(of: [probe.started], timeout: 2)
+        controller.epubPresentEpoch += 1  // 待ちの間に別の本が開かれた
+        probe.resume()
+        let stale = await restoring.value
+        XCTAssertNil(stale, "後発の提示に替わった古い復元は位置を返さず、確認も出さない")
+
+        // 対照: 提示が最新のままなら保存位置が返る(不在の先行エントリで繰り上がる)
+        let current = await controller.restoredEPUBLocator(
+            for: epub, publication: publication, epoch: controller.epubPresentEpoch)
+        XCTAssertEqual(current?.progression, 0.5)
+        XCTAssertEqual(probe.mainThreadCalls, 0)
+    }
 }
 
 // MARK: - 最近の一覧
@@ -335,6 +543,43 @@ final class RecentsOffMainTests: XCTestCase {
         XCTAssertEqual(menu.items.map { $0.representedObject as? String }, [a])
         XCTAssertEqual(probe.record.mainThreadCalls, 0)
         XCTAssertEqual(probe.record.calls, 2)
+    }
+
+    /// 開けなかった本の不在を覚えると同期一覧から外れる。一覧自体は消さない
+    /// (マウントし直せば戻る)
+    func testNoteMissingHidesEntryWithoutDeletingIt() throws {
+        let a = try makeBookFile("a.zip")
+        let b = try makeBookFile("b.zip")
+        let store = makeStore(probe: SlowProbe(existing: [a, b], delay: 0))
+        store.noteOpened(path: a)
+        store.noteOpened(path: b)
+        XCTAssertEqual(store.recentBookPaths(), [b, a])
+        store.noteMissing(normalizedPath: a)
+        XCTAssertEqual(store.recentBookPaths(), [b], "不在と分かった本は次のメニューから外れる")
+        XCTAssertEqual(store.recentPaths(), [b, a], "一覧そのものは残す")
+    }
+
+    /// 最近の一覧から消えた本を選ぶと、開くフローの実在確認で止まる。黙って残らず、
+    /// 一覧から外れる(フィードバックの音は GUI 依存のためここでは検証しない)
+    func testOpeningMissingRecentMarksItAbsent() async throws {
+        let a = try makeBookFile("a.zip")
+        let b = try makeBookFile("b.zip")
+        let probe = SlowProbe(existing: [b], delay: 0)
+        let store = makeStore(probe: probe)
+        store.noteOpened(path: a)
+        store.noteOpened(path: b)
+        let controller = ReaderWindowController(window: nil, history: store)
+        controller.fileSystemProbe = probe
+        XCTAssertEqual(store.recentBookPaths(), [b, a], "未確認の間は一覧どおり")
+        // Open Recent と同じく、一覧に保存された(正規化済み。/var/folders は
+        // /private/var/... になる)パスをそのまま開く
+        let stored = try XCTUnwrap(store.recentBookPaths().last)
+        XCTAssertEqual(stored, a)
+        await controller.openBook(at: URL(fileURLWithPath: stored)).value
+        XCTAssertNil(controller.book)
+        XCTAssertFalse(controller.isOpeningBook)
+        XCTAssertEqual(store.recentBookPaths(), [b], "開けなかった本は次のメニューから外れる")
+        XCTAssertEqual(store.recentPaths(), [b, a], "一覧そのものは消さない")
     }
 }
 

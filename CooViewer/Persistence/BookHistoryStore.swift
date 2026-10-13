@@ -351,6 +351,19 @@ final class BookHistoryStore {
             .prefix(limit).map(\.path)
     }
 
+    /// 開こうとして実在確認に失敗した本を「不在」として覚える(openBookFlow から)。
+    /// recentBookPaths() は未確認の本を在るものとして表示するため、消えた本を選んで
+    /// 何も起きないまま一覧に残り続けないようにする。
+    /// パスは正規化せずそのまま鍵にする: normalize(resolvingSymlinksInPath)は
+    /// メインアクターで死んだマウントに触り得るため、呼び出し側が渡した文字列に
+    /// 一切 I/O を掛けない。Open Recent は保存済み(正規化済み)のパスをそのまま
+    /// 渡すので一致し、それ以外の鍵は recentExistence に無害に残るだけ。
+    /// 旧 §7.2 は解決できないエントリを一覧から削除したが、ここでは意図的に残す
+    /// (外付け/ネットワークの本はマウントし直せば戻る。次の実在確認で再評価)
+    func noteMissing(normalizedPath path: String) {
+        recentExistence[path] = false
+    }
+
     /// 実在する本だけの一覧。全エントリ(≤50)の実在確認をメインアクター外で
     /// 行い、結果を recentExistence に残して recentBookPaths() が次回から使う。
     /// 確認中に一覧へ加わった本(=今開いた本)は未確認なので在るものとして扱う
