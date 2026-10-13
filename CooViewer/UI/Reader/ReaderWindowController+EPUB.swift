@@ -59,7 +59,8 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             locator = EPUBLocator(spineIndex: min(max(0, atPage), spineCount - 1),
                                   progression: 0)
         } else {
-            locator = await restoredEPUBLocator(for: url, publication: publication)
+            locator = await restoredEPUBLocator(for: url, publication: publication,
+                                                epoch: epoch)
         }
         // cooViewer-oxr.23: 復元確認の modal が run loop を回している間(と復元
         // ゲートの実在確認を待つ間)は、旧
@@ -174,12 +175,17 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
 
     /// 前回位置の復元。保存側のゲート(§7.3)に加えて、画像本と同じ
     /// GoToLastPageMode(0=確認/1=自動/2=無効。§7.3)を通す。
-    /// リフローに固定ページ番号は無いため、確認ダイアログは全体進行率で示す
-    private func restoredEPUBLocator(for url: URL,
-                                     publication: EPUBPublication) async -> EPUBLocator? {
+    /// リフローに固定ページ番号は無いため、確認ダイアログは全体進行率で示す。
+    /// epoch は呼び出し元の提示エポック: 実在確認の待ちは死んだマウントで SMB
+    /// タイムアウトまで続き得るので、待ち明けに提示が後発要求へ移っていたら
+    /// 確認ダイアログを出さずに降りる(旧本の modal が新しい本の上に出る混線を防ぐ。
+    /// 設計書 §7.3: 待ち明けの世代/エポック照合)
+    func restoredEPUBLocator(for url: URL, publication: EPUBPublication,
+                             epoch: Int) async -> EPUBLocator? {
         guard settings.goToLastPageMode < 2 else { return nil }
         // 復元ゲートの実在確認はメインアクター外(上限内なら I/O なし)
         let inRecents = await history.isWithinRecentLimit(path: url.path)
+        guard epubPresentEpoch == epoch else { return nil }
         guard let saved = history.savedReflowPosition(forPath: url.path, inRecents: inRecents)
         else { return nil }
         let locator = EPUBLocator(spineIndex: saved.spineIndex,
