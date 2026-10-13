@@ -242,7 +242,8 @@ extension ReaderWindowController {
     /// なので、基準をコレクションフォルダへ読み替える(設計書 §2.4 EPUB 対応)。
     /// fromSlideshow は openBookFlow まで一時的に伝播し、タイマーを維持する。
     /// 兄弟一覧の取得を待つ間に別のオープンが始まったり基準の本が変わったら、
-    /// 古い一覧で開かない(その後継フローが復帰フラグも畳む)
+    /// 古い一覧で開かない。合本内の EPUB→EPUB 移動は openGeneration を動かさず
+    /// folderURL も変わらないため、提示エポックも併せて照合する
     @discardableResult
     func openAdjacentBook(forward: Bool, openLast: Bool = false,
                           fromSlideshow: Bool = false) -> Task<Void, Never>? {
@@ -255,11 +256,29 @@ extension ReaderWindowController {
             return nil
         }
         let generation = openGeneration
+        let epoch = epubPresentEpoch
+        adjacentBookRequest &+= 1
+        let request = adjacentBookRequest
+        // 呼び出し元(巻端の openCollectionEntry 等)がこの要求のために立てた復帰
+        // フラグか。要求時に false なら、後から立った分は別の所有者のもの
+        let ownsReturn = collectionNavigation.returnPending
         return Task {
             let siblings = await siblingBooks(of: currentURL)
-            guard generation == openGeneration,
+            guard generation == openGeneration, epoch == epubPresentEpoch,
                   (epubCollectionContext?.folderURL ?? currentBookFileURL) == currentURL
-            else { return }
+            else {
+                // 失効した要求は openBookFlow を通らないので、自分の復帰フラグは自分で
+                // 畳む。ただし後発の所有者がいるときは触らない(cooViewer-s7j の不変条件):
+                // 世代が進んだ(後発オープンの defer が畳む)、番号が進んだ(後発の
+                // 次/前の本要求が要る)、isOpeningBook(openBook は世代を即時に進めるが
+                // エポックは Task 内で isOpeningBook = true と同じ同期区間で進める。
+                // その隙で失効したなら in-flight のフローが所有し、自身の後片付けで畳む)
+                if ownsReturn, generation == openGeneration,
+                   request == adjacentBookRequest, !isOpeningBook {
+                    collectionNavigation.returnPending = false
+                }
+                return
+            }
             openAdjacentBook(from: currentURL, siblings: siblings, forward: forward,
                              openLast: openLast, fromSlideshow: fromSlideshow)
         }

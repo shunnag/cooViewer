@@ -174,6 +174,9 @@ final class ReaderWindowController: NSWindowController {
 
     /// 開くフローの世代(連打時に古いフローが新しい本を上書きしないための番号)
     var openGeneration = 0  // +EPUB(コレクション自動入場)も競合ガードに読む
+    /// 次/前の本要求の番号(+Library.swift openAdjacentBook)。兄弟一覧待ちで失効した
+    /// 要求が、後発の要求が立てた合本復帰フラグを消さないための所有者照合
+    var adjacentBookRequest = 0
     /// 本の切替中はスライドショーの tick を保留する。世代付きの一時状態であり、
     /// 表示確定または後発オープンによる世代失効後に openBookFlow が解除する
     var isOpeningBook = false
@@ -1109,6 +1112,15 @@ final class ReaderWindowController: NSWindowController {
         guard exists else {
             // ドリルダウンから引き継いだ HUD が残らないように畳む
             endAnyOpeningProgress()
+            // 消えた本(抜かれた外付け/NAS 上の最近の本など)は、他の開けない本と
+            // 同じくダイアログを出さず音で知らせる(仕様書 §4.17、設計書 §7.4
+            // 「開けない本はビープ」)。ただしスライドショー由来は鳴らさない: 兄弟
+            // 一覧は最長 5 秒キャッシュされ、消えた隣の本を指したまま tick ごとに
+            // ここへ来るため、最小間隔では何十回も鳴ってしまう(2.0b45 は無音)。
+            // 最近の一覧は実在未確認の項目も表示するため、ここで不在を覚えさせて
+            // 次回のメニューから外す。一覧自体は消さない(マウントし直せば戻る)
+            if !fromSlideshow { NSSound.beep() }
+            history.noteMissing(normalizedPath: url.path)
             return
         }
         if !isDirectory, !SupportedTypes.isBookFile(url),
