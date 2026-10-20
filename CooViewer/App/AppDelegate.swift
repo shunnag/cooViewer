@@ -179,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
                   !arguments.contains("--show-open-failure"),
+                  !arguments.contains("--show-partial-open"),
                   !arguments.contains("--show-open-failure-volume"),
                   !arguments.contains("--show-opening-retry"),
                   !AutomatedRun.isXCTest, !didOpenDocumentAtLaunch {
@@ -445,8 +446,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if arguments.contains("--show-open-failure") || arguments.contains("--show-open-failure-volume") {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))
-                self.readerWindowController?.debugShowOpenFailure(
+                await self.readerWindowController?.debugShowOpenFailure(
                     volumeUnavailable: arguments.contains("--show-open-failure-volume"))
+            }
+        }
+        if arguments.contains("--show-partial-open") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                await self.readerWindowController?.debugShowPartialOpen()
             }
         }
         if arguments.contains("--show-activity") {

@@ -47,6 +47,15 @@ actor NestedFolderSource: BookSource {
     private var preparedChildren: [Int: PreparedChild] = [:]
     private var excludedOrdinals: Set<Int> = []
     private var skippedOrdinals: Set<Int> = []
+    private var preparedImages: [PageEntry] = []
+    private var lastAssemblyFailure: AssemblyFailure?
+    private var hasPageList = false
+    private(set) var cardChildren: [UnreadableVolumeMarker] = []
+
+    var canOpenPartial: Bool {
+        lastAssemblyFailure?.volumeUnavailable == false
+            && (!preparedImages.isEmpty || preparedChildren.values.contains { !$0.entries.isEmpty })
+    }
     private var assemblyRetry: (@Sendable (String) -> Void)?
     /// 組み立て進捗(完了した子の数, 子の総数)の通知先。対話的なオープンのみ
     /// 設定される(次の本のバックグラウンド準備では nil のまま)。build は
@@ -56,7 +65,14 @@ actor NestedFolderSource: BookSource {
     private var mediaProfile: MediaProfile = .unknown
 
     /// ネストページの id 基数(ArchiveSource と同じ 1M 刻み)
-    private static let nestedIDStride = 1_000_000
+    static let nestedIDStride = 1_000_000
+
+    static func acceptsPageOffset(_ offset: Int) -> Bool { offset >= 0 && offset < nestedIDStride - 1 }
+
+    static func realPageID(ordinal: Int, offset: Int) -> Int? {
+        guard acceptsPageOffset(offset) else { return nil }
+        return ordinal * nestedIDStride + offset
+    }
 
     init(folder: FolderSource, unlocker: NestedUnlocker? = nil,
          preferredEngine: ArchiveEngineKind = .kaitokit,
@@ -72,6 +88,14 @@ actor NestedFolderSource: BookSource {
 
     func entries() async throws -> [PageEntry] {
         try await buildIfNeeded()
+    }
+
+    /// 同意した今回だけ保持済み結果を使う。完全版のキャッシュへは載せない(設計書 §7.4、§2.4)。
+    func partialEntries() async throws -> [PageEntry] {
+        guard buildTask == nil, canOpenPartial, let failure = lastAssemblyFailure else {
+            throw BookSourceError.unreadable(url)
+        }
+        return assemble(images: preparedImages, failure: failure)
     }
 
     /// コレクションフォルダ直下の ComicInfo.xml を FolderSource へ委譲して読む
@@ -94,8 +118,7 @@ actor NestedFolderSource: BookSource {
             // 合流した古い失敗の後始末が、既に始まった新しい構築を壊さない。
             if buildTask?.id == running.id {
                 buildTask = nil
-                locations.removeAll()
-                children.removeAll()
+                lastAssemblyFailure = SourceReadFailure.assemblyFailure(in: error)
             }
             throw error
         }
@@ -108,6 +131,7 @@ actor NestedFolderSource: BookSource {
     /// 登録(id 割当・locations)は従来どおり候補順に直列で行う
     private func build(id: UUID) async throws -> [PageEntry] {
         let images = try await folder.entries()
+        preparedImages = images
         let candidates = folder.nestedBookCandidates
         let unlocker = unlocker
         let profile = mediaProfile
@@ -136,6 +160,16 @@ actor NestedFolderSource: BookSource {
             }
         guard buildTask?.id == id else { throw CancellationError() }
 
+        lastAssemblyFailure = nil
+        return assemble(images: images, failure: nil)
+    }
+
+    private func assemble(images: [PageEntry], failure: AssemblyFailure?) -> [PageEntry] {
+        let candidates = folder.nestedBookCandidates
+        locations.removeAll()
+        children.removeAll()
+        cardChildren.removeAll()
+        hasPageList = true
         var result: [PageEntry] = []
         var imageIterator = images.makeIterator()
         var pending = imageIterator.next()
@@ -147,6 +181,14 @@ actor NestedFolderSource: BookSource {
             if let prepared = preparedChildren[position] {
                 register(child: prepared.source, childEntries: prepared.entries,
                          candidate: candidate, ordinal: position + 1, into: &result)
+            } else if let failure, !excludedOrdinals.contains(position), !skippedOrdinals.contains(position) {
+                let marker = UnreadableVolumeMarker(relativePath: candidate.relativePath,
+                    cause: failure.failures.first { $0.relativePath == candidate.relativePath }?.cause)
+                cardChildren.append(marker)
+                result.append(PageEntry(id: (position + 1) * Self.nestedIDStride + (Self.nestedIDStride - 1),
+                    name: candidate.fileURL.lastPathComponent, pathInBook: candidate.relativePath,
+                    fileURL: nil, creationDate: nil,
+                    modificationDate: nil, unreadableVolume: marker))
             }
         }
         while let image = pending {
@@ -245,10 +287,9 @@ actor NestedFolderSource: BookSource {
                           ordinal: Int, into result: inout [PageEntry]) {
         children.append(child)
         let sourceIndex = children.count - 1
-        let idBase = ordinal * Self.nestedIDStride
         for (offset, childEntry) in childEntries.enumerated() {
-            guard offset < Self.nestedIDStride else { break }
-            let id = idBase + offset
+            // 末尾 ID は欠落カード専用に予約し、画像キャッシュとの衝突を防ぐ(設計書 §7.4)。
+            guard let id = Self.realPageID(ordinal: ordinal, offset: offset) else { break }
             locations[id] = .child(sourceIndex: sourceIndex, entry: childEntry)
             result.append(PageEntry(
                 id: id,
@@ -264,6 +305,12 @@ actor NestedFolderSource: BookSource {
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()
+        if let marker = entry.unreadableVolume {
+            guard let image = await PlaceholderImage.make(text: marker.message, fittingLines: true) else {
+                throw BookSourceError.pageLoadFailed(entry.name)
+            }
+            return image
+        }
         switch locations[entry.id] {
         case .child(let sourceIndex, let childEntry):
             return try await children[sourceIndex].image(
@@ -284,6 +331,7 @@ actor NestedFolderSource: BookSource {
     }
 
     func imageSize(for entry: PageEntry) async -> CGSize? {
+        if entry.unreadableVolume != nil { return CGSize(width: 700, height: 1000) }
         switch locations[entry.id] {
         case .child(let sourceIndex, let childEntry):
             return await children[sourceIndex].imageSize(for: childEntry)
@@ -309,7 +357,7 @@ actor NestedFolderSource: BookSource {
     /// 避ける。子側が更新日時とサイズを再検証する(cooViewer-oxr.42、設計書 §2.4)。
     func preparsedReflowPublication(for candidateURL: URL) async
         -> EPUBPublication? {
-        guard (try? await buildIfNeeded()) != nil else { return nil }
+        if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return nil } }
         let target = CanonicalPath.normalize(candidateURL.path)
         for location in locations.values {
             guard case .child(let sourceIndex, let childEntry) = location,
@@ -323,7 +371,7 @@ actor NestedFolderSource: BookSource {
 
     /// フォルダ合本では現在ページの子だけへ問い合わせ、直下画像には実装名を付けない。
     func archiveEngineKind(for entry: PageEntry) async -> ArchiveEngineKind? {
-        guard (try? await buildIfNeeded()) != nil else { return nil }
+        if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return nil } }
         guard case .child(let sourceIndex, let childEntry) = locations[entry.id] else {
             return nil
         }
@@ -334,13 +382,28 @@ actor NestedFolderSource: BookSource {
     /// 上限はスプールし得る子(書庫)の数で等分し、フォルダ全体で
     /// spoolSizeLimit を超えないようにする。PDF 等はスプールしないため数えない
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
-        guard (try? await buildIfNeeded()) != nil else { return }
+        if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return } }
         let archiveChildren = children.compactMap { $0 as? ArchiveSource }
         guard !archiveChildren.isEmpty else { return }
-        let perChild = spoolSizeLimit / Int64(archiveChildren.count)
+        // カードの書庫分だけ枠を予約し、スプールしない除外・省略巻で完全版の配分を減らさない(設計書 §7.4、§2.4、仕様書 §4.17)。
+        let archiveCardCount = cardChildren.filter {
+            SupportedTypes.isArchive(url.appendingPathComponent($0.relativePath))
+        }.count
+        let perChild = spoolSizeLimit / Int64(archiveChildren.count + archiveCardCount)
         for child in archiveChildren {
             await child.beginBackgroundPreparation(spoolSizeLimit: perChild)
         }
+    }
+
+    /// 合本内の準備完了を実時間の待機なしで観測する診断口(設計書 §2.4、§7.4)。
+    func waitForSpoolCompletion() async -> Int {
+        let archives = children.compactMap { $0 as? ArchiveSource }
+        var count = 0
+        for archive in archives {
+            await archive.waitForSpoolCompletion()
+            count += await archive.spooledEntryCount
+        }
+        return count
     }
 
     func hasSkippedLockedContent() async -> Bool {
@@ -381,7 +444,7 @@ actor NestedFolderSource: BookSource {
     /// 解除して束ねていれば、復号済み保護コンテンツを含む本になる(CWE-312)。
     /// 判定は子の解除が終わる build 後に確定する
     func containsProtectedContent() async -> Bool {
-        guard (try? await buildIfNeeded()) != nil else { return true }
+        if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return true } }
         return await unlocker.sawUnlockedChild
     }
 
@@ -401,7 +464,8 @@ actor NestedFolderSource: BookSource {
     /// ページの実体ファイル: フォルダ直下の画像はその画像、子の本のページは
     /// その書庫/PDF ファイル(Finder 表示・ファイル情報用)
     func containerFileURL(for entry: PageEntry) async -> URL {
-        guard (try? await buildIfNeeded()) != nil else { return url }
+        if let marker = entry.unreadableVolume { return url.appendingPathComponent(marker.relativePath) }
+        if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return url } }
         switch locations[entry.id] {
         case .child(let sourceIndex, _):
             return children[sourceIndex].url
@@ -420,5 +484,45 @@ actor NestedFolderSource: BookSource {
         for child in preparedChildren.values {
             await child.source.applyMediaProfile(profile)
         }
+    }
+}
+
+extension NestedFolderSource {
+    static func syntheticFailure() async -> (NestedFolderSource, AssemblyFailure) {
+        let url = URL(fileURLWithPath: "/synthetic/図面集")
+        let paths = (1...5).map { String(format: "A-%03d.zip", $0) }
+        let source = NestedFolderSource(folder: FolderSource(snapshotURL: url, images: [], nestedPaths: paths))
+        let failure = await source.prepareSynthetic(paths: paths)
+        return (source, failure)
+    }
+
+    private func prepareSynthetic(paths: [String]) -> AssemblyFailure {
+        for ordinal in [0, 2, 4] {
+            let child = SyntheticCollectionVolume(url: url.appendingPathComponent(paths[ordinal]))
+            preparedChildren[ordinal] = AssemblyPreparedChild(source: child,
+                entries: child.pages, excludedCount: 0)
+        }
+        let failure = AssemblyFailure(failures: [1, 3].map { ordinal in
+            ChildReadFailure(relativePath: paths[ordinal], url: url.appendingPathComponent(paths[ordinal]),
+                cause: ordinal == 1 ? .accessDenied : .connectionLost, retryClass: .persistent)
+        }, total: 5, sourceURL: url)
+        lastAssemblyFailure = failure
+        return failure
+    }
+}
+
+private struct SyntheticCollectionVolume: BookSource {
+    let url: URL
+    let supportsDateSort = false
+    var pages: [PageEntry] {
+        [PageEntry(id: 0, name: "001.png", pathInBook: "001.png", fileURL: nil,
+                   creationDate: nil, modificationDate: nil)]
+    }
+    func entries() async throws -> [PageEntry] { pages }
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        guard let image = await PlaceholderImage.make(text: url.lastPathComponent) else {
+            throw BookSourceError.pageLoadFailed(entry.name)
+        }
+        return image
     }
 }

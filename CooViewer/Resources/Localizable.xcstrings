@@ -6122,6 +6122,147 @@
           }
         }
       }
+    },
+    "Open Without Unreadable Volumes": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読めない巻を除いて開く"
+          }
+        }
+      }
+    },
+    "This volume could not be checked": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この巻は確認できませんでした"
+          }
+        }
+      }
+    },
+    "This volume could not be read.\nChoose Reload to try again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この巻は読み込めませんでした。\n「もう一度読み込む」で読み直せます。"
+          }
+        }
+      }
+    },
+    "(Missing volume)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": { "state": "translated", "value": "(欠けた巻)" }
+        }
+      }
+    },
+    "Bookmarks cannot be changed while volumes are missing": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一部の巻が欠けているため、しおりは変更できません"
+          }
+        }
+      }
+    },
+    "Spread adjustments cannot be saved while volumes are missing": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一部の巻が欠けているため、見開きの調整は保存できません"
+          }
+        }
+      }
+    },
+    " (%lld volumes missing)": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": " (%lld volume missing)"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": " (%lld volumes missing)"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(欠け %lld 冊)"
+          }
+        }
+      }
+    },
+    "Still unable to read %lld volumes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Still unable to read %lld volume"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Still unable to read %lld volumes"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "まだ %lld 冊を読み込めません"
+          }
+        }
+      }
+    },
+    "Opened “%@” without %lld unreadable volumes.": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Opened “%@” without %lld unreadable volume."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Opened “%@” without %lld unreadable volumes."
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” を、読めない %lld 冊を除いて開きました。"
+          }
+        }
+      }
     }
   },
   "version": "1.1"

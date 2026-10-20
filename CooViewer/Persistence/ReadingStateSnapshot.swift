@@ -5,6 +5,9 @@ struct ImageBookStateSnapshot {
     let pageIndex: Int
     let pagePath: String?
     let settings: SavedBookSettings
+    /// 部分本の番号は完全本へ持ち越せない。カード上では保存位置も保持する(設計書 §7.4)。
+    var isPartial = false
+    var isUnreadableVolume = false
 }
 
 /// Washi の型を持ち込まずにリフローの保存位置を表す。

@@ -57,7 +57,7 @@ enum OpenFailureMessage {
         String(localized: "The book will not be displayed with missing pages.", bundle: bundle)
     }
 
-    private static func causeText(_ cause: ReadFailureCause, bundle: Bundle) -> String {
+    static func causeText(_ cause: ReadFailureCause, bundle: Bundle = .main) -> String {
         switch cause {
         case .accessDenied: String(localized: "Access denied", bundle: bundle)
         case .notFound: String(localized: "File not found (it may have been moved or deleted)", bundle: bundle)
