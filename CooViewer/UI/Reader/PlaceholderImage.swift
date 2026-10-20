@@ -6,7 +6,8 @@ import AppKit
 enum PlaceholderImage {
     /// 警告記号+メッセージ入りの縦長ページ画像を作る。
     static func make(text: String,
-                     size: CGSize = CGSize(width: 700, height: 1000)) -> CGImage? {
+                     size: CGSize = CGSize(width: 700, height: 1000),
+                     fittingLines: Bool = false) -> CGImage? {
         guard let context = CGContext(
             data: nil, width: Int(size.width), height: Int(size.height),
             bitsPerComponent: 8, bytesPerRow: 0,
@@ -24,6 +25,15 @@ enum PlaceholderImage {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
 
+        let inset: CGFloat = 60
+        var fontSize: CGFloat = 34
+        if fittingLines {
+            // 巻の案内は文単位の改行を守り、再読込の語を途中で折らない(設計書 §7.4)。
+            let widest = text.components(separatedBy: "\n").map {
+                ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: fontSize, weight: .medium)]).width
+            }.max() ?? 0
+            if widest > size.width - inset * 2 { fontSize *= (size.width - inset * 2) / widest }
+        }
         let message = NSMutableAttributedString()
         message.append(NSAttributedString(string: "⚠\n\n", attributes: [
             .font: NSFont.systemFont(ofSize: 96),
@@ -31,12 +41,11 @@ enum PlaceholderImage {
             .paragraphStyle: paragraph,
         ]))
         message.append(NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 34, weight: .medium),
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
             .foregroundColor: NSColor(white: 0.85, alpha: 1),
             .paragraphStyle: paragraph,
         ]))
 
-        let inset: CGFloat = 60
         let bounds = NSRect(x: inset, y: 0, width: size.width - inset * 2, height: size.height)
         let textHeight = message.boundingRect(
             with: NSSize(width: bounds.width, height: .greatestFiniteMagnitude),

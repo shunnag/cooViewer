@@ -69,6 +69,10 @@ final class ThumbnailOverlayModel: ObservableObject {
             where ratio > threshold && !paired.contains(index) && !large.contains(index) {
             large.insert(index)
         }
+        // 欠落巻のカードも独立した移動先として残し、隣ページのセルへ埋め込まない(仕様書 §4.17、設計書 §7.4、§2.4)。
+        for (index, entry) in snapshot.entries.enumerated() where entry.unreadableVolume != nil {
+            large.insert(index)
+        }
         return large
     }
 
@@ -207,7 +211,7 @@ final class ThumbnailOverlayModel: ObservableObject {
             currentIndex: book.currentIndex,
             displayedIndices: displayedIndices.isEmpty
                 ? [book.currentIndex] : Set(displayedIndices),
-            bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)),
+            bookmarkedPages: Set(book.resolvedBookmarkIndices),
             readsFromLeft: book.readMode.readsFromLeft,
             marks: book.marks,
             singleSetting: book.singleSetting,
@@ -239,7 +243,7 @@ final class ThumbnailOverlayModel: ObservableObject {
         } else {
             // しおり・マーク(見開き強制)・読み方向・見開きしきい値は本側で
             // 変わり得るので併せて追従する
-            let bookmarked = Set(book.bookmarks.map(\.pageIndex))
+            let bookmarked = Set(book.resolvedBookmarkIndices)
             if snapshot.bookmarkedPages != bookmarked {
                 snapshot.bookmarkedPages = bookmarked
             }

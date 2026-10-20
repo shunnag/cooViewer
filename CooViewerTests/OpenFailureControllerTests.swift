@@ -750,9 +750,9 @@ final class OpenFailureControllerTests: XCTestCase {
                 }
             }
         }
-        controller.debugShowOpenFailure()
+        await controller.debugShowOpenFailure()
         assertLayout(hasBullets: true)
-        controller.debugShowOpenFailure(volumeUnavailable: true)
+        await controller.debugShowOpenFailure(volumeUnavailable: true)
         assertLayout(hasBullets: false)
         let unlisted = AssemblyFailure(failures: [], total: 2, unchecked: 2, sourceURL: url)
         let source = OpenFailureTestSource(url: url, error: unlisted)
@@ -761,7 +761,7 @@ final class OpenFailureControllerTests: XCTestCase {
         XCTAssertFalse(controller.openFailurePresentation.buttonsHidden)
         assertLayout(hasBullets: false)
         // 同じ窓で表示が切り替わっても、二つの配置制約を同時に有効にしない(設計書 §7.4)。
-        controller.debugShowOpenFailure()
+        await controller.debugShowOpenFailure()
         assertLayout(hasBullets: true)
         controller.debugShowOpeningProgress(retrying: true)
         XCTAssertTrue(controller.openingProgressIsVisible)

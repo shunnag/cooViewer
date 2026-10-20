@@ -84,6 +84,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             publication: publication, url: url, collectionContext: collectionContext,
             bookmarks: bookmarks)
         epubSession = session
+        restorePartialCollectionRecovery()
         epubMouseRecognizer = MouseGestureRecognizer()
         epubScrollGesture = EPUBScrollGestureRecognizer()
         epubRotationSum = 0
@@ -104,6 +105,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             // 併記する(画像巻へ戻れば openBookFlow が合本名へ戻す。監査 UX 提案)
             window?.title =
                 "\(collectionContext.folderURL.lastPathComponent) — \(epubTitle)"
+                    + (collectionContext.partialRecovery?.partialState?.incompleteSuffix ?? "")
         } else {
             window?.title = epubTitle
         }
@@ -637,7 +639,7 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
                     forSpineIndex: epubView.currentLocator.spineIndex)
                 session.pageLabelText = title.map { " \(numbers)/\(map.total) (\($0)) " }
                     ?? " \(numbers)/\(map.total) "
-                pageLabel.stringValue = session.pageLabelText ?? ""
+                pageLabel.stringValue = partialCollectionPageLabel(session.pageLabelText)
                 updateIndicatorVisibility()
                 return
             }
@@ -665,8 +667,14 @@ extension ReaderWindowController: EPUBReaderViewDelegate {
             updateEPUBPageBar(progress: progress, readsFromLeft: readsFromLeft)
             session.pageLabelText = nil
         }
-        pageLabel.stringValue = session.pageLabelText ?? ""
+        pageLabel.stringValue = partialCollectionPageLabel(session.pageLabelText)
         updateIndicatorVisibility()
+    }
+
+    func partialCollectionPageLabel(_ text: String?) -> String {
+        guard let text else { return "" }
+        let suffix = epubCollectionContext?.partialRecovery?.partialState?.incompleteSuffix ?? ""
+        return text.hasSuffix(" ") ? String(text.dropLast()) + suffix + " " : text + suffix
     }
 
     /// EPUB ビュー上のマウス移動(tracking area の owner として受ける):

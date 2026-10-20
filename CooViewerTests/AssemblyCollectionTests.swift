@@ -5,6 +5,109 @@ import XCTest
 @testable import cooViewer
 
 final class AssemblyCollectionTests: XCTestCase {
+    func testPartialEntriesKeepSortedCardsWithoutReadingAndCompleteRetryKeepsIDs() async throws {
+        let root = try directory(names: ["10.zip", "30.zip", "50.zip"])
+        try TestFixtures.storedZip(entries: ["page.png", "page2.png"].map {
+            (Array($0.utf8), TestFixtures.pngData(width: 40, height: 60))
+        }).write(to: root.appendingPathComponent("30.zip"))
+        try TestFixtures.pngData(width: 40, height: 60).write(to: root.appendingPathComponent("20.png"))
+        let control = OpenControl(failures: ["10.zip": (EACCES, 100), "50.zip": (EACCES, 100)])
+        let clock = AssemblyTestClock { _ in }
+        var policy = AssemblyRetryPolicy.immediate
+        policy.now = { clock.now }
+        policy.sleep = { try await clock.sleep($0) }
+        let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
+            engineFactory: control.factory, retryPolicy: policy)
+        _ = try await assemblyFailure(source)
+        let before = ["10.zip", "30.zip", "50.zip"].map { control.calls($0) }
+        let partial = try await source.partialEntries()
+        XCTAssertEqual(partial.map(\.pathInBook), ["10.zip", "20.png", "30.zip/page.png", "30.zip/page2.png", "50.zip"])
+        XCTAssertEqual(partial.map(\.id), [1_999_999, 0, 2_000_000, 2_000_001, 3_999_999])
+        XCTAssertEqual(partial.compactMap(\.unreadableVolume).map(\.cause), [.accessDenied, .accessDenied])
+        XCTAssertEqual(Set(partial.map(\.id)).count, partial.count)
+        let cards = await source.cardChildren
+        XCTAssertEqual(cards.count, 2)
+        let image = try await source.image(for: partial[0], maxPixelSize: nil)
+        XCTAssertEqual(image.width, 700)
+        _ = await source.containerFileURL(for: partial[2])
+        _ = await source.archiveEngineKind(for: partial[2])
+        _ = await source.containsProtectedContent()
+        _ = await source.preparsedReflowPublication(for: root.appendingPathComponent("none.epub"))
+        _ = try await source.partialEntries()
+        for entry in partial where entry.pathInBook.hasPrefix("30.zip/") {
+            _ = try await source.image(for: entry, maxPixelSize: nil)
+        }
+        XCTAssertEqual(["10.zip", "30.zip", "50.zip"].map { control.calls($0) }, before)
+        _ = try await assemblyFailure(source)
+        XCTAssertGreaterThan(control.calls("10.zip"), before[0])
+        XCTAssertEqual(control.calls("30.zip"), before[1])
+        // 再失敗後も表示中の実ページの所在を保つ(設計書 §7.4)。
+        let kept = try await source.image(for: partial[2], maxPixelSize: nil)
+        XCTAssertEqual(kept.width, 40)
+        control.recover()
+        let complete = try await source.entries()
+        let baseline = try await NestedFolderSource(folder: FolderSource(url: root, readSubFolders: false),
+                                                    retryPolicy: .immediate).entries()
+        XCTAssertEqual(complete, baseline)
+        XCTAssertEqual(control.calls("30.zip"), 1)
+        let remaining = await source.cardChildren
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testPartialEntriesIncludeUncheckedChildrenAndFolderImage() async throws {
+        let root = try directory(names: ["a.zip", "b.zip", "c.zip"])
+        try TestFixtures.pngData(width: 40, height: 60).write(to: root.appendingPathComponent("0.png"))
+        let gate = AssemblyTestGate()
+        let control = OpenControl(failures: ["a.zip": (EACCES, 100)])
+        var policy = AssemblyRetryPolicy.immediate
+        policy.failureCutoff = .zero
+        policy.beforeChildAttempt = { name in if name != "a.zip" { await gate.wait() } }
+        let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
+            engineFactory: control.factory, retryPolicy: policy)
+        let failure = try await assemblyFailure(source)
+        XCTAssertEqual(failure.unchecked, 2)
+        let entries = try await source.partialEntries()
+        XCTAssertEqual(entries.map(\.pathInBook), ["0.png", "a.zip", "b.zip", "c.zip"])
+        XCTAssertEqual(entries[1].unreadableVolume?.cause, .accessDenied)
+        XCTAssertNotNil(entries[2].unreadableVolume)
+        XCTAssertNil(entries[2].unreadableVolume?.cause)
+        XCTAssertNotNil(entries[3].unreadableVolume)
+        XCTAssertNil(entries[3].unreadableVolume?.cause)
+        XCTAssertEqual(control.calls("b.zip"), 0)
+        XCTAssertEqual(control.calls("c.zip"), 0)
+        await gate.open()
+    }
+
+    func testCardReservationRejectsTheLastOffsetOfEachMillionPageDomain() {
+        let stride = NestedFolderSource.nestedIDStride
+        for offset in [0, stride - 2] { XCTAssertTrue(NestedFolderSource.acceptsPageOffset(offset)) }
+        for offset in [stride - 1, stride, Int.max] { XCTAssertFalse(NestedFolderSource.acceptsPageOffset(offset)) }
+        for ordinal in 1...5 {
+            let largestRealID = ordinal * stride + stride - 2
+            let cardID = ordinal * stride + stride - 1
+            XCTAssertLessThan(largestRealID, cardID)
+            XCTAssertLessThan(cardID, (ordinal + 1) * stride)
+        }
+    }
+
+    func testMillionPageChildNeverAllocatesTheReservedCardID() {
+        let stride = NestedFolderSource.nestedIDStride
+        var count = 0
+        var last = 0
+        var collides = false
+        // 登録と同じ割当関数で百万ページ分を走査し、巨大画像 fixture を要さず境界を検証する(設計書 §7.4)。
+        for offset in 0..<(stride + 2) {
+            if let id = NestedFolderSource.realPageID(ordinal: 2, offset: offset) {
+                count += 1
+                last = id
+                if id == 2 * stride + stride - 1 { collides = true }
+            }
+        }
+        XCTAssertEqual(count, stride - 1)
+        XCTAssertEqual(last, 2_999_998)
+        XCTAssertFalse(collides)
+    }
+
     func testFolderRecoversWithinBudgetWithIdenticalEntriesAndRetryNotification() async throws {
         let root = try directory(names: ["a.zip", "b.zip", "c.zip"])
         let control = OpenControl(failures: ["b.zip": (EMFILE, 2)])
@@ -295,6 +398,7 @@ private final class OpenControl: Sendable {
     func calls(_ name: String) -> Int { state.withLock { $0.calls[name, default: 0] } }
     var factory: ArchiveEngineFactory {
         ArchiveEngineFactory(openFile: { kind, path, role in
+            guard role == .primary else { return try ArchiveEngineFactory.live.openFile(kind, path, role) }
             let name = URL(fileURLWithPath: path).lastPathComponent
             let code: Int32? = self.state.withLock {
                 $0.calls[name, default: 0] += 1

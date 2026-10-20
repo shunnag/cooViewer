@@ -45,6 +45,11 @@ final class ReaderWindowController: NSWindowController {
     private var failureButtonsCenterConstraint: NSLayoutConstraint?
     private let reloadButton = NSButton(title: String(localized: "Reload"), target: nil, action: nil)
 
+    private let partialOpenButton = NSButton(title: String(localized: "Open Without Unreadable Volumes"), target: nil, action: nil)
+    private let readerNotice = NSTextField(wrappingLabelWithString: "")
+    private var readerNoticeTask: Task<Void, Never>?
+    private(set) var lastReaderNotice: String?
+
     struct OpenRequest {
         let url: URL
         let atPage: Int?
@@ -56,14 +61,28 @@ final class ReaderWindowController: NSWindowController {
         let initialPageURL: URL?
     }
 
+    struct PartialBookState {
+        let entries: [PageEntry]
+        let sortMode: SortMode
+        let readMode: ReadMode
+        var missingVolumeCount: Int { entries.filter { $0.unreadableVolume != nil }.count }
+        var incompleteSuffix: String { Book.incompleteSuffix(missingVolumeCount: missingVolumeCount) }
+    }
+
     struct FailedOpen {
+        let id = UUID()
         let originalPath: String
         let canonicalPath: String
         var url: URL { URL(fileURLWithPath: canonicalPath, isDirectory: false) }
         let source: any BookSource
         let request: OpenRequest
         let failure: AssemblyFailure
-        let placeholder: Book
+        // EPUB 中はページ列だけを持ち回り、画像本の PageCache を保持しない(設計書 §2.4、§7.4)。
+        weak var placeholder: Book?
+        var partialState: PartialBookState?
+        var isPartial: Bool { partialState != nil }
+        var isSynthetic = false
+        var partialAvailable = false
         let bookWasMissing: Bool
         let sourceReusable: Bool
         var automaticRetryAllowed: Bool
@@ -76,7 +95,50 @@ final class ReaderWindowController: NSWindowController {
     }
 
     private(set) var failedOpen: FailedOpen?
-    private var failedOpenRetryGeneration: Int?
+    var canOpenWithoutUnreadableVolumes: Bool {
+        guard let failed = failedOpen else { return false }
+        // ArchiveSource は成功子を保持しないため部分オープンを提供できない(設計書 §7.4)。
+        return failed.source is NestedFolderSource && !failed.failure.volumeUnavailable
+            && failed.partialAvailable && book === failed.placeholder && book?.isPartial == false
+            && failedOpenRetryGeneration == nil
+    }
+    var partialOpenButtonPresentation: (hidden: Bool, key: String, refusesFocus: Bool) {
+        (partialOpenButton.isHidden, partialOpenButton.keyEquivalent, partialOpenButton.refusesFirstResponder)
+    }
+    private func displaysFailedBook(_ failed: FailedOpen) -> Bool {
+        (book != nil && book === failed.placeholder) || (isEPUBMode
+            && epubCollectionContext?.partialRecovery?.id == failed.id)
+    }
+
+    func partialRecoverySnapshot(for book: Book) -> FailedOpen? {
+        guard book.isPartial, var recovery = failedOpen, recovery.placeholder === book else { return nil }
+        recovery.partialState = PartialBookState(entries: book.entries, sortMode: book.sortMode,
+                                                readMode: book.readMode)
+        failedOpen = recovery
+        return recovery
+    }
+
+    func restorePartialCollectionRecovery() {
+        guard let context = epubCollectionContext, let recovery = context.partialRecovery, recovery.isPartial,
+              context.source.url == recovery.source.url,
+              CanonicalPath.normalize(context.folderURL.path) == CanonicalPath.normalize(recovery.source.url.path) else {
+            // 単体 EPUB には合本の同意を引き継がず、保持中の子ソースも解放する(設計書 §7.4、§2.4)。
+            clearFailedOpen()
+            return
+        }
+        if failedOpen?.id != recovery.id { failedOpen = recovery }
+        epubSession?.collectionContext?.partialRecovery = failedOpen
+        observeOpenFailure(generation: openGeneration)
+    }
+
+    private(set) var failedOpenRetryGeneration: Int?
+    var confirmLastPageRestore: (Int) -> Bool = { page in
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Go to page \(page + 1)?")
+        alert.addButton(withTitle: String(localized: "Go"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
     private var openFailureProbe: (id: UUID, task: Task<Void, Never>)?
     private var openFailureProbeNeedsRecheck = false
     private var openFailureObservers: [any NSObjectProtocol] = []
@@ -222,6 +284,7 @@ final class ReaderWindowController: NSWindowController {
     )?
     /// 次の EPUB は展開せず publication の解析だけ先行する
     /// （cooViewer-oxr.45、設計書 §2.4）。
+    private(set) var backgroundPreparationTask: Task<Void, Never>?
     var preparedNextEPUB: (path: String, publication: EPUBPublication)?
     var preparingNextBookPath: String?
     /// 同フォルダの本一覧のキャッシュ(+Library。巻末付近の毎ページ走査対策)
@@ -1035,7 +1098,26 @@ final class ReaderWindowController: NSWindowController {
         reloadButton.keyEquivalent = ""
         reloadButton.refusesFirstResponder = true
         failureButtons.addArrangedSubview(reloadButton)
+        partialOpenButton.target = self
+        partialOpenButton.action = #selector(openWithoutUnreadableVolumes(_:))
+        partialOpenButton.bezelStyle = .rounded
+        partialOpenButton.keyEquivalent = ""
+        partialOpenButton.refusesFirstResponder = true
+        partialOpenButton.isHidden = true
+        failureButtons.addArrangedSubview(partialOpenButton)
         contentView.addSubview(failureButtons)
+        readerNotice.translatesAutoresizingMaskIntoConstraints = false
+        readerNotice.textColor = .white
+        readerNotice.backgroundColor = .black.withAlphaComponent(0.85)
+        readerNotice.drawsBackground = true
+        readerNotice.alignment = .center
+        readerNotice.isHidden = true
+        contentView.addSubview(readerNotice)
+        NSLayoutConstraint.activate([
+            readerNotice.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            readerNotice.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            readerNotice.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.8),
+        ])
         failureButtonsLeadingConstraint = failureButtons.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor)
         let centeredButtons = failureButtons.centerXAnchor.constraint(equalTo: statusLabel.centerXAnchor)
         failureButtonsCenterConstraint = centeredButtons
@@ -1218,6 +1300,7 @@ final class ReaderWindowController: NSWindowController {
 
         var bookURL = url
         var initialPageURL = requestedInitialPageURL
+        let isSynthetic = retrying?.isSynthetic == true
 
         // 開く対象の stat もメインアクター外で、他の照会と同じ probe(既定実装は専用
         // キュー)を通す: NAS では数 ms、死んだマウントでは SMB タイムアウトまで止まり、
@@ -1233,7 +1316,7 @@ final class ReaderWindowController: NSWindowController {
             let reachable = storage?.isReachable ?? false
             guard await waitForRetryFeedback(generation: generation) else { return }
             endAnyOpeningProgress()
-            if reachable {
+            if reachable, !isSynthetic {
                 history.noteMissing(normalizedPath: url.path)
                 if let canonical = storage?.canonicalPath, canonical != url.path {
                     history.noteMissing(normalizedPath: canonical)
@@ -1255,7 +1338,7 @@ final class ReaderWindowController: NSWindowController {
                 failure: failure, canonicalPath: canonical, request: request, bookWasMissing: true,
                 sourceReusable: matchingRetry?.sourceReusable ?? false,
                 automaticRetryAllowed: storage?.timedOut == false,
-                autoRetryUsed: matchingRetry?.autoRetryUsed ?? false)
+                autoRetryUsed: matchingRetry?.autoRetryUsed ?? false, isSynthetic: isSynthetic)
             return
         }
         if !isDirectory, !SupportedTypes.isBookFile(url),
@@ -1458,6 +1541,8 @@ final class ReaderWindowController: NSWindowController {
             }
             guard generation == openGeneration else { return }
 
+            let returningPartial = collectionNavigation.returnPending
+                ? epubCollectionContext?.partialRecovery : nil
             // 旧本の後始末(仕様書 §4.1.2 手順 4)
             if !fromSlideshow { stopSlideshow() }
             self.book?.cancelPrefetch()  // 旧本のバックグラウンド I/O を止める
@@ -1472,8 +1557,23 @@ final class ReaderWindowController: NSWindowController {
             // マークが走るが、その分だけ先に 1 ページ目を描ける(結果はボリュームでキャッシュ)。
             let probeURL = bookURL
             let mediaProfileTask = Task { await self.effectiveMediaProfile(for: probeURL) }
-            let book = try await Book.open(source: source, sortMode: settings.sortMode,
-                                           cacheByteLimit: settings.pageCacheByteLimit)
+            let book: Book
+            if let returningPartial, let previous = returningPartial.partialState,
+               returningPartial.source.url == source.url {
+                let probe = fileSystemProbe
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    let identity = await probe.identity(at: source.url)
+                    return Book.prepare(url: source.url, entries: previous.entries,
+                        sortMode: previous.sortMode, identity: identity)
+                }.value
+                book = Book(source: source, prepared: prepared, sortMode: previous.sortMode,
+                            cacheByteLimit: settings.pageCacheByteLimit)
+                book.isSyntheticPreview = returningPartial.isSynthetic
+            } else {
+                book = try await Book.open(source: source, sortMode: settings.sortMode,
+                                          cacheByteLimit: settings.pageCacheByteLimit, probe: fileSystemProbe)
+            }
+            book.isSyntheticPreview = book.isSyntheticPreview || isSynthetic
             guard generation == openGeneration else { return }
             // 画像ゼロのフォルダ(コレクションフォルダ)は中の最初の本を開く
             // (旧実装は開くのを拒否 §4.1.2 手順 3。設計書 §2.4 の仕様変更)。
@@ -1539,8 +1639,8 @@ final class ReaderWindowController: NSWindowController {
             }
             guard generation == openGeneration else { return }
             let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
-            let persistence = await restoreBookState(for: book, skipPageRestore: skipPageRestore,
-                                                     generation: generation)
+            let persistence = book.isSyntheticPreview ? nil : await restoreBookState(
+                for: book, skipPageRestore: skipPageRestore, generation: generation)
             guard generation == openGeneration else { return }
 
             // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
@@ -1571,13 +1671,20 @@ final class ReaderWindowController: NSWindowController {
             endOpeningProgress(generation: generation)
             preparedNextEPUB = nil
             replaceBook(book, persistence: persistence)
+            if book.isPartial, var retained = returningPartial {
+                retained.placeholder = book
+                retained.partialState = PartialBookState(entries: book.entries, sortMode: book.sortMode,
+                                                        readMode: book.readMode)
+                failedOpen = retained
+                observeOpenFailure(generation: generation)
+            }
             loadedAnimationFrameCaps.removeAll()
             readerView.resampleKeyPrefix = book.cacheKey
             currentBookIsEncrypted = hasProtectedContent
             readerView.superResDiskCacheEncrypted = hasProtectedContent
             if atLastPage { collectionNavigation.arrivalForward = false }
-            history.noteOpened(path: book.source.url.path)
-            window?.title = bookTitle
+            if !book.isSyntheticPreview { history.noteOpened(path: book.source.url.path) }
+            window?.title = bookTitle + book.incompleteSuffix
             lockedBookReason = nil
             statusLabel.isHidden = true
             failureButtons.isHidden = true
@@ -1590,19 +1697,7 @@ final class ReaderWindowController: NSWindowController {
             // 判断=SSD の zip を無駄にスプールしない)と、新しい並列幅/深さでの先読み再
             // スケジュールを行う。開き直しに追い越されていたら(世代・本の同一性で判定)何も
             // しない。unknown のまま(適応チューニング OFF)なら再適用は不要でスプールのみ。
-            let spoolLimit = settings.archiveSpoolSizeLimit
-            Task { @MainActor [weak self] in
-                let realProfile = await mediaProfileTask.value
-                guard let self, self.openGeneration == generation,
-                      self.book === book else { return }
-                if realProfile != book.mediaProfile {
-                    book.mediaProfile = realProfile
-                    await source.applyMediaProfile(realProfile)
-                    self.applyAdvancedSettings(to: book)
-                    book.reschedulePrefetch()
-                }
-                await source.beginBackgroundPreparation(spoolSizeLimit: spoolLimit)
-            }
+            startBackgroundPreparation(for: book, generation: generation, profile: mediaProfileTask)
             // サムネイル表示中に本が切り替わったら一覧も新しい本で組み直す。
             // 非表示中はスナップショットを空にして旧本のソース保持を解く
             // (書庫のスプール/ネスト展開の一時ファイル回収のため)
@@ -1619,11 +1714,14 @@ final class ReaderWindowController: NSWindowController {
             }
             endOpeningProgress(generation: generation)
             if !Task.isCancelled, let failure = SourceReadFailure.assemblyFailure(in: error) {
+                let partialAvailable = await (attemptedSource as? NestedFolderSource)?.canOpenPartial ?? false
+                guard generation == openGeneration, !Task.isCancelled else { return }
                 presentOpenFailure(source: attemptedSource ?? EPUBParseFailureSource(
                     url: URL(fileURLWithPath: canonical, isDirectory: false)),
                     failure: failure, canonicalPath: canonical, request: request,
                     automaticRetryAllowed: matchingRetry?.automaticRetryAllowed ?? true,
-                    autoRetryUsed: matchingRetry?.autoRetryUsed ?? false)
+                    autoRetryUsed: matchingRetry?.autoRetryUsed ?? false,
+                    partialAvailable: partialAvailable, isSynthetic: isSynthetic)
                 return
             }
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
@@ -1714,7 +1812,7 @@ final class ReaderWindowController: NSWindowController {
         resetInteractiveCurl()
         book?.cancelPrefetch()
         saveCurrentBookState()
-        replaceBook(nil)
+        replaceBook(nil, preservingPartialRecovery: failedOpen?.isPartial == true)
         // cooViewer-oxr.45: 旧 Book 由来の次巻 publication は EPUB 入場時にも
         // 解放する（設計書 §2.4）。
         preparedNextEPUB = nil
@@ -1748,7 +1846,7 @@ final class ReaderWindowController: NSWindowController {
     private func presentOpenFailure(source: any BookSource, failure: AssemblyFailure,
                                     canonicalPath: String, request: OpenRequest, bookWasMissing: Bool = false,
                                     sourceReusable: Bool = true, automaticRetryAllowed: Bool = true,
-                                    autoRetryUsed: Bool = false) {
+                                    autoRetryUsed: Bool = false, partialAvailable: Bool = false, isSynthetic: Bool = false) {
         let automaticRetryAllowed = automaticRetryAllowed && !failure.reachabilityTimedOut
         let bookName = bookWasMissing ? request.url.lastPathComponent : source.displayName
         let reason = bookWasMissing
@@ -1761,11 +1859,20 @@ final class ReaderWindowController: NSWindowController {
             canonicalPath: canonicalPath, source: source, request: request, failure: failure,
             placeholder: placeholder, bookWasMissing: bookWasMissing, sourceReusable: sourceReusable,
             automaticRetryAllowed: automaticRetryAllowed, autoRetryUsed: autoRetryUsed)
+        failedOpen?.partialAvailable = partialAvailable
+        failedOpen?.isSynthetic = isSynthetic
+        placeholder.isSyntheticPreview = isSynthetic
         restoreOpenFailurePresentation()
     }
 
     private func restoreOpenFailurePresentation() {
-        guard let failed = failedOpen, book === failed.placeholder else { return }
+        guard let failed = failedOpen, displaysFailedBook(failed) else { return }
+        if failed.isPartial {
+            statusLabel.isHidden = true
+            failureButtons.isHidden = true
+            observeOpenFailure(generation: openGeneration)
+            return
+        }
         let name = failed.bookWasMissing ? failed.request.url.lastPathComponent : failed.source.displayName
         let reason = failed.bookWasMissing
             ? OpenFailureMessage.textForNotFound(bookName: name,
@@ -1774,6 +1881,7 @@ final class ReaderWindowController: NSWindowController {
         lockedBookReason = reason
         showBookStatusMessage(reason)
         failureButtons.isHidden = false
+        partialOpenButton.isHidden = !canOpenWithoutUnreadableVolumes
         window?.makeFirstResponder(readerView)
         observeOpenFailure(generation: openGeneration)
         NSAccessibility.post(element: statusLabel, notification: .announcementRequested,
@@ -1811,7 +1919,7 @@ final class ReaderWindowController: NSWindowController {
     }
 
     private func beginOpeningFromFailure(generation: Int, name: String) {
-        guard let failed = failedOpen, book === failed.placeholder else { clearFailedOpen(); return }
+        guard let failed = failedOpen, displaysFailedBook(failed) else { clearFailedOpen(); return }
         minimumRetryFeedback?.task?.cancel()
         minimumRetryFeedback = nil
         // 別の本を開く操作も失敗し得るため、新しい本の採用までは元の操作手段を保持する(設計書 §7.4)。
@@ -1857,8 +1965,9 @@ final class ReaderWindowController: NSWindowController {
 
     @discardableResult
     func retryFailedOpen(userInitiated: Bool = true) -> Task<Void, Never>? {
-        guard let failed = failedOpen, book === failed.placeholder,
+        guard let failed = failedOpen, displaysFailedBook(failed),
               failedOpenRetryGeneration == nil else { return nil }
+        if failed.isPartial { return completePartialBook(failed, userInitiated: userInitiated) }
         openGeneration &+= 1
         let generation = openGeneration
         beginOpeningFromFailure(generation: generation, name: failed.source.displayName)
@@ -1904,7 +2013,7 @@ final class ReaderWindowController: NSWindowController {
     func automaticallyRetryFailedOpen(generation: Int, mountedPath: String? = nil,
                                       originalMountedPath: String? = nil) -> Task<Void, Never>? {
         guard generation == openGeneration, let failed = failedOpen,
-              book === failed.placeholder, failed.automaticRetryArmed,
+              displaysFailedBook(failed), failed.automaticRetryArmed,
               failedOpenRetryGeneration == nil else { return nil }
         if let mountedPath {
             let mountedPaths = [mountedPath, originalMountedPath].compactMap { $0 }
@@ -1935,7 +2044,7 @@ final class ReaderWindowController: NSWindowController {
                 let reachable = storage?.isReachable ?? false
                 guard let self, self.openFailureProbe?.id == id else { return }
                 guard !Task.isCancelled, self.openGeneration == generation,
-                      self.book === failed.placeholder, self.failedOpen?.autoRetryUsed == false else { return }
+                      self.displaysFailedBook(failed), self.failedOpen?.autoRetryUsed == false else { return }
                 if !reachable, self.openFailureProbeNeedsRecheck {
                     self.openFailureProbeNeedsRecheck = false
                     continue
@@ -1945,11 +2054,13 @@ final class ReaderWindowController: NSWindowController {
                 guard reachable else {
                     if storage?.timedOut == true {
                         self.failedOpen?.automaticRetryAllowed = false
+                        self.epubSession?.collectionContext?.partialRecovery?.automaticRetryAllowed = false
                         self.restoreOpenFailurePresentation()
                     }
                     return
                 }
                 self.failedOpen?.autoRetryUsed = true
+                self.epubSession?.collectionContext?.partialRecovery?.autoRetryUsed = true
                 if let retry = self.retryFailedOpen(userInitiated: false) { await retry.value }
                 return
             }
@@ -1959,20 +2070,35 @@ final class ReaderWindowController: NSWindowController {
     }
 
     /// 実在しない固定ソースなので、撮影で利用者の本や履歴へ触れない(設計書 §7.4)。
-    func debugShowOpenFailure(volumeUnavailable: Bool = false) {
+    func debugShowOpenFailure(volumeUnavailable: Bool = false) async {
         openGeneration &+= 1
         endAnyOpeningProgress()
-        let url = URL(fileURLWithPath: "/synthetic/図面集")
-        let causes: [ReadFailureCause] = [.accessDenied, .notFound, .diskFull]
-        let failures = causes.enumerated().map { index, cause in
-            ChildReadFailure(relativePath: "A-0\(17 + index).zip",
-                url: url.appendingPathComponent("A-0\(17 + index).zip"), cause: cause, retryClass: .persistent)
-        }
-        let failure = AssemblyFailure(failures: failures, total: 5, unchecked: 2,
-            volumeUnavailable: volumeUnavailable, sourceURL: url)
-        presentOpenFailure(source: EPUBParseFailureSource(url: url), failure: failure, canonicalPath: url.path,
-            request: OpenRequest(url: url, atPage: nil, atLastPage: false, allowCollectionDrill: false,
-                autoOpenDepth: 0, fromSlideshow: false, initialPageURL: nil))
+        let (source, base) = await NestedFolderSource.syntheticFailure()
+        let failure = AssemblyFailure(failures: base.failures, total: base.total,
+            volumeUnavailable: volumeUnavailable, sourceURL: source.url)
+        presentOpenFailure(source: source, failure: failure, canonicalPath: source.url.path,
+            request: OpenRequest(url: source.url, atPage: nil, atLastPage: false, allowCollectionDrill: false,
+                autoOpenDepth: 0, fromSlideshow: false, initialPageURL: nil), partialAvailable: true, isSynthetic: true)
+    }
+
+    func debugShowPartialOpen() async {
+        openGeneration &+= 1
+        endAnyOpeningProgress()
+        let (source, _) = await NestedFolderSource.syntheticFailure()
+        guard let entries = try? await source.partialEntries() else { return }
+        let prepared = Book.prepare(url: source.url, entries: entries, sortMode: .name, identity: .init())
+        let partial = Book(source: source, prepared: prepared)
+        partial.isSyntheticPreview = true
+        partial.readMode = .leftToRightSpread
+        partial.goTo(index: 1)
+        replaceBook(partial)
+        window?.title = partial.displayName + partial.incompleteSuffix
+        readerView.resampleKeyPrefix = partial.cacheKey
+        lockedBookReason = nil
+        statusLabel.isHidden = true
+        failureButtons.isHidden = true
+        updateIndicatorVisibility()
+        await refreshDisplay()
     }
 
     // MARK: - 終了処理(§7.7 の保存漏れを塞ぐ)
@@ -2299,8 +2425,14 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: - 表示更新
 
-    func replaceBook(_ book: Book?, persistence: ImageBookPersistence? = nil) {
-        clearFailedOpen()
+    func replaceBook(_ book: Book?, persistence: ImageBookPersistence? = nil,
+                     preservingPartialRecovery: Bool = false) {
+        if !preservingPartialRecovery { clearFailedOpen() }
+        backgroundPreparationTask?.cancel()
+        backgroundPreparationTask = nil
+        readerNoticeTask?.cancel()
+        readerNotice.isHidden = true
+        lastReaderNotice = nil
         resetInteractiveCurl()
         self.book = book
         // 本と同時に採用し、破棄された準備結果で現在の保存判断を変えない(設計書 §7.4)。
@@ -3095,8 +3227,8 @@ final class ReaderWindowController: NSWindowController {
                 ? book.entries[index].displayTitle(relativePath: relativePaths) : nil
         }.joined(separator: " / ")
         pageLabel.stringValue = names.isEmpty
-            ? " \(numbers)/\(totalPages) "
-            : " \(numbers)/\(totalPages) (\(names)) "
+            ? " \(numbers)/\(totalPages)\(book.incompleteSuffix) "
+            : " \(numbers)/\(totalPages) (\(names))\(book.incompleteSuffix) "
         let lastShown = pageNumber(indices.last ?? 0)
         pageBar.progress = Double(lastShown) / Double(totalPages)
         pageBar.readsFromLeft = book.readMode.readsFromLeft
@@ -3392,7 +3524,9 @@ final class ReaderWindowController: NSWindowController {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(reloadBook(_:)):
-            return failedOpen != nil && failedOpenRetryGeneration == nil && book === failedOpen?.placeholder
+            return failedOpen.map { displaysFailedBook($0) && failedOpenRetryGeneration == nil } ?? false
+        case #selector(openWithoutUnreadableVolumes(_:)):
+            return canOpenWithoutUnreadableVolumes
         case #selector(showEPUBSearchMenu(_:)):
             return isEPUBMode
         case #selector(useSelectionForEPUBFindMenu(_:)):
@@ -3453,6 +3587,8 @@ final class ReaderWindowController: NSWindowController {
         case #selector(toggleSlideshowMenu(_:)):
             // スライドショーは EPUB モードでも有効(§4.9。c6s.21 ⑪)
             return (book?.pageCount ?? 0) > 0 || isEPUBMode
+        case #selector(goToBookmarkListItem(_:)):
+            return book != nil && menuItem.representedObject is Int
         case #selector(editBookmarksMenu(_:)),
              #selector(addRemoveBookmarkMenu(_:)),
              #selector(nextBookmarkMenu(_:)), #selector(previousBookmarkMenu(_:)):
@@ -3581,5 +3717,207 @@ extension ReaderWindowController: ReaderViewDelegate {
 
     func readerView(_ view: ReaderView, scrollWheel event: NSEvent) {
         handleScrollWheel(event)
+    }
+}
+
+extension ReaderWindowController {
+    func showReaderNotice(_ message: String) {
+        lastReaderNotice = message
+        readerNoticeTask?.cancel()
+        readerNotice.stringValue = "  " + message + "  "
+        readerNotice.isHidden = false
+        // 一覧やしおり編集からの拒否も読者に届くよう、案内を最前面へ戻す(設計書 §7.4、§2.4)。
+        readerNotice.superview?.addSubview(readerNotice, positioned: .above, relativeTo: nil)
+        NSAccessibility.post(element: readerNotice, notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        readerNoticeTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            self?.readerNotice.isHidden = true
+        }
+    }
+
+    @objc func openWithoutUnreadableVolumes(_ sender: Any?) { openPartialBook() }
+
+    /// 同意はこの失敗画面に限り有効で、本の保存状態へ加えない(仕様書 §4.17、設計書 §7.4、§2.4)。
+    @discardableResult
+    func openPartialBook() -> Task<Void, Never>? {
+        guard canOpenWithoutUnreadableVolumes, let failed = failedOpen,
+              let source = failed.source as? NestedFolderSource else { return nil }
+        openGeneration &+= 1
+        let generation = openGeneration
+        removeOpenFailureObservers()
+        failedOpenRetryGeneration = generation
+        partialOpenButton.isEnabled = false
+        return Task {
+            defer { partialOpenButton.isEnabled = true }
+            do {
+                let entries = try await source.partialEntries()
+                let sortMode = settings.sortMode
+                let probe = fileSystemProbe
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    let identity = await probe.identity(at: source.url)
+                    return Book.prepare(url: source.url, entries: entries, sortMode: sortMode, identity: identity)
+                }.value
+                guard openGeneration == generation, book === failed.placeholder, !Task.isCancelled else { return }
+                let partial = Book(source: source, prepared: prepared, sortMode: sortMode,
+                    cacheByteLimit: settings.pageCacheByteLimit)
+                await adoptRecoveredBook(partial, replacing: failed, generation: generation)
+            } catch {
+                guard openGeneration == generation else { return }
+                failedOpenRetryGeneration = nil
+                restoreOpenFailurePresentation()
+            }
+        }
+    }
+
+    /// 完全な一覧が揃うまで現在の部分本を保持し、再失敗を空の本に置き換えない(設計書 §7.4)。
+    private func completePartialBook(_ failed: FailedOpen, userInitiated: Bool) -> Task<Void, Never> {
+        openGeneration &+= 1
+        let generation = openGeneration
+        beginOpeningFromFailure(generation: generation, name: failed.source.displayName)
+        if userInitiated {
+            minimumRetryFeedback = RetryFeedback(generation: generation,
+                deadline: manualRetryNow().advanced(by: manualRetryMinimumDuration),
+                now: manualRetryNow, sleep: manualRetrySleep)
+            revealOpeningProgress()
+        }
+        return Task {
+            defer { finishOpeningFromFailure(generation: generation) }
+            do {
+                await bindAssemblyHandlers(source: failed.source, generation: generation)
+                guard generation == openGeneration, !Task.isCancelled else { return }
+                let complete = try await Book.open(source: failed.source,
+                    sortMode: failed.placeholder?.sortMode ?? failed.partialState?.sortMode ?? settings.sortMode,
+                    cacheByteLimit: settings.pageCacheByteLimit, probe: fileSystemProbe)
+                guard await waitForRetryFeedback(generation: generation), displaysFailedBook(failed) else { return }
+                await adoptRecoveredBook(complete, replacing: failed, generation: generation)
+            } catch {
+                guard await waitForRetryFeedback(generation: generation), displaysFailedBook(failed) else { return }
+                if userInitiated {
+                    let failure = SourceReadFailure.assemblyFailure(in: error)
+                    let count = failure.map { $0.failures.count + $0.unchecked }
+                        ?? failed.partialState?.missingVolumeCount ?? 0
+                    showReaderNotice(String(localized: "Still unable to read \(count) volumes"))
+                }
+            }
+        }
+    }
+
+    func startBackgroundPreparation(for book: Book, generation: Int,
+                                            profile: Task<MediaProfile, Never>) {
+        backgroundPreparationTask?.cancel()
+        let spoolLimit = settings.archiveSpoolSizeLimit
+        backgroundPreparationTask = Task { @MainActor [weak self, weak book] in
+            let realProfile = await profile.value
+            guard let self, let book, !Task.isCancelled,
+                  self.openGeneration == generation, self.book === book else { return }
+            if realProfile != book.mediaProfile {
+                book.mediaProfile = realProfile
+                await book.source.applyMediaProfile(realProfile)
+                guard !Task.isCancelled, self.openGeneration == generation, self.book === book else { return }
+                self.applyAdvancedSettings(to: book)
+                book.reschedulePrefetch()
+            }
+            await book.source.beginBackgroundPreparation(spoolSizeLimit: spoolLimit)
+        }
+    }
+
+    private func bindAssemblyHandlers(source: any BookSource, generation: Int) async {
+        await source.setAssemblyProgressHandler { [weak self] done, total in
+            Task { @MainActor [weak self] in
+                self?.noteOpeningProgress(generation: generation, done: done, total: total)
+            }
+        }
+        await source.setAssemblyRetryHandler { [weak self] path in
+            Task { @MainActor [weak self] in
+                self?.noteOpeningRetry(generation: generation, relativePath: path)
+            }
+        }
+    }
+
+    private func adoptRecoveredBook(_ next: Book, replacing failed: FailedOpen, generation: Int) async {
+        next.isSyntheticPreview = failed.isSynthetic
+        next.readMode = settings.readMode
+        let mediaProfileTask = Task { await self.effectiveMediaProfile(for: next.source.url) }
+        // 読み方向は巻の欠落でずれないため、番号ヒントと分けて従来の優先順位を保つ(設計書 §7.4、§2.4)。
+        if settings.respectComicInfoReadingDirection,
+           let rtl = await next.comicInfo()?.manga.readsRightToLeft {
+            next.readMode = next.readMode.withDirection(readsRightToLeft: rtl)
+        }
+        next.singleSetting = settings.singleSetting
+        next.coverSingleFirst = settings.spreadCoverSingle
+        await next.loadComicInfoState(useLayoutHints: settings.useComicInfoLayoutHints)
+        applyAdvancedSettings(to: next)
+        let encrypted = await next.source.containsProtectedContent()
+        guard generation == openGeneration, displaysFailedBook(failed), !Task.isCancelled else { return }
+        // 完全版へ設定を復元する前に今回の並び順を保存し、部分本での変更を旧設定で戻さない(設計書 §7.4、§2.4)。
+        if failed.isPartial { saveCurrentBookState() }
+        let persistence = next.isSyntheticPreview ? nil : await restoreBookState(
+            for: next, skipPageRestore: failed.isPartial, generation: generation)
+        let title = await next.displayTitle()
+        guard generation == openGeneration, displaysFailedBook(failed), !Task.isCancelled else { return }
+        if failed.isPartial {
+            let previous = failed.placeholder
+            next.readMode = previous?.readMode ?? failed.partialState?.readMode ?? settings.readMode
+            // 実際に復元したカードの内部だけ元の錨を使い、それ以外は表示中のページを保つ(設計書 §7.4、§2.4)。
+            let anchor = previous.flatMap { previous in
+                imageBookPersistence.flatMap { snapshot -> String? in
+                    guard snapshot.bookID == ObjectIdentifier(previous),
+                          snapshot.navigationRevision == previous.explicitNavigationRevision,
+                          previous.entries.indices.contains(previous.currentIndex),
+                          let marker = previous.entries[previous.currentIndex].unreadableVolume,
+                          let anchor = snapshot.landedOnCardAnchor,
+                          anchor.hasPrefix(marker.relativePath + "/") else { return nil }
+                    return anchor
+                }
+            }
+            let current: PageEntry? = previous.flatMap {
+                $0.entries.indices.contains($0.currentIndex) ? $0.entries[$0.currentIndex] : nil
+            } ?? epubCollectionContext.flatMap {
+                $0.entries.indices.contains($0.entryIndex) ? $0.entries[$0.entryIndex] : nil
+            }
+            let index = anchor.flatMap { path in next.entries.firstIndex { $0.pathInBook == path } }
+                ?? current.flatMap { current in
+                    next.entries.firstIndex { $0.pathInBook == current.pathInBook }
+                        ?? current.unreadableVolume.flatMap { marker in
+                            next.entries.firstIndex { $0.pathInBook.hasPrefix(marker.relativePath + "/") }
+                        }
+                }
+            if let index { next.goTo(index: index) }
+        }
+        failed.placeholder?.cancelPrefetch()
+        dismissEPUBMode()
+        endOpeningProgress(generation: generation)
+        preparedNextEPUB = nil
+        replaceBook(next, persistence: persistence)
+        loadedAnimationFrameCaps.removeAll()
+        readerView.resampleKeyPrefix = next.cacheKey
+        currentBookIsEncrypted = encrypted
+        readerView.superResDiskCacheEncrypted = encrypted
+        if !next.isSyntheticPreview { history.noteOpened(path: next.source.url.path) }
+        window?.title = title + next.incompleteSuffix
+        lockedBookReason = nil
+        statusLabel.isHidden = true
+        failureButtons.isHidden = true
+        if next.isPartial {
+            var retained = failed
+            retained.placeholder = next
+            retained.partialState = PartialBookState(entries: next.entries, sortMode: next.sortMode,
+                                                     readMode: next.readMode)
+            failedOpen = retained
+            observeOpenFailure(generation: generation)
+            let count = next.missingVolumeCount
+            let name = next.displayName
+            NSAccessibility.post(element: readerView, notification: .announcementRequested,
+                userInfo: [.announcement: String(localized: "Opened “\(name)” without \(count) unreadable volumes."),
+                           .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
+        updateIndicatorVisibility()
+        window?.makeFirstResponder(readerView)
+        await refreshDisplay()
+        guard generation == openGeneration, book === next else { return }
+        startBackgroundPreparation(for: next, generation: generation, profile: mediaProfileTask)
+        if isThumbnailOverlayVisible { presentThumbnailOverlay(for: next) }
+        else { thumbnailOverlayModel.clear() }
     }
 }

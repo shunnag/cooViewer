@@ -9,7 +9,8 @@ extension ReaderWindowController {
         let bookID: ObjectIdentifier
         let complete: Bool
         let navigationRevision: Int
-        let missingPage: (index: Int, path: String)?
+        let missingPage: (index: Int, path: String?)?
+        let landedOnCardAnchor: String?
     }
 
     // MARK: - 状態の保存と復元(仕様書 §7)
@@ -17,7 +18,7 @@ extension ReaderWindowController {
     /// 現在の本の状態を保存する(切替時・クローズ時・終了時。§7.7 の穴も塞ぐ)
     func saveCurrentBookState() {
         // 開けなかった本(空のプレースホルダ)は履歴・設定に記録しない
-        guard let book, book.pageCount > 0 else { return }
+        guard let book, book.pageCount > 0, !book.isSyntheticPreview else { return }
         let path = book.source.url.path
         let persistence = imageBookPersistence.flatMap { $0.bookID == ObjectIdentifier(book) ? $0 : nil }
         // ページ番号に加えて「どのファイルか」も添える(新規キー)。次回開いたとき
@@ -52,7 +53,9 @@ extension ReaderWindowController {
                 displayName: book.displayName, pageIndex: pageIndex,
                 pagePath: currentPagePath,
                 settings: .init(readMode: book.readMode, sortMode: book.sortMode,
-                                marks: book.marks, bookmarks: bookmarks)))
+                                marks: book.marks, bookmarks: bookmarks),
+                isPartial: book.isPartial,
+                isUnreadableVolume: book.entries[book.currentIndex].unreadableVolume != nil))
     }
 
     /// 開いた本に保存済み設定を適用する(§4.1.2 手順 6-7, §7.1)。
@@ -62,18 +65,22 @@ extension ReaderWindowController {
     func restoreBookState(for book: Book, skipPageRestore: Bool, generation: Int) async -> ImageBookPersistence? {
         let store = history
         let path = book.source.url.path
-        let complete = await book.source.excludedChildCount() == 0
+        let complete = await book.source.excludedChildCount() == 0 && !book.isPartial
         guard generation == openGeneration else { return nil }
         // 復元ゲートで移動しない設定でも、欠落した保存位置の保護は必要(設計書 §7.4)。
-        let storedPage = store.savedPage(forPath: path, inRecents: true)
-        let missingPage: (index: Int, path: String)?
-        if let storedPage, let pagePath = storedPage.pagePath,
-           !book.entries.contains(where: { $0.pathInBook == pagePath }) {
-            missingPage = (storedPage.page, pagePath)
+        let storedPage = store.savedPage(forPath: path, inRecents: true, pathOnly: book.isPartial,
+                                         includingIndexOnly: book.isPartial)
+        let missingPage: (index: Int, path: String?)?
+        if let storedPage,
+           (book.isPartial && storedPage.pagePath == nil)
+            || storedPage.pagePath.map({ path in !book.entries.contains { $0.pathInBook == path } }) == true {
+            missingPage = (storedPage.page, storedPage.pagePath)
         } else { missingPage = nil }
+        var landedOnCardAnchor: String?
         func snapshot() -> ImageBookPersistence {
             ImageBookPersistence(bookID: ObjectIdentifier(book), complete: complete,
-                                 navigationRevision: book.explicitNavigationRevision, missingPage: missingPage)
+                                 navigationRevision: book.explicitNavigationRevision, missingPage: missingPage,
+                                 landedOnCardAnchor: landedOnCardAnchor)
         }
         if let saved = store.settings(displayName: book.displayName, path: path) {
             if let readMode = saved.readMode { book.readMode = readMode }
@@ -81,9 +88,16 @@ extension ReaderWindowController {
                 _ = await book.setSortMode(sortMode).value
                 guard generation == openGeneration else { return nil }
             }
-            book.marks = saved.marks
+            if !book.isPartial { book.marks = saved.marks }
             // しおりは保存時のページパスで照合し直す(エントリ列の変化に追従)
             book.bookmarks = saved.bookmarks.map { bookmark in
+                if book.isPartial {
+                    var resolved = bookmark
+                    resolved.pageIndex = bookmark.pagePath.flatMap { path in
+                        book.entries.firstIndex { $0.pathInBook == path }
+                    } ?? -1
+                    return resolved
+                }
                 // 欠落を含む番号列では旧しおりの clamp も確定位置にできない(設計書 §7.4)。
                 if bookmark.pagePath == nil, !complete { return bookmark }
                 var resolved = bookmark
@@ -97,27 +111,43 @@ extension ReaderWindowController {
         // 復元ゲートの実在確認はメインアクター外(上限内なら I/O なし)
         let inRecents = await store.isWithinRecentLimit(path: path)
         guard generation == openGeneration else { return nil }
-        let restorePage = store.savedPage(forPath: path, inRecents: inRecents)
+        let restorePage = store.savedPage(forPath: path, inRecents: inRecents, pathOnly: book.isPartial)
 
         // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)。
         // ページパスが記録されていれば同じファイルのページへ照合し直す
         guard !skipPageRestore, settings.goToLastPageMode < 2,
               let restorePage else { return snapshot() }
-        let page = BookHistoryStore.reconciledIndex(
-            saved: restorePage.page, pagePath: restorePage.pagePath,
-            entries: book.entries)
-        guard page > 0, page < book.pageCount else { return snapshot() }
-        if settings.goToLastPageMode == 1 {
-            book.goTo(index: page)
+        // 部分本では旧番号への代替と番号だけの確認を禁止する(設計書 §7.4、仕様書 §4.17)。
+        let page: Int
+        if book.isPartial {
+            guard let path = restorePage.pagePath,
+                  let index = book.entries.firstIndex(where: { $0.pathInBook == path })
+                    ?? book.entries.firstIndex(where: {
+                        $0.unreadableVolume.map { path.hasPrefix($0.relativePath + "/") } == true
+                    }) else { return snapshot() }
+            page = index
         } else {
-            let alert = NSAlert()
-            alert.messageText = String(
-                localized: "Go to page \(page + 1)?")
-            alert.addButton(withTitle: String(localized: "Go"))
-            alert.addButton(withTitle: String(localized: "Cancel"))
-            if alert.runModal() == .alertFirstButtonReturn {
-                book.goTo(index: page)
+            page = BookHistoryStore.reconciledIndex(
+                saved: restorePage.page, pagePath: restorePage.pagePath,
+                entries: book.entries)
+        }
+        guard book.entries.indices.contains(page) else { return snapshot() }
+        func recordCardAnchor() {
+            // 保存保護とは別に実際の復元先を記録し、未復元の錨へ再読込後に飛ばさない(設計書 §7.4、§2.4)。
+            if book.isPartial, let path = restorePage.pagePath,
+               let marker = book.entries[page].unreadableVolume,
+               path.hasPrefix(marker.relativePath + "/") {
+                landedOnCardAnchor = path
             }
+        }
+        guard page > 0 else {
+            // 先頭のカードは移動や確認を要さないが、巻内の元の位置は完全版への復帰に必要(設計書 §7.4、§2.4)。
+            recordCardAnchor()
+            return snapshot()
+        }
+        if settings.goToLastPageMode == 1 || confirmLastPageRestore(page) {
+            book.goTo(index: page)
+            recordCardAnchor()
         }
         return snapshot()
     }
@@ -130,6 +160,7 @@ extension ReaderWindowController {
             return
         }
         guard let book else { return }
+        guard allowIndexStateEdit(for: book, bookmarks: true) else { return }
         let page = book.currentIndex
         if let index = book.bookmarks.firstIndex(where: { $0.pageIndex == page }) {
             book.bookmarks.remove(at: index)
@@ -164,25 +195,8 @@ extension ReaderWindowController {
                     return book.entries[index].pathInBook
                 },
                 onSave: { [weak self, weak book] bookmarks in
-                    guard let book else { return }
-                    book.bookmarks = bookmarks
-                    guard let self else { return }
-                    if book === self.book {
-                        self.saveCurrentBookState()
-                        // サムネイル表示中はしおりバッジへ即時反映
-                        if self.isThumbnailOverlayVisible {
-                            self.presentThumbnailOverlay(for: book)
-                        }
-                    } else {
-                        // シート中に本が切り替わっても編集対象の本へ保存する
-                        self.history.save(
-                            displayName: book.displayName,
-                            path: book.source.url.path,
-                            settings: .init(readMode: book.readMode,
-                                            sortMode: book.sortMode,
-                                            marks: book.marks,
-                                            bookmarks: book.bookmarks))
-                    }
+                    guard let self, let book else { return }
+                    self.saveEditedBookmarks(bookmarks, for: book)
                 },
                 onClose: { [weak self] in
                     guard let self, let sheet = self.bookmarkEditorWindow else { return }
@@ -191,6 +205,23 @@ extension ReaderWindowController {
                 })))
         bookmarkEditorWindow = editor
         window.beginSheet(editor)
+    }
+
+    /// OK の確定もキー操作と同じ保存規則を通し、番号のずれを持ち込ませない(設計書 §7.4、仕様書 §4.17)。
+    @discardableResult
+    func saveEditedBookmarks(_ bookmarks: [PageBookmark], for book: Book) -> Bool {
+        guard allowIndexStateEdit(for: book, bookmarks: true) else { return false }
+        book.bookmarks = bookmarks
+        if book === self.book {
+            saveCurrentBookState()
+            if isThumbnailOverlayVisible { presentThumbnailOverlay(for: book) }
+        } else {
+            // シート中の本切替でも、同意した編集対象だけに書き戻す(仕様書 §4.7.2)。
+            history.save(displayName: book.displayName, path: book.source.url.path,
+                settings: .init(readMode: book.readMode, sortMode: book.sortMode,
+                                marks: book.marks, bookmarks: book.bookmarks))
+        }
+        return true
     }
 
     /// しおり一覧メニューからのジャンプ(representedObject = 0 始まり index)
@@ -228,6 +259,7 @@ extension ReaderWindowController {
     @discardableResult
     func switchSingleSpread() -> Task<Void, Never>? {
         guard let book else { return nil }
+        guard allowIndexStateEdit(for: book, bookmarks: false) else { return nil }
         let checkpoint = book.navigationCheckpoint
         return Task {
             let spread = await book.currentSpread()
@@ -242,6 +274,15 @@ extension ReaderWindowController {
             saveCurrentBookState()
             await refreshDisplay()
         }
+    }
+
+    /// 部分本の番号編集を入口で拒否し、保存規則と同じ判断に揃える(設計書 §7.4、§2.4)。
+    func allowIndexStateEdit(for book: Book, bookmarks: Bool) -> Bool {
+        guard book.isPartial else { return true }
+        showReaderNotice(bookmarks
+            ? String(localized: "Bookmarks cannot be changed while volumes are missing")
+            : String(localized: "Spread adjustments cannot be saved while volumes are missing"))
+        return false
     }
 
     // MARK: - 同フォルダの次/前の本(仕様書 §4.1.4, §4.3.4)
@@ -825,6 +866,12 @@ extension ReaderWindowController {
 final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = BookmarkListMenuDelegate()
     private weak var attachedMenu: NSMenu?
+    private weak var providedController: ReaderWindowController?
+
+    init(controller: ReaderWindowController? = nil) {
+        providedController = controller
+        super.init()
+    }
 
     func attach(_ menu: NSMenu) {
         attachedMenu = menu
@@ -839,7 +886,7 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let controller = NSApp.windows
+        let controller = providedController ?? NSApp.windows
             .compactMap { $0.windowController as? ReaderWindowController }.first
         if let controller, controller.isEPUBMode {
             for (index, bookmark) in (controller.epubSession?.bookmarks ?? []).enumerated() {
@@ -862,12 +909,16 @@ final class BookmarkListMenuDelegate: NSObject, NSMenuDelegate {
         }
         let bookmarks = controller?.book?.bookmarks ?? []
         for bookmark in bookmarks {
-            let title = "\(bookmark.name)  (p.\(bookmark.pageIndex + 1))"
+            let unresolved = controller?.book?.isPartial == true && bookmark.pageIndex < 0
+            let label = unresolved ? String(localized: "(Missing volume)") : "(p.\(bookmark.pageIndex + 1))"
+            let title = "\(bookmark.name)  \(label)"
             let item = menu.addItem(
                 withTitle: title,
                 action: #selector(ReaderWindowController.goToBookmarkListItem(_:)),
                 keyEquivalent: "")
-            item.representedObject = bookmark.pageIndex
+            let index = controller?.book?.resolvedBookmarkIndex(bookmark)
+            item.representedObject = index
+            item.isEnabled = index != nil
         }
         if bookmarks.isEmpty {
             let empty = menu.addItem(withTitle: String(localized: "No Bookmarks"),

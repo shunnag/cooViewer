@@ -8,7 +8,7 @@ enum SourceReadFailure {
         case transient, network, reopen, persistent, structural, cancelled
     }
 
-    enum ReadFailureCause: Sendable, Equatable {
+    enum ReadFailureCause: Sendable, Hashable {
         case accessDenied, notFound, diskFull, connectionLost, fileChanged, repeatedFailure
     }
 

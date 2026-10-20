@@ -10,6 +10,18 @@ import Foundation
 final class Book {
     let source: any BookSource
     private(set) var entries: [PageEntry]
+    let missingVolumeCount: Int
+    var isSyntheticPreview = false
+    var isPartial: Bool { missingVolumeCount > 0 }
+    var incompleteSuffix: String {
+        Self.incompleteSuffix(missingVolumeCount: missingVolumeCount)
+    }
+
+    nonisolated static func incompleteSuffix(missingVolumeCount count: Int) -> String {
+        guard count > 0 else { return "" }
+        return String(localized: " (\(count) volumes missing)")
+    }
+
     private(set) var currentIndex = 0 {
         didSet { if currentIndex != oldValue { stateRevision &+= 1 } }
     }
@@ -84,6 +96,7 @@ final class Book {
         self.source = source
         self.sortMode = sortMode
         self.entries = prepared.sortedEntries
+        self.missingVolumeCount = prepared.sortedEntries.filter { $0.unreadableVolume != nil }.count
         self.cache = PageCache(byteLimit: cacheByteLimit)
         self.cacheKey = prepared.cacheKey
         self.sorter = sorter
@@ -199,7 +212,7 @@ final class Book {
     /// image は 0 始まりページとして実ページへ写像し、範囲外は捨てる
     /// (PageCount と実ページ数のズレ耐性)
     func loadComicInfoState(useLayoutHints: Bool) async {
-        let info = await comicInfo()
+        let info = isPartial ? nil : await comicInfo()
         let count = pageCount
         chapterMarks = (info?.chapters ?? []).compactMap { chapter in
             guard chapter.image >= 0, chapter.image < count else { return nil }
@@ -310,9 +323,8 @@ final class Book {
 
     /// サイズ索引による見開き候補判定。寸法が取れなければ nil(従来判定へ)
     private func isSmallFromIndex(at index: Int) async -> Bool? {
-        // リフロー EPUB の代理ページは常に単独: 見開きに混ぜると「隣のページの
-        // おまけ」として素通りし、EPUB モードへの切替が飛ばされる
-        if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+        // 巻の代理ページを単独にし、EPUB 入場や欠落の案内を隣の画像へ埋め込まない(仕様書 §4.17、設計書 §7.4、§2.4)。
+        if entries.indices.contains(index), entries[index].isStandalonePage {
             return false
         }
         guard let size = await pageSize(at: index) else { return nil }
@@ -339,8 +351,8 @@ final class Book {
     }
 
     private func isSmall(_ image: CGImage?, at index: Int) -> Bool {
-        // リフロー EPUB の代理ページは常に単独(isSmallFromIndex と同じ規則)
-        if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+        // 寸法索引がなくても巻の代理ページを単独に保つ(設計書 §7.4、§2.4)。
+        if entries.indices.contains(index), entries[index].isStandalonePage {
             return false
         }
         guard let image else { return false }
@@ -569,8 +581,8 @@ final class Book {
         // サイズ未取得でも marks・表紙単ページの規則は適用したいので、
         // 不明なページは縦長サイズを仮定して通常判定に流す
         func assumedSmall(at index: Int) async -> Bool {
-            // 代理ページ(リフロー EPUB)は常に単独(isSmallFromIndex と同じ規則)
-            if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+            // 再配置でも代理ページを隣の画像へ吸収させない(設計書 §7.4、§2.4)。
+            if entries.indices.contains(index), entries[index].isStandalonePage {
                 return false
             }
             let size = await pageSize(at: index) ?? CGSize(width: 70, height: 100)
@@ -697,6 +709,9 @@ final class Book {
         prefetchTask = nil
     }
 
+    /// キャッシュの寿命を、実時間の待機なしで検証する(設計書 §7.4)。
+    func waitForPrefetch() async { await prefetchTask?.value }
+
     private func invalidatePendingNavigation() {
         navigationGeneration &+= 1
         stateRevision &+= 1
@@ -746,12 +761,21 @@ final class Book {
 
     // MARK: - しおり移動
 
+    func resolvedBookmarkIndex(_ bookmark: PageBookmark) -> Int? {
+        if isPartial {
+            return bookmark.pagePath.flatMap { path in entries.firstIndex { $0.pathInBook == path } }
+        }
+        return bookmark.pageIndex
+    }
+
+    var resolvedBookmarkIndices: [Int] { bookmarks.compactMap { resolvedBookmarkIndex($0) } }
+
     func nextBookmarkIndex() -> Int? {
-        bookmarks.map(\.pageIndex).filter { $0 > currentIndex }.min()
+        resolvedBookmarkIndices.filter { $0 > currentIndex }.min()
     }
 
     func previousBookmarkIndex() -> Int? {
-        bookmarks.map(\.pageIndex).filter { $0 < currentIndex }.max()
+        resolvedBookmarkIndices.filter { $0 < currentIndex }.max()
     }
 
     // MARK: - 先読み(仕様書 §4.5 の置換。設計書 §3.1)
