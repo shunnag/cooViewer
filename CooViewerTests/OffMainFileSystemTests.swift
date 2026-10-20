@@ -559,8 +559,7 @@ final class RecentsOffMainTests: XCTestCase {
         XCTAssertEqual(store.recentPaths(), [b, a], "一覧そのものは残す")
     }
 
-    /// 最近の一覧から消えた本を選ぶと、開くフローの実在確認で止まる。黙って残らず、
-    /// 一覧から外れる(フィードバックの音は GUI 依存のためここでは検証しない)
+    /// 保存先に到達できる不在は窓内に示し、最近の一覧から外す(設計書 §7.4)。
     func testOpeningMissingRecentMarksItAbsent() async throws {
         let a = try makeBookFile("a.zip")
         let b = try makeBookFile("b.zip")
@@ -576,7 +575,9 @@ final class RecentsOffMainTests: XCTestCase {
         let stored = try XCTUnwrap(store.recentBookPaths().last)
         XCTAssertEqual(stored, a)
         await controller.openBook(at: URL(fileURLWithPath: stored)).value
-        XCTAssertNil(controller.book)
+        XCTAssertEqual(controller.book?.pageCount, 0)
+        XCTAssertEqual(controller.book?.source.url.path, stored)
+        XCTAssertEqual(controller.failedOpen?.bookWasMissing, true)
         XCTAssertFalse(controller.isOpeningBook)
         XCTAssertEqual(store.recentBookPaths(), [b], "開けなかった本は次のメニューから外れる")
         XCTAssertEqual(store.recentPaths(), [b, a], "一覧そのものは消さない")

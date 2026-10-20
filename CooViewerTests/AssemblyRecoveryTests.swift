@@ -63,6 +63,35 @@ final class AssemblyRecoveryTests: XCTestCase {
         }
     }
 
+    func testReachabilityTimeoutIsPreservedInAssemblyFailure() async throws {
+        let checking = expectation(description: "保存先の応答を停止")
+        let timer = expectation(description: "確認の期限を設定")
+        let gate = AssemblyTestGate()
+        let clock = AssemblyTestClock { if $0 == .seconds(2) { timer.fulfill() } }
+        var policy = AssemblyRetryPolicy.immediate
+        policy.delays = []
+        policy.networkExtraDelay = nil
+        policy.now = { clock.now }
+        policy.sleep = { try await clock.sleep($0) }
+        policy.reachabilityProbe = { _ in checking.fulfill(); await gate.wait(); return false }
+        let configured = policy
+        let build = Task {
+            do {
+                _ = try await AssemblyPreparation.run(candidates: candidates(2), total: 2,
+                    sourceURL: source.url, lanes: 1, policy: configured) { _ in throw KaitoError.io(EIO) }
+                XCTFail("応答期限切れを失敗として返す")
+                return nil as AssemblyFailure?
+            } catch { return error as? AssemblyFailure }
+        }
+        await fulfillment(of: [checking, timer], timeout: 2)
+        clock.advance(.seconds(2))
+        let failure = await build.value
+        XCTAssertEqual(failure?.volumeUnavailable, true)
+        XCTAssertEqual(failure?.reachabilityTimedOut, true)
+        XCTAssertEqual(failure?.unchecked, 1)
+        await gate.open()
+    }
+
     func testUnreachableProbeWaitsForPasswordAnswerAndVerification() async throws {
         let prompting = expectation(description: "入力待ちを開始")
         let probeQueued = expectation(description: "到達不能を通知")
@@ -95,7 +124,9 @@ final class AssemblyRecoveryTests: XCTestCase {
                 _ = try await AssemblyPreparation.run(candidates: candidates(3), total: 3,
                     sourceURL: source.url, lanes: 3, policy: configured,
                     onComplete: { ordinal, _ in if ordinal == 2 { probeApplied.fulfill() } },
-                    onEventEnqueued: { event in if case .probe(false) = event { probeQueued.fulfill() } }) { candidate in
+                    onEventEnqueued: { event in
+                        if case .probe(let reachability) = event, !reachability.isReachable { probeQueued.fulfill() }
+                    }) { candidate in
                         if candidate.ordinal == 0 { throw KaitoError.io(EIO) }
                         if candidate.ordinal == 1 {
                             _ = try await unlocker.unlockForAssembly(encrypted, name: "secret.zip",

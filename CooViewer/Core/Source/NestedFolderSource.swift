@@ -10,7 +10,7 @@ import Washi
 actor NestedFolderSource: BookSource {
     nonisolated let url: URL
     private let folder: FolderSource
-    private let unlocker: NestedUnlocker
+    nonisolated let unlocker: NestedUnlocker
     /// コレクション内の各書庫も本を開いた時点の選択で揃える(設計書 §2.4)。
     private let preferredEngine: ArchiveEngineKind
     private let engineFactory: ArchiveEngineFactory
