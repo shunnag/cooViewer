@@ -178,6 +178,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             readerWindowController?.openBook(
                 at: URL(fileURLWithPath: arguments[index + 1]), atPage: page)
         } else if SettingsStore.shared.openLastFolder,
+                  !arguments.contains("--show-open-failure"),
+                  !arguments.contains("--show-partial-open"),
+                  !arguments.contains("--show-open-failure-volume"),
+                  !arguments.contains("--show-opening-retry"),
                   !AutomatedRun.isXCTest, !didOpenDocumentAtLaunch {
             // 起動時に前回の本を開く(仕様書 §6.1 OpenLastFolder、既定 YES)。
             // XCTest のホストとしての起動では開かない: ユーザーの実データに
@@ -431,11 +435,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.readerWindowController?.showFileInfo()
             }
         }
-        if arguments.contains("--show-opening-progress") {
+        if arguments.contains("--show-opening-progress") || arguments.contains("--show-opening-retry") {
             // 検証用: オープン進捗 HUD を固定内容で表示(スナップショット撮影)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))
-                self.readerWindowController?.debugShowOpeningProgress()
+                self.readerWindowController?.debugShowOpeningProgress(
+                    retrying: arguments.contains("--show-opening-retry"))
+            }
+        }
+        if arguments.contains("--show-open-failure") || arguments.contains("--show-open-failure-volume") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                await self.readerWindowController?.debugShowOpenFailure(
+                    volumeUnavailable: arguments.contains("--show-open-failure-volume"))
+            }
+        }
+        if arguments.contains("--show-partial-open") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                await self.readerWindowController?.debugShowPartialOpen()
             }
         }
         if arguments.contains("--show-activity") {

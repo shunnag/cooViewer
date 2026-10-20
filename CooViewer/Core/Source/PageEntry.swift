@@ -1,5 +1,20 @@
 import Foundation
 
+/// 欠落をページとして可視化し、再読込後の着地点も巻のパスで保つ(設計書 §7.4、§2.4)。
+struct UnreadableVolumeMarker: Sendable, Hashable {
+    let relativePath: String
+    /// 未確認の子は原因を断定しない(仕様書 §4.17、設計書 §7.4)。
+    let cause: ReadFailureCause?
+
+    var message: String {
+        let name = (relativePath as NSString).lastPathComponent
+        let reason = cause.map { OpenFailureMessage.causeText($0) }
+            ?? String(localized: "This volume could not be checked")
+        return name + "\n\n" + reason + "\n\n" + String(localized:
+            "This volume could not be read.\nChoose Reload to try again.")
+    }
+}
+
 /// 本の中の 1 ページ(1 画像)を表す。
 struct PageEntry: Sendable, Hashable, Identifiable {
     /// ソース内での安定 ID(書庫エントリ番号 / PDF ページ番号 / フォルダ列挙順)
@@ -17,6 +32,10 @@ struct PageEntry: Sendable, Hashable, Identifiable {
     /// URL(表紙 1 ページで本を代表し、表示到達で EPUB モードへ切り替える)。
     /// 常に単独表示(見開きに混ぜない — Book.isSmall が除外する)
     var reflowEPUBURL: URL? = nil
+    var unreadableVolume: UnreadableVolumeMarker? = nil
+
+    /// 巻の代理表示を見開きに混ぜると欠落や入場先を見落とす(仕様書 §4.17、設計書 §2.4、§7.4)。
+    var isStandalonePage: Bool { reflowEPUBURL != nil || unreadableVolume != nil }
 
     /// 本の中でこのページが属するフォルダ(サブフォルダ移動の判定単位。仕様書 §4.3.5)
     var containerPath: String {

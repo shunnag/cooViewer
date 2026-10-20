@@ -59,6 +59,9 @@ protocol BookSource: Sendable {
     /// 組んだソースを対話的に開くときの使い回し判定。ネスト対応ソースのみ実装)
     func hasSkippedLockedContent() async -> Bool
 
+    /// 不完全な一覧のページ番号で保存パスを補完しないための除外数(設計書 §7.4)。
+    func excludedChildCount() async -> Int
+
     /// ページのピクセル寸法をヘッダ情報だけから返す(EXIF 回転適用後)。
     /// デコードなしで見開き判定(縦横比)を行うため。取れないソースは nil を
     /// 返し、呼び出し側は従来のデコード判定へフォールバックする
@@ -70,6 +73,9 @@ protocol BookSource: Sendable {
     /// 統合ソースの組み立て進捗(完了した子の数, 子の総数)の通知先を設定する。
     /// 子の本を持たないソースは何もしない
     func setAssemblyProgressHandler(_ handler: (@Sendable (Int, Int) -> Void)?) async
+
+    /// 再試行中の子の相対パスを表示側へ渡す(設計書 §7.4)。
+    func setAssemblyRetryHandler(_ handler: (@Sendable (String) -> Void)?) async
 
     /// このページをディスク上で代表する実体ファイル(仕様書 §4.13 Finder 表示、
     /// ファイル情報)。フォルダの単体画像はその画像ファイル、書庫/PDF 内の
@@ -117,10 +123,12 @@ extension BookSource {
     func imageData(for entry: PageEntry) async -> Data? { nil }
     func imageSize(for entry: PageEntry) async -> CGSize? { nil }
     func hasSkippedLockedContent() async -> Bool { false }
+    func excludedChildCount() async -> Int { 0 }
     func attachNestedPasswordProvider(_ provider: NestedPasswordProvider?) async {}
     func notePasswordSaveConsent(_ password: String) async {}
     func setAssemblyProgressHandler(
         _ handler: (@Sendable (Int, Int) -> Void)?) async {}
+    func setAssemblyRetryHandler(_ handler: (@Sendable (String) -> Void)?) async {}
     func containerFileURL(for entry: PageEntry) async -> URL {
         entry.fileURL ?? url
     }

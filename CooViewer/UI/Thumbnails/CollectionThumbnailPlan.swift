@@ -63,7 +63,8 @@ struct CollectionThumbnailPlan: Sendable {
                     pathInBook: entry.pathInBook,
                     fileURL: entry.fileURL,
                     creationDate: entry.creationDate,
-                    modificationDate: entry.modificationDate))
+                    modificationDate: entry.modificationDate,
+                    unreadableVolume: entry.unreadableVolume))
             }
         }
         return CollectionThumbnailPlan(entries: entries, targets: targets,

@@ -23,4 +23,6 @@ struct EPUBCollectionContext {
     let coverSingle: Bool
     /// しおり付きページ(合本の実ページ index)
     let bookmarkedPages: Set<Int>
+    /// EPUB 往復でも今回の同意と部分一覧を保ち、復帰で完全版の再読込を強制しない(設計書 §7.4、§2.4)。
+    var partialRecovery: ReaderWindowController.FailedOpen? = nil
 }

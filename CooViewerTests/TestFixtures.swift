@@ -12,10 +12,12 @@ extension ArchiveSource {
     init(url: URL, nestingDepth: Int = 0, unlocker: NestedUnlocker? = nil,
          preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live,
+         retryPolicy: AssemblyRetryPolicy = .immediate,
          powerState: any PowerStateProviding = FixedPowerState(isLowPowerModeEnabled: false)) throws {
         try self.init(url: url, nestingDepth: nestingDepth, unlocker: unlocker,
                       persistenceKey: .file(path: url.path),
-                      preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState)
+                      preferredEngine: preferredEngine, engineFactory: engineFactory,
+                      retryPolicy: retryPolicy, powerState: powerState)
     }
 }
 

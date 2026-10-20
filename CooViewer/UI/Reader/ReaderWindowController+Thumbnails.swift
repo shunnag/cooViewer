@@ -246,7 +246,7 @@ extension ReaderWindowController {
                 readsFromLeft: book.readMode.readsFromLeft,
                 singleSetting: book.singleSetting,
                 coverSingle: book.coverSingleFirst,
-                bookmarkedBookPages: Set(book.bookmarks.map(\.pageIndex)),
+                bookmarkedBookPages: Set(book.resolvedBookmarkIndices),
                 forcesReadableColors: forcesReadableColors,
                 jumpContext: .imageBook(book))
         }

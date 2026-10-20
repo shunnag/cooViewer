@@ -588,10 +588,17 @@ final class BookHistoryStore {
     /// は表示上限 OpenRecentLimit 内で判定する。保持自体は 50 件。旧仕様の
     /// 「一覧から外れたら要 AlwaysRemember」と一致。実在確認を伴うため呼び出し側が
     /// メインアクター外で済ませて渡す)
-    func savedPage(forPath rawPath: String, inRecents: Bool) -> (page: Int, pagePath: String?)? {
+    func savedPage(forPath rawPath: String, inRecents: Bool,
+                   pathOnly: Bool = false, includingIndexOnly: Bool = false) -> (page: Int, pagePath: String?)? {
         let path = normalize(rawPath)
         guard let state = loadState(forNormalizedPath: path),
-              let page = state.lastPageIndex, page > 0 else { return nil }
+              let page = state.lastPageIndex else { return nil }
+        // 部分本の先頭にも有効なパスがあるため、旧番号の「復帰なし」と区別する(設計書 §7.4、§2.4)。
+        if pathOnly {
+            guard page >= 0, includingIndexOnly || state.lastPagePath != nil else { return nil }
+        } else {
+            guard page > 0 else { return nil }
+        }
         // 一覧内ならいつでも、外れた本は「閉じた時点で」AlwaysRememberLastPage が
         // ON だった場合のみ(旧 LastPages の write-time 意味論 §7.3)
         guard inRecents || state.rememberBeyondRecents == true else { return nil }
@@ -634,12 +641,21 @@ final class BookHistoryStore {
         let path = normalize(rawPath)
         let result = updateState(forNormalizedPath: path) { state in
             state.displayName = snapshot.displayName
-            state.applyImagePosition(
-                pageIndex: snapshot.pageIndex, pagePath: snapshot.pagePath,
-                rememberBeyondRecents: defaults.bool(forKey: "AlwaysRememberLastPage"),
-                closedAt: Date().timeIntervalSince1970)
+            if !snapshot.isUnreadableVolume {
+                state.applyImagePosition(
+                    pageIndex: snapshot.pageIndex, pagePath: snapshot.pagePath,
+                    rememberBeyondRecents: defaults.bool(forKey: "AlwaysRememberLastPage"),
+                    closedAt: Date().timeIntervalSince1970)
+            }
+            let storedMarks = state.marks
+            let storedBookmarks = state.bookmarks
             state.applySettings(snapshot.settings,
                                 remember: defaults.bool(forKey: "RememberBookSettings"))
+            // 再解釈・正規化せず読込時の配列を保ち、番号のずれを永続化しない(設計書 §7.4、§2.4)。
+            if snapshot.isPartial {
+                state.marks = storedMarks
+                state.bookmarks = storedBookmarks
+            }
             updateURLBookmark(&state, path: path)
         }
         touchRecents(path: path)

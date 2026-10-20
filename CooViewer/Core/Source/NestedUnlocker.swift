@@ -64,7 +64,7 @@ actor NestedUnlocker {
 
     /// 直列化用の末尾タスク(並列の子構築から呼ばれても、解錠処理と
     /// ダイアログは 1 つずつ順番に行う。actor 再入での多重プロンプト防止)
-    private enum Result: Sendable { case unlocked, skipped, unreadable }
+    private enum Result: Sendable { case unlocked, skipped, unreadable, cancelled }
     private var serialTail: Task<Result, Never>?
 
     /// child のロック解除を試みる。成功で true、失敗/キャンセル/読み取り失敗で false
@@ -83,10 +83,13 @@ actor NestedUnlocker {
     /// 合本では読めなかった子を完成済み一覧から消さず、組み立てを失敗させ再試行に残す。
     func unlockForAssembly(_ child: any BookSource, name: String,
                            persistenceKey: PasswordVault.Key) async throws -> Bool {
-        switch await serializedUnlock(child, name: name, persistenceKey: persistenceKey) {
+        let result = await serializedUnlock(child, name: name, persistenceKey: persistenceKey)
+        try Task.checkCancellation()
+        switch result {
         case .unlocked: return true
         case .skipped: return false
         case .unreadable: throw BookSourceError.temporarilyUnavailable(child.url)
+        case .cancelled: throw CancellationError()
         }
     }
 
@@ -95,15 +98,20 @@ actor NestedUnlocker {
         let previous = serialTail
         let task = Task { [previous] in
             _ = await previous?.value
+            guard !Task.isCancelled else { return Result.cancelled }
             return await self.performUnlock(child, name: name,
                                             persistenceKey: persistenceKey)
         }
         serialTail = task
-        return await task.value
+        // 共有の直列末尾は取り消さず、この依頼だけを止めて遅いダイアログを防ぐ(設計書 §7.4)。
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
     }
 
     private func performUnlock(_ child: any BookSource, name: String,
                                persistenceKey: PasswordVault.Key) async -> Result {
+        guard !Task.isCancelled else { return .cancelled }
         // 保存済みパスワード(照会・失敗とも完全無言 = §4.17 の黙殺と整合)。
         // vault 由来は過去に同意済みなので同意集合に入れる。
         // 読み取り失敗(unreadable)は子が読めないのであってパスワードの問題ではない。
@@ -111,6 +119,7 @@ actor NestedUnlocker {
         // 無言スキップと同じ扱いで外す(cooViewer-3tfd)。キャンセルとは違い、
         // 他の子への問い合わせは止めない
         if let vault, let saved = await vault.password(for: persistenceKey) {
+            guard !Task.isCancelled else { return .cancelled }
             switch await child.checkAndSetPassword(saved) {
             case .accepted:
                 consentedPasswords.insert(saved)
@@ -126,6 +135,7 @@ actor NestedUnlocker {
             }
         }
         for password in knownPasswords {
+            guard !Task.isCancelled else { return .cancelled }
             switch await child.checkAndSetPassword(password) {
             case .accepted:
                 if consentedPasswords.contains(password) {
@@ -145,7 +155,14 @@ actor NestedUnlocker {
         }
         let maxAttempts = 3
         for attempt in 1...maxAttempts {
-            guard let answer = await provider(name, attempt) else {
+            guard !Task.isCancelled else { return .cancelled }
+            // 入力待ちは障害の待ち時間ではないため、合本の期限を止める(設計書 §2.4、§7.4)。
+            AssemblyInteraction.handler?(true)
+            // 回答の検証・保存まで保護し、到達不能通知で入力済みの回答を捨てない(設計書 §2.4、§7.4)。
+            defer { AssemblyInteraction.handler?(false) }
+            let answer = await provider(name, attempt)
+            guard !Task.isCancelled else { return .cancelled }
+            guard let answer else {
                 promptingDisabled = true  // キャンセル=この本ではもう尋ねない
                 sawSkippedChild = true
                 return .skipped
@@ -160,6 +177,9 @@ actor NestedUnlocker {
                 sawUnlockedChild = true
                 return .unlocked
             case .unreadable:
+                // 検証未了の回答を再試行でも使い、再入力は求めない。保存は成功時だけ行う(設計書 §2.4、§7.4)。
+                addKnown(answer.password)
+                if answer.saveRequested { consentedPasswords.insert(answer.password) }
                 return .unreadable
             case .rejected:
                 continue

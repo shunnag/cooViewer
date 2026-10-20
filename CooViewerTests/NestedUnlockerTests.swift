@@ -123,7 +123,7 @@ final class NestedUnlockerTests: XCTestCase {
 
     /// ダイアログの回答が読み取り失敗なら、その子の問い合わせは終えるが、
     /// キャンセルとは違って他の子への問い合わせは続く
-    func testUnreadableDuringPromptKeepsPromptingForOtherChildren() async {
+    func testUnreadableDuringPromptAllowsSilentUnlockOfOtherChildren() async {
         let prompts = PromptCounter(answer: "pw")
         let unlocker = NestedUnlocker(provider: { await prompts.provide($0, $1) })
         let flaky = MockEncryptedSource(password: "pw", fixedOutcome: .unreadable)
@@ -136,10 +136,10 @@ final class NestedUnlockerTests: XCTestCase {
         let healthy = MockEncryptedSource(password: "pw")
         let healthyOK = await unlocker.unlock(healthy, name: "healthy.zip")
         XCTAssertTrue(healthyOK, "別の子はダイアログで解錠できる")
-        // 兄弟は 1 回目(attempt 1)から尋ねられる = 読めない子が試行予算を奪っていない
+        // 検証未了の回答も兄弟で再利用し、同じ回答を再入力させない(設計書 §2.4、§7.4)。
         let recorded = await prompts.prompts
-        XCTAssertEqual(recorded.map(\.name), ["flaky.zip", "healthy.zip"])
-        XCTAssertEqual(recorded.map(\.attempt), [1, 1])
+        XCTAssertEqual(recorded.map(\.name), ["flaky.zip"])
+        XCTAssertEqual(recorded.map(\.attempt), [1])
         let sawSkipped = await unlocker.sawSkippedChild
         let sawUnlocked = await unlocker.sawUnlockedChild
         XCTAssertTrue(sawSkipped)
@@ -152,6 +152,63 @@ final class NestedUnlockerTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("unlocker-vault-\(UUID().uuidString)")
         return (PasswordVault(key: SymmetricKey(size: .bits256), directory: dir), dir)
+    }
+
+    func testUnreadableAnswerIsRetriedSilentlyAndSavedOnlyAfterAcceptance() async throws {
+        let (vault, dir) = makeVault()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = PasswordVault.Key.file(path: "/tmp/books/retrying.zip")
+        let prompts = PromptCounter(answer: "pw")
+        let unlocker = NestedUnlocker(provider: { name, attempt in
+            _ = await prompts.provide(name, attempt)
+            return NestedPasswordAnswer(password: "pw", saveRequested: true)
+        }, vault: vault)
+        do {
+            _ = try await unlocker.unlockForAssembly(
+                MockEncryptedSource(password: "pw", fixedOutcome: .unreadable),
+                name: "retrying.zip", persistenceKey: key)
+            XCTFail("未検証の回答は合本の再試行へ戻す")
+        } catch { XCTAssertEqual(SourceReadFailure.retryClass(error), .transient) }
+        let pending = await vault.password(for: key)
+        XCTAssertNil(pending)
+        let accepted = try await unlocker.unlockForAssembly(
+            MockEncryptedSource(password: "pw"), name: "retrying.zip", persistenceKey: key)
+        let count = await prompts.count
+        let saved = await vault.password(for: key)
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(saved, "pw")
+    }
+
+    func testCancelledQueuedUnlockNeverPromptsAndDoesNotCancelPreviousUnlock() async throws {
+        let prompting = expectation(description: "先行する回答を待機")
+        let queued = expectation(description: "後続の解除依頼")
+        let gate = AssemblyTestGate()
+        let prompts = PromptCounter(answer: "pw")
+        let unlocker = NestedUnlocker(provider: { name, attempt in
+            let answer = await prompts.provide(name, attempt)
+            if name == "first.zip" { prompting.fulfill(); await gate.wait() }
+            return answer
+        })
+        let first = Task {
+            try await unlocker.unlockForAssembly(MockEncryptedSource(password: "pw"), name: "first.zip",
+                persistenceKey: .file(path: "/tmp/first.zip"))
+        }
+        await fulfillment(of: [prompting], timeout: 1)
+        let second = Task {
+            queued.fulfill()
+            return try await unlocker.unlockForAssembly(MockEncryptedSource(password: "other"), name: "late.zip",
+                persistenceKey: .file(path: "/tmp/late.zip"))
+        }
+        await fulfillment(of: [queued], timeout: 1)
+        second.cancel()
+        await gate.open()
+        let accepted = try await first.value
+        XCTAssertTrue(accepted)
+        do { _ = try await second.value; XCTFail("後続の依頼だけを取り消す") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let recorded = await prompts.prompts
+        XCTAssertEqual(recorded.map(\.name), ["first.zip"])
     }
 
     func testVaultPasswordUnlocksWithoutPrompt() async {

@@ -5870,6 +5870,399 @@
           }
         }
       }
+    },
+    "Reload": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "もう一度読み込む"
+          }
+        }
+      }
+    },
+    "Could not open “%@”.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” を開けませんでした。"
+          }
+        }
+      }
+    },
+    "Could not check %lld additional books.": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Could not check %lld additional book."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Could not check %lld additional books."
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "さらに %lld 冊は確認できませんでした。"
+          }
+        }
+      }
+    },
+    "The book will not be displayed with missing pages.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページが欠けた状態では表示しません。"
+          }
+        }
+      }
+    },
+    "“%@” could not be found (it may have been moved or deleted).": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” が見つかりません(移動・削除された可能性があります)。"
+          }
+        }
+      }
+    },
+    "Access denied": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセス権がありません"
+          }
+        }
+      }
+    },
+    "File not found (it may have been moved or deleted)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ファイルが見つかりません(移動・削除された可能性)"
+          }
+        }
+      }
+    },
+    "Not enough disk space": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ディスクの空きが足りません"
+          }
+        }
+      }
+    },
+    "Connection lost": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続が切れています"
+          }
+        }
+      }
+    },
+    "The file changed while reading": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読み込み中にファイルが変わりました"
+          }
+        }
+      }
+    },
+    "Reading failed repeatedly": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "繰り返し読み込みに失敗しました"
+          }
+        }
+      }
+    },
+    "Retrying “%@”…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” を再試行しています…"
+          }
+        }
+      }
+    },
+    "Could not check %lld books.": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Could not check %lld book."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Could not check %lld books."
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 冊は確認できませんでした。"
+          }
+        }
+      }
+    },
+    "Could not read the following %lld books:": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Could not read the following %lld book:"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Could not read the following %lld books:"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "次の %lld 冊を読み込めません:"
+          }
+        }
+      }
+    },
+    "• %lld more books": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "• %lld more book"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "• %lld more books"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "・ほか %lld 冊"
+          }
+        }
+      }
+    },
+    "• %@ — %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "・%@ — %@"
+          }
+        }
+      }
+    },
+    "The storage location is unavailable. It will reload automatically when the volume is reconnected or the Mac wakes.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存先に接続できません。再接続(マウント)かスリープ解除のときに自動で読み直します。"
+          }
+        }
+      }
+    },
+    "The storage location is unavailable. Choose Reload when the connection returns.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存先に接続できません。接続が戻ったら「もう一度読み込む」を選んでください。"
+          }
+        }
+      }
+    },
+    "Open Without Unreadable Volumes": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読めない巻を除いて開く"
+          }
+        }
+      }
+    },
+    "This volume could not be checked": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この巻は確認できませんでした"
+          }
+        }
+      }
+    },
+    "This volume could not be read.\nChoose Reload to try again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この巻は読み込めませんでした。\n「もう一度読み込む」で読み直せます。"
+          }
+        }
+      }
+    },
+    "(Missing volume)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": { "state": "translated", "value": "(欠けた巻)" }
+        }
+      }
+    },
+    "Bookmarks cannot be changed while volumes are missing": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一部の巻が欠けているため、しおりは変更できません"
+          }
+        }
+      }
+    },
+    "Spread adjustments cannot be saved while volumes are missing": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一部の巻が欠けているため、見開きの調整は保存できません"
+          }
+        }
+      }
+    },
+    " (%lld volumes missing)": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": " (%lld volume missing)"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": " (%lld volumes missing)"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(欠け %lld 冊)"
+          }
+        }
+      }
+    },
+    "Still unable to read %lld volumes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Still unable to read %lld volume"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Still unable to read %lld volumes"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "まだ %lld 冊を読み込めません"
+          }
+        }
+      }
+    },
+    "Opened “%@” without %lld unreadable volumes.": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Opened “%@” without %lld unreadable volume."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Opened “%@” without %lld unreadable volumes."
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” を、読めない %lld 冊を除いて開きました。"
+          }
+        }
+      }
     }
   },
   "version": "1.1"
