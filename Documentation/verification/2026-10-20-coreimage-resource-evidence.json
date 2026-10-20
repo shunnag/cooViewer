@@ -1,0 +1,762 @@
+{
+  "reportedSignature": {
+    "signal": "SIGSEGV",
+    "far": 40,
+    "x8": 0,
+    "symbolLocation": 1136,
+    "imageOffset": 3211776,
+    "CoreImageUUID": "f87ba1ec-adf3-31c4-b443-b67a9ba9d2f8"
+  },
+  "syntheticReproductions": [
+    {
+      "test": "Lanczos cold FD exhaustion",
+      "exception": {
+        "codes": "0x0000000000000001, 0x0000000000000028",
+        "rawCodes": [
+          1,
+          40
+        ],
+        "type": "EXC_BAD_ACCESS",
+        "signal": "SIGSEGV",
+        "subtype": "KERN_INVALID_ADDRESS at 0x0000000000000028"
+      },
+      "queue": "CI::MainProgramArgsQ-2",
+      "function": "invocation function for block in CI::ProgramNode::create_program_and_arguments(CI::Context*, char const*)",
+      "symbolLocation": 1136,
+      "imageOffset": 3211776,
+      "far": 40,
+      "x8": 0,
+      "CoreImageUUID": "f87ba1ec-adf3-31c4-b443-b67a9ba9d2f8"
+    },
+    {
+      "test": "Lanczos cold FD exhaustion",
+      "exception": {
+        "codes": "0x0000000000000001, 0x0000000000000028",
+        "rawCodes": [
+          1,
+          40
+        ],
+        "type": "EXC_BAD_ACCESS",
+        "signal": "SIGSEGV",
+        "subtype": "KERN_INVALID_ADDRESS at 0x0000000000000028"
+      },
+      "queue": "CI::MainProgramArgsQ-1",
+      "function": "invocation function for block in CI::ProgramNode::create_program_and_arguments(CI::Context*, char const*)",
+      "symbolLocation": 1136,
+      "imageOffset": 3211776,
+      "far": 40,
+      "x8": 0,
+      "CoreImageUUID": "f87ba1ec-adf3-31c4-b443-b67a9ba9d2f8"
+    },
+    {
+      "test": "Noise reduction cold FD exhaustion",
+      "exception": {
+        "codes": "0x0000000000000001, 0x0000000000000028",
+        "rawCodes": [
+          1,
+          40
+        ],
+        "type": "EXC_BAD_ACCESS",
+        "signal": "SIGSEGV",
+        "subtype": "KERN_INVALID_ADDRESS at 0x0000000000000028"
+      },
+      "queue": "CI::MainProgramArgsQ-1",
+      "function": "invocation function for block in CI::ProgramNode::create_program_and_arguments(CI::Context*, char const*)",
+      "symbolLocation": 1136,
+      "imageOffset": 3211776,
+      "far": 40,
+      "x8": 0,
+      "CoreImageUUID": "f87ba1ec-adf3-31c4-b443-b67a9ba9d2f8"
+    }
+  ],
+  "controls": {
+    "coldLanczos16FreeFDs": {
+      "width": 978,
+      "height": 341,
+      "centerRGBA": [
+        204,
+        51,
+        26,
+        255
+      ]
+    },
+    "MetalFX16FreeFDs": {
+      "width": 2500,
+      "height": 2000,
+      "centerRGBA": [
+        204,
+        51,
+        26,
+        255
+      ]
+    },
+    "coldNoiseReduction16FreeFDs": {
+      "width": 2048,
+      "height": 1536,
+      "centerRGBA": [
+        204,
+        51,
+        26,
+        255
+      ]
+    }
+  },
+  "fixedBoundaryCases": [
+    {
+      "mode": "fd-scale-late",
+      "spareFD": 0,
+      "exit": 0,
+      "result": null,
+      "afterRelease": [
+        978,
+        341
+      ]
+    },
+    {
+      "mode": "fd-noise-late",
+      "spareFD": 0,
+      "exit": 0,
+      "result": null,
+      "afterRelease": [
+        2048,
+        1536
+      ]
+    },
+    {
+      "mode": "fd-metal",
+      "spareFD": 0,
+      "exit": 0,
+      "result": null,
+      "afterRelease": [
+        2500,
+        2000
+      ]
+    },
+    {
+      "mode": "fd-scale-late",
+      "spareFD": 32,
+      "exit": 0,
+      "result": [
+        978,
+        341
+      ]
+    },
+    {
+      "mode": "fd-noise-late",
+      "spareFD": 32,
+      "exit": 0,
+      "result": [
+        2048,
+        1536
+      ]
+    },
+    {
+      "mode": "fd-metal",
+      "spareFD": 32,
+      "exit": 0,
+      "result": [
+        2500,
+        2000
+      ]
+    },
+    {
+      "mode": "invalid-lanczos",
+      "value": "NaN",
+      "exit": 0
+    },
+    {
+      "mode": "invalid-metalfx",
+      "value": "Infinity",
+      "exit": 0
+    },
+    {
+      "mode": "wide-metalfx",
+      "input": [
+        16384,
+        2
+      ],
+      "outputRequest": [
+        32768,
+        4
+      ],
+      "outputBytes": 524288,
+      "beforeExit": 134,
+      "beforeReason": "Metal texture width exceeds 16384",
+      "afterExit": 0,
+      "afterResult": null
+    }
+  ],
+  "fixedCollection": {
+    "archiveCount": 300,
+    "contents": [
+      "synthetic JPEG",
+      "one-page scanned-style PDF",
+      "memo"
+    ],
+    "expectedPages": 600,
+    "actualPages": 600,
+    "secondReadPages": 600,
+    "initialFD": 7,
+    "retainedFD": 71,
+    "sourceReleased": true,
+    "releasedFDStandalone": 7,
+    "releasedFDInFullSuite": 11
+  },
+  "validation": {
+    "cooViewerFull": {
+      "tests": 926,
+      "skipped": 2,
+      "failures": 0
+    },
+    "cooViewerDecodedStateFocused": {
+      "tests": 39,
+      "failures": 0
+    },
+    "KaitoKitFullBeforeLastCacheOptimizations": {
+      "tests": 1743,
+      "skipped": 51,
+      "failures": 0
+    },
+    "KaitoKitFinalFDAndVolumesASan": {
+      "tests": 92,
+      "failures": 0
+    },
+    "WashiFull": {
+      "tests": 749,
+      "skipped": 5,
+      "failures": 0
+    },
+    "renderNormalRequests": 1800,
+    "renderAnisotropicRequests": 1800,
+    "noiseRequests": 36,
+    "Gyoshuku300FolderReencodeAndConvert": {
+      "tests": 1,
+      "failures": 0
+    },
+    "cooViewerReleaseBuild": {
+      "configuration": "Release",
+      "architecture": "arm64",
+      "codeSigningAllowed": false,
+      "success": true
+    }
+  },
+  "performance": {
+    "environment": "M4 Max / macOS 27.2 / -O / synthetic data / concurrent regression suites running",
+    "ioInputMiB": 64,
+    "ioReadMiBPerRound": 2048,
+    "ioChunkKiB": 256,
+    "archiveCount": 300,
+    "archiveVisitsPerRound": 1500,
+    "excludedWarmupRounds": 1,
+    "ioAndArchives": [
+      {
+        "trial": 0,
+        "binary": "io-old",
+        "mode": "archive-persistent",
+        "rounds": [
+          {
+            "open_ms": 40.858666667190846,
+            "revisit_ms": 9.000333331641741
+          },
+          {
+            "open_ms": 41.376833332833485,
+            "revisit_ms": 8.650791667605517
+          },
+          {
+            "open_ms": 41.867041665682336,
+            "revisit_ms": 8.843749999869033
+          },
+          {
+            "open_ms": 40.79433333390625,
+            "revisit_ms": 8.835333333991002
+          },
+          {
+            "open_ms": 40.75791666764417,
+            "revisit_ms": 8.90070833338541
+          },
+          {
+            "open_ms": 40.45399999995425,
+            "revisit_ms": 8.616875000370783
+          }
+        ]
+      },
+      {
+        "trial": 0,
+        "binary": "io-new",
+        "mode": "archive-bounded",
+        "rounds": [
+          {
+            "open_ms": 44.00287499993283,
+            "revisit_ms": 41.545208332536276
+          },
+          {
+            "open_ms": 42.145999999775086,
+            "revisit_ms": 41.81962500115333
+          },
+          {
+            "open_ms": 43.3497083340626,
+            "revisit_ms": 42.60887499913224
+          },
+          {
+            "open_ms": 45.073374998537474,
+            "revisit_ms": 42.405458334542345
+          },
+          {
+            "open_ms": 45.145708332711365,
+            "revisit_ms": 42.073166667250916
+          },
+          {
+            "open_ms": 45.78337500061025,
+            "revisit_ms": 42.338416666098055
+          }
+        ]
+      },
+      {
+        "trial": 0,
+        "binary": "io-old",
+        "mode": "persistent",
+        "rounds": [
+          {
+            "milliseconds": 77.24462500118534
+          },
+          {
+            "milliseconds": 77.89466666508815
+          },
+          {
+            "milliseconds": 78.27804166663554
+          },
+          {
+            "milliseconds": 77.5235833334591
+          },
+          {
+            "milliseconds": 76.30012499976147
+          },
+          {
+            "milliseconds": 76.94583333250193
+          }
+        ]
+      },
+      {
+        "trial": 0,
+        "binary": "io-new",
+        "mode": "bounded",
+        "rounds": [
+          {
+            "milliseconds": 79.38491666754999
+          },
+          {
+            "milliseconds": 78.75891666844836
+          },
+          {
+            "milliseconds": 79.29170833267563
+          },
+          {
+            "milliseconds": 78.68058333406225
+          },
+          {
+            "milliseconds": 77.1417083342385
+          },
+          {
+            "milliseconds": 79.74670833391428
+          }
+        ]
+      },
+      {
+        "trial": 1,
+        "binary": "io-old",
+        "mode": "archive-persistent",
+        "rounds": [
+          {
+            "open_ms": 40.194916666223435,
+            "revisit_ms": 8.901458333639312
+          },
+          {
+            "open_ms": 40.92300000047544,
+            "revisit_ms": 8.753541666010278
+          },
+          {
+            "open_ms": 40.39233333423908,
+            "revisit_ms": 8.511458332577604
+          },
+          {
+            "open_ms": 40.539041665397235,
+            "revisit_ms": 8.761291666814941
+          },
+          {
+            "open_ms": 41.32449999997334,
+            "revisit_ms": 8.970208333266783
+          },
+          {
+            "open_ms": 40.699958333789255,
+            "revisit_ms": 9.21316666790517
+          }
+        ]
+      },
+      {
+        "trial": 1,
+        "binary": "io-new",
+        "mode": "archive-bounded",
+        "rounds": [
+          {
+            "open_ms": 43.28595833248983,
+            "revisit_ms": 41.28612500062445
+          },
+          {
+            "open_ms": 42.21645833422372,
+            "revisit_ms": 45.98112500025309
+          },
+          {
+            "open_ms": 44.13658333396597,
+            "revisit_ms": 42.342624999946565
+          },
+          {
+            "open_ms": 44.240083332624636,
+            "revisit_ms": 43.213166667555925
+          },
+          {
+            "open_ms": 43.78908333274012,
+            "revisit_ms": 43.229541666732985
+          },
+          {
+            "open_ms": 44.495333333543385,
+            "revisit_ms": 44.14954166713869
+          }
+        ]
+      },
+      {
+        "trial": 1,
+        "binary": "io-old",
+        "mode": "persistent",
+        "rounds": [
+          {
+            "milliseconds": 80.407749999722
+          },
+          {
+            "milliseconds": 75.95266666612588
+          },
+          {
+            "milliseconds": 75.45387500067591
+          },
+          {
+            "milliseconds": 76.89399999981106
+          },
+          {
+            "milliseconds": 78.69616666539514
+          },
+          {
+            "milliseconds": 77.35766666701238
+          }
+        ]
+      },
+      {
+        "trial": 1,
+        "binary": "io-new",
+        "mode": "bounded",
+        "rounds": [
+          {
+            "milliseconds": 78.13429166526475
+          },
+          {
+            "milliseconds": 77.65591666611726
+          },
+          {
+            "milliseconds": 77.96500000040396
+          },
+          {
+            "milliseconds": 78.44937500158267
+          },
+          {
+            "milliseconds": 79.15725000020757
+          },
+          {
+            "milliseconds": 81.60866666730726
+          }
+        ]
+      },
+      {
+        "trial": 2,
+        "binary": "io-old",
+        "mode": "archive-persistent",
+        "rounds": [
+          {
+            "open_ms": 41.78683333338995,
+            "revisit_ms": 9.70262499868113
+          },
+          {
+            "open_ms": 41.09683333263092,
+            "revisit_ms": 9.051833334524417
+          },
+          {
+            "open_ms": 44.0100000014354,
+            "revisit_ms": 10.004458332332433
+          },
+          {
+            "open_ms": 43.33387500082608,
+            "revisit_ms": 9.441041665922967
+          },
+          {
+            "open_ms": 43.49266666577023,
+            "revisit_ms": 9.291000000303029
+          },
+          {
+            "open_ms": 42.06583333325398,
+            "revisit_ms": 10.00370833389752
+          }
+        ]
+      },
+      {
+        "trial": 2,
+        "binary": "io-new",
+        "mode": "archive-bounded",
+        "rounds": [
+          {
+            "open_ms": 44.29049999998824,
+            "revisit_ms": 46.91612500027986
+          },
+          {
+            "open_ms": 43.84866666623566,
+            "revisit_ms": 48.851750001631444
+          },
+          {
+            "open_ms": 43.3371666676976,
+            "revisit_ms": 44.614958333113464
+          },
+          {
+            "open_ms": 45.00058333178458,
+            "revisit_ms": 42.96408333357249
+          },
+          {
+            "open_ms": 42.87991666569724,
+            "revisit_ms": 43.13416666809644
+          },
+          {
+            "open_ms": 45.31187500106171,
+            "revisit_ms": 45.484083333576564
+          }
+        ]
+      },
+      {
+        "trial": 2,
+        "binary": "io-old",
+        "mode": "persistent",
+        "rounds": [
+          {
+            "milliseconds": 80.92933333318797
+          },
+          {
+            "milliseconds": 81.8891666658601
+          },
+          {
+            "milliseconds": 81.00033333357715
+          },
+          {
+            "milliseconds": 81.82104166735371
+          },
+          {
+            "milliseconds": 80.42129166824452
+          },
+          {
+            "milliseconds": 80.6443333349307
+          }
+        ]
+      },
+      {
+        "trial": 2,
+        "binary": "io-new",
+        "mode": "bounded",
+        "rounds": [
+          {
+            "milliseconds": 83.61795833297947
+          },
+          {
+            "milliseconds": 82.21512500131212
+          },
+          {
+            "milliseconds": 78.73333333191113
+          },
+          {
+            "milliseconds": 78.84875000127067
+          },
+          {
+            "milliseconds": 80.34212500024296
+          },
+          {
+            "milliseconds": 78.67533333228494
+          }
+        ]
+      }
+    ],
+    "rendering": [
+      {
+        "trial": 0,
+        "binary": "render-old",
+        "renderer": "lanczos",
+        "n": 150,
+        "p50_ms": 2.1581666678684996,
+        "p95_ms": 2.442833334498573
+      },
+      {
+        "trial": 0,
+        "binary": "render-old",
+        "renderer": "noise",
+        "n": 60,
+        "p50_ms": 1.5020416667539394,
+        "p95_ms": 1.64954166575626
+      },
+      {
+        "trial": 0,
+        "binary": "render-old",
+        "renderer": "metal",
+        "n": 60,
+        "p50_ms": 4.543541666862438,
+        "p95_ms": 4.780249999384978
+      },
+      {
+        "trial": 0,
+        "binary": "render-new",
+        "renderer": "lanczos",
+        "n": 150,
+        "p50_ms": 2.1478749986272305,
+        "p95_ms": 2.5365000001329463
+      },
+      {
+        "trial": 0,
+        "binary": "render-new",
+        "renderer": "noise",
+        "n": 60,
+        "p50_ms": 1.5265833335433854,
+        "p95_ms": 1.6982083325274289
+      },
+      {
+        "trial": 0,
+        "binary": "render-new",
+        "renderer": "metal",
+        "n": 60,
+        "p50_ms": 4.985666666470934,
+        "p95_ms": 5.293291666021105
+      },
+      {
+        "trial": 1,
+        "binary": "render-old",
+        "renderer": "lanczos",
+        "n": 150,
+        "p50_ms": 2.708166666707257,
+        "p95_ms": 2.985083334351657
+      },
+      {
+        "trial": 1,
+        "binary": "render-old",
+        "renderer": "noise",
+        "n": 60,
+        "p50_ms": 1.6240416662185453,
+        "p95_ms": 1.854500000263215
+      },
+      {
+        "trial": 1,
+        "binary": "render-old",
+        "renderer": "metal",
+        "n": 60,
+        "p50_ms": 4.552500000500004,
+        "p95_ms": 5.008458332667942
+      },
+      {
+        "trial": 1,
+        "binary": "render-new",
+        "renderer": "lanczos",
+        "n": 150,
+        "p50_ms": 2.1578750001935987,
+        "p95_ms": 2.5068750001082662
+      },
+      {
+        "trial": 1,
+        "binary": "render-new",
+        "renderer": "noise",
+        "n": 60,
+        "p50_ms": 1.5045416657812893,
+        "p95_ms": 1.646749999054009
+      },
+      {
+        "trial": 1,
+        "binary": "render-new",
+        "renderer": "metal",
+        "n": 60,
+        "p50_ms": 4.708124999524443,
+        "p95_ms": 5.040374999225605
+      },
+      {
+        "trial": 2,
+        "binary": "render-old",
+        "renderer": "lanczos",
+        "n": 150,
+        "p50_ms": 2.144416666851612,
+        "p95_ms": 2.3209583341667894
+      },
+      {
+        "trial": 2,
+        "binary": "render-old",
+        "renderer": "noise",
+        "n": 60,
+        "p50_ms": 1.4962083332648035,
+        "p95_ms": 1.6677083331160247
+      },
+      {
+        "trial": 2,
+        "binary": "render-old",
+        "renderer": "metal",
+        "n": 60,
+        "p50_ms": 4.550416666461388,
+        "p95_ms": 4.953333334924537
+      },
+      {
+        "trial": 2,
+        "binary": "render-new",
+        "renderer": "lanczos",
+        "n": 150,
+        "p50_ms": 2.1474166660482297,
+        "p95_ms": 2.450124999086256
+      },
+      {
+        "trial": 2,
+        "binary": "render-new",
+        "renderer": "noise",
+        "n": 60,
+        "p50_ms": 1.5163749994826503,
+        "p95_ms": 1.6803333328425651
+      },
+      {
+        "trial": 2,
+        "binary": "render-new",
+        "renderer": "metal",
+        "n": 60,
+        "p50_ms": 4.736749999210588,
+        "p95_ms": 5.495583334777621
+      }
+    ],
+    "decodedStateCacheBookkeeping": {
+      "uses": 50000,
+      "microsecondsPerUse": 7.65515,
+      "discardedHotOwner": 0
+    }
+  },
+  "decodedRetentionPolicy": {
+    "memoryGiBPerIdleBook": 8,
+    "maximumIdleBooks": 16,
+    "on128GiBMachine": 16,
+    "globalActiveSpoolLimit": 4,
+    "inUseExtractorsAndActiveBuildOrSpoolAreProtected": true
+  },
+  "nonRGBCorrection": {
+    "input": "synthetic CMYK CGImage",
+    "spareFD": 64,
+    "beforeGPUResult": null,
+    "afterReleasingFDResultBeforeFix": null,
+    "beforeProbeExit": -5,
+    "beforeExitWasDiagnosticAssertion": true,
+    "afterGPUResult": [
+      2500,
+      2000
+    ],
+    "afterExit": 0,
+    "grayAndCMYKComparedWithCoreGraphicsRGB": true
+  }
+}
