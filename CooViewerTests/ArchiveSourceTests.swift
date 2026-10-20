@@ -1,4 +1,6 @@
 import AppKit
+import Darwin
+import KaitoKit
 import PDFKit
 import XCTest
 import os
@@ -310,6 +312,35 @@ final class ArchiveSourceTests: XCTestCase {
             url: fixture("blocks"), cancelledPage: 2, expectedWidths: [4, 4, 4, 4])
     }
 
+    func testResourceFailureDuringPoolGrowthCanBeRetried() async throws {
+        let url = try writeZip(named: "resource-pool.zip", entries: (0..<4).map {
+            (Array("p\($0).avifs".utf8), TestFixtures.pngData(width: 4 + $0, height: 6))
+        })
+        try await assertCancelledPoolGrowthCanBeRetried(
+            url: url, cancelledPage: 1, expectedWidths: [4, 5, 6, 7], resourceFailure: true)
+    }
+
+    func testResourceFailureCreatingFirstExtractorDoesNotDisableFutureGrowth() async throws {
+        let url = try writeZip(named: "resource-first.zip", entries: [
+            (Array("page.avifs".utf8), TestFixtures.pngData(width: 4, height: 6)),
+        ])
+        let opens = OSAllocatedUnfairLock(initialState: 0)
+        let factory = ArchiveEngineFactory(openFile: ArchiveEngineFactory.live.openFile,
+            openData: { kind, data, role in
+                let ordinal = opens.withLock { $0 += 1; return $0 }
+                if ordinal == 2 { throw KaitoError.io(EMFILE) }
+                return try ArchiveEngineFactory.live.openData(kind, data, role)
+            })
+        let source = try ArchiveSource(url: url, engineFactory: factory)
+        let pages = try await source.entries()
+        _ = try await source.image(for: pages[0], maxPixelSize: nil)
+        let before = await source.extractorCount
+        XCTAssertEqual(before, 0)
+        _ = try await source.image(for: pages[0], maxPixelSize: nil)
+        let after = await source.extractorCount
+        XCTAssertEqual(after, 1)
+    }
+
     func testCancelledFirstExtractorFailureIsTransient() async throws {
         let url = try writeZip(named: "first-cancel.zip", entries: [
             (Array("page.avifs".utf8), TestFixtures.pngData(width: 4, height: 6)),
@@ -340,7 +371,7 @@ final class ArchiveSourceTests: XCTestCase {
     }
 
     private func assertCancelledPoolGrowthCanBeRetried(
-        url: URL, cancelledPage: Int, expectedWidths: [Int]
+        url: URL, cancelledPage: Int, expectedWidths: [Int], resourceFailure: Bool = false
     ) async throws {
         let busy = expectation(description: "最初の展開係を使用中にする")
         let cancelledOpen = expectation(description: "増設オープンをキャンセル済み Task で実行")
@@ -353,10 +384,24 @@ final class ArchiveSourceTests: XCTestCase {
             openFile: ArchiveEngineFactory.live.openFile,
             openData: { kind, data, role in
                 let ordinal = opens.withLock { $0 += 1; return $0 }
+                if ordinal == 3, resourceFailure {
+                    cancelledOpen.fulfill()
+                    throw KaitoError.io(EMFILE)
+                }
                 // image() 入口の検査を通過後、KaitoKit を開く直前にキャンセルする。
                 // actor 待機中にキャンセルされる競合を、時間待ちなしで再現する。
                 if ordinal == 3 { withUnsafeCurrentTask { $0?.cancel() } }
-                let engine = try ArchiveEngineFactory.live.openData(kind, data, role)
+                let engine: (any ArchiveEngine)?
+                do {
+                    engine = try ArchiveEngineFactory.live.openData(kind, data, role)
+                } catch {
+                    if ordinal == 3 {
+                        XCTAssertTrue(Task.isCancelled)
+                        XCTAssertTrue(error is CancellationError, "キャンセルの理由を factory が保持する")
+                        cancelledOpen.fulfill()
+                    }
+                    throw error
+                }
                 if ordinal == 3 {
                     XCTAssertTrue(Task.isCancelled)
                     XCTAssertNil(engine, "KaitoKit の実際のキャンセル契約を通す")
@@ -380,8 +425,10 @@ final class ArchiveSourceTests: XCTestCase {
         await fulfillment(of: [busy], timeout: 3)
         let cancelled = Task {
             do {
-                _ = try await source.image(for: pages[cancelledPage], maxPixelSize: nil)
-                XCTFail("キャンセルされた展開の nil を成功扱いしない")
+                let image = try await source.image(for: pages[cancelledPage], maxPixelSize: nil)
+                if resourceFailure {
+                    XCTAssertEqual(image.width, expectedWidths[cancelledPage])
+                } else { XCTFail("キャンセルされた展開の nil を成功扱いしない") }
             } catch {
                 XCTAssertTrue(error is CancellationError, "\(error)")
             }
