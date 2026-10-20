@@ -33,7 +33,7 @@ final class AssemblyAbortTests: XCTestCase {
         let factory = ArchiveEngineFactory(openFile: { kind, path, role in
             let name = URL(fileURLWithPath: path).lastPathComponent
             let fail = state.withLock { $0.calls[name, default: 0] += 1; return $0.fail && name == "bad.zip" }
-            if fail { throw KaitoError.io(EACCES) }
+            if fail { throw KaitoError.io(ENOSPC) }
             return try ArchiveEngineFactory.live.openFile(kind, path, role)
         }, openData: { _, _, _ in nil })
         let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
@@ -263,7 +263,7 @@ final class AssemblyAbortTests: XCTestCase {
         policy.now = { clock.now }
         policy.sleep = { try await clock.sleep($0) }
         policy.beforeChildAttempt = { path in
-            if path == "bad.zip" { throw KaitoError.io(EACCES) }
+            if path == "bad.zip" { throw KaitoError.io(ENOSPC) }
             if path == "B.zip" {
                 await withTaskCancellationHandler {
                     inside.fulfill()

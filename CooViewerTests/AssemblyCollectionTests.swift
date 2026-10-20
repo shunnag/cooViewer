@@ -5,13 +5,155 @@ import XCTest
 @testable import cooViewer
 
 final class AssemblyCollectionTests: XCTestCase {
+    func testDanglingSymlinkChildIsExcludedWithoutRetryWait() async throws {
+        let root = try directory(names: ["good.zip"], pageName: "page.avifs")
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("bad.zip"),
+            withDestinationURL: root.appendingPathComponent("gone.zip"))
+        try await checkPermanentChildExcluded(folder: FolderSource(url: root, readSubFolders: false))
+    }
+
+    func testUnreadableChildIsExcludedWithoutRetryWait() async throws {
+        try XCTSkipIf(geteuid() == 0, "root は読取権限の拒否を再現できない")
+        let root = try directory(names: ["good.zip", "bad.zip"], pageName: "page.avifs")
+        let bad = root.appendingPathComponent("bad.zip")
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: bad.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bad.path) }
+        try await checkPermanentChildExcluded(folder: FolderSource(url: root, readSubFolders: false))
+    }
+
+    func testChildVanishedAfterEnumerationIsExcludedWithoutRetryWait() async throws {
+        let root = try directory(names: ["good.zip", "bad.zip"], pageName: "page.avifs")
+        let folder = try FolderSource(url: root, readSubFolders: false)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("bad.zip"))
+        try await checkPermanentChildExcluded(folder: folder)
+    }
+
+    func testPermanentErrnosAndCocoaChildFailuresAreSilentlyExcluded() async throws {
+        let root = try directory(names: ["good.zip", "bad.zip"], pageName: "page.avifs")
+        let errors: [any Error] = [ENOENT, ENOTDIR, ELOOP, EACCES, EPERM].map { KaitoError.io($0) }
+            + [4, 260, 257].map { NSError(domain: NSCocoaErrorDomain, code: $0) }
+        for error in errors {
+            let factory = ArchiveEngineFactory(openFile: { kind, path, role in
+                if path.hasSuffix("/bad.zip") { throw error }
+                return try ArchiveEngineFactory.live.openFile(kind, path, role)
+            }, openData: { _, _, _ in nil })
+            try await checkPermanentChildExcluded(folder: FolderSource(url: root, readSubFolders: false),
+                                                  engineFactory: factory)
+        }
+    }
+
+    func testEnvironmentalChildFailuresStillProduceAssemblyFailure() async throws {
+        let root = try directory(names: ["good.zip", "bad.zip"], pageName: "page.avifs")
+        for code in [EIO, ETIMEDOUT, ENOTCONN, ENETDOWN, ENETUNREACH, EHOSTDOWN,
+                     EHOSTUNREACH, ENXIO, ECONNRESET, EMFILE, ENFILE, EAGAIN, ENOMEM, ESTALE, ENOSPC] {
+            let control = OpenControl(failures: ["bad.zip": (code, 100)])
+            var policy = AssemblyRetryPolicy.immediate
+            policy.reachabilityProbe = { _ in true }
+            let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
+                engineFactory: control.factory, retryPolicy: policy)
+            let failure = try await assemblyFailure(source)
+            XCTAssertEqual(failure.failures.map(\.relativePath), ["bad.zip"], "errno \(code)")
+            XCTAssertFalse(failure.volumeUnavailable)
+            let excluded = await source.excludedChildCount()
+            XCTAssertEqual(excluded, 0)
+        }
+    }
+
+    func testUnreachableCollectionWinsOverPermanentChildExclusion() async throws {
+        let root = try directory(names: ["good.zip", "bad.zip"], pageName: "page.avifs")
+        for code in [ENOENT, EACCES] {
+            let control = OpenControl(failures: ["bad.zip": (code, 100)])
+            let gate = AssemblyTestGate()
+            let probing = expectation(description: "親フォルダへの到達を確認中")
+            let clock = AssemblyTestClock { _ in }
+            var policy = AssemblyRetryPolicy.immediate
+            policy.now = { clock.now }
+            policy.sleep = { try await clock.sleep($0) }
+            policy.reachabilityProbe = { _ in probing.fulfill(); await gate.wait(); return false }
+            let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
+                engineFactory: control.factory, retryPolicy: policy)
+            let finished = OSAllocatedUnfairLock(initialState: false)
+            let build = Task {
+                defer { finished.withLock { $0 = true } }
+                return try await source.entries()
+            }
+            await fulfillment(of: [probing], timeout: 2)
+            XCTAssertFalse(finished.withLock { $0 })
+            await gate.open()
+            do { _ = try await build.value; XCTFail("保存先の失敗を返す") }
+            catch {
+                let failure = try XCTUnwrap(error as? AssemblyFailure)
+                XCTAssertTrue(failure.volumeUnavailable)
+                XCTAssertEqual(failure.failures.first?.relativePath, "bad.zip")
+            }
+            let excluded = await source.excludedChildCount()
+            XCTAssertEqual(excluded, 0)
+        }
+    }
+
+    func testCollectionReachabilityTimeoutWinsOverNotFoundChildExclusion() async throws {
+        let root = try directory(names: ["good.zip", "bad.zip"], pageName: "page.avifs")
+        let control = OpenControl(failures: ["bad.zip": (ENOENT, 100)])
+        let gate = AssemblyTestGate()
+        var policy = AssemblyRetryPolicy.immediate
+        policy.probeTimeout = .zero
+        policy.reachabilityProbe = { _ in await gate.wait(); return true }
+        let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
+            engineFactory: control.factory, retryPolicy: policy)
+        let failure = try await assemblyFailure(source)
+        await gate.open()
+        XCTAssertTrue(failure.volumeUnavailable)
+        XCTAssertTrue(failure.reachabilityTimedOut)
+        XCTAssertEqual(failure.failures.first?.cause, .notFound)
+        let excluded = await source.excludedChildCount()
+        XCTAssertEqual(excluded, 0)
+    }
+
+    // 型情報サービスの有無に左右されず、子の除外と待機だけを検証する(設計書 §7.4)。
+    private func checkPermanentChildExcluded(folder: FolderSource,
+                                            engineFactory: ArchiveEngineFactory = .live) async throws {
+        XCTAssertEqual(folder.nestedBookCandidates.map(\.relativePath), ["bad.zip", "good.zip"])
+        let retrySleeps = OSAllocatedUnfairLock(initialState: 0)
+        let retries = OSAllocatedUnfairLock(initialState: 0)
+        let clock = AssemblyTestClock { _ in }
+        var policy = AssemblyRetryPolicy.default
+        policy.now = { clock.now }
+        policy.sleep = { duration in
+            if [.milliseconds(250), .milliseconds(750), .milliseconds(1500), .seconds(3)].contains(duration) {
+                retrySleeps.withLock { $0 += 1 }
+            }
+            try await clock.sleep(duration)
+        }
+        let source = NestedFolderSource(folder: folder, engineFactory: engineFactory, retryPolicy: policy)
+        await source.setAssemblyRetryHandler { _ in retries.withLock { $0 += 1 } }
+        let finished = expectation(description: "10秒の期限や再試行待機なしで開く")
+        let start = ContinuousClock.now
+        let build = Task {
+            defer { finished.fulfill() }
+            return try await source.entries()
+        }
+        await fulfillment(of: [finished], timeout: 2)
+        // 退行時も仮想時計の待ち手を残さず、失敗として回収する(設計書 §7.4)。
+        clock.advance(.seconds(10))
+        let pages = try await build.value
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(3))
+        XCTAssertEqual(pages.map(\.pathInBook), ["good.zip/page.avifs"])
+        XCTAssertTrue(pages.allSatisfy { $0.unreadableVolume == nil })
+        let canOpenPartial = await source.canOpenPartial
+        let excluded = await source.excludedChildCount()
+        XCTAssertFalse(canOpenPartial)
+        XCTAssertEqual(excluded, 1)
+        XCTAssertEqual(retrySleeps.withLock { $0 }, 0)
+        XCTAssertEqual(retries.withLock { $0 }, 0)
+    }
+
     func testPartialEntriesKeepSortedCardsWithoutReadingAndCompleteRetryKeepsIDs() async throws {
         let root = try directory(names: ["10.zip", "30.zip", "50.zip"])
         try TestFixtures.storedZip(entries: ["page.png", "page2.png"].map {
             (Array($0.utf8), TestFixtures.pngData(width: 40, height: 60))
         }).write(to: root.appendingPathComponent("30.zip"))
         try TestFixtures.pngData(width: 40, height: 60).write(to: root.appendingPathComponent("20.png"))
-        let control = OpenControl(failures: ["10.zip": (EACCES, 100), "50.zip": (EACCES, 100)])
+        let control = OpenControl(failures: ["10.zip": (ENOSPC, 100), "50.zip": (ENOSPC, 100)])
         let clock = AssemblyTestClock { _ in }
         var policy = AssemblyRetryPolicy.immediate
         policy.now = { clock.now }
@@ -23,7 +165,7 @@ final class AssemblyCollectionTests: XCTestCase {
         let partial = try await source.partialEntries()
         XCTAssertEqual(partial.map(\.pathInBook), ["10.zip", "20.png", "30.zip/page.png", "30.zip/page2.png", "50.zip"])
         XCTAssertEqual(partial.map(\.id), [1_999_999, 0, 2_000_000, 2_000_001, 3_999_999])
-        XCTAssertEqual(partial.compactMap(\.unreadableVolume).map(\.cause), [.accessDenied, .accessDenied])
+        XCTAssertEqual(partial.compactMap(\.unreadableVolume).map(\.cause), [.diskFull, .diskFull])
         XCTAssertEqual(Set(partial.map(\.id)).count, partial.count)
         let cards = await source.cardChildren
         XCTAssertEqual(cards.count, 2)
@@ -58,7 +200,7 @@ final class AssemblyCollectionTests: XCTestCase {
         let root = try directory(names: ["a.zip", "b.zip", "c.zip"])
         try TestFixtures.pngData(width: 40, height: 60).write(to: root.appendingPathComponent("0.png"))
         let gate = AssemblyTestGate()
-        let control = OpenControl(failures: ["a.zip": (EACCES, 100)])
+        let control = OpenControl(failures: ["a.zip": (ENOSPC, 100)])
         var policy = AssemblyRetryPolicy.immediate
         policy.failureCutoff = .zero
         policy.beforeChildAttempt = { name in if name != "a.zip" { await gate.wait() } }
@@ -68,7 +210,7 @@ final class AssemblyCollectionTests: XCTestCase {
         XCTAssertEqual(failure.unchecked, 2)
         let entries = try await source.partialEntries()
         XCTAssertEqual(entries.map(\.pathInBook), ["0.png", "a.zip", "b.zip", "c.zip"])
-        XCTAssertEqual(entries[1].unreadableVolume?.cause, .accessDenied)
+        XCTAssertEqual(entries[1].unreadableVolume?.cause, .diskFull)
         XCTAssertNotNil(entries[2].unreadableVolume)
         XCTAssertNil(entries[2].unreadableVolume?.cause)
         XCTAssertNotNil(entries[3].unreadableVolume)
@@ -138,12 +280,12 @@ final class AssemblyCollectionTests: XCTestCase {
 
     func testFolderCollectsEveryFailureAndReopensOnlyFailedOrdinals() async throws {
         let root = try directory(names: ["a.zip", "b.zip", "c.zip"])
-        let control = OpenControl(failures: ["a.zip": (EMFILE, 100), "c.zip": (EACCES, 100)])
+        let control = OpenControl(failures: ["a.zip": (EMFILE, 100), "c.zip": (ENOSPC, 100)])
         let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
             engineFactory: control.factory, retryPolicy: .immediate)
         let failure = try await assemblyFailure(source)
         XCTAssertEqual(failure.failures.map(\.relativePath), ["a.zip", "c.zip"])
-        XCTAssertEqual(failure.failures.map(\.cause), [.repeatedFailure, .accessDenied])
+        XCTAssertEqual(failure.failures.map(\.cause), [.repeatedFailure, .diskFull])
         XCTAssertEqual(failure.total, 3)
         XCTAssertEqual(failure.unchecked, 0)
         XCTAssertFalse(failure.volumeUnavailable)
@@ -196,7 +338,7 @@ final class AssemblyCollectionTests: XCTestCase {
     func testFailureCutoffCountsUncheckedAndNextBuildCompletes() async throws {
         let names = (0..<12).map { String(format: "%02d.zip", $0) }
         let root = try directory(names: names)
-        let control = OpenControl(failures: Dictionary(uniqueKeysWithValues: names.map { ($0, (EACCES, 100)) }))
+        let control = OpenControl(failures: Dictionary(uniqueKeysWithValues: names.map { ($0, (ENOSPC, 100)) }))
         let gate = AssemblyTestGate()
         var policy = AssemblyRetryPolicy.immediate
         policy.failureCutoff = .zero
@@ -328,15 +470,15 @@ final class AssemblyCollectionTests: XCTestCase {
         } catch { return try XCTUnwrap(error as? AssemblyFailure, "\(error)") }
     }
 
-    private func directory(names: [String]) throws -> URL {
+    private func directory(names: [String], pageName: String = "page.png") throws -> URL {
         let root = try TestFixtures.makeTempDir()
         addTeardownBlock { try FileManager.default.removeItem(at: root) }
-        for name in names { try zip().write(to: root.appendingPathComponent(name)) }
+        for name in names { try zip(pageName: pageName).write(to: root.appendingPathComponent(name)) }
         return root
     }
 
-    private func zip() -> Data {
-        TestFixtures.storedZip(entries: [(Array("page.png".utf8), TestFixtures.pngData(width: 40, height: 60))])
+    private func zip(pageName: String = "page.png") -> Data {
+        TestFixtures.storedZip(entries: [(Array(pageName.utf8), TestFixtures.pngData(width: 40, height: 60))])
     }
 }
 

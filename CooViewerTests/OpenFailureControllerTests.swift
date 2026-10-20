@@ -86,19 +86,22 @@ final class OpenFailureControllerTests: XCTestCase {
         XCTAssertEqual(controller.openFailureObserverCount, 0)
     }
 
-    func testNotFoundChildrenRefreshCandidatesAndKeepUnlocker() async throws {
-        try await checkNotFoundCandidateRefresh(openImage: false)
+    func testNotFoundChildrenOpenWithoutFailureOrConsent() async throws {
+        try await checkNotFoundChildrenExcluded(openImage: false)
     }
 
-    func testImageRequestRefreshesParentCollectionCandidatesAndKeepsUnlocker() async throws {
-        try await checkNotFoundCandidateRefresh(openImage: true)
+    func testImageRequestSilentlyExcludesNotFoundCollectionChildren() async throws {
+        try await checkNotFoundChildrenExcluded(openImage: true)
     }
 
-    private func checkNotFoundCandidateRefresh(openImage: Bool) async throws {
+    private func checkNotFoundChildrenExcluded(openImage: Bool) async throws {
         let (controller, _, directory) = try makeController()
         let folderURL = directory.deletingLastPathComponent().appendingPathComponent("collection")
         try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
         try Data().write(to: folderURL.appendingPathComponent("missing.zip"))
+        try TestFixtures.storedZip(entries: ["0.png", "1.png", "2.png"].map {
+            (Array($0.utf8), TestFixtures.pngData(width: 2, height: 3))
+        }).write(to: folderURL.appendingPathComponent("good.zip"))
         let imageURL = folderURL.appendingPathComponent("cover.png")
         if openImage { try TestFixtures.pngData(width: 2, height: 3).write(to: imageURL) }
         controller.fileSystemProbe = OpenFailureTestProbe(exists: true, isDirectory: !openImage)
@@ -107,29 +110,29 @@ final class OpenFailureControllerTests: XCTestCase {
         var policy = AssemblyRetryPolicy.immediate
         policy.sleep = { try await clock.sleep($0) }
         policy.reachabilityProbe = { _ in true }
-        let engineFactory = ArchiveEngineFactory(openFile: { _, _, _ in
-            throw CocoaError(.fileReadNoSuchFile)
+        let engineFactory = ArchiveEngineFactory(openFile: { kind, path, role in
+            if path.hasSuffix("/missing.zip") { throw CocoaError(.fileReadNoSuchFile) }
+            return try ArchiveEngineFactory.live.openFile(kind, path, role)
         }, openData: { _, _, _ in nil })
         let original = NestedFolderSource(folder: try FolderSource(url: folderURL, readSubFolders: false),
             unlocker: unlocker, engineFactory: engineFactory, retryPolicy: policy)
-        let replacement = OpenFailureTestSource(url: folderURL, error: makeFailure(), failuresRemaining: 0,
-            pageNames: ["0.png", "1.png", "cover.png", "3.png"])
         var factoryCalls = 0
         controller.openSourceFactory = { request in
             factoryCalls += 1
             XCTAssertEqual(request.url.path, folderURL.path)
-            if factoryCalls == 1 { return original }
-            XCTAssertTrue(request.unlocker === unlocker)
-            return replacement
+            return original
         }
         controller.openReachabilityPolicy.reachabilityProbe = { _ in true }
         await controller.openBook(at: openImage ? imageURL : folderURL, atPage: 2).value
-        XCTAssertEqual(controller.failedOpen?.failure.failures.map(\.cause), [.notFound])
-        let retry = try XCTUnwrap(controller.retryFailedOpen())
-        await retry.value
-        XCTAssertEqual(factoryCalls, 2)
-        XCTAssertTrue((try XCTUnwrap(controller.book).source as AnyObject) === replacement)
+        XCTAssertNil(controller.failedOpen)
+        XCTAssertNil(controller.retryFailedOpen())
+        XCTAssertFalse(controller.canOpenWithoutUnreadableVolumes)
+        XCTAssertEqual(factoryCalls, 1)
         let book = try XCTUnwrap(controller.book)
+        XCTAssertTrue((book.source as AnyObject) === original)
+        XCTAssertTrue(original.unlocker === unlocker)
+        XCTAssertFalse(book.isPartial)
+        XCTAssertFalse(book.entries.contains { $0.pathInBook.hasPrefix("missing.zip") })
         if openImage { XCTAssertEqual(book.entries[book.currentIndex].name, "cover.png") }
         else { XCTAssertEqual(book.currentIndex, 2) }
     }
