@@ -64,7 +64,8 @@ actor NestedUnlocker {
 
     /// 直列化用の末尾タスク(並列の子構築から呼ばれても、解錠処理と
     /// ダイアログは 1 つずつ順番に行う。actor 再入での多重プロンプト防止)
-    private var serialTail: Task<Bool, Never>?
+    private enum Result: Sendable { case unlocked, skipped, unreadable }
+    private var serialTail: Task<Result, Never>?
 
     /// child のロック解除を試みる。成功で true、失敗/キャンセル/読み取り失敗で false
     /// (呼び出し側はその子を本から外す。仕様書 §4.17 の黙殺方針)。
@@ -73,6 +74,24 @@ actor NestedUnlocker {
     /// 呼び出しは到着順に直列実行される
     func unlock(_ child: any BookSource, name: String,
                 persistenceKey: PasswordVault.Key) async -> Bool {
+        let result = await serializedUnlock(child, name: name, persistenceKey: persistenceKey)
+        if case .unreadable = result { sawSkippedChild = true }
+        if case .unlocked = result { return true }
+        return false
+    }
+
+    /// 合本では読めなかった子を完成済み一覧から消さず、組み立てを失敗させ再試行に残す。
+    func unlockForAssembly(_ child: any BookSource, name: String,
+                           persistenceKey: PasswordVault.Key) async throws -> Bool {
+        switch await serializedUnlock(child, name: name, persistenceKey: persistenceKey) {
+        case .unlocked: return true
+        case .skipped: return false
+        case .unreadable: throw BookSourceError.temporarilyUnavailable(child.url)
+        }
+    }
+
+    private func serializedUnlock(_ child: any BookSource, name: String,
+                                  persistenceKey: PasswordVault.Key) async -> Result {
         let previous = serialTail
         let task = Task { [previous] in
             _ = await previous?.value
@@ -84,7 +103,7 @@ actor NestedUnlocker {
     }
 
     private func performUnlock(_ child: any BookSource, name: String,
-                               persistenceKey: PasswordVault.Key) async -> Bool {
+                               persistenceKey: PasswordVault.Key) async -> Result {
         // 保存済みパスワード(照会・失敗とも完全無言 = §4.17 の黙殺と整合)。
         // vault 由来は過去に同意済みなので同意集合に入れる。
         // 読み取り失敗(unreadable)は子が読めないのであってパスワードの問題ではない。
@@ -99,10 +118,9 @@ actor NestedUnlocker {
                 // にも展延できるよう既知パスワードとしても記録する
                 addKnown(saved)
                 sawUnlockedChild = true
-                return true
+                return .unlocked
             case .unreadable:
-                sawSkippedChild = true
-                return false
+                return .unreadable
             case .rejected:
                 break
             }
@@ -114,24 +132,23 @@ actor NestedUnlocker {
                     await vault?.save(password, for: persistenceKey)
                 }
                 sawUnlockedChild = true
-                return true
+                return .unlocked
             case .unreadable:
-                sawSkippedChild = true
-                return false
+                return .unreadable
             case .rejected:
                 continue
             }
         }
         guard let provider, !promptingDisabled else {
             sawSkippedChild = true
-            return false
+            return .skipped
         }
         let maxAttempts = 3
         for attempt in 1...maxAttempts {
             guard let answer = await provider(name, attempt) else {
                 promptingDisabled = true  // キャンセル=この本ではもう尋ねない
                 sawSkippedChild = true
-                return false
+                return .skipped
             }
             switch await child.checkAndSetPassword(answer.password) {
             case .accepted:
@@ -141,15 +158,14 @@ actor NestedUnlocker {
                     await vault?.save(answer.password, for: persistenceKey)
                 }
                 sawUnlockedChild = true
-                return true
+                return .unlocked
             case .unreadable:
-                sawSkippedChild = true
-                return false
+                return .unreadable
             case .rejected:
                 continue
             }
         }
         sawSkippedChild = true
-        return false
+        return .skipped
     }
 }

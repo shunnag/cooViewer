@@ -6,6 +6,7 @@ enum BookSourceError: Error {
     case unreadable(URL)
     case unsupportedFormat(URL)
     case pageLoadFailed(String)
+    case temporarilyUnavailable(URL)
 }
 
 /// 「本」の供給源(フォルダ / 書庫 / PDF)。

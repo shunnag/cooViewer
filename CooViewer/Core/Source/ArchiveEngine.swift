@@ -23,12 +23,14 @@ protocol ArchiveEngine: AnyObject {
     func isEncrypted() -> Bool
     func setPassword(_ password: String)
     func solidGroup(ofEntry index: Int32) -> Int32
+    func discardDecodedState()
 
     static var defaultZipLazyLocalHeaders: Bool { get }
     static func setDefaultZipLazyLocalHeaders(_ enabled: Bool)
 }
 
 extension ArchiveEngine {
+    func discardDecodedState() {}
     /// nil しか返せないエンジン(テストの偽エンジン)向けの既定。環境要因ではない
     /// エラーにして、プローブの分類では従来どおり誤パスワード側に落とす
     func readContents(ofEntry index: Int32) throws -> Data {
@@ -130,14 +132,14 @@ struct ArchiveDecodeBudget: Sendable, Equatable {
 
 /// ネイティブ API を既存の nil/false 契約へ収める(設計書 §2.4、§5)。
 final class KaitoKitEngine: ArchiveEngine {
-    private let reader: ArchiveReader
+    private var reader: ArchiveReader
     private let limits: ReadLimits
     private static let lazyLocalHeaders = OSAllocatedUnfairLock(initialState: true)
 
     /// 電力状態・電力方針と同じく、物理メモリと圧迫段階も open 時点の値を固定する(設計書 §5)。
     private static func options(role: ArchiveReaderRole) -> ReaderOptions {
         let powerPolicy = PowerStateMonitor.shared.powerPolicy
-        return ArchiveDecodeBudget(
+        var options = ArchiveDecodeBudget(
             role: role,
             automaticThreads: ReaderOptions.automaticDecodeThreads(
                 powerPolicy: powerPolicy.decodePowerPolicy),
@@ -145,6 +147,26 @@ final class KaitoKitEngine: ArchiveEngine {
             memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel,
             powerPolicy: powerPolicy)
             .readerOptions(lazyLocalHeaders: defaultZipLazyLocalHeaders)
+        // 解析結果と solid 状態を維持し、未使用 FD だけをプロセス共通の LRU で制限する。
+        options.fileAccessPolicy = .bounded
+        return options
+    }
+
+    private init(reader: ArchiveReader, limits: ReadLimits) {
+        self.reader = reader
+        self.limits = limits
+    }
+
+    /// 生成窓口は errno を保持する。protocol の旧 failable init は偽エンジン向けに残す。
+    static func open(file path: String, role: ArchiveReaderRole) throws -> KaitoKitEngine {
+        let options = Self.options(role: role)
+        return try KaitoKitEngine(reader: ArchiveReader.open(url: URL(fileURLWithPath: path), options: options),
+                                  limits: options.limits)
+    }
+
+    static func open(data: Data, role: ArchiveReaderRole) throws -> KaitoKitEngine {
+        let options = Self.options(role: role)
+        return try KaitoKitEngine(reader: ArchiveReader.open(data: data, options: options), limits: options.limits)
     }
 
     init?(file path: String, role: ArchiveReaderRole) {
@@ -239,6 +261,16 @@ final class KaitoKitEngine: ArchiveEngine {
         return Int32(exactly: group) ?? -1
     }
 
+    /// 全画像のスプール後は、末尾の非画像 entry のため残った solid 状態も解放する。
+    /// 不変の一覧・索引・入力は共有し、再解析やファイルの全読み直しは行わない。
+    func discardDecodedState() {
+        switch reader.format {
+        case .sevenZip, .rar:
+            if let reopened = try? reader.reopen() { reader = reopened }
+        default: break
+        }
+    }
+
     // 開いた reader の設定は固定し、変更は以後の open へ反映する(設計書 §7.5)。
     static var defaultZipLazyLocalHeaders: Bool { lazyLocalHeaders.withLock { $0 } }
     static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {
@@ -260,12 +292,12 @@ struct ArchiveEngineFactory: Sendable {
     static let live = ArchiveEngineFactory(
         openFile: { kind, path, role in
             switch kind {
-            case .kaitokit: KaitoKitEngine(file: path, role: role)
+            case .kaitokit: try KaitoKitEngine.open(file: path, role: role)
             }
         },
         openData: { kind, data, role in
             switch kind {
-            case .kaitokit: KaitoKitEngine(data: data, role: role)
+            case .kaitokit: try KaitoKitEngine.open(data: data, role: role)
             }
         }
     )
