@@ -235,6 +235,7 @@ enum AssemblyPreparation {
     static func run(
         candidates: [AssemblyCandidate], total: Int, sourceURL: URL, lanes: Int,
         policy: AssemblyRetryPolicy, probeSource: Bool = true,
+        excludePermanentChildFailures: Bool = false,
         onRetry: (@Sendable (String) async -> Void)? = nil,
         onProgress: (@Sendable (Int, Int) async -> Void)? = nil,
         onComplete: (@Sendable (Int, AssemblyChildPreparation) async -> Void)? = nil,
@@ -271,6 +272,7 @@ enum AssemblyPreparation {
         var pausedAt: ContinuousClock.Instant?
         var probed = false
         var probing = false
+        var sourceIsReachable = false
         var pendingVolumeUnavailable = false
         var volumeUnavailable = false
         var reachabilityTimedOut = false
@@ -349,7 +351,8 @@ enum AssemblyPreparation {
                         armCutoffTimer()
                     }
                     if probeSource, !probed, SourceReadFailure.retryClass(error) == .network
-                        || SourceReadFailure.cause(error) == .notFound {
+                        || SourceReadFailure.cause(error) == .notFound
+                        || (excludePermanentChildFailures && SourceReadFailure.isPermanentCollectionChildFailure(error)) {
                         probed = true
                         probing = true
                         auxiliaries.append(Task.detached(priority: priority) {
@@ -405,6 +408,7 @@ enum AssemblyPreparation {
                        !attempts.isEmpty || !failures.isEmpty { requestAbortCheck() }
                 case .probe(let reachability):
                     probing = false
+                    sourceIsReachable = reachability.isReachable
                     if !reachability.isReachable {
                         pendingVolumeUnavailable = true
                         reachabilityTimedOut = reachability.timedOut
@@ -418,6 +422,14 @@ enum AssemblyPreparation {
                             volumeUnavailable = pendingVolumeUnavailable
                             aborted = true
                         }
+                    }
+                }
+                if excludePermanentChildFailures, sourceIsReachable {
+                    // 設計書 §7.4: 親への到達確認を優先する。恒久的な失敗は再試行しても直らず、毎回の同意を求めない。
+                    for (ordinal, error) in failures where SourceReadFailure.isPermanentCollectionChildFailure(error) {
+                        failures.removeValue(forKey: ordinal)
+                        results[ordinal] = .excluded
+                        await onComplete?(ordinal, .excluded)
                     }
                 }
                 // 完了通知と期限通知が重なっても、回復済みの本を失敗に戻さない(設計書 §7.4)。

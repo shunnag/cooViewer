@@ -151,6 +151,7 @@ actor NestedFolderSource: BookSource {
                                   url: candidates[$0].fileURL) }
         _ = try await AssemblyPreparation.run(
             candidates: pendingCandidates, total: candidates.count, sourceURL: url, lanes: 4, policy: policy,
+            excludePermanentChildFailures: true,
             onRetry: { path in await self.notifyAssemblyRetry(path, buildID: id) },
             onProgress: { done, total in await self.notifyAssemblyProgress(done, total: total, buildID: id) },
             onComplete: { ordinal, child in await self.keepPrepared(child, ordinal: ordinal, buildID: id) }) { candidate in
@@ -199,7 +200,7 @@ actor NestedFolderSource: BookSource {
     }
 
     /// 子の本 1 つを開いて一覧まで取得する(actor 外で並列実行される部分)。
-    /// 破損・解除不能だけを除外に数え、意図的な省略とは区別する(仕様書 §4.17、設計書 §7.4)。
+    /// 破損・解除不能・恒久的な子の失敗を除外に数え、意図的な省略とは区別する(仕様書 §4.17、設計書 §7.4)。
     private static func prepareChild(
         candidate: (fileURL: URL, relativePath: String),
         unlocker: NestedUnlocker, profile: MediaProfile,
