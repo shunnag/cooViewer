@@ -41,7 +41,7 @@ final class AssemblyAbortTests: XCTestCase {
         let finished = expectation(description: "停止した子を待たずに失敗する")
         let returned = OSAllocatedUnfairLock(initialState: false)
         let build = Task {
-            let failure = await Self.failure(source)
+            let failure = await AssemblyAbortTests.failure(source)
             returned.withLock { $0 = true }
             finished.fulfill()
             return failure
@@ -98,7 +98,7 @@ final class AssemblyAbortTests: XCTestCase {
         let finished = expectation(description: "書庫も子を join しない")
         let returned = OSAllocatedUnfairLock(initialState: false)
         let build = Task {
-            let result = await Self.failure(source)
+            let result = await AssemblyAbortTests.failure(source)
             returned.withLock { $0 = true }
             finished.fulfill()
             return result
@@ -141,7 +141,7 @@ final class AssemblyAbortTests: XCTestCase {
             return try ArchiveEngineFactory.live.openFile(kind, path, role)
         }, openData: { _, _, _ in nil })
         var archive: ArchiveSource? = try ArchiveSource(url: outer, engineFactory: factory, retryPolicy: policy)
-        let failure = await Self.failure(try XCTUnwrap(archive))
+        let failure = await AssemblyAbortTests.failure(try XCTUnwrap(archive))
         XCTAssertEqual(failure?.failures.first?.retryClass, .transient)
         XCTAssertEqual(failure?.unchecked, 0)
         let pages = try await XCTUnwrap(archive).entries()
@@ -281,7 +281,7 @@ final class AssemblyAbortTests: XCTestCase {
         let done = expectation(description: "外側が失敗応答する")
         let returned = OSAllocatedUnfairLock(initialState: false)
         let build = Task {
-            let result = await Self.failure(source)
+            let result = await AssemblyAbortTests.failure(source)
             returned.withLock { $0 = true }
             done.fulfill()
             return result
@@ -321,7 +321,7 @@ final class AssemblyAbortTests: XCTestCase {
         }
         let source = try ArchiveSource(url: outer, retryPolicy: policy)
         let finished = expectation(description: "全再試行を待たずに返る")
-        let build = Task { let result = await Self.failure(source); finished.fulfill(); return result }
+        let build = Task { let result = await AssemblyAbortTests.failure(source); finished.fulfill(); return result }
         await fulfillment(of: [retry, cutoff], timeout: 2)
         clock.advance(.seconds(5))
         await fulfillment(of: [finished], timeout: 1)
@@ -347,7 +347,7 @@ final class AssemblyAbortTests: XCTestCase {
         policy.networkExtraDelay = nil
         policy.reachabilityProbe = { url in probes.withLock { $0.append(url) }; return false }
         let source = try ArchiveSource(url: outer, engineFactory: factory, retryPolicy: policy)
-        let result = await Self.failure(source)
+        let result = await AssemblyAbortTests.failure(source)
         XCTAssertEqual(result?.volumeUnavailable, true)
         XCTAssertEqual(result?.unchecked, 2)
         XCTAssertEqual(probes.withLock { $0 }, [outer])
@@ -388,7 +388,7 @@ final class AssemblyAbortTests: XCTestCase {
         let source = try ArchiveSource(url: outer, engineFactory: factory, retryPolicy: policy)
         let finished = expectation(description: "read が戻ると失敗応答する")
         let build = Task {
-            let result = await Self.failure(source)
+            let result = await AssemblyAbortTests.failure(source)
             returned.withLock { $0 = true }
             finished.fulfill()
             return result
