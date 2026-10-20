@@ -18,6 +18,9 @@ actor PDFSource: BookSource {
     init(url: URL) throws {
         self.url = url
         self.sourceData = nil
+        guard FileDescriptorHeadroom.isAvailable() else {
+            throw BookSourceError.temporarilyUnavailable(url)
+        }
         guard let document = PDFDocument(url: url) else {
             throw BookSourceError.unreadable(url)
         }

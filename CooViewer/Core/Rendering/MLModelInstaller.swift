@@ -115,6 +115,8 @@ actor MLModelInstaller {
                 try? fileManager.removeItem(at: compiledURL)
                 try fileManager.moveItem(at: compiled, to: compiledURL)
             }
+            // 一時的なファイル記述子不足を恒久失敗にせず、代替画像のキャッシュ固定を防いで次回再試行する。
+            guard FileDescriptorHeadroom.isAvailable() else { return nil }
             // 3. ロード(Neural Engine を含む全ユニットを許可)
             let configuration = MLModelConfiguration()
             configuration.computeUnits = .all

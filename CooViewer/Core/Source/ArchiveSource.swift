@@ -1,6 +1,7 @@
 import CoreGraphics
 import CryptoKit
 import Foundation
+import KaitoKit
 import os
 import PDFKit
 import Washi
@@ -49,7 +50,7 @@ actor ArchiveSource: BookSource {
     }
 
     /// entries() の組み立て結果(actor 再入で二重構築しないよう Task で共有)
-    private var buildTask: Task<[PageEntry], Never>?
+    private var buildTask: (task: Task<[PageEntry], any Error>, id: UUID)?
     private var locations: [Int: PageLocation] = [:]
     private var children: [any BookSource] = []
     private var nestedRoot: URL?
@@ -74,6 +75,12 @@ actor ArchiveSource: BookSource {
         case finished
     }
     private var spoolState: SpoolState = .idle
+    /// 全書庫を同時に復号すると、FD 以外に solid 辞書・先行復号も冊数分常駐する。
+    /// 表示要求はこの枠を使わず、準備だけを本単位で制限する。
+    private static let spoolGate = SourceReadGate(limit: 4)
+    private var spoolIsActive = false
+    private var primaryHasDecodedState = false
+    private var isBuilding = false
 
     private static let logger = Logger(
         subsystem: "jp.coo.cooViewer", category: "archive")
@@ -380,6 +387,7 @@ actor ArchiveSource: BookSource {
         } catch {
             // 互換 API はキャンセルも nil にするため、診断へ記録する前に区別する。
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if SourceReadFailure.mustPropagate(error) { throw error }
             let message = "\(url.path): \(String(describing: error))"
             ArchiveEngineDiagnostics.recordError(message: message)
             logger.error("Archive open failed: \(message, privacy: .public)")
@@ -398,6 +406,7 @@ actor ArchiveSource: BookSource {
                 kind: preferredEngine, factory: factory)
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if SourceReadFailure.mustPropagate(error) { throw error }
             let message = "\(name): \(String(describing: error))"
             ArchiveEngineDiagnostics.recordError(message: message)
             logger.error("Archive open failed: \(message, privacy: .public)")
@@ -462,7 +471,7 @@ actor ArchiveSource: BookSource {
         } catch let error as EngineOpenError {
             throw error
         } catch {
-            if error is CancellationError { throw error }
+            if SourceReadFailure.mustPropagate(error) { throw error }
             throw EngineOpenError.threw(kind, "file", String(describing: error))
         }
     }
@@ -478,7 +487,7 @@ actor ArchiveSource: BookSource {
         } catch let error as EngineOpenError {
             throw error
         } catch {
-            if error is CancellationError { throw error }
+            if SourceReadFailure.mustPropagate(error) { throw error }
             throw EngineOpenError.threw(kind, "data", String(describing: error))
         }
     }
@@ -559,19 +568,37 @@ actor ArchiveSource: BookSource {
     }
 
     func entries() async throws -> [PageEntry] {
-        await buildIfNeeded()
+        try await buildIfNeeded()
     }
 
     @discardableResult
-    private func buildIfNeeded() async -> [PageEntry] {
-        if let buildTask { return await buildTask.value }
-        let task = Task { await build() }
-        buildTask = task
-        return await task.value
+    private func buildIfNeeded() async throws -> [PageEntry] {
+        let running: (task: Task<[PageEntry], any Error>, id: UUID)
+        if let buildTask { running = buildTask }
+        else {
+            running = (Task { try await build() }, UUID())
+            buildTask = running
+        }
+        do {
+            let pages = try await running.task.value
+            await touchDecodedState()
+            return pages
+        }
+        catch {
+            if buildTask?.id == running.id {
+                buildTask = nil
+                locations.removeAll()
+                children.removeAll()
+            }
+            await touchDecodedState()
+            throw error
+        }
     }
 
     /// 最上位の画像とネスト展開したページを、書庫の列挙順で 1 つの本に組む
-    private func build() async -> [PageEntry] {
+    private func build() async throws -> [PageEntry] {
+        isBuilding = true
+        defer { isBuilding = false }
         var result: [PageEntry] = []
         var imageIterator = outerImages.makeIterator()
         var pendingImage = imageIterator.next()
@@ -590,7 +617,7 @@ actor ArchiveSource: BookSource {
             let candidate = nestedCandidates[candidateCursor]
             candidateCursor += 1
             let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
-            let appended = await appendNestedPages(
+            let appended = try await appendNestedPages(
                 of: candidate, ordinal: idOrdinal + 1, into: &result)
             // 非 EPUB は壊れていても従来どおり序数を消費する。EPUB だけは
             // 実際に取り込めた場合に限り消費し、旧キャッシュの id を保つ。
@@ -606,7 +633,17 @@ actor ArchiveSource: BookSource {
     @discardableResult
     private func appendNestedPages(of candidate: (index: Int32, path: String),
                                    ordinal: Int,
-                                   into result: inout [PageEntry]) async -> Bool {
+                                   into result: inout [PageEntry]) async throws -> Bool {
+        do { return try await appendReadableNestedPages(of: candidate, ordinal: ordinal, into: &result) }
+        catch {
+            if SourceReadFailure.mustPropagate(error) { throw error }
+            return false
+        }
+    }
+
+    private func appendReadableNestedPages(of candidate: (index: Int32, path: String),
+                                            ordinal: Int,
+                                            into result: inout [PageEntry]) async throws -> Bool {
         let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
         let sensitive = contentIsSensitive || archive.isEncrypted()
         if isEPUB, sensitive, archive.entryHasSize(candidate.index) {
@@ -616,7 +653,7 @@ actor ArchiveSource: BookSource {
             guard archive.uncompressedSize(ofEntry: candidate.index)
                     <= Self.nestedInMemoryLimit else { return false }
         }
-        guard let data = nestedChildData(candidate) else { return false }
+        guard let data = try nestedChildData(candidate) else { return false }
         // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
         // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
         let childKey = persistenceKey.nested(entryPath: candidate.path)
@@ -654,14 +691,11 @@ actor ArchiveSource: BookSource {
             } else {
                 // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
                 // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
-                guard let fileURL = writeNestedTemp(candidate, data: data),
-                      let filePublication = try? await EPUBStagingArea.shared
-                        .openPublication(at: fileURL),
-                      let epub = try? EPUBSource(
+                let fileURL = try writeNestedTemp(candidate, data: data)
+                let filePublication = try await EPUBStagingArea.shared.openPublication(at: fileURL)
+                let epub = try EPUBSource(
                         publication: filePublication, url: fileURL,
-                        precomputedImageOnlyPageInfos: imageOnlyPageInfos) else {
-                    return false
-                }
+                        precomputedImageOnlyPageInfos: imageOnlyPageInfos)
                 child = epub
             }
             // EPUBSource は FXL または画像のみの非 DRM に限る。通常のリフロー・
@@ -671,26 +705,23 @@ actor ArchiveSource: BookSource {
                 guard let pdf = try? PDFSource(data: data) else { return false }
                 child = pdf
             } else {
-                guard let fileURL = writeNestedTemp(candidate, data: data),
-                      let pdf = try? PDFSource(url: fileURL) else { return false }
-                child = pdf
+                let fileURL = try writeNestedTemp(candidate, data: data)
+                child = try PDFSource(url: fileURL)
             }
         } else if useMemory {
-            guard let nested = try? ArchiveSource(
+            let nested = try ArchiveSource(
                 data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
                 unlocker: unlocker, persistenceKey: childKey, sensitive: true,
                 preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
                 extractorPoolSizing: extractorPoolSizing)
-            else { return false }
             child = nested
         } else {
-            guard let fileURL = writeNestedTemp(candidate, data: data),
-                  let nested = try? ArchiveSource(
+            let fileURL = try writeNestedTemp(candidate, data: data)
+            let nested = try ArchiveSource(
                     url: fileURL, nestingDepth: nestingDepth + 1,
                     unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
                     preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
                     extractorPoolSizing: extractorPoolSizing)
-            else { return false }
             child = nested
         }
         // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
@@ -698,10 +729,11 @@ actor ArchiveSource: BookSource {
         // 恒久的な空セルとして残すより一覧が正直になる)
         if !isEPUB, await child.isEncrypted() {
             let name = (candidate.path as NSString).lastPathComponent
-            guard await unlocker.unlock(child, name: name,
+            guard try await unlocker.unlockForAssembly(child, name: name,
                                         persistenceKey: childKey) else { return false }
         }
-        guard let childEntries = try? await child.entries(), !childEntries.isEmpty else {
+        let childEntries = try await child.entries()
+        guard !childEntries.isEmpty else {
             return false
         }
         children.append(child)
@@ -733,12 +765,23 @@ actor ArchiveSource: BookSource {
     /// するため爆弾検出に使えない)。サイズ不明(entryHasSize: が false)の形式は
     /// ストリーミング展開 API が無く事前判定できないので通す — 既知の残存リスク。
     /// サイズ未申告で 0 等が返っても上限以下として通し、正規エントリは弾かない
-    private func nestedChildData(_ candidate: (index: Int32, path: String)) -> Data? {
+    private func primaryContents(ofEntry index: Int32) -> Data? {
+        primaryHasDecodedState = true
+        return archive.contents(ofEntry: index)
+    }
+
+    private func touchDecodedState() async {
+        guard primaryHasDecodedState || !extractors.isEmpty else { return }
+        await ArchiveDecodedStateCache.shared.recordUse(self)
+    }
+
+    private func nestedChildData(_ candidate: (index: Int32, path: String)) throws -> Data? {
         if archive.entryHasSize(candidate.index) {
             let uncompressedSize = archive.uncompressedSize(ofEntry: candidate.index)
             guard uncompressedSize <= Self.nestedEntrySizeLimit else { return nil }
         }
-        return archive.contents(ofEntry: candidate.index)
+        primaryHasDecodedState = true
+        return try archive.readContents(ofEntry: candidate.index)
     }
 
     /// ネスト子を一時領域へ書き出す(<pid>-<uuid>-nested/)。非機微な子、または
@@ -746,25 +789,31 @@ actor ArchiveSource: BookSource {
     /// 6ax/c6s.23 によりここへ渡さない。残る平文 temp は KaitoKit/PDFKit がパスを
     /// 直読みするため暗号化不可(設計書 §2.4 の残余リスク)なので、権限を所有者限定にする
     private func writeNestedTemp(_ candidate: (index: Int32, path: String),
-                                 data: Data) -> URL? {
+                                 data: Data) throws -> URL {
         if nestedRoot == nil {
             let directory = Self.spoolRoot().appendingPathComponent(
                 "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)-nested")
-            guard (try? FileManager.default.createDirectory(
+            try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700])) != nil else { return nil }
+                attributes: [.posixPermissions: 0o700])
             nestedRoot = directory
         }
-        guard let root = nestedRoot else { return nil }
+        guard let root = nestedRoot else { throw BookSourceError.temporarilyUnavailable(url) }
         let fileURL = root.appendingPathComponent(
             "\(candidate.index)-\((candidate.path as NSString).lastPathComponent)")
-        guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return nil }
+        try data.write(to: fileURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                ofItemAtPath: fileURL.path)
         return fileURL
     }
 
     func imageData(for entry: PageEntry) async -> Data? {
+        let data = await loadedImageData(for: entry)
+        await touchDecodedState()
+        return data
+    }
+
+    private func loadedImageData(for entry: PageEntry) async -> Data? {
         switch locations[entry.id] {
         case .child(let sourceIndex, let childEntry):
             return await children[sourceIndex].imageData(for: childEntry)
@@ -772,7 +821,7 @@ actor ArchiveSource: BookSource {
             if let spooled = spooledData(for: entry.id) { return spooled }
             // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
             guard !exceedsPerPageDecodeLimit(index) else { return nil }
-            return archive.contents(ofEntry: index)
+            return primaryContents(ofEntry: index)
         case nil:
             // 一覧構築(build)前に呼ばれた場合の逃げ道。最上位書庫の
             // エントリ番号としてそのまま解釈する(ネスト id 域は 1M 以上
@@ -781,11 +830,19 @@ actor ArchiveSource: BookSource {
             if let spooled = spooledData(for: entry.id) { return spooled }
             // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
             guard !exceedsPerPageDecodeLimit(index) else { return nil }
-            return archive.contents(ofEntry: index)
+            return primaryContents(ofEntry: index)
         }
     }
 
     nonisolated func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        let result: Result<CGImage, any Error>
+        do { result = .success(try await renderImage(for: entry, maxPixelSize: maxPixelSize)) }
+        catch { result = .failure(error) }
+        await touchDecodedState()
+        return try result.get()
+    }
+
+    private nonisolated func renderImage(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
         switch try await pageContent(for: entry) {
         case .child(let child, let childEntry):
@@ -867,7 +924,7 @@ actor ArchiveSource: BookSource {
         guard !exceedsPerPageDecodeLimit(index) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
-        guard let extracted = archive.contents(ofEntry: index) else {
+        guard let extracted = primaryContents(ofEntry: index) else {
             try Task.checkCancellation()
             throw BookSourceError.pageLoadFailed(entry.name)
         }
@@ -919,24 +976,25 @@ actor ArchiveSource: BookSource {
             // メモリ背景(暗号化親のネスト子)は共有 NSData から再オープンし、
             // 平文を disk に置かずに並列展開を保つ(cooViewer-6ax)
             let expected = archive.numberOfEntries()
-            let grown: ArchiveEntryExtractor?
-            if let sourceData {
-                grown = ArchiveEntryExtractor(data: sourceData, password: password,
-                                              expectedEntryCount: expected,
-                                              engineKind: archiveEngineKind,
-                                              factory: engineFactory, poolSize: poolSize)
-            } else {
-                grown = ArchiveEntryExtractor(url: url, password: password,
-                                              expectedEntryCount: expected,
-                                              engineKind: archiveEngineKind,
-                                              factory: engineFactory, poolSize: poolSize)
-            }
-            if let extractor = grown {
-                extractors.append(extractor)
+            do {
+                let grown: ArchiveEntryExtractor
+                if let sourceData {
+                    grown = try ArchiveEntryExtractor(data: sourceData, password: password,
+                        expectedEntryCount: expected, engineKind: archiveEngineKind,
+                        factory: engineFactory, poolSize: poolSize)
+                } else {
+                    grown = try ArchiveEntryExtractor(url: url, password: password,
+                        expectedEntryCount: expected, engineKind: archiveEngineKind,
+                        factory: engineFactory, poolSize: poolSize)
+                }
+                extractors.append(grown)
                 extractorBusyCounts.append(1)
-                return (extractors.count - 1, extractor)
+                return (extractors.count - 1, grown)
+            } catch {
+                if !Task.isCancelled, !SourceReadFailure.mustPropagate(error) {
+                    extractorGrowthDisabled = true
+                }
             }
-            if !Task.isCancelled { extractorGrowthDisabled = true }
         }
         guard !extractors.isEmpty else { return nil }
         var index = 0
@@ -950,6 +1008,16 @@ actor ArchiveSource: BookSource {
         if extractorBusyCounts.indices.contains(index) {
             extractorBusyCounts[index] -= 1
         }
+        releaseFinishedExtractorsIfIdle()
+    }
+
+    private func releaseFinishedExtractorsIfIdle() {
+        guard case .finished = spoolState, !extractors.isEmpty,
+              spooledIDs.count >= outerImages.count,
+              extractorBusyCounts.allSatisfy({ $0 == 0 }) else { return }
+        extractors.removeAll()
+        extractorBusyCounts.removeAll()
+        groupExtractorAssignment.removeAll()
     }
 
     /// テスト用: 生成済みの展開係の数
@@ -999,15 +1067,17 @@ actor ArchiveSource: BookSource {
            archive.uncompressedSize(ofEntry: index) > Self.comicInfoSizeLimit {
             return nil
         }
-        guard let data = archive.contents(ofEntry: index) else { return nil }
-        return ComicInfo.parse(data)
+        let data = primaryContents(ofEntry: index)
+        let result = data.flatMap { ComicInfo.parse($0) }
+        await touchDecodedState()
+        return result
     }
 
     /// 最上位書庫が暗号化されている、または組み立て時にネストの暗号化書庫/PDF を
     /// 解除して束ねていれば、復号済み保護コンテンツを含む本(CWE-312)。
     /// ネストの解除は build 後に確定するため buildIfNeeded を待ってから判定する
     func containsProtectedContent() async -> Bool {
-        await buildIfNeeded()
+        guard (try? await buildIfNeeded()) != nil else { return true }
         if archive.isEncrypted() { return true }
         return await unlocker.sawUnlockedChild
     }
@@ -1048,6 +1118,7 @@ actor ArchiveSource: BookSource {
         guard let probe else { return .accepted }
         archive.setPassword(password)
         do {
+            primaryHasDecodedState = true
             _ = try archive.readContents(ofEntry: probe)
         } catch {
             return PasswordCheck.classifyProbeFailure(error)
@@ -1065,7 +1136,7 @@ actor ArchiveSource: BookSource {
     /// 最速のアクセスパターンになる。展開中のページ要求は従来経路で応える。
     /// ネスト分は展開時点でローカルファイルになっているため対象外。
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
-        await buildIfNeeded()  // ネスト展開もこの時点で済ませる
+        guard (try? await buildIfNeeded()) != nil else { return }
         beginSpooling(sizeLimit: spoolSizeLimit)
     }
 
@@ -1110,6 +1181,8 @@ actor ArchiveSource: BookSource {
 
         let ids = outerImages.map(\.id)
         let task = Task<Void, Never> { [weak self] in
+            await Self.spoolGate.acquire(interactive: false)
+            await self?.markSpoolingActive()
             for id in ids {
                 if Task.isCancelled { break }
                 await self?.spoolEntry(id)
@@ -1117,12 +1190,20 @@ actor ArchiveSource: BookSource {
                 await Task.yield()
             }
             await self?.finishSpooling()
+            await self?.touchDecodedState()
+            await Self.spoolGate.release()
         }
         spoolState = .running(task)
     }
 
+    private func markSpoolingActive() { spoolIsActive = true }
+
     private func finishSpooling() {
+        archive.discardDecodedState()
+        primaryHasDecodedState = false
+        spoolIsActive = false
         spoolState = .finished
+        releaseFinishedExtractorsIfIdle()
     }
 
     /// スプール完了を待つ(テスト・診断用)
@@ -1151,7 +1232,7 @@ actor ArchiveSource: BookSource {
         guard let directory = spoolDirectory, !spooledIDs.contains(id) else { return }
         // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開(スプール)しない
         guard !exceedsPerPageDecodeLimit(Int32(id)) else { return }
-        guard var data = archive.contents(ofEntry: Int32(id)) else { return }
+        guard var data = primaryContents(ofEntry: Int32(id)) else { return }
         if spoolEncrypted {
             // seal 失敗時は書かない(平文フォールバック禁止)
             guard let sealed = SuperResCacheCrypto.seal(data, using: spoolKey) else {
@@ -1187,37 +1268,28 @@ actor ArchiveEntryExtractor {
     /// expectedEntryCount: メイン書庫のエントリ数。開いた後にファイルが
     /// 差し替えられていた場合に、一覧と食い違う内容を展開しないための検証
     /// (エントリ数が同じ差し替えまでは検出しない割り切り。PDF 側と同じ)
-    init?(url: URL, password: String?, expectedEntryCount: Int32,
-          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory, poolSize: Int) {
-        let opened: (any ArchiveEngine)?
-        do {
-            opened = try factory.openFile(engineKind, url.path, .extractor(poolSize: poolSize))
-        } catch {
-            return nil
+    init(url: URL, password: String?, expectedEntryCount: Int32,
+         engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory, poolSize: Int) throws {
+        guard let archive = try factory.openFile(engineKind, url.path, .extractor(poolSize: poolSize)) else {
+            throw KaitoError.malformed("extractor open failed")
         }
-        guard let archive = opened else { return nil }
-        if let password {
-            archive.setPassword(password)
+        if let password { archive.setPassword(password) }
+        guard archive.numberOfEntries() == expectedEntryCount else {
+            throw KaitoError.malformed("extractor entry count changed")
         }
-        guard archive.numberOfEntries() == expectedEntryCount else { return nil }
         self.archive = archive
     }
 
-    /// メモリ背景版(暗号化親のネスト子。共有 NSData から独立ハンドルを開く。
-    /// 平文を disk に置かずに並列展開する。cooViewer-6ax)
-    init?(data: Data, password: String?, expectedEntryCount: Int32,
-          engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory, poolSize: Int) {
-        let opened: (any ArchiveEngine)?
-        do {
-            opened = try factory.openData(engineKind, data, .extractor(poolSize: poolSize))
-        } catch {
-            return nil
+    /// メモリ背景版。平文を disk に置かず、共有 NSData から独立した係を作る。
+    init(data: Data, password: String?, expectedEntryCount: Int32,
+         engineKind: ArchiveEngineKind, factory: ArchiveEngineFactory, poolSize: Int) throws {
+        guard let archive = try factory.openData(engineKind, data, .extractor(poolSize: poolSize)) else {
+            throw KaitoError.malformed("extractor open failed")
         }
-        guard let archive = opened else { return nil }
-        if let password {
-            archive.setPassword(password)
+        if let password { archive.setPassword(password) }
+        guard archive.numberOfEntries() == expectedEntryCount else {
+            throw KaitoError.malformed("extractor entry count changed")
         }
-        guard archive.numberOfEntries() == expectedEntryCount else { return nil }
         self.archive = archive
     }
 
@@ -1230,5 +1302,19 @@ actor ArchiveEntryExtractor {
             return nil
         }
         return archive.contents(ofEntry: index)
+    }
+}
+
+
+extension ArchiveSource: ArchiveDecodedStateOwner {
+    func releaseIdleDecodedState() -> Bool {
+        guard !isBuilding, !spoolIsActive,
+              extractorBusyCounts.allSatisfy({ $0 == 0 }) else { return false }
+        archive.discardDecodedState()
+        primaryHasDecodedState = false
+        extractors.removeAll()
+        extractorBusyCounts.removeAll()
+        groupExtractorAssignment.removeAll()
+        return true
     }
 }
