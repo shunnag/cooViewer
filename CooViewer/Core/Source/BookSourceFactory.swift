@@ -11,13 +11,16 @@ enum BookSourceFactory {
                      nestedPasswordProvider: NestedPasswordProvider? = nil,
                      preparsedEPUB: EPUBPublication? = nil,
                      vault: PasswordVault? = PasswordVault.sharedIfEnabled(),
-                     archiveEngine: ArchiveEngineKind = .kaitokit)
+                     archiveEngine: ArchiveEngineKind = .kaitokit,
+                     unlocker: NestedUnlocker? = nil)
         async throws -> any BookSource {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw BookSourceError.unreadable(url)
         }
-        let unlocker = NestedUnlocker(provider: nestedPasswordProvider, vault: vault)
+        // 候補一覧だけを更新するときも解錠・取消しの記憶を引き継ぐ(設計書 §2.4、§7.4)。
+        let unlocker = unlocker ?? NestedUnlocker(provider: nestedPasswordProvider, vault: vault)
+        await unlocker.setProvider(nestedPasswordProvider)
         if isDirectory.boolValue {
             let folder = try FolderSource(url: url, readSubFolders: readSubFolders)
             // 書庫/PDF を含むフォルダは統合ソースで包む(旧ネストローダー §2.4)。

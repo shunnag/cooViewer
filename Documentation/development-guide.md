@@ -108,6 +108,9 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--show-bookmark-editor` | しおり編集をウインドウ表示(シートは撮れないため) |
 | `--show-file-info` | ファイル情報パネルを開く(`--snapshot` はパネルを撮る) |
 | `--show-opening-progress` | オープン進捗 HUD を固定内容で表示 |
+| `--show-open-failure` | 「図面集」の読込失敗を固定表示(異なる原因の 3 冊 + 未確認 2 冊、実ファイル不要) |
+| `--show-open-failure-volume` | 「図面集」の保存先に接続できない状態を固定表示(実ファイル不要) |
+| `--show-opening-retry` | オープン進捗 HUD と「A-017.zip を再試行しています…」の 2 行を固定表示 |
 | `--show-gesture-hud <left\|right\|up\|down>` | ドラッグジェスチャの方向 HUD を強調状態で表示(割当名は実際のバインディングを解決。未割当なら灰色) |
 | `--zoom <倍率>` | 連続ピンチズームを中心基点で指定倍率にして撮る(1.0=下限。パン/描画確認用) |
 | `--show-activity` | アクティビティ窓を開いて撮る(`--snapshot` は ImageRenderer で内容を描画。ScrollView は headless の cacheDisplay で写らないため) |

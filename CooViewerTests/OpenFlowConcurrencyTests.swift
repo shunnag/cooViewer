@@ -37,6 +37,8 @@ final class OpenFlowConcurrencyTests: XCTestCase {
         let recentsBefore = history.recentBookPaths()
         let writesBefore = history.stateFileWriteCount
         let source = ProtectedContentPreparationSource(url: url)
+        let missingURL = URL(fileURLWithPath: CanonicalPath.normalize(
+            url.appendingPathExtension("missing").path), isDirectory: false)
         let controller = ReaderWindowController(window: nil, history: history)
         controller.preparedNextBook = (url.path, source, controller.settings.effectiveArchiveEngine)
         let opening = controller.openBook(at: url, atPage: 1)
@@ -45,11 +47,20 @@ final class OpenFlowConcurrencyTests: XCTestCase {
         if closesWindow {
             controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
         } else {
-            await controller.openBook(at: url.appendingPathExtension("missing")).value
+            await controller.openBook(at: missingURL).value
         }
         await source.resume()
         await opening.value
-        XCTAssertNil(controller.book)
+        if closesWindow {
+            XCTAssertNil(controller.book)
+        } else {
+            let placeholder = try XCTUnwrap(controller.book)
+            XCTAssertEqual(placeholder.pageCount, 0)
+            XCTAssertEqual(placeholder.source.url, missingURL)
+            XCTAssertFalse((placeholder.source as AnyObject) === source,
+                           "失効した準備結果を新要求の本にしない")
+            XCTAssertEqual(controller.failedOpen?.bookWasMissing, true)
+        }
         XCTAssertEqual(history.stateFileWriteCount, writesBefore)
         let restored = BookHistoryStore(defaults: defaults, directory: stateDirectory)
         XCTAssertEqual(restored.savedPage(forPath: url.path)?.page, 2)
@@ -80,12 +91,18 @@ final class OpenFlowConcurrencyTests: XCTestCase {
         await fulfillment(of: [source.paused], timeout: 2)
         let replacement = Book(source: source, entries: [])
         controller.replaceBook(replacement)
-        // 存在しないパスの新要求を最後にする。履歴への保存やダイアログは起きない。
-        let missing = source.url.appendingPathExtension("missing")
+        // 新要求の不在表示を、遅れて届く旧解除結果で上書きさせない(設計書 §7.4)。
+        let missing = URL(fileURLWithPath: CanonicalPath.normalize(
+            source.url.appendingPathExtension("missing").path), isDirectory: false)
         await controller.openBook(at: missing).value
+        let missingPlaceholder = try XCTUnwrap(controller.book)
         await source.resume()
         await opening.value
-        XCTAssertTrue(controller.book === replacement, "旧フローの取消表示で新要求を上書きしない")
+        XCTAssertTrue(controller.book === missingPlaceholder, "旧フローの取消表示で新要求を上書きしない")
+        XCTAssertFalse(controller.book === replacement)
+        XCTAssertEqual(controller.book?.pageCount, 0)
+        XCTAssertEqual(controller.book?.source.url, missing)
+        XCTAssertEqual(controller.failedOpen?.bookWasMissing, true)
     }
 
     func testCloseBeforeOpeningTaskStartsPreventsSourceAccess() async throws {

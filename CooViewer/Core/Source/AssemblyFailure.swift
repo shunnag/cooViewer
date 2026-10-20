@@ -29,15 +29,19 @@ struct AssemblyFailure: Error, CustomNSError, Sendable {
     let unchecked: Int
     let volumeUnavailable: Bool
     let sourceURL: URL
+    /// 期限切れはマウント通知で回復を検知できるとは限らず、手動再読込の案内へ切り替える(設計書 §7.4)。
+    let reachabilityTimedOut: Bool
     private let underlyingError: (any Error)?
 
     init(failures: [ChildReadFailure], total: Int, unchecked: Int = 0,
-         volumeUnavailable: Bool = false, sourceURL: URL, underlyingError: (any Error)? = nil) {
+         volumeUnavailable: Bool = false, sourceURL: URL, reachabilityTimedOut: Bool = false,
+         underlyingError: (any Error)? = nil) {
         self.failures = failures
         self.total = total
         self.unchecked = unchecked
         self.volumeUnavailable = volumeUnavailable
         self.sourceURL = sourceURL
+        self.reachabilityTimedOut = reachabilityTimedOut
         self.underlyingError = underlyingError
     }
 

@@ -87,20 +87,32 @@ enum AssemblyRetry {
         }
     }
 
+    struct Reachability: Sendable {
+        let isReachable: Bool
+        let timedOut: Bool
+    }
+
     static func sourceIsReachable(_ url: URL, policy: AssemblyRetryPolicy) async throws -> Bool {
+        try await sourceReachability(url, policy: policy).isReachable
+    }
+
+    /// 待機予算を増やさず、復帰通知だけでは検知できない期限切れの理由を案内へ引き継ぐ(設計書 §2.4、§7.4)。
+    static func sourceReachability(_ url: URL, policy: AssemblyRetryPolicy) async throws -> Reachability {
         let result = AssemblyProbeResult()
         let priority = Task.currentPriority
-        let probe = Task.detached(priority: priority) { result.finish(await policy.reachabilityProbe(url)) }
+        let probe = Task.detached(priority: priority) {
+            result.finish(.init(isReachable: await policy.reachabilityProbe(url), timedOut: false))
+        }
         let timeout = Task.detached(priority: priority) {
             do {
                 try await policy.sleep(policy.probeTimeout)
-                result.finish(false)
+                result.finish(.init(isReachable: false, timedOut: true))
             } catch {}
         }
         defer { probe.cancel(); timeout.cancel() }
         let reachable = await withTaskCancellationHandler {
             await result.value()
-        } onCancel: { result.finish(false) }
+        } onCancel: { result.finish(.init(isReachable: false, timedOut: false)) }
         try Task.checkCancellation()
         return reachable
     }
@@ -109,25 +121,25 @@ enum AssemblyRetry {
 /// OS のプローブ自体が応答しなくても timeout で待ち手を解放する(設計書 §7.4)。
 private final class AssemblyProbeResult: Sendable {
     private struct State {
-        var result: Bool?
-        var continuation: CheckedContinuation<Bool, Never>?
+        var result: AssemblyRetry.Reachability?
+        var continuation: CheckedContinuation<AssemblyRetry.Reachability, Never>?
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    func value() async -> Bool {
+    func value() async -> AssemblyRetry.Reachability {
         await withCheckedContinuation { continuation in
-            let ready: Bool? = state.withLock {
+            let ready: AssemblyRetry.Reachability? = state.withLock {
                 if let result = $0.result { return result }
                 $0.continuation = continuation
-                return nil as Bool?
+                return nil as AssemblyRetry.Reachability?
             }
             if let ready { continuation.resume(returning: ready) }
         }
     }
 
-    func finish(_ result: Bool) {
+    func finish(_ result: AssemblyRetry.Reachability) {
         let continuation = state.withLock {
-            guard $0.result == nil else { return nil as CheckedContinuation<Bool, Never>? }
+            guard $0.result == nil else { return nil as CheckedContinuation<AssemblyRetry.Reachability, Never>? }
             $0.result = result
             let continuation = $0.continuation
             $0.continuation = nil
@@ -200,7 +212,7 @@ enum AssemblyPreparation {
         case completed(Int, Result<AssemblyChildPreparation, any Error>)
         case interactiveUnlock(Int, Bool, ContinuousClock.Instant)
         case cutoff(UUID)
-        case probe(Bool)
+        case probe(AssemblyRetry.Reachability)
         case abortCheck(UUID)
     }
 
@@ -261,6 +273,7 @@ enum AssemblyPreparation {
         var probing = false
         var pendingVolumeUnavailable = false
         var volumeUnavailable = false
+        var reachabilityTimedOut = false
         var abortCheckID: UUID?
         var aborted = false
         var next = 0
@@ -341,7 +354,7 @@ enum AssemblyPreparation {
                         probing = true
                         auxiliaries.append(Task.detached(priority: priority) {
                             do {
-                                emit(.probe(try await AssemblyRetry.sourceIsReachable(sourceURL, policy: policy)))
+                                emit(.probe(try await AssemblyRetry.sourceReachability(sourceURL, policy: policy)))
                             } catch {}
                         })
                     }
@@ -390,9 +403,12 @@ enum AssemblyPreparation {
                 case .cutoff(let id):
                     if id == cutoffID, interactiveUnlocks.isEmpty,
                        !attempts.isEmpty || !failures.isEmpty { requestAbortCheck() }
-                case .probe(let reachable):
+                case .probe(let reachability):
                     probing = false
-                    if !reachable { pendingVolumeUnavailable = true }
+                    if !reachability.isReachable {
+                        pendingVolumeUnavailable = true
+                        reachabilityTimedOut = reachability.timedOut
+                    }
                 case .abortCheck(let id):
                     guard id == abortCheckID else { continue }
                     abortCheckID = nil
@@ -441,6 +457,7 @@ enum AssemblyPreparation {
             throw AssemblyFailure(failures: children, total: total,
                 unchecked: unchecked,
                 volumeUnavailable: volumeUnavailable, sourceURL: sourceURL,
+                reachabilityTimedOut: volumeUnavailable && reachabilityTimedOut,
                 underlyingError: ordered.first?.value ?? firstFailure)
         }
         return results
