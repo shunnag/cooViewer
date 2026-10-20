@@ -8,9 +8,17 @@ protocol ArchiveDecodedStateOwner: AnyObject, Sendable {
 /// FD と別に、solid 辞書・展開係の保持を冊数から独立させる。
 /// 最近の本は維持してページめくりを速くし、実行中のスプール・貸出中の係は触らない。
 actor ArchiveDecodedStateCache {
-    static let maximumIdleBooks = max(1, min(16,
-        Int(ProcessInfo.processInfo.physicalMemory / (8 << 30))))
+    static let maximumIdleBooks = idleBookLimit()
     static let shared = ArchiveDecodedStateCache(limit: maximumIdleBooks)
+
+    static func idleBookLimit(defaults: UserDefaults = .standard,
+                              physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
+        // 再現用の上限は起動引数だけから読み、保存済みの設定には影響させない。
+        let arguments = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        if let value = arguments["DecodedStateIdleBooks"],
+           let limit = Int(String(describing: value)), limit >= 1 { return limit }
+        return max(1, min(16, Int(physicalMemory / (8 << 30))))
+    }
 
     private final class Reference: @unchecked Sendable {
         weak var owner: (any ArchiveDecodedStateOwner)?
@@ -37,6 +45,11 @@ actor ArchiveDecodedStateCache {
         while order.count > limit, attempts > 0 {
             attempts -= 1
             let candidate = order.removeFirst()
+            // 古い本が全て使用中でも、今読んだ本の solid 状態を捨てない。
+            if candidate == key {
+                order.append(candidate)
+                continue
+            }
             guard let reference = owners.removeValue(forKey: candidate),
                   let old = reference.owner else { continue }
             if !(await old.releaseIdleDecodedState()), owners[candidate] == nil {
