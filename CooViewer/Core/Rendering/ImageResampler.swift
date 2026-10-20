@@ -42,9 +42,11 @@ actor ImageResampler {
     /// 実効上限 = MemoryBudgetPolicy(configured, 圧迫段階)
     private var byteLimit: Int
     private let pressureObservation: MemoryPressureObservation
-    private lazy var metalFX: MetalFXUpscaler? = MetalFXUpscaler()
-    private lazy var lanczos: LanczosDownscaler? = LanczosDownscaler()
-    private lazy var noiseReducer: NoiseReducer? = NoiseReducer()
+    private var metalFX: MetalFXUpscaler?
+    private var lanczos: LanczosDownscaler?
+    private var noiseReducer: NoiseReducer?
+    private let noiseReductionOverride: (@Sendable (CGImage, NoiseReductionLevel) -> CGImage?)?
+    private let upscaleOverride: (@Sendable (CGImage, CGSize) -> CGImage?)?
 
     /// アクティビティ窓向けの読み取り専用スナップショット(O(1))
     struct Stats: Sendable, Equatable {
@@ -63,7 +65,11 @@ actor ImageResampler {
             12 << 30,
             Int(clamping: ProcessInfo.processInfo.physicalMemory) / 5),
          pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared,
-         center: NotificationCenter = .default) {
+         center: NotificationCenter = .default,
+         noiseReductionOverride: (@Sendable (CGImage, NoiseReductionLevel) -> CGImage?)? = nil,
+         upscaleOverride: (@Sendable (CGImage, CGSize) -> CGImage?)? = nil) {
+        self.noiseReductionOverride = noiseReductionOverride
+        self.upscaleOverride = upscaleOverride
         configuredByteLimit = max(1, byteLimit)
         self.byteLimit = MemoryBudgetPolicy.effectiveLimit(
             configured: configuredByteLimit, level: pressure.memoryPressureLevel)
@@ -96,9 +102,9 @@ actor ImageResampler {
                   cacheKey: String, upscaleWithMetalFX: Bool,
                   noiseReduction: NoiseReductionLevel = .none,
                   superResEncrypted: Bool = false) async -> CGImage? {
-        let width = Int(pixelSize.width.rounded())
-        let height = Int(pixelSize.height.rounded())
-        guard width > 0, height > 0 else { return nil }
+        guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
+        let width = size.width
+        let height = size.height
         if width == image.width, height == image.height,
            noiseReduction == .none { return image }
 
@@ -152,23 +158,25 @@ actor ImageResampler {
             ? "\(cacheKey)|\(image.width)x\(image.height)|nr-strong" : nil
         let source: CGImage
         let usedMLFallback: Bool
+        let sourceCacheable: Bool
         if let nrKey, let cached = cache[nrKey] {
             source = cached
             // 恒久失敗中は CI の中間結果も保持する。派生する別サイズにも
             // 代替結果の印を引き継ぎ、モデル回復時にまとめて破棄する。
             usedMLFallback = mlFallbackKeys.contains(nrKey)
+            sourceCacheable = true
             _ = touch(nrKey)
         } else {
             reducedSourceCount += 1
             // 圧縮ノイズ低減(JPEG のブロックノイズ)。最高・強は CoreML モデル、
             // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
-            (source, usedMLFallback) = await reducedSource(
+            (source, usedMLFallback, sourceCacheable) = await reducedSource(
                 of: image, level: noiseReduction, cacheKey: cacheKey,
                 encrypted: superResEncrypted)
             // 中間結果のキャッシュ可否は最終結果と同じ 7n1.2 規則。恒久失敗機
             // (.failed/XCTest)は CI 中間も焼いてリサイズ再計算を防ぐ、一過性
             // フォールバック(未導入/DL 中)はモデル完成後の本物に譲るため焼かない
-            if let nrKey,
+            if sourceCacheable, let nrKey,
                await resolvedCacheable(usedMLFallback: usedMLFallback,
                                        image: image, level: noiseReduction) {
                 insert(source, for: nrKey)
@@ -180,20 +188,27 @@ actor ImageResampler {
 
         let isUpscale = width > source.width || height > source.height
         var result: CGImage?
+        var resizeCacheable = true
         if width == source.width, height == source.height {
             result = source  // ノイズ低減のみ(サイズ変更なし)
         }
-        if result == nil, isUpscale, upscaleWithMetalFX {
+        if result == nil, isUpscale, upscaleWithMetalFX,
+           width >= source.width, height >= source.height {
             result = metalFXUpscale(source, width: width, height: height)
+            // 一過性の MetalFX 失敗を CG の完成結果として固定しない。
+            let unsupportedSize = metalFX.map { !$0.supportsDimensions(source, width: width, height: height) } ?? false
+            resizeCacheable = result != nil || (upscaleOverride == nil
+                && (unsupportedSize || MetalFXUpscaler.deviceIsUnsupported))
         }
         // 縮小は GPU の Lanczos を最優先(CPU の CG 高品質補間はフォールバック)
         if result == nil, !isUpscale {
+            if lanczos == nil { lanczos = LanczosDownscaler() }
             result = lanczos?.downscale(source, to: CGSize(width: width, height: height))
         }
         if result == nil {
             result = Self.cgResample(source, width: width, height: height)
         }
-        if let result,
+        if sourceCacheable, resizeCacheable, let result,
            await resolvedCacheable(usedMLFallback: usedMLFallback,
                                    image: image, level: noiseReduction) {
             insert(result, for: key)
@@ -266,9 +281,9 @@ actor ImageResampler {
     func cached(_ image: CGImage, to pixelSize: CGSize,
                 cacheKey: String, upscaleWithMetalFX: Bool,
                 noiseReduction: NoiseReductionLevel = .none) -> CGImage? {
-        let width = Int(pixelSize.width.rounded())
-        let height = Int(pixelSize.height.rounded())
-        guard width > 0, height > 0 else { return nil }
+        guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
+        let width = size.width
+        let height = size.height
         return touch(Self.makeKey(cacheKey: cacheKey, image: image,
                                   width: width, height: height,
                                   upscaleWithMetalFX: upscaleWithMetalFX,
@@ -314,22 +329,30 @@ actor ImageResampler {
                                level: NoiseReductionLevel,
                                cacheKey: String?,
                                encrypted: Bool = false)
-        async -> (image: CGImage, usedMLFallback: Bool) {
-        guard level != .none else { return (image, false) }
+        async -> (image: CGImage, usedMLFallback: Bool, cacheable: Bool) {
+        guard level != .none else { return (image, false, true) }
         if level == .maximum {
             // ディスクキャッシュのキーは元画像サイズまで含めて一意にする
             let srKey = cacheKey.map { "\($0)|\(image.width)x\(image.height)|sr4" }
             if let upscaled = await MLSuperResolver.shared.upscale(
                 image, cacheKey: srKey, encrypted: encrypted) {
-                return (upscaled, false)
+                return (upscaled, false, true)
             }
         }
         if level == .strong || level == .maximum,
            let reduced = await MLNoiseReducer.shared.reduce(image) {
-            return (reduced, false)
+            return (reduced, false, true)
         }
         let requestedML = level == .strong || level == .maximum
-        return (noiseReducer?.reduce(image, level: level) ?? image, requestedML)
+        let reduced: CGImage?
+        if let noiseReductionOverride { reduced = noiseReductionOverride(image, level) }
+        else {
+            if noiseReducer == nil { noiseReducer = NoiseReducer() }
+            reduced = noiseReducer?.reduce(image, level: level)
+        }
+        // 一時的な GPU 不足で未処理の原画を返しても、「ノイズ低減済み」へ焼かない。
+        if let reduced { return (reduced, requestedML, true) }
+        return (image, requestedML, false)
     }
 
     // MARK: - バイト基準 LRU(PageCache と同じ方針)
@@ -365,11 +388,14 @@ actor ImageResampler {
     /// MetalFX による拡大(2 倍超の段階適用は MetalFXUpscaler 内でテクスチャの
     /// まま行われる)。失敗時は nil を返し、呼び出し元が CG へフォールバック。
     private func metalFXUpscale(_ image: CGImage, width: Int, height: Int) -> CGImage? {
-        metalFX?.upscale(image, to: CGSize(width: width, height: height))
+        if let upscaleOverride { return upscaleOverride(image, CGSize(width: width, height: height)) }
+        if metalFX == nil { metalFX = MetalFXUpscaler() }
+        return metalFX?.upscale(image, to: CGSize(width: width, height: height))
     }
 
     /// CG の高品質補間(Lanczos 相当)によるリサンプル
     static func cgResample(_ image: CGImage, width: Int, height: Int) -> CGImage? {
+        guard BitmapDimensions(width: width, height: height) != nil else { return nil }
         // グレースケール/CMYK は RGBA コンテキストを作れないため sRGB へ変換する
         let sourceSpace = image.colorSpace
         let space = (sourceSpace?.model == .rgb ? sourceSpace : nil)
