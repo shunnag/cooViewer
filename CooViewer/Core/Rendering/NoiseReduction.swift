@@ -83,7 +83,8 @@ final class NoiseReducer {
     private let context: CIContext
 
     init?() {
-        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+        guard FileDescriptorHeadroom.isAvailable(),
+              let device = MTLCreateSystemDefaultDevice() else { return nil }
         context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
     }
 
@@ -92,6 +93,7 @@ final class NoiseReducer {
     /// ここへ来た場合はフォールバックとして中と同じ処理を行う
     func reduce(_ image: CGImage, level: NoiseReductionLevel) -> CGImage? {
         guard level != .none else { return image }
+        guard FileDescriptorHeadroom.isAvailable() else { return nil }
         let filter = CIFilter.noiseReduction()
         filter.inputImage = CIImage(cgImage: image)
         switch level {
@@ -110,29 +112,7 @@ final class NoiseReducer {
         let sourceSpace = image.colorSpace
         let space = (sourceSpace?.model == .rgb ? sourceSpace : nil)
             ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        // 出力は malloc 領域へ直接レンダリングし、CGImage に所有権ごと渡す
-        let width = image.width
-        let height = image.height
-        let bytesPerRow = width * 4
-        let byteCount = bytesPerRow * height
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: byteCount,
-                                                      alignment: 16)
-        context.render(
-            output, toBitmap: buffer, rowBytes: bytesPerRow,
-            bounds: CGRect(x: 0, y: 0, width: width, height: height),
-            format: .RGBA8, colorSpace: space)
-        guard let provider = CGDataProvider(
-            dataInfo: nil, data: buffer, size: byteCount,
-            releaseData: { _, data, _ in data.deallocate() }) else {
-            buffer.deallocate()
-            return nil
-        }
-        return CGImage(
-            width: width, height: height,
-            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
-            space: space,
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-            provider: provider, decode: nil, shouldInterpolate: true,
-            intent: .defaultIntent)
+        guard let size = BitmapDimensions(width: image.width, height: image.height) else { return nil }
+        return BitmapRendering.render(output, context: context, size: size, colorSpace: space)
     }
 }
