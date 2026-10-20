@@ -113,6 +113,10 @@ enum MainMenuBuilder {
         menu.addItem(withTitle: String(localized: "Open the Last Book"),
                      action: #selector(ReaderWindowController.openLastBookMenu(_:)),
                      keyEquivalent: "O")  // ⇧⌘O(旧 §8.1 と同じ)
+        menu.addItem(withTitle: String(localized: "Reload"),
+                     action: #selector(ReaderWindowController.reloadBook(_:)), keyEquivalent: "r")
+        menu.addItem(withTitle: String(localized: "Open Without Unreadable Volumes"),
+                     action: #selector(ReaderWindowController.openWithoutUnreadableVolumes(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         // 現在ページの実体ファイル(単体画像/書庫/PDF)を Finder で選択表示
         menu.addItem(withTitle: String(localized: "Show in Finder"),

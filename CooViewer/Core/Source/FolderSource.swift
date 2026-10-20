@@ -11,6 +11,13 @@ final class FolderSource: BookSource {
     /// 統合は NestedFolderSource が担い、本クラスは列挙のみ行う)
     let nestedBookCandidates: [(fileURL: URL, relativePath: String)]
 
+    /// 撮影用の不変スナップショットは実フォルダや利用者の履歴に触れない(設計書 §7.4)。
+    init(snapshotURL: URL, images: [PageEntry], nestedPaths: [String]) {
+        url = snapshotURL
+        pageEntries = images
+        nestedBookCandidates = nestedPaths.map { (snapshotURL.appendingPathComponent($0), $0) }
+    }
+
     var supportsDateSort: Bool { true }
     var supportsParallelPageLoads: Bool { true }
 

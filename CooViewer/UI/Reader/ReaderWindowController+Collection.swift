@@ -24,7 +24,8 @@ extension ReaderWindowController {
             source: book.source,
             singleSetting: book.singleSetting,
             coverSingle: book.coverSingleFirst,
-            bookmarkedPages: Set(book.bookmarks.map(\.pageIndex)))
+            bookmarkedPages: Set(book.resolvedBookmarkIndices),
+            partialRecovery: partialRecoverySnapshot(for: book))
         // 提示エポックを採番(await より前)。合本内移動は openGeneration を
         // 動かさないため、last-request-wins は epubPresentEpoch で担保する
         epubPresentEpoch += 1
@@ -114,7 +115,7 @@ extension ReaderWindowController {
             source: context.source,
             singleSetting: context.singleSetting,
             coverSingle: context.coverSingle,
-            bookmarkedPages: context.bookmarkedPages)
+            bookmarkedPages: context.bookmarkedPages, partialRecovery: context.partialRecovery)
         // 提示エポックを採番(await より前。last-request-wins)
         epubPresentEpoch += 1
         let presentEpoch = epubPresentEpoch

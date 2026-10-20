@@ -8,7 +8,7 @@ import Washi
 final class EPUBReadingSession {
     let publication: EPUBPublication
     let url: URL
-    let collectionContext: EPUBCollectionContext?
+    var collectionContext: EPUBCollectionContext?
     private(set) var isActive = true
     /// 同じ publication の再提示でも、設定同期中の旧ビュー通知を採用しない。
     var isConfiguringView = false

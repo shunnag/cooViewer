@@ -10,6 +10,18 @@ import Foundation
 final class Book {
     let source: any BookSource
     private(set) var entries: [PageEntry]
+    let missingVolumeCount: Int
+    var isSyntheticPreview = false
+    var isPartial: Bool { missingVolumeCount > 0 }
+    var incompleteSuffix: String {
+        Self.incompleteSuffix(missingVolumeCount: missingVolumeCount)
+    }
+
+    nonisolated static func incompleteSuffix(missingVolumeCount count: Int) -> String {
+        guard count > 0 else { return "" }
+        return String(localized: " (\(count) volumes missing)")
+    }
+
     private(set) var currentIndex = 0 {
         didSet { if currentIndex != oldValue { stateRevision &+= 1 } }
     }
@@ -46,6 +58,8 @@ final class Book {
     /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
     private var stateRevision = 0
     private var navigationGeneration = 0
+    /// 設定編集による再描画世代と、保存位置を変更する明示ナビゲーションを分ける(設計書 §7.4)。
+    private(set) var explicitNavigationRevision = 0
     /// 直近の移動方向(先読み・事前リサンプルの向きの決定に使う)
     private(set) var lastMoveForward = true
 
@@ -82,6 +96,7 @@ final class Book {
         self.source = source
         self.sortMode = sortMode
         self.entries = prepared.sortedEntries
+        self.missingVolumeCount = prepared.sortedEntries.filter { $0.unreadableVolume != nil }.count
         self.cache = PageCache(byteLimit: cacheByteLimit)
         self.cacheKey = prepared.cacheKey
         self.sorter = sorter
@@ -197,7 +212,7 @@ final class Book {
     /// image は 0 始まりページとして実ページへ写像し、範囲外は捨てる
     /// (PageCount と実ページ数のズレ耐性)
     func loadComicInfoState(useLayoutHints: Bool) async {
-        let info = await comicInfo()
+        let info = isPartial ? nil : await comicInfo()
         let count = pageCount
         chapterMarks = (info?.chapters ?? []).compactMap { chapter in
             guard chapter.image >= 0, chapter.image < count else { return nil }
@@ -308,9 +323,8 @@ final class Book {
 
     /// サイズ索引による見開き候補判定。寸法が取れなければ nil(従来判定へ)
     private func isSmallFromIndex(at index: Int) async -> Bool? {
-        // リフロー EPUB の代理ページは常に単独: 見開きに混ぜると「隣のページの
-        // おまけ」として素通りし、EPUB モードへの切替が飛ばされる
-        if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+        // 巻の代理ページを単独にし、EPUB 入場や欠落の案内を隣の画像へ埋め込まない(仕様書 §4.17、設計書 §7.4、§2.4)。
+        if entries.indices.contains(index), entries[index].isStandalonePage {
             return false
         }
         guard let size = await pageSize(at: index) else { return nil }
@@ -337,8 +351,8 @@ final class Book {
     }
 
     private func isSmall(_ image: CGImage?, at index: Int) -> Bool {
-        // リフロー EPUB の代理ページは常に単独(isSmallFromIndex と同じ規則)
-        if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+        // 寸法索引がなくても巻の代理ページを単独に保つ(設計書 §7.4、§2.4)。
+        if entries.indices.contains(index), entries[index].isStandalonePage {
             return false
         }
         guard let image else { return false }
@@ -416,12 +430,14 @@ final class Book {
     struct NavigationCheckpoint {
         fileprivate let index: Int
         fileprivate let generation: Int
+        fileprivate let explicitNavigationRevision: Int
         fileprivate let displayCount: Int
         fileprivate let forward: Bool
     }
 
     var navigationCheckpoint: NavigationCheckpoint {
         NavigationCheckpoint(index: currentIndex, generation: navigationGeneration,
+                             explicitNavigationRevision: explicitNavigationRevision,
                              displayCount: lastDisplayCount, forward: lastMoveForward)
     }
 
@@ -436,6 +452,8 @@ final class Book {
                            ifUnchanged destination: NavigationCheckpoint) -> Bool {
         guard isAtNavigationCheckpoint(destination) else { return false }
         goTo(index: origin.index)
+        // 仮移動の取消しは読者の移動ではないため、保存位置を守る操作回数も戻す(設計書 §7.4)。
+        explicitNavigationRevision = origin.explicitNavigationRevision
         lastDisplayCount = origin.displayCount
         lastMoveForward = origin.forward
         return true
@@ -445,6 +463,7 @@ final class Book {
         invalidatePendingNavigation()
         guard !entries.isEmpty else { return .hitEnd }
         guard currentIndex + lastDisplayCount < entries.count else { return .hitEnd }
+        explicitNavigationRevision &+= 1
         currentIndex += lastDisplayCount
         lastMoveForward = true
         return .moved
@@ -467,6 +486,7 @@ final class Book {
             // 別の後退が先に完了した場合は、その位置からもう一度戻る。
             // ヘッダ待機中のキー連打を落とさず、負の位置への減算も防ぐ。
             guard anchor == currentIndex else { continue }
+            explicitNavigationRevision &+= 1
             currentIndex = start
             lastMoveForward = false
             return .moved
@@ -499,6 +519,7 @@ final class Book {
     func moveHalfNext() -> MoveResult {
         invalidatePendingNavigation()
         guard currentIndex + 1 < entries.count else { return .hitEnd }
+        explicitNavigationRevision &+= 1
         currentIndex += 1
         lastMoveForward = true
         return .moved
@@ -507,6 +528,7 @@ final class Book {
     func moveHalfPrevious() -> MoveResult {
         invalidatePendingNavigation()
         guard currentIndex > 0 else { return .hitStart }
+        explicitNavigationRevision &+= 1
         currentIndex -= 1
         lastMoveForward = false
         return .moved
@@ -515,11 +537,13 @@ final class Book {
     func goTo(index: Int) {
         invalidatePendingNavigation()
         guard !entries.isEmpty else { return }
+        explicitNavigationRevision &+= 1
         currentIndex = min(max(0, index), entries.count - 1)
     }
 
     func goToFirst() {
         invalidatePendingNavigation()
+        explicitNavigationRevision &+= 1
         currentIndex = 0
         lastMoveForward = true
     }
@@ -535,6 +559,7 @@ final class Book {
               generation == navigationGeneration, !Task.isCancelled else {
             return false
         }
+        explicitNavigationRevision &+= 1
         currentIndex = start
         lastMoveForward = true
         return true
@@ -556,8 +581,8 @@ final class Book {
         // サイズ未取得でも marks・表紙単ページの規則は適用したいので、
         // 不明なページは縦長サイズを仮定して通常判定に流す
         func assumedSmall(at index: Int) async -> Bool {
-            // 代理ページ(リフロー EPUB)は常に単独(isSmallFromIndex と同じ規則)
-            if entries.indices.contains(index), entries[index].reflowEPUBURL != nil {
+            // 再配置でも代理ページを隣の画像へ吸収させない(設計書 §7.4、§2.4)。
+            if entries.indices.contains(index), entries[index].isStandalonePage {
                 return false
             }
             let size = await pageSize(at: index) ?? CGSize(width: 70, height: 100)
@@ -669,6 +694,7 @@ final class Book {
             guard generation == sortGeneration else { return false }
             invalidatePendingNavigation()
             entries = sorted
+            // 並べ替えに伴う先頭への配置はページ移動の意思ではなく、明示移動には数えない(設計書 §7.4)。
             currentIndex = 0
             return true
         }
@@ -682,6 +708,9 @@ final class Book {
         prefetchTask?.cancel()
         prefetchTask = nil
     }
+
+    /// キャッシュの寿命を、実時間の待機なしで検証する(設計書 §7.4)。
+    func waitForPrefetch() async { await prefetchTask?.value }
 
     private func invalidatePendingNavigation() {
         navigationGeneration &+= 1
@@ -732,12 +761,21 @@ final class Book {
 
     // MARK: - しおり移動
 
+    func resolvedBookmarkIndex(_ bookmark: PageBookmark) -> Int? {
+        if isPartial {
+            return bookmark.pagePath.flatMap { path in entries.firstIndex { $0.pathInBook == path } }
+        }
+        return bookmark.pageIndex
+    }
+
+    var resolvedBookmarkIndices: [Int] { bookmarks.compactMap { resolvedBookmarkIndex($0) } }
+
     func nextBookmarkIndex() -> Int? {
-        bookmarks.map(\.pageIndex).filter { $0 > currentIndex }.min()
+        resolvedBookmarkIndices.filter { $0 > currentIndex }.min()
     }
 
     func previousBookmarkIndex() -> Int? {
-        bookmarks.map(\.pageIndex).filter { $0 < currentIndex }.max()
+        resolvedBookmarkIndices.filter { $0 < currentIndex }.max()
     }
 
     // MARK: - 先読み(仕様書 §4.5 の置換。設計書 §3.1)
