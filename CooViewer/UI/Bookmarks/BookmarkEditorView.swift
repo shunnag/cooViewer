@@ -9,23 +9,41 @@ struct BookmarkEditorView: View {
         let id = UUID()
         var name: String
         var pageNumber: Int  // 1 始まり(表示・入力用。保存時に 0 始まりへ戻す)
+        var original: PageBookmark?
+
+        func bookmark(offset: Int, pageCount: Int, bookIsComplete: Bool = true,
+                      pagePath: (Int) -> String?) -> PageBookmark {
+            // 名前変更や並べ替えだけで錨を失わず、未変更の旧しおりも補完しない(設計書 §7.4)。
+            let unchanged = original.map { pageNumber == $0.pageIndex + 1 } ?? false
+            // 不完全な一覧の旧しおりだけは位置を推定できないため元の番号を守る(設計書 §7.4)。
+            let preserveLegacyIndex = unchanged && original?.pagePath == nil && !bookIsComplete
+            let index = preserveLegacyIndex ? original!.pageIndex
+                : min(max(0, pageNumber - 1), max(0, pageCount - 1))
+            return PageBookmark(name: name.isEmpty ? "bookmark\(offset + 1)" : name, pageIndex: index,
+                                pagePath: unchanged ? original?.pagePath : pagePath(index))
+        }
     }
 
     let pageCount: Int
+    let bookIsComplete: Bool
+    let pagePath: @MainActor (Int) -> String?
     let onSave: @MainActor ([PageBookmark]) -> Void
     let onClose: @MainActor () -> Void
 
     @State private var items: [Item]
     @State private var selection: Set<UUID> = []
 
-    init(bookmarks: [PageBookmark], pageCount: Int,
+    init(bookmarks: [PageBookmark], pageCount: Int, bookIsComplete: Bool = true,
+         pagePath: @escaping @MainActor (Int) -> String? = { _ in nil },
          onSave: @escaping @MainActor ([PageBookmark]) -> Void,
          onClose: @escaping @MainActor () -> Void) {
         self.pageCount = pageCount
+        self.bookIsComplete = bookIsComplete
+        self.pagePath = pagePath
         self.onSave = onSave
         self.onClose = onClose
         _items = State(initialValue: bookmarks.map {
-            Item(name: $0.name, pageNumber: $0.pageIndex + 1)
+            Item(name: $0.name, pageNumber: $0.pageIndex + 1, original: $0)
         })
     }
 
@@ -75,13 +93,10 @@ struct BookmarkEditorView: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Button(String(localized: "OK")) {
-                    // 空の名前と範囲外ページは保存時に補正する
+                    // 旧しおりの不確かな位置を守りつつ、確定できる範囲外ページは補正する(設計書 §7.4)。
                     onSave(items.enumerated().map { offset, item in
-                        PageBookmark(
-                            name: item.name.isEmpty
-                                ? "bookmark\(offset + 1)" : item.name,
-                            pageIndex: min(max(0, item.pageNumber - 1),
-                                           max(0, pageCount - 1)))
+                        item.bookmark(offset: offset, pageCount: pageCount,
+                                      bookIsComplete: bookIsComplete, pagePath: pagePath)
                     })
                     onClose()
                 }

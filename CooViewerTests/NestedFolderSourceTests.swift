@@ -163,6 +163,8 @@ final class NestedFolderSourceTests: XCTestCase {
         let first = try await source.entries()
         XCTAssertEqual(first.map(\.pathInBook), ["00.png"],
                        "解除できない子は黙って外れること(§4.17)")
+        let excluded = await source.excludedChildCount()
+        XCTAssertEqual(excluded, 1)
         XCTAssertEqual(prompts.withLock { $0 }, 1)
 
         // 復帰の再利用契約: 新しい provider を付け替えて entries を取り直しても
