@@ -26,11 +26,13 @@ actor ArchiveSource: BookSource {
     /// ネスト子と展開係も同じエンジンで生成する。
     private let preferredEngine: ArchiveEngineKind
     private let engineFactory: ArchiveEngineFactory
+    private let retryPolicy: AssemblyRetryPolicy
     private let powerState: any PowerStateProviding
     private let extractorPoolSizing: @Sendable (Bool) -> Int
     /// メモリ背景(暗号化親のネスト子)。非 nil のとき disk を読まず、
     /// 展開プールもこの共有 NSData から再オープンする(平文を temp に置かない)
     private let sourceData: Data?
+    private let hasSyntheticURL: Bool
     /// この本の内容が暗号化された祖先由来か(nest 子の平文 temp 回避を子孫へ伝播)
     private let contentIsSensitive: Bool
     /// ルートの ComicInfo.xml エントリ(あれば。cooViewer-4fi.2)
@@ -51,9 +53,18 @@ actor ArchiveSource: BookSource {
 
     /// entries() の組み立て結果(actor 再入で二重構築しないよう Task で共有)
     private var buildTask: (task: Task<[PageEntry], any Error>, id: UUID)?
+    private struct AssemblyLifetime {
+        var abandoned = false
+        var task: Task<[PageEntry], any Error>?
+    }
+    // actor が同期 I/O 中でも取消しを伝えるため、構築 Task の参照だけはロックで共有する(設計書 §2.4、§7.4)。
+    private nonisolated let assemblyLifetime = OSAllocatedUnfairLock(initialState: AssemblyLifetime())
     private var locations: [Int: PageLocation] = [:]
     private var children: [any BookSource] = []
-    private var nestedRoot: URL?
+    private var excludedCount = 0
+
+    private var nestedRoots: [URL] = []
+    private var nestedRootCleanup: Task<Void, Never>?
     private var password: String?
     /// ネスト書庫/PDF のロック解除係(本の全ネスト階層で共有)
     private let unlocker: NestedUnlocker
@@ -250,17 +261,20 @@ actor ArchiveSource: BookSource {
          persistenceKey: PasswordVault.Key, sensitive: Bool = false,
          preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live,
+         retryPolicy: AssemblyRetryPolicy = .default,
          powerState: any PowerStateProviding = PowerStateMonitor.shared,
          extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
              ArchiveSource.extractorPoolSize(conserveEnergy: $0)
          }) throws {
         self.url = url
+        self.hasSyntheticURL = false
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker ?? NestedUnlocker()
         self.persistenceKey = persistenceKey
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
+        self.retryPolicy = retryPolicy
         self.powerState = powerState
         self.extractorPoolSizing = extractorPoolSizing
         // ローカル固定ボリュームの単一ファイル書庫は mmap 経由で開く(open+全列挙が
@@ -311,17 +325,20 @@ actor ArchiveSource: BookSource {
          persistenceKey: PasswordVault.Key, sensitive: Bool = true,
          preferredEngine: ArchiveEngineKind = .kaitokit,
          engineFactory: ArchiveEngineFactory = .live,
+         retryPolicy: AssemblyRetryPolicy = .default,
          powerState: any PowerStateProviding = PowerStateMonitor.shared,
          extractorPoolSizing: @escaping @Sendable (Bool) -> Int = {
              ArchiveSource.extractorPoolSize(conserveEnergy: $0)
          }) throws {
         self.url = URL(fileURLWithPath: name)
+        self.hasSyntheticURL = true
         self.contentIsSensitive = sensitive
         self.nestingDepth = nestingDepth
         self.unlocker = unlocker
         self.persistenceKey = persistenceKey
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
+        self.retryPolicy = retryPolicy
         self.powerState = powerState
         self.extractorPoolSizing = extractorPoolSizing
         let opened = try Self.open(
@@ -557,7 +574,7 @@ actor ArchiveSource: BookSource {
 
     deinit {
         if case .running(let task) = spoolState { task.cancel() }
-        let directories = [spoolDirectory, nestedRoot].compactMap(\.self)
+        let directories = [spoolDirectory].compactMap(\.self) + nestedRoots
         if !directories.isEmpty {
             Task.detached(priority: .utility) {
                 for directory in directories {
@@ -571,12 +588,29 @@ actor ArchiveSource: BookSource {
         try await buildIfNeeded()
     }
 
+    /// 試行専有の子を捨てる場合だけ呼び、共有の entries() の取消しでは構築を止めない(設計書 §2.4、§7.4)。
+    nonisolated func abandonAssembly() {
+        // entries() より先に取消し通知が到着しても、後から入力依頼を始めさせない(設計書 §7.4)。
+        let task = assemblyLifetime.withLock {
+            $0.abandoned = true
+            return $0.task
+        }
+        task?.cancel()
+    }
+
     @discardableResult
     private func buildIfNeeded() async throws -> [PageEntry] {
+        guard !assemblyLifetime.withLock({ $0.abandoned }) else { throw CancellationError() }
         let running: (task: Task<[PageEntry], any Error>, id: UUID)
         if let buildTask { running = buildTask }
         else {
             running = (Task { try await build() }, UUID())
+            let abandoned = assemblyLifetime.withLock {
+                if $0.abandoned { return true }
+                $0.task = running.task
+                return false
+            }
+            if abandoned { running.task.cancel(); throw CancellationError() }
             buildTask = running
         }
         do {
@@ -587,6 +621,7 @@ actor ArchiveSource: BookSource {
         catch {
             if buildTask?.id == running.id {
                 buildTask = nil
+                assemblyLifetime.withLock { $0.task = nil }
                 locations.removeAll()
                 children.removeAll()
             }
@@ -595,147 +630,67 @@ actor ArchiveSource: BookSource {
         }
     }
 
-    /// 最上位の画像とネスト展開したページを、書庫の列挙順で 1 つの本に組む
+    /// 準備は期限付きで行い、登録だけを列挙順に確定する(設計書 §2.4、§7.4)。
     private func build() async throws -> [PageEntry] {
         isBuilding = true
         defer { isBuilding = false }
+        excludedCount = 0
+        let candidates = nestedCandidates
+        let context = NestedPreparationContext(
+            depth: nestingDepth, sensitive: contentIsSensitive || archive.isEncrypted(),
+            unlocker: unlocker, persistenceKey: persistenceKey, engine: preferredEngine,
+            factory: engineFactory, policy: retryPolicy, powerState: powerState,
+            poolSizing: extractorPoolSizing, root: nestedTempRoot())
+        await nestedRootCleanup?.value
+        let prepared = try await AssemblyPreparation.run(
+            candidates: candidates.enumerated().map {
+                AssemblyCandidate(ordinal: $0.offset, relativePath: $0.element.path,
+                                  url: url.appendingPathComponent($0.element.path))
+            }, total: candidates.count, sourceURL: url, lanes: 1, policy: retryPolicy,
+            // mmap の実ファイルと違い、メモリ専用の合成 URL には到達性を問えない(設計書 §2.4、§7.4)。
+            probeSource: !hasSyntheticURL) { candidate in
+                try await self.prepareNestedChild(candidates[candidate.ordinal], context: context)
+            }
         var result: [PageEntry] = []
         var imageIterator = outerImages.makeIterator()
         var pendingImage = imageIterator.next()
-        // cooViewer-id8: 候補配列の走査位置と id ストライドの序数は別物。
         var candidateCursor = 0
         var idOrdinal = 0
         for index in 0..<archive.numberOfEntries() {
+            try Task.checkCancellation()
             if let image = pendingImage, image.id == Int(index) {
                 locations[image.id] = .outer(entryIndex: index)
                 result.append(image)
                 pendingImage = imageIterator.next()
                 continue
             }
-            guard candidateCursor < nestedCandidates.count,
-                  nestedCandidates[candidateCursor].index == index else { continue }
-            let candidate = nestedCandidates[candidateCursor]
+            guard candidateCursor < candidates.count, candidates[candidateCursor].index == index else { continue }
+            let candidate = candidates[candidateCursor]
+            let preparation = prepared[candidateCursor]
             candidateCursor += 1
-            let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
-            let appended = try await appendNestedPages(
-                of: candidate, ordinal: idOrdinal + 1, into: &result)
-            // 非 EPUB は壊れていても従来どおり序数を消費する。EPUB だけは
-            // 実際に取り込めた場合に限り消費し、旧キャッシュの id を保つ。
-            if !isEPUB || appended {
-                idOrdinal += 1
+            let appended: Bool
+            switch preparation {
+            case .ready(let child):
+                appendNestedPages(child, candidate: candidate, ordinal: idOrdinal + 1, into: &result)
+                appended = true
+            case .excluded:
+                excludedCount += 1
+                appended = false
+            default:
+                appended = false
             }
+            // 棄却 EPUB は序数を消費せず、従来の書庫 id を保つ(cooViewer-id8、設計書 §2.4)。
+            if !SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path)) || appended { idOrdinal += 1 }
         }
         return result
     }
 
-    /// ネスト候補 1 つをメモリまたは一時領域へ展開し、子ソースのページを取り込む。
-    /// 失敗(壊れた書庫等)はそのエントリを黙って飛ばす(§4.17 の方針)
-    @discardableResult
-    private func appendNestedPages(of candidate: (index: Int32, path: String),
-                                   ordinal: Int,
-                                   into result: inout [PageEntry]) async throws -> Bool {
-        do { return try await appendReadableNestedPages(of: candidate, ordinal: ordinal, into: &result) }
-        catch {
-            if SourceReadFailure.mustPropagate(error) { throw error }
-            return false
-        }
-    }
-
-    private func appendReadableNestedPages(of candidate: (index: Int32, path: String),
-                                            ordinal: Int,
-                                            into result: inout [PageEntry]) async throws -> Bool {
-        let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
-        let sensitive = contentIsSensitive || archive.isEncrypted()
-        if isEPUB, sensitive, archive.entryHasSize(candidate.index) {
-            // c6s.23: 暗号化祖先下の EPUB は展開前にメモリ上限を確認する。
-            // 6ax により上限超を平文 temp へ逃がせないため、PDF/書庫とは
-            // 意図的に非対称なスキップとする。サイズ不明の形式だけは通す
-            guard archive.uncompressedSize(ofEntry: candidate.index)
-                    <= Self.nestedInMemoryLimit else { return false }
-        }
-        guard let data = try nestedChildData(candidate) else { return false }
-        // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
-        // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
-        let childKey = persistenceKey.nested(entryPath: candidate.path)
-        // 暗号化祖先由来の子は復号済み平文を disk に置かずメモリから開く。ただし
-        // RAM 常駐(プールで共有/複製)が重い大きな書庫/PDF は現行の平文 temp へ
-        // フォールバックする(EPUB は 6ax/c6s.23 によりスキップ)。非機微な子は
-        // 従来どおり temp 経由で挙動・性能を変えず、機微性は子孫へ伝播する
-        let useMemory = sensitive && Int64(data.count) <= Self.nestedInMemoryLimit
-        let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
-        let child: any BookSource
-        if isEPUB {
-            // cooViewer-cj2/oxr.44: 通常のリフロー/DRM/破損 EPUB はメモリ上の
-            // OCF 解析で先に棄却し、採用しない全データを平文 temp へ書き出さない。
-            guard let probe = try? EPUBPublication(
-                data: data,
-                displayURL: URL(fileURLWithPath: candidate.path)),
-                !probe.isDRMProtected else { return false }
-            // rendition:layout がなくても全 spine が単一画像なら画像本として採用し、
-            // 判定で得たページ情報を子へ渡す(cooViewer-oxr.44、設計書 §2.4)。
-            let imageOnlyPageInfos = probe.isFixedLayout
-                ? nil : EPUBImageOnlyHeuristic.imageOnlyPageInfos(probe)
-            guard probe.isFixedLayout || imageOnlyPageInfos != nil else { return false }
-            if sensitive {
-                // c6s.23: probe が OCF の Data を保持するため、そのまま子へ渡せば
-                // 6ax の平文 temp 禁止を守れる。実サイズが上限超なら temp へ
-                // フォールバックせずスキップする(PDF/書庫との非対称は意図的)
-                guard useMemory,
-                      let epub = try? EPUBSource(
-                        publication: probe,
-                        url: URL(fileURLWithPath: candidate.path),
-                        precomputedImageOnlyPageInfos: imageOnlyPageInfos) else {
-                    return false
-                }
-                child = epub
-            } else {
-                // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
-                // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
-                let fileURL = try writeNestedTemp(candidate, data: data)
-                let filePublication = try await EPUBStagingArea.shared.openPublication(at: fileURL)
-                let epub = try EPUBSource(
-                        publication: filePublication, url: fileURL,
-                        precomputedImageOnlyPageInfos: imageOnlyPageInfos)
-                child = epub
-            }
-            // EPUBSource は FXL または画像のみの非 DRM に限る。通常のリフロー・
-            // DRM・破損は仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
-        } else if isPDF {
-            if useMemory {
-                guard let pdf = try? PDFSource(data: data) else { return false }
-                child = pdf
-            } else {
-                let fileURL = try writeNestedTemp(candidate, data: data)
-                child = try PDFSource(url: fileURL)
-            }
-        } else if useMemory {
-            let nested = try ArchiveSource(
-                data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
-                unlocker: unlocker, persistenceKey: childKey, sensitive: true,
-                preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
-                extractorPoolSizing: extractorPoolSizing)
-            child = nested
-        } else {
-            let fileURL = try writeNestedTemp(candidate, data: data)
-            let nested = try ArchiveSource(
-                    url: fileURL, nestingDepth: nestingDepth + 1,
-                    unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
-                    preferredEngine: preferredEngine, engineFactory: engineFactory, powerState: powerState,
-                    extractorPoolSizing: extractorPoolSizing)
-            child = nested
-        }
-        // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
-        // 解除できない/キャンセルされた子は本から外す(§4.17 の黙殺方針。
-        // 恒久的な空セルとして残すより一覧が正直になる)
-        if !isEPUB, await child.isEncrypted() {
-            let name = (candidate.path as NSString).lastPathComponent
-            guard try await unlocker.unlockForAssembly(child, name: name,
-                                        persistenceKey: childKey) else { return false }
-        }
-        let childEntries = try await child.entries()
-        guard !childEntries.isEmpty else {
-            return false
-        }
+    private func appendNestedPages(_ prepared: AssemblyPreparedChild,
+                                   candidate: (index: Int32, path: String), ordinal: Int,
+                                   into result: inout [PageEntry]) {
+        let child = prepared.source
+        let childEntries = prepared.entries
+        excludedCount += prepared.excludedCount
         children.append(child)
         let sourceIndex = children.count - 1
         let idBase = ordinal * Self.nestedIDStride
@@ -755,7 +710,127 @@ actor ArchiveSource: BookSource {
                 modificationDate: nil
             ))
         }
-        return true
+    }
+
+    private struct NestedPreparationContext: Sendable {
+        let depth: Int
+        let sensitive: Bool
+        let unlocker: NestedUnlocker
+        let persistenceKey: PasswordVault.Key
+        let engine: ArchiveEngineKind
+        let factory: ArchiveEngineFactory
+        let policy: AssemblyRetryPolicy
+        let powerState: any PowerStateProviding
+        let poolSizing: @Sendable (Bool) -> Int
+        let root: URL
+    }
+
+    private func prepareNestedChild(_ candidate: (index: Int32, path: String),
+                                    context: NestedPreparationContext) async throws -> AssemblyChildPreparation {
+        try Task.checkCancellation()
+        let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
+        if isEPUB, context.sensitive, archive.entryHasSize(candidate.index),
+           archive.uncompressedSize(ofEntry: candidate.index) > Self.nestedInMemoryLimit {
+            return .skipped
+        }
+        // 展開の同期 read が親 actor を占有すると、停止したマウントから戻るまで
+        // build の期限切れ応答も遅れる。子の非同期準備だけが期限で待機を打ち切れる(設計書 §2.4、§7.4)。
+        guard let data = try nestedChildData(candidate) else { return .skipped }
+        return try await Self.prepareReadableNestedChild(candidate, data: data, context: context)
+    }
+
+    private static func prepareReadableNestedChild(_ candidate: (index: Int32, path: String),
+                                                  data: Data, context: NestedPreparationContext)
+        async throws -> AssemblyChildPreparation {
+        let isEPUB = SupportedTypes.isEPUB(URL(fileURLWithPath: candidate.path))
+        let sensitive = context.sensitive
+        let unlocker = context.unlocker
+        let persistenceKey = context.persistenceKey
+        let nestingDepth = context.depth
+        let preferredEngine = context.engine
+        let engineFactory = context.factory
+        let retryPolicy = context.policy
+        let powerState = context.powerState
+        let extractorPoolSizing = context.poolSizing
+        // 子のキーは一時展開パス(fileURL)ではなく親キー+書庫内パスで組む
+        // (temp パスは起動ごとに変わり保存キーとして無意味になるため)
+        let childKey = persistenceKey.nested(entryPath: candidate.path)
+        // 暗号化祖先由来の子は復号済み平文を disk に置かずメモリから開く。ただし
+        // RAM 常駐(プールで共有/複製)が重い大きな書庫/PDF は現行の平文 temp へ
+        // フォールバックする(EPUB は 6ax/c6s.23 によりスキップ)。非機微な子は
+        // 従来どおり temp 経由で挙動・性能を変えず、機微性は子孫へ伝播する
+        let useMemory = sensitive && Int64(data.count) <= Self.nestedInMemoryLimit
+        let isPDF = SupportedTypes.isPDF(URL(fileURLWithPath: candidate.path))
+        let child: any BookSource
+        if isEPUB {
+            // cooViewer-cj2/oxr.44: 通常のリフロー/DRM/破損 EPUB はメモリ上の
+            // OCF 解析で先に棄却し、採用しない全データを平文 temp へ書き出さない。
+            let probe = try EPUBPublication(data: data, displayURL: URL(fileURLWithPath: candidate.path))
+            guard !probe.isDRMProtected else { return .skipped }
+            // rendition:layout がなくても全 spine が単一画像なら画像本として採用し、
+            // 判定で得たページ情報を子へ渡す(cooViewer-oxr.44、設計書 §2.4)。
+            let imageOnlyPageInfos = probe.isFixedLayout
+                ? nil : EPUBImageOnlyHeuristic.imageOnlyPageInfos(probe)
+            guard probe.isFixedLayout || imageOnlyPageInfos != nil else { return .skipped }
+            if sensitive {
+                // c6s.23: probe が OCF の Data を保持するため、そのまま子へ渡せば
+                // 6ax の平文 temp 禁止を守れる。実サイズが上限超なら temp へ
+                // フォールバックせずスキップする(PDF/書庫との非対称は意図的)
+                guard useMemory else { return .skipped }
+                child = try EPUBSource(publication: probe, url: URL(fileURLWithPath: candidate.path),
+                                       precomputedImageOnlyPageInfos: imageOnlyPageInfos)
+            } else {
+                // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
+                // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
+                let fileURL = try writeNestedTemp(candidate, data: data, root: context.root)
+                let filePublication = try await EPUBStagingArea.shared.openPublication(at: fileURL)
+                let epub = try EPUBSource(
+                        publication: filePublication, url: fileURL,
+                        precomputedImageOnlyPageInfos: imageOnlyPageInfos)
+                child = epub
+            }
+            // EPUBSource は FXL または画像のみの非 DRM に限る。通常のリフロー・
+            // DRM・破損は仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
+        } else if isPDF {
+            if useMemory {
+                child = try PDFSource(data: data)
+            } else {
+                let fileURL = try writeNestedTemp(candidate, data: data, root: context.root)
+                child = try PDFSource(url: fileURL)
+            }
+        } else if useMemory {
+            let nested = try ArchiveSource(
+                data: data, name: candidate.path, nestingDepth: nestingDepth + 1,
+                unlocker: unlocker, persistenceKey: childKey, sensitive: true,
+                preferredEngine: preferredEngine, engineFactory: engineFactory, retryPolicy: retryPolicy, powerState: powerState,
+                extractorPoolSizing: extractorPoolSizing)
+            child = nested
+        } else {
+            let fileURL = try writeNestedTemp(candidate, data: data, root: context.root)
+            let nested = try ArchiveSource(
+                    url: fileURL, nestingDepth: nestingDepth + 1,
+                    unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
+                    preferredEngine: preferredEngine, engineFactory: engineFactory, retryPolicy: retryPolicy, powerState: powerState,
+                    extractorPoolSizing: extractorPoolSizing)
+            child = nested
+        }
+        // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
+        // 解除できない/キャンセルされた子は本から外す(§4.17 の黙殺方針。
+        // 恒久的な空セルとして残すより一覧が正直になる)
+        let encrypted: Bool
+        if isEPUB { encrypted = false }
+        else { encrypted = await child.isEncrypted() }
+        try Task.checkCancellation()
+        if encrypted {
+            let name = (candidate.path as NSString).lastPathComponent
+            try Task.checkCancellation()
+            guard try await unlocker.unlockForAssembly(child, name: name,
+                                        persistenceKey: childKey) else { return .excluded }
+        }
+        let childEntries = try await AssemblyPreparation.entriesForOwnedChild(child)
+        let exclusions = await child.excludedChildCount()
+        guard !childEntries.isEmpty else { return exclusions > 0 ? .excluded : .skipped }
+        return .ready(AssemblyPreparedChild(source: child, entries: childEntries, excludedCount: exclusions))
     }
 
     /// ネスト候補の展開後バイト(zip 爆弾ガード付き、temp には書かない)。
@@ -788,17 +863,24 @@ actor ArchiveSource: BookSource {
     /// 上限超でメモリ経由を諦めた機微な書庫/PDF に使う。暗号化祖先由来の EPUB は
     /// 6ax/c6s.23 によりここへ渡さない。残る平文 temp は KaitoKit/PDFKit がパスを
     /// 直読みするため暗号化不可(設計書 §2.4 の残余リスク)なので、権限を所有者限定にする
-    private func writeNestedTemp(_ candidate: (index: Int32, path: String),
-                                 data: Data) throws -> URL {
-        if nestedRoot == nil {
-            let directory = Self.spoolRoot().appendingPathComponent(
-                "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)-nested")
-            try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700])
-            nestedRoot = directory
+    private func nestedTempRoot() -> URL {
+        // 打ち切った子が後から戻っても、新しい構築の一時ファイルを上書きさせない(設計書 §7.4)。
+        let retiredRoots = nestedRoots
+        nestedRootCleanup = Task.detached(priority: .utility) {
+            // 世代ごとの隔離は残し、再構築のたびに大きな展開ファイルを蓄積させない(設計書 §2.4、§7.4)。
+            for root in retiredRoots { try? FileManager.default.removeItem(at: root) }
         }
-        guard let root = nestedRoot else { throw BookSourceError.temporarilyUnavailable(url) }
+        let root = Self.spoolRoot().appendingPathComponent(
+            "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)-nested")
+        nestedRoots.append(root)
+        return root
+    }
+
+    private static func writeNestedTemp(_ candidate: (index: Int32, path: String),
+                                        data: Data, root: URL) throws -> URL {
+        try Task.checkCancellation()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
         let fileURL = root.appendingPathComponent(
             "\(candidate.index)-\((candidate.path as NSString).lastPathComponent)")
         try data.write(to: fileURL, options: .atomic)
@@ -1081,6 +1163,8 @@ actor ArchiveSource: BookSource {
         if archive.isEncrypted() { return true }
         return await unlocker.sawUnlockedChild
     }
+
+    func excludedChildCount() async -> Int { excludedCount }
 
     func hasSkippedLockedContent() async -> Bool {
         await unlocker.sawSkippedChild

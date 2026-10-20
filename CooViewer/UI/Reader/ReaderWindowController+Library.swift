@@ -5,6 +5,13 @@ import Washi
 /// 付随機能: しおり・本の状態保存/復元・同フォルダ移動・スライドショー・
 /// ゴミ箱・Finder 表示・原寸表示(仕様書 §4.7-§4.13, §7)。
 extension ReaderWindowController {
+    struct ImageBookPersistence {
+        let bookID: ObjectIdentifier
+        let complete: Bool
+        let navigationRevision: Int
+        let missingPage: (index: Int, path: String)?
+    }
+
     // MARK: - 状態の保存と復元(仕様書 §7)
 
     /// 現在の本の状態を保存する(切替時・クローズ時・終了時。§7.7 の穴も塞ぐ)
@@ -12,12 +19,15 @@ extension ReaderWindowController {
         // 開けなかった本(空のプレースホルダ)は履歴・設定に記録しない
         guard let book, book.pageCount > 0 else { return }
         let path = book.source.url.path
+        let persistence = imageBookPersistence.flatMap { $0.bookID == ObjectIdentifier(book) ? $0 : nil }
         // ページ番号に加えて「どのファイルか」も添える(新規キー)。次回開いたとき
         // エントリ列が変わっていても(ネスト展開の失敗・並び替え)照合できる
         func pagePath(_ index: Int) -> String? {
             book.entries.indices.contains(index) ? book.entries[index].pathInBook : nil
         }
         let bookmarks = book.bookmarks.map { bookmark in
+            // 除外がある一覧では旧しおりの番号と実ファイルの対応を確定できない(設計書 §7.4)。
+            if bookmark.pagePath == nil, persistence?.complete != true { return bookmark }
             // 記録済みパスのページが今回の本に存在しない(ネスト展開の失敗等で
             // 照合できなかった)場合は元の記録を保つ。今回の位置で上書きすると、
             // 次回そのページが戻ってきたときに照合できなくなる
@@ -29,10 +39,18 @@ extension ReaderWindowController {
                 name: bookmark.name, pageIndex: bookmark.pageIndex,
                 pagePath: pagePath(bookmark.pageIndex) ?? bookmark.pagePath)
         }
+        var pageIndex = book.currentIndex
+        var currentPagePath = pagePath(pageIndex)
+        if let persistence, let missing = persistence.missingPage,
+           book.explicitNavigationRevision == persistence.navigationRevision {
+            // 見開きの再配置は移動に数えず、明示移動までは欠落した元の錨を守る(設計書 §7.4)。
+            pageIndex = missing.index
+            currentPagePath = missing.path
+        }
         history.saveImageBook(
             path: path, snapshot: .init(
-                displayName: book.displayName, pageIndex: book.currentIndex,
-                pagePath: pagePath(book.currentIndex),
+                displayName: book.displayName, pageIndex: pageIndex,
+                pagePath: currentPagePath,
                 settings: .init(readMode: book.readMode, sortMode: book.sortMode,
                                 marks: book.marks, bookmarks: bookmarks)))
     }
@@ -41,18 +59,33 @@ extension ReaderWindowController {
     /// 保存された並び順への並べ替えはメインアクター外で行われるので、初回描画が
     /// 復元後の並びになるよう完了を待つ。待つ間に後発のオープンが始まっていたら
     /// 以降(特に「前回のページへ?」の確認ダイアログ)は行わない
-    func restoreBookState(for book: Book, skipPageRestore: Bool, generation: Int) async {
+    func restoreBookState(for book: Book, skipPageRestore: Bool, generation: Int) async -> ImageBookPersistence? {
         let store = history
         let path = book.source.url.path
+        let complete = await book.source.excludedChildCount() == 0
+        guard generation == openGeneration else { return nil }
+        // 復元ゲートで移動しない設定でも、欠落した保存位置の保護は必要(設計書 §7.4)。
+        let storedPage = store.savedPage(forPath: path, inRecents: true)
+        let missingPage: (index: Int, path: String)?
+        if let storedPage, let pagePath = storedPage.pagePath,
+           !book.entries.contains(where: { $0.pathInBook == pagePath }) {
+            missingPage = (storedPage.page, pagePath)
+        } else { missingPage = nil }
+        func snapshot() -> ImageBookPersistence {
+            ImageBookPersistence(bookID: ObjectIdentifier(book), complete: complete,
+                                 navigationRevision: book.explicitNavigationRevision, missingPage: missingPage)
+        }
         if let saved = store.settings(displayName: book.displayName, path: path) {
             if let readMode = saved.readMode { book.readMode = readMode }
             if let sortMode = saved.sortMode, sortMode != book.sortMode {
                 _ = await book.setSortMode(sortMode).value
-                guard generation == openGeneration else { return }
+                guard generation == openGeneration else { return nil }
             }
             book.marks = saved.marks
             // しおりは保存時のページパスで照合し直す(エントリ列の変化に追従)
             book.bookmarks = saved.bookmarks.map { bookmark in
+                // 欠落を含む番号列では旧しおりの clamp も確定位置にできない(設計書 §7.4)。
+                if bookmark.pagePath == nil, !complete { return bookmark }
                 var resolved = bookmark
                 resolved.pageIndex = BookHistoryStore.reconciledIndex(
                     saved: bookmark.pageIndex, pagePath: bookmark.pagePath,
@@ -63,17 +96,17 @@ extension ReaderWindowController {
         // 復元ページは履歴を更新する前に読む(仕様書 §4.1.2: 手順 7 → 8 の順)。
         // 復元ゲートの実在確認はメインアクター外(上限内なら I/O なし)
         let inRecents = await store.isWithinRecentLimit(path: path)
-        guard generation == openGeneration else { return }
+        guard generation == openGeneration else { return nil }
         let restorePage = store.savedPage(forPath: path, inRecents: inRecents)
 
         // 最終ページ復元(GoToLastPage: 0=確認/1=自動/2=無効。§7.3)。
         // ページパスが記録されていれば同じファイルのページへ照合し直す
         guard !skipPageRestore, settings.goToLastPageMode < 2,
-              let restorePage else { return }
+              let restorePage else { return snapshot() }
         let page = BookHistoryStore.reconciledIndex(
             saved: restorePage.page, pagePath: restorePage.pagePath,
             entries: book.entries)
-        guard page > 0, page < book.pageCount else { return }
+        guard page > 0, page < book.pageCount else { return snapshot() }
         if settings.goToLastPageMode == 1 {
             book.goTo(index: page)
         } else {
@@ -86,6 +119,7 @@ extension ReaderWindowController {
                 book.goTo(index: page)
             }
         }
+        return snapshot()
     }
 
     // MARK: - しおり(仕様書 §4.7)
@@ -101,7 +135,8 @@ extension ReaderWindowController {
             book.bookmarks.remove(at: index)
         } else {
             let name = book.entries.indices.contains(page) ? book.entries[page].name : ""
-            book.bookmarks.append(.init(name: name, pageIndex: page))
+            let pagePath = book.entries.indices.contains(page) ? book.entries[page].pathInBook : nil
+            book.bookmarks.append(.init(name: name, pageIndex: page, pagePath: pagePath))
         }
         saveCurrentBookState()
         // サムネイル表示中はしおりバッジ/絞り込みへ即時反映
@@ -121,6 +156,13 @@ extension ReaderWindowController {
         let editor = NSWindow(contentViewController: NSHostingController(
             rootView: BookmarkEditorView(
                 bookmarks: book.bookmarks, pageCount: book.pageCount,
+                bookIsComplete: imageBookPersistence.flatMap {
+                    $0.bookID == ObjectIdentifier(book) ? $0.complete : nil
+                } ?? false,
+                pagePath: { [weak book] index in
+                    guard let book, book.entries.indices.contains(index) else { return nil }
+                    return book.entries[index].pathInBook
+                },
                 onSave: { [weak self, weak book] bookmarks in
                     guard let book else { return }
                     book.bookmarks = bookmarks

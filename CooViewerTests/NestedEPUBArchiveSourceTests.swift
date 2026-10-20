@@ -169,6 +169,9 @@ final class NestedEPUBArchiveSourceTests: XCTestCase {
 
         XCTAssertEqual(entries.map(\.pathInBook), ["00.avifs", "10.avifs"])
 
+        let excluded = await source.excludedChildCount()
+        XCTAssertEqual(excluded, 0, "仕様上の EPUB 省略を不完全な合本と数えない")
+
         // cooViewer-cj2: source を生存させたまま spool を調べ、棄却した
         // リフロー EPUB が nested temp に作られていないことを固定する。
         let root = ArchiveSource.spoolRoot()

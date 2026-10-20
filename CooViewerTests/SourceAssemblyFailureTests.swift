@@ -81,15 +81,11 @@ final class SourceAssemblyFailureTests: XCTestCase {
         let root = try directory()
         for name in ["a.zip", "b.zip"] { try zip().write(to: root.appendingPathComponent(name)) }
         let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
-            engineFactory: failingOnce(suffix: "b.zip"))
-        do {
-            _ = try await source.entries()
-            XCTFail("資源不足を成功した部分合本にしない")
-        } catch { XCTAssertEqual(error as? KaitoError, .io(EMFILE)) }
+            engineFactory: failingOnce(suffix: "b.zip"), retryPolicy: .immediate)
         let recovered = try await source.entries()
         XCTAssertEqual(recovered.map(\.pathInBook), ["a.zip/page.png", "b.zip/page.png"])
         XCTAssertEqual(Set(recovered.map(\.id)).count, 2)
-        let image = try await source.image(for: recovered[1], maxPixelSize: nil)
+        let image = try await source.image(for: XCTUnwrap(recovered.dropFirst().first), maxPixelSize: nil)
         XCTAssertEqual(image.width, 40)
     }
 
@@ -98,11 +94,7 @@ final class SourceAssemblyFailureTests: XCTestCase {
         let outer = root.appendingPathComponent("outer.zip")
         try TestFixtures.storedZip(entries: [(Array("a.zip".utf8), zip()), (Array("b.zip".utf8), zip())])
             .write(to: outer)
-        let source = try ArchiveSource(url: outer, engineFactory: failingOnce(suffix: "-b.zip"))
-        do {
-            _ = try await source.entries()
-            XCTFail("途中の子の読み取り失敗を完成扱いにしない")
-        } catch { XCTAssertEqual(error as? KaitoError, .io(EMFILE)) }
+        let source = try ArchiveSource(url: outer, engineFactory: failingOnce(suffix: "-b.zip"), retryPolicy: .immediate)
         let recovered = try await source.entries()
         XCTAssertEqual(recovered.map(\.pathInBook), ["a.zip/page.png", "b.zip/page.png"])
         XCTAssertEqual(recovered.map(\.id), [1_000_000, 2_000_000])

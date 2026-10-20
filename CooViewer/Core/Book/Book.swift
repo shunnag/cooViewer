@@ -46,6 +46,8 @@ final class Book {
     /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
     private var stateRevision = 0
     private var navigationGeneration = 0
+    /// 設定編集による再描画世代と、保存位置を変更する明示ナビゲーションを分ける(設計書 §7.4)。
+    private(set) var explicitNavigationRevision = 0
     /// 直近の移動方向(先読み・事前リサンプルの向きの決定に使う)
     private(set) var lastMoveForward = true
 
@@ -416,12 +418,14 @@ final class Book {
     struct NavigationCheckpoint {
         fileprivate let index: Int
         fileprivate let generation: Int
+        fileprivate let explicitNavigationRevision: Int
         fileprivate let displayCount: Int
         fileprivate let forward: Bool
     }
 
     var navigationCheckpoint: NavigationCheckpoint {
         NavigationCheckpoint(index: currentIndex, generation: navigationGeneration,
+                             explicitNavigationRevision: explicitNavigationRevision,
                              displayCount: lastDisplayCount, forward: lastMoveForward)
     }
 
@@ -436,6 +440,8 @@ final class Book {
                            ifUnchanged destination: NavigationCheckpoint) -> Bool {
         guard isAtNavigationCheckpoint(destination) else { return false }
         goTo(index: origin.index)
+        // 仮移動の取消しは読者の移動ではないため、保存位置を守る操作回数も戻す(設計書 §7.4)。
+        explicitNavigationRevision = origin.explicitNavigationRevision
         lastDisplayCount = origin.displayCount
         lastMoveForward = origin.forward
         return true
@@ -445,6 +451,7 @@ final class Book {
         invalidatePendingNavigation()
         guard !entries.isEmpty else { return .hitEnd }
         guard currentIndex + lastDisplayCount < entries.count else { return .hitEnd }
+        explicitNavigationRevision &+= 1
         currentIndex += lastDisplayCount
         lastMoveForward = true
         return .moved
@@ -467,6 +474,7 @@ final class Book {
             // 別の後退が先に完了した場合は、その位置からもう一度戻る。
             // ヘッダ待機中のキー連打を落とさず、負の位置への減算も防ぐ。
             guard anchor == currentIndex else { continue }
+            explicitNavigationRevision &+= 1
             currentIndex = start
             lastMoveForward = false
             return .moved
@@ -499,6 +507,7 @@ final class Book {
     func moveHalfNext() -> MoveResult {
         invalidatePendingNavigation()
         guard currentIndex + 1 < entries.count else { return .hitEnd }
+        explicitNavigationRevision &+= 1
         currentIndex += 1
         lastMoveForward = true
         return .moved
@@ -507,6 +516,7 @@ final class Book {
     func moveHalfPrevious() -> MoveResult {
         invalidatePendingNavigation()
         guard currentIndex > 0 else { return .hitStart }
+        explicitNavigationRevision &+= 1
         currentIndex -= 1
         lastMoveForward = false
         return .moved
@@ -515,11 +525,13 @@ final class Book {
     func goTo(index: Int) {
         invalidatePendingNavigation()
         guard !entries.isEmpty else { return }
+        explicitNavigationRevision &+= 1
         currentIndex = min(max(0, index), entries.count - 1)
     }
 
     func goToFirst() {
         invalidatePendingNavigation()
+        explicitNavigationRevision &+= 1
         currentIndex = 0
         lastMoveForward = true
     }
@@ -535,6 +547,7 @@ final class Book {
               generation == navigationGeneration, !Task.isCancelled else {
             return false
         }
+        explicitNavigationRevision &+= 1
         currentIndex = start
         lastMoveForward = true
         return true
@@ -669,6 +682,7 @@ final class Book {
             guard generation == sortGeneration else { return false }
             invalidatePendingNavigation()
             entries = sorted
+            // 並べ替えに伴う先頭への配置はページ移動の意思ではなく、明示移動には数えない(設計書 §7.4)。
             currentIndex = 0
             return true
         }

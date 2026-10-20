@@ -27,6 +27,8 @@ private enum EPUBRouting {
 @MainActor
 final class ReaderWindowController: NSWindowController {
     private(set) var book: Book?
+    /// 同期保存で不完全な一覧を確定位置と誤認しないため、復元時の観測を保持する(設計書 §7.4)。
+    var imageBookPersistence: ImageBookPersistence?
     /// 現在の本がパスワード付き書庫か(ロック解除前の isEncrypted で判定)。
     /// 超解像ディスクキャッシュを暗号化して残すかの判断に使う(復号済みページを
     /// 平文で残さない。CWE-312)。ロック解除後は isEncrypted が false を返す実装
@@ -1365,8 +1367,8 @@ final class ReaderWindowController: NSWindowController {
             }
             guard generation == openGeneration else { return }
             let skipPageRestore = initialPageURL != nil || atPage != nil || atLastPage
-            await restoreBookState(for: book, skipPageRestore: skipPageRestore,
-                                   generation: generation)
+            let persistence = await restoreBookState(for: book, skipPageRestore: skipPageRestore,
+                                                     generation: generation)
             guard generation == openGeneration else { return }
 
             // 単一画像から開いた場合: まず実ファイル URL、次に名前で探す
@@ -1395,7 +1397,7 @@ final class ReaderWindowController: NSWindowController {
             // 初期位置・タイトルが揃い、最後の世代照合を通った後に同期で採用する。
             endOpeningProgress(generation: generation)
             preparedNextEPUB = nil
-            replaceBook(book)
+            replaceBook(book, persistence: persistence)
             loadedAnimationFrameCaps.removeAll()
             readerView.resampleKeyPrefix = book.cacheKey
             currentBookIsEncrypted = hasProtectedContent
@@ -1437,6 +1439,10 @@ final class ReaderWindowController: NSWindowController {
                 thumbnailOverlayModel.clear()
             }
         } catch {
+            guard generation == openGeneration else {
+                endOpeningProgress(generation: generation)
+                return
+            }
             // 旧実装のエラー黙殺方針(仕様書 §4.17): ダイアログは出さない
             // オープンのキャンセルは読めない本として通知しない。
             if !(error is CancellationError), !Task.isCancelled { NSSound.beep() }
@@ -1876,9 +1882,13 @@ final class ReaderWindowController: NSWindowController {
 
     // MARK: - 表示更新
 
-    func replaceBook(_ book: Book?) {
+    func replaceBook(_ book: Book?, persistence: ImageBookPersistence? = nil) {
         resetInteractiveCurl()
         self.book = book
+        // 本と同時に採用し、破棄された準備結果で現在の保存判断を変えない(設計書 §7.4)。
+        imageBookPersistence = book.flatMap { current in
+            persistence.flatMap { $0.bookID == ObjectIdentifier(current) ? $0 : nil }
+        }
     }
 
     func invalidatePendingDisplay() {

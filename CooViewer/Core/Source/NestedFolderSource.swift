@@ -14,6 +14,7 @@ actor NestedFolderSource: BookSource {
     /// コレクション内の各書庫も本を開いた時点の選択で揃える(設計書 §2.4)。
     private let preferredEngine: ArchiveEngineKind
     private let engineFactory: ArchiveEngineFactory
+    private let retryPolicy: AssemblyRetryPolicy
 
     nonisolated var supportsDateSort: Bool { false }
     /// フォルダ画像はゲート制御下で並列。子(書庫/PDF)が全員「いまの状態で
@@ -36,6 +37,17 @@ actor NestedFolderSource: BookSource {
     private var buildTask: (task: Task<[PageEntry], any Error>, id: UUID)?
     private var locations: [Int: PageLocation] = [:]
     private var children: [any BookSource] = []
+    private typealias PreparedChild = AssemblyPreparedChild
+    private struct CandidateIdentity: Equatable {
+        let url: URL
+        let path: String
+    }
+    // 失敗した再構築でも、同じ候補列の成功子は読み直さない(設計書 §2.4、§7.4)。
+    private var preparedCandidateIdentity: [CandidateIdentity] = []
+    private var preparedChildren: [Int: PreparedChild] = [:]
+    private var excludedOrdinals: Set<Int> = []
+    private var skippedOrdinals: Set<Int> = []
+    private var assemblyRetry: (@Sendable (String) -> Void)?
     /// 組み立て進捗(完了した子の数, 子の総数)の通知先。対話的なオープンのみ
     /// 設定される(次の本のバックグラウンド準備では nil のまま)。build は
     /// actor 上で走るため、組み立て途中に後付けされても以降の子から反映される
@@ -48,12 +60,14 @@ actor NestedFolderSource: BookSource {
 
     init(folder: FolderSource, unlocker: NestedUnlocker? = nil,
          preferredEngine: ArchiveEngineKind = .kaitokit,
-         engineFactory: ArchiveEngineFactory = .live) {
+         engineFactory: ArchiveEngineFactory = .live,
+         retryPolicy: AssemblyRetryPolicy = .default) {
         self.url = folder.url
         self.folder = folder
         self.unlocker = unlocker ?? NestedUnlocker()
         self.preferredEngine = preferredEngine
         self.engineFactory = engineFactory
+        self.retryPolicy = retryPolicy
     }
 
     func entries() async throws -> [PageEntry] {
@@ -71,7 +85,8 @@ actor NestedFolderSource: BookSource {
         let running: (task: Task<[PageEntry], any Error>, id: UUID)
         if let buildTask { running = buildTask }
         else {
-            running = (Task { try await build() }, UUID())
+            let id = UUID()
+            running = (Task { try await build(id: id) }, id)
             buildTask = running
         }
         do { return try await running.task.value }
@@ -91,41 +106,35 @@ actor NestedFolderSource: BookSource {
     /// 子の本(書庫/PDF)のオープンと一覧取得は**並列**(幅 4)で行い、
     /// 大量の書庫を含むフォルダのオープン時間を線形から短縮する。
     /// 登録(id 割当・locations)は従来どおり候補順に直列で行う
-    private func build() async throws -> [PageEntry] {
+    private func build(id: UUID) async throws -> [PageEntry] {
         let images = try await folder.entries()
         let candidates = folder.nestedBookCandidates
         let unlocker = unlocker
         let profile = mediaProfile
         let preferredEngine = preferredEngine
         let engineFactory = engineFactory
-        var prepared: [Int: (any BookSource, [PageEntry])] = [:]
-        if !candidates.isEmpty {
-            assemblyProgress?(0, candidates.count)
+        let policy = retryPolicy
+        let identity = candidates.map { CandidateIdentity(url: $0.fileURL, path: $0.relativePath) }
+        if identity != preparedCandidateIdentity {
+            preparedChildren.removeAll()
+            excludedOrdinals.removeAll()
+            skippedOrdinals.removeAll()
+            preparedCandidateIdentity = identity
         }
-        try await withThrowingTaskGroup(of: (Int, (any BookSource, [PageEntry])?).self) { group in
-            var next = 0
-            var completed = 0
-            func addTask() {
-                guard next < candidates.count else { return }
-                let ordinal = next
-                let candidate = candidates[ordinal]
-                next += 1
-                group.addTask {
-                    (ordinal, try await Self.prepareChild(
-                        candidate: candidate, unlocker: unlocker, profile: profile,
-                        preferredEngine: preferredEngine, engineFactory: engineFactory))
-                }
+        let pendingCandidates = candidates.indices.filter {
+            preparedChildren[$0] == nil && !excludedOrdinals.contains($0) && !skippedOrdinals.contains($0)
+        }.map { AssemblyCandidate(ordinal: $0, relativePath: candidates[$0].relativePath,
+                                  url: candidates[$0].fileURL) }
+        _ = try await AssemblyPreparation.run(
+            candidates: pendingCandidates, total: candidates.count, sourceURL: url, lanes: 4, policy: policy,
+            onRetry: { path in await self.notifyAssemblyRetry(path, buildID: id) },
+            onProgress: { done, total in await self.notifyAssemblyProgress(done, total: total, buildID: id) },
+            onComplete: { ordinal, child in await self.keepPrepared(child, ordinal: ordinal, buildID: id) }) { candidate in
+                try await Self.prepareChild(
+                    candidate: (candidate.url, candidate.relativePath), unlocker: unlocker, profile: profile,
+                    preferredEngine: preferredEngine, engineFactory: engineFactory, retryPolicy: policy)
             }
-            for _ in 0..<4 { addTask() }
-            while let (ordinal, result) = try await group.next() {
-                prepared[ordinal] = result
-                // 読めなかった子も処理は完了している。成功件数を使うと
-                // スキップがある合本の進捗が総数まで届かない。
-                completed += 1
-                assemblyProgress?(completed, candidates.count)
-                addTask()
-            }
-        }
+        guard buildTask?.id == id else { throw CancellationError() }
 
         var result: [PageEntry] = []
         var imageIterator = images.makeIterator()
@@ -135,8 +144,8 @@ actor NestedFolderSource: BookSource {
                 appendFolderImage(image, into: &result)
                 pending = imageIterator.next()
             }
-            if let (child, childEntries) = prepared[position] {
-                register(child: child, childEntries: childEntries,
+            if let prepared = preparedChildren[position] {
+                register(child: prepared.source, childEntries: prepared.entries,
                          candidate: candidate, ordinal: position + 1, into: &result)
             }
         }
@@ -148,26 +157,29 @@ actor NestedFolderSource: BookSource {
     }
 
     /// 子の本 1 つを開いて一覧まで取得する(actor 外で並列実行される部分)。
-    /// 壊れた子・解除できない子は nil(従来どおり黙って飛ばす)
+    /// 破損・解除不能だけを除外に数え、意図的な省略とは区別する(仕様書 §4.17、設計書 §7.4)。
     private static func prepareChild(
         candidate: (fileURL: URL, relativePath: String),
         unlocker: NestedUnlocker, profile: MediaProfile,
-        preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory
-    ) async throws -> (any BookSource, [PageEntry])? {
+        preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory,
+        retryPolicy: AssemblyRetryPolicy
+    ) async throws -> AssemblyChildPreparation {
         do {
             return try await prepareReadableChild(candidate: candidate, unlocker: unlocker,
-                profile: profile, preferredEngine: preferredEngine, engineFactory: engineFactory)
+                profile: profile, preferredEngine: preferredEngine, engineFactory: engineFactory,
+                retryPolicy: retryPolicy)
         } catch {
             if SourceReadFailure.mustPropagate(error) { throw error }
-            return nil
+            return .excluded
         }
     }
 
     private static func prepareReadableChild(
         candidate: (fileURL: URL, relativePath: String),
         unlocker: NestedUnlocker, profile: MediaProfile,
-        preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory
-    ) async throws -> (any BookSource, [PageEntry])? {
+        preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory,
+        retryPolicy: AssemblyRetryPolicy
+    ) async throws -> AssemblyChildPreparation {
         // コレクション内の子はディスク上の実ファイルなので、保存キーは
         // 正規化した実パス — 単体で同じ zip を開いたときと同一キーになり、
         // 保存パスワードが両経路で共有される(設計書 §2.4)
@@ -179,7 +191,7 @@ actor NestedFolderSource: BookSource {
             // コレクションの子 EPUB は一度だけ解析し、その Publication と画像のみ
             // 判定結果を子ソースへ渡す(cooViewer-oxr.42/44、設計書 §2.4)。
             let publication = try await EPUBStagingArea.shared.openPublication(at: candidate.fileURL)
-            guard !publication.isDRMProtected else { return nil }
+            guard !publication.isDRMProtected else { return .skipped }
             if publication.isFixedLayout {
                 let epub = try EPUBSource(
                     publication: publication, url: candidate.fileURL,
@@ -200,18 +212,24 @@ actor NestedFolderSource: BookSource {
             let nested = try ArchiveSource(
                 url: candidate.fileURL, nestingDepth: 1, unlocker: unlocker,
                 persistenceKey: childKey, preferredEngine: preferredEngine,
-                engineFactory: engineFactory)
+                engineFactory: engineFactory, retryPolicy: retryPolicy)
             child = nested
         }
-        if await child.isEncrypted() {
+        let encrypted = await child.isEncrypted()
+        try Task.checkCancellation()
+        if encrypted {
             let name = (candidate.relativePath as NSString).lastPathComponent
+            try Task.checkCancellation()
             guard try await unlocker.unlockForAssembly(child, name: name,
-                                        persistenceKey: childKey) else { return nil }
+                                        persistenceKey: childKey) else { return .excluded }
         }
-        let childEntries = try await child.entries()
-        guard !childEntries.isEmpty else { return nil }
+        let childEntries = try await AssemblyPreparation.entriesForOwnedChild(child)
+        guard !childEntries.isEmpty else {
+            return await child.excludedChildCount() > 0 ? .excluded : .skipped
+        }
         await child.applyMediaProfile(profile)
-        return (child, childEntries)
+        return .ready(AssemblyPreparedChild(source: child, entries: childEntries,
+                                            excludedCount: await child.excludedChildCount()))
     }
 
     private func appendFolderImage(_ image: PageEntry, into result: inout [PageEntry]) {
@@ -329,6 +347,36 @@ actor NestedFolderSource: BookSource {
         await unlocker.sawSkippedChild
     }
 
+    func excludedChildCount() async -> Int {
+        var count = excludedOrdinals.count
+        for child in preparedChildren.values { count += child.excludedCount }
+        return count
+    }
+
+    private func keepPrepared(_ child: AssemblyChildPreparation, ordinal: Int, buildID: UUID) {
+        // 打ち切った世代の遅い結果で新しい構築を汚さない(設計書 §7.4)。
+        guard buildTask?.id == buildID else { return }
+        switch child {
+        case .ready(let prepared): preparedChildren[ordinal] = prepared
+        case .excluded: excludedOrdinals.insert(ordinal)
+        case .skipped: skippedOrdinals.insert(ordinal)
+        }
+    }
+
+    private func notifyAssemblyProgress(_ done: Int, total: Int, buildID: UUID) {
+        guard buildTask?.id == buildID else { return }
+        assemblyProgress?(done, total)
+    }
+
+    private func notifyAssemblyRetry(_ path: String, buildID: UUID) {
+        guard buildTask?.id == buildID else { return }
+        assemblyRetry?(path)
+    }
+
+    func setAssemblyRetryHandler(_ handler: (@Sendable (String) -> Void)?) async {
+        assemblyRetry = handler
+    }
+
     /// フォルダ自体は暗号化されないが、組み立て時に暗号化された子(書庫/PDF)を
     /// 解除して束ねていれば、復号済み保護コンテンツを含む本になる(CWE-312)。
     /// 判定は子の解除が終わる build 後に確定する
@@ -346,7 +394,7 @@ actor NestedFolderSource: BookSource {
     }
 
     func setAssemblyProgressHandler(
-        _ handler: (@Sendable (Int, Int) -> Void)?) {
+        _ handler: (@Sendable (Int, Int) -> Void)?) async {
         assemblyProgress = handler
     }
 
@@ -369,8 +417,8 @@ actor NestedFolderSource: BookSource {
     func applyMediaProfile(_ profile: MediaProfile) async {
         mediaProfile = profile
         await folder.applyMediaProfile(profile)
-        for child in children {
-            await child.applyMediaProfile(profile)
+        for child in preparedChildren.values {
+            await child.source.applyMediaProfile(profile)
         }
     }
 }
