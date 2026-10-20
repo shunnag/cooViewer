@@ -130,6 +130,7 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--snapshot-settings <png>` | 設定ウインドウを撮って終了 |
 | `-SettingsSelectedTab <n>` | 設定ウインドウの表示ペイン(SettingsPane.rawValue) |
 | `-SettingsSearchText <語>` | 設定検索の初期値を注入(検索 UI の検証用) |
+| `-DecodedStateIdleBooks <N>` | アイドル復号状態を保持する冊数を、この起動だけ N 冊(N ≥ 1)に上書きする。UserDefaults の引数ドメインだけを読み、保存しない。既定は物理 RAM / 8 GiB を 1〜16 冊に制限。大容量 RAM 機でも `1` / `2` で使用中の子書庫が並ぶ solid 合本のページ送りを再現できる |
 | `--appearance <dark\|light>` | 外観を強制(EPUB のテーマ追従などダークモード検証用) |
 | `--dump-first-responder <txt>` | 3 秒後に first responder の型名を書き出して終了(EPUB⇔画像本のフォーカス復帰検証) |
 | `--dump-window-state <txt>` | 3 秒後に全画面状態(`fullscreen=true/false`)とウインドウのフレーム(`frame=…`)を書き出して終了(`-LaunchWindowMode 1` で全画面起動、`-LaunchWindowMode 2 -LastWindowWasFullscreen true` で前回状態の復元を検証。引数ドメインの Bool は `true` 表記のみ効き、`YES`/`1` は false 扱いになる) |
