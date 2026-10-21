@@ -136,6 +136,54 @@ final class NestedFolderSourceTests: XCTestCase {
                       "続き巻だけならフォルダは従来どおり(並列・日付ソート維持)")
     }
 
+    // 採番・並列幅の検証は OS の UTI 登録状態に依存しない拡張子を使う。
+    private func writeAssemblyLaneCollection() throws {
+        for index in 0..<20 {
+            let name = String(format: "%02d.zip", index)
+            try zipData([("b.avifs", png(width: 42)), ("a.avifs", png(width: 41))])
+                .write(to: tempDir.appendingPathComponent(name))
+        }
+    }
+
+    func testAssemblyEntriesIndependentOfLaneCount() async throws {
+        try writeAssemblyLaneCollection()
+        let folder = try FolderSource(url: tempDir, readSubFolders: false)
+        let serial = NestedFolderSource(folder: folder, retryPolicy: .immediate)
+        let parallel = NestedFolderSource(folder: folder, retryPolicy: .immediate)
+        await parallel.applyMediaProfile(MediaProfile(mediaClass: .network))
+        let one = try await NestedFolderSource.$testingAssemblyLanes.withValue(1) {
+            try await serial.entries()
+        }
+        let sixteen = try await NestedFolderSource.$testingAssemblyLanes.withValue(16) {
+            try await parallel.entries()
+        }
+        XCTAssertEqual(one, sixteen)
+        XCTAssertEqual(one.count, 40)
+        XCTAssertEqual(one.map(\.id), (1...20).flatMap { [$0 * 1_000_000, $0 * 1_000_000 + 1] })
+    }
+
+    func testBuildUsesProfileAppliedBeforeEntries() async throws {
+        try writeAssemblyLaneCollection()
+        let ready = expectation(description: "ネットワーク媒体は最初から16レーンで組み立てる")
+        let gate = AssemblyTestGate()
+        let entered = OSAllocatedUnfairLock(initialState: 0)
+        var policy = AssemblyRetryPolicy.immediate
+        policy.beforeChildAttempt = { _ in
+            let count = entered.withLock { $0 += 1; return $0 }
+            if count == 16 { ready.fulfill() }
+            await gate.wait()
+        }
+        let source = NestedFolderSource(folder: try FolderSource(url: tempDir, readSubFolders: false),
+                                        retryPolicy: policy)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network))
+        let build = Task { try await source.entries() }
+        await fulfillment(of: [ready], timeout: 2)
+        XCTAssertEqual(entered.withLock { $0 }, 16)
+        await gate.open()
+        let entries = try await build.value
+        XCTAssertEqual(entries.count, 40)
+    }
+
     func testWindowParallelQueryUsesOnlyReferencedChildren() async throws {
         for name in ["a.zip", "b.zip", "solid.7z"] {
             try Data().write(to: tempDir.appendingPathComponent(name))

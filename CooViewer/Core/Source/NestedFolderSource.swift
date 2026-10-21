@@ -80,6 +80,7 @@ actor NestedFolderSource: BookSource {
 
     /// ネストページの id 基数(ArchiveSource と同じ 1M 刻み)
     static let nestedIDStride = 1_000_000
+    @TaskLocal static var testingAssemblyLanes: Int?
 
     static func acceptsPageOffset(_ offset: Int) -> Bool { offset >= 0 && offset < nestedIDStride - 1 }
 
@@ -140,7 +141,7 @@ actor NestedFolderSource: BookSource {
 
     /// フォルダの画像と子の本のページを、パス単純順(FolderSource の列挙順)で
     /// 1 冊に組む。ArchiveSource.build と同じ方針。
-    /// 子の本(書庫/PDF)のオープンと一覧取得は**並列**(幅 4)で行い、
+    /// 子の本(書庫/PDF)のオープンと一覧取得は媒体に応じた幅で並列に行い、
     /// 大量の書庫を含むフォルダのオープン時間を線形から短縮する。
     /// 登録(id 割当・locations)は従来どおり候補順に直列で行う
     private func build(id: UUID) async throws -> [PageEntry] {
@@ -149,6 +150,7 @@ actor NestedFolderSource: BookSource {
         let candidates = folder.nestedBookCandidates
         let unlocker = unlocker
         let profile = mediaProfile
+        let lanes = Self.testingAssemblyLanes ?? profile.collectionAssemblyLanes
         let preferredEngine = preferredEngine
         let engineFactory = engineFactory
         let policy = retryPolicy
@@ -165,7 +167,7 @@ actor NestedFolderSource: BookSource {
         }.map { AssemblyCandidate(ordinal: $0, relativePath: candidates[$0].relativePath,
                                   url: candidates[$0].fileURL) }
         _ = try await AssemblyPreparation.run(
-            candidates: pendingCandidates, total: candidates.count, sourceURL: url, lanes: 4, policy: policy,
+            candidates: pendingCandidates, total: candidates.count, sourceURL: url, lanes: lanes, policy: policy,
             excludePermanentChildFailures: true,
             onRetry: { path in await self.notifyAssemblyRetry(path, buildID: id) },
             onProgress: { done, total in await self.notifyAssemblyProgress(done, total: total, buildID: id) },

@@ -1557,6 +1557,11 @@ final class ReaderWindowController: NSWindowController {
             // マークが走るが、その分だけ先に 1 ページ目を描ける(結果はボリュームでキャッシュ)。
             let probeURL = bookURL
             let mediaProfileTask = Task { await self.effectiveMediaProfile(for: probeURL) }
+            // 合本は組み立て前に媒体を確定し、ネットワーク用の並列幅を使う(設計書 §7.4)。
+            if source is NestedFolderSource {
+                await source.applyMediaProfile(await mediaProfileTask.value)
+                guard generation == openGeneration, !Task.isCancelled else { return }
+            }
             let book: Book
             if let returningPartial, let previous = returningPartial.partialState,
                returningPartial.source.url == source.url {
@@ -3786,6 +3791,10 @@ extension ReaderWindowController {
             do {
                 await bindAssemblyHandlers(source: failed.source, generation: generation)
                 guard generation == openGeneration, !Task.isCancelled else { return }
+                if failed.source is NestedFolderSource {
+                    await failed.source.applyMediaProfile(await effectiveMediaProfile(for: failed.source.url))
+                    guard generation == openGeneration, !Task.isCancelled else { return }
+                }
                 let complete = try await Book.open(source: failed.source,
                     sortMode: failed.placeholder?.sortMode ?? failed.partialState?.sortMode ?? settings.sortMode,
                     cacheByteLimit: settings.pageCacheByteLimit, probe: fileSystemProbe)
