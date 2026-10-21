@@ -42,6 +42,9 @@ protocol BookSource: Sendable {
     /// solid 書庫の順不同展開によるストリーム巻き戻しを避ける)
     func currentlySupportsParallelPageLoads() async -> Bool
 
+    /// 先読み窓に含まれるページだけの並列可否。既定はソース全体の答えを使う。
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool
+
     /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
     /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
     /// spoolSizeLimit: ローカル一時展開に使ってよい合計バイト数
@@ -116,6 +119,9 @@ extension BookSource {
     func checkAndSetPassword(_ password: String) async -> PasswordCheck { .accepted }
     var supportsParallelPageLoads: Bool { false }
     func currentlySupportsParallelPageLoads() async -> Bool { supportsParallelPageLoads }
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool {
+        await currentlySupportsParallelPageLoads()
+    }
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {}
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         try await image(for: entry, maxPixelSize: nil)

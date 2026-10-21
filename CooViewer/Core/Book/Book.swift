@@ -815,11 +815,12 @@ final class Book {
         let width = max(1, mediaProfile.bookPrefetchConcurrency)
         let source = source
 
+        let targetIDs = targets.map { entries[$0].id }
         prefetchTask = Task { [weak self] in
             guard let self else { return }
             // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
             // ソースの「現在の状態」(スプール完了・形式)で判断する
-            let parallel = await source.currentlySupportsParallelPageLoads()
+            let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
             if parallel {
                 await withTaskGroup(of: Void.self) { group in
                     var iterator = targets.makeIterator()

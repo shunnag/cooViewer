@@ -28,6 +28,19 @@ actor NestedFolderSource: BookSource {
         return true
     }
 
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool {
+        var seen: Set<Int> = []
+        // await 中の再組み立てで children の添字が変わるため、先に子の参照を確保する(設計書 §7.4)。
+        let sources: [any BookSource] = ids.compactMap { id in
+            guard case .child(let index, _) = locations[id], seen.insert(index).inserted else { return nil }
+            return children[index]
+        }
+        for child in sources {
+            if await !child.currentlySupportsParallelPageLoads() { return false }
+        }
+        return true
+    }
+
     /// ページの所在: フォルダ直下の画像、または子ソースのページ
     private enum PageLocation {
         case folder(PageEntry)
