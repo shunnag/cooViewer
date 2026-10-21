@@ -136,6 +136,75 @@ final class NestedFolderSourceTests: XCTestCase {
                       "続き巻だけならフォルダは従来どおり(並列・日付ソート維持)")
     }
 
+    func testWindowParallelQueryUsesOnlyReferencedChildren() async throws {
+        for name in ["a.zip", "b.zip", "solid.7z"] {
+            try Data().write(to: tempDir.appendingPathComponent(name))
+        }
+        let factory = ArchiveEngineFactory(openFile: { _, path, _ in
+            WindowQueryArchiveEngine(serial: path.hasSuffix("solid.7z"))
+        }, openData: { _, _, _ in nil })
+        let source: any BookSource = NestedFolderSource(
+            folder: try FolderSource(url: tempDir, readSubFolders: false),
+            engineFactory: factory, retryPolicy: .immediate)
+        let entries = try await source.entries()
+        let zipIDs = entries.filter { $0.pathInBook.hasPrefix("a.zip/") || $0.pathInBook.hasPrefix("b.zip/") }.map(\.id)
+        let solidIDs = entries.filter { $0.pathInBook.hasPrefix("solid.7z/") }.map(\.id)
+        XCTAssertEqual(zipIDs.count, 4)
+        XCTAssertEqual(solidIDs.count, 2)
+        let zipParallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: zipIDs + zipIDs)
+        let solidParallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: zipIDs + solidIDs)
+        let wholeParallel = await source.currentlySupportsParallelPageLoads()
+        XCTAssertTrue(zipParallel)
+        XCTAssertFalse(solidParallel)
+        XCTAssertFalse(wholeParallel)
+    }
+
+    private func makeWindowQueryCollection() async throws -> (NestedFolderSource, [PageEntry]) {
+        let solid = try XCTUnwrap(Bundle(for: NestedFolderSourceTests.self)
+            .url(forResource: "solid", withExtension: "7z"))
+        try FileManager.default.copyItem(at: solid, to: tempDir.appendingPathComponent("solid.7z"))
+        for name in ["a.zip", "b.zip"] {
+            try zipData([("page.avifs", png(width: 41))]).write(to: tempDir.appendingPathComponent(name))
+        }
+        try png(width: 42).write(to: tempDir.appendingPathComponent("folder.avifs"))
+        let source = NestedFolderSource(folder: try FolderSource(url: tempDir, readSubFolders: false),
+                                        retryPolicy: .immediate)
+        return (source, try await source.entries())
+    }
+
+    func testWindowParallelQueryIgnoresSolidChildOutsideWindow() async throws {
+        let (source, entries) = try await makeWindowQueryCollection()
+        let ids = entries.filter { $0.pathInBook.hasPrefix("a.zip/") || $0.pathInBook.hasPrefix("b.zip/") }.map(\.id)
+        XCTAssertEqual(ids.count, 2)
+        let erased: any BookSource = source
+        let parallel = await erased.currentlySupportsParallelPageLoads(forEntryIDs: ids + ids)
+        let whole = await erased.currentlySupportsParallelPageLoads()
+        XCTAssertTrue(parallel)
+        XCTAssertFalse(whole)
+    }
+
+    func testWindowParallelQueryIsSerialWhenSolidChildInWindow() async throws {
+        let (source, entries) = try await makeWindowQueryCollection()
+        XCTAssertTrue(entries.contains { $0.pathInBook.hasPrefix("solid.7z/") })
+        let erased: any BookSource = source
+        let parallel = await erased.currentlySupportsParallelPageLoads(forEntryIDs: entries.map(\.id))
+        XCTAssertFalse(parallel)
+    }
+
+    func testWindowParallelQueryTreatsFolderImagesAndCardsAsParallel() async throws {
+        let (source, entries) = try await makeWindowQueryCollection()
+        let folder = try XCTUnwrap(entries.first { $0.pathInBook == "folder.avifs" })
+        let folderParallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: [folder.id, -1])
+        XCTAssertTrue(folderParallel)
+        let (partial, _) = await NestedFolderSource.syntheticFailure()
+        let cards = try await partial.partialEntries().filter { $0.unreadableVolume != nil }
+        XCTAssertEqual(cards.count, 2)
+        let cardParallel = await partial.currentlySupportsParallelPageLoads(forEntryIDs: cards.map(\.id) + [-1])
+        XCTAssertTrue(cardParallel)
+        let emptyParallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: [])
+        XCTAssertTrue(emptyParallel)
+    }
+
     private func makeSplitRARCollection() throws -> NestedFolderSource {
         for name in ["x.part1.rar", "x.part2.rar", "x.part3.rar"] {
             try Data([0]).write(to: tempDir.appendingPathComponent(name))
@@ -312,4 +381,24 @@ private final class ProgressCollector: @unchecked Sendable {
         defer { lock.unlock() }
         return stored
     }
+}
+
+/// UTI 登録や実復号から独立して、窓の並列可否を実際の書庫ソース経由で検証する。
+private final class WindowQueryArchiveEngine: ArchiveEngine {
+    private let serial: Bool
+    init(serial: Bool) { self.serial = serial }
+    init?(file path: String, role: ArchiveReaderRole) { return nil }
+    init?(data: Data, role: ArchiveReaderRole) { return nil }
+    func numberOfEntries() -> Int32 { 2 }
+    func name(ofEntry index: Int32) -> String? { "page-\(index).avifs" }
+    func contents(ofEntry index: Int32) -> Data? { nil }
+    func uncompressedSize(ofEntry index: Int32) -> Int64 { 1 }
+    func entryHasSize(_ index: Int32) -> Bool { true }
+    func entryIsDirectory(_ index: Int32) -> Bool { false }
+    func entryIsEncrypted(_ index: Int32) -> Bool { false }
+    func isEncrypted() -> Bool { false }
+    func setPassword(_ password: String) {}
+    func solidGroup(ofEntry index: Int32) -> Int32 { serial ? 0 : -1 }
+    static var defaultZipLazyLocalHeaders: Bool { true }
+    static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
 }

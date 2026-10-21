@@ -28,6 +28,13 @@ final class StubSource: BookSource, @unchecked Sendable {
     var decodedIDs: [Int] { decodeLock.withLock { decodedLog } }
     func resetDecodeLog() { decodeLock.withLock { decodedLog = [] } }
 
+    private var windowQueries: [[Int]] = []
+    var queriedWindows: [[Int]] { decodeLock.withLock { windowQueries } }
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool {
+        decodeLock.withLock { windowQueries.append(ids) }
+        return false
+    }
+
     init(sizes: [CGSize]) {
         self.sizes = sizes
     }
@@ -112,6 +119,40 @@ final class BookTests: XCTestCase {
         XCTAssertEqual(book.entriesGeneration, generation + 1)
         _ = book.reflowPlaceholders
         XCTAssertEqual(book.entriesGeneration, generation + 1)
+    }
+
+    func testPrefetchAsksSourceWithWindowEntryIDs() async {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10))
+        let entries = [9, 4, 7, 1].map { id in
+            PageEntry(id: id, name: "p\(id)", pathInBook: "p\(id)", fileURL: nil,
+                      creationDate: nil, modificationDate: nil)
+        }
+        let book = Book(source: stub, prepared: .init(sortedEntries: entries, cacheKey: "window-query"))
+        book.prefetchAhead = 2
+        book.prefetchBehind = 1
+        book.goTo(index: 1)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        XCTAssertEqual(stub.queriedWindows, [[7, 1, 9]])
+    }
+
+    func testDefaultWindowQueryFallsBackToWholeSourceAnswer() async {
+        struct WholeSourceStub: BookSource {
+            let url = URL(fileURLWithPath: "/stub/whole")
+            let supportsDateSort = false
+            let supportsParallelPageLoads = true
+            let answer: Bool
+            func entries() async throws -> [PageEntry] { [] }
+            func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+                throw BookSourceError.pageLoadFailed(entry.name)
+            }
+            func currentlySupportsParallelPageLoads() async -> Bool { answer }
+        }
+        for answer in [false, true] {
+            let source: any BookSource = WholeSourceStub(answer: answer)
+            let result = await source.currentlySupportsParallelPageLoads(forEntryIDs: [42])
+            XCTAssertEqual(result, answer)
+        }
     }
 
     func testSkipClampsExtremeOffsetsBeforeAdding() async throws {
