@@ -5,6 +5,8 @@ import ImageIO
 /// アニメーション画像(GIF/APNG/WebP/HEICS/AVIF シーケンス)の全フレーム読込。
 /// 再生は ReaderView が CAKeyframeAnimation で行う(設計書 §5 描画品質)。
 struct AnimatedImage {
+    static let candidateExtensions: Set<String> = ["gif", "png", "apng", "webp", "heics", "avif", "avifs"]
+
     let frames: [CGImage]
     let delays: [Double]
 
