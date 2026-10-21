@@ -71,6 +71,7 @@ final class Book {
     private let sorter: any PageSorting
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
+    private var lastReadingPosition: (volume: Int, forward: Bool, generation: Int)?
     /// 見開き取得は同じ位置・並び・配置条件で完了した結果だけを採用する。
     /// ナビゲーション世代は後発のジャンプ/設定変更で旧判定を失効させる一方、
     /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
@@ -386,6 +387,7 @@ final class Book {
     func currentSpread() async -> Spread {
         while !entries.isEmpty, !Task.isCancelled {
             let revision = stateRevision
+            noteReadingPositionIfNeeded()
             let spread = await loadSpread(at: currentIndex)
             // 旧ページの取得中に位置/ソート/見開き条件が変わったら再計算する。
             // 画像と番号の対応、次ページの送り幅を同じ状態で確定するため。
@@ -395,6 +397,25 @@ final class Book {
             return spread
         }
         return Spread(indices: [], images: [])
+    }
+
+    private func noteReadingPositionIfNeeded() {
+        guard entries.indices.contains(currentIndex) else { return }
+        let current = entries[currentIndex]
+        let volume = source.prefetchVolumeKey(for: current)
+        if let lastReadingPosition, lastReadingPosition.volume == volume,
+           lastReadingPosition.forward == lastMoveForward, lastReadingPosition.generation == entriesGeneration { return }
+        lastReadingPosition = (volume, lastMoveForward, entriesGeneration)
+        // 今の巻だけを走査し、合本 actor や別の子を表示経路で待たない(cooViewer-tg48、設計書 §5)。
+        var first = currentIndex
+        var end = currentIndex + 1
+        while first > 0, source.prefetchVolumeKey(for: entries[first - 1]) == volume { first -= 1 }
+        while end < entries.count, source.prefetchVolumeKey(for: entries[end]) == volume { end += 1 }
+        let previous = first > 0 ? entries[first - 1] : nil
+        let next = end < entries.count ? entries[end] : nil
+        let source = source
+        let forward = lastMoveForward
+        Task { await source.noteReadingPosition(current: current, next: next, previous: previous, forward: forward) }
     }
 
     private func loadSpread(at index: Int) async -> Spread {

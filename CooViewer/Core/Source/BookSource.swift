@@ -48,6 +48,9 @@ protocol BookSource: Sendable {
     /// 先読みの巻境界。actor を待たずに判定する(仕様書 §4.5、設計書 §3.1)。
     nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int
 
+    /// 読書位置を準備係へ知らせる。表示側は待たずに通知する(設計書 §5)。
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool) async
+
     /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
     /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
     /// spoolSizeLimit: ローカル一時展開に使ってよい合計バイト数
@@ -126,6 +129,7 @@ extension BookSource {
         await currentlySupportsParallelPageLoads()
     }
     nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { 0 }
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool) async {}
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {}
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         try await image(for: entry, maxPixelSize: nil)

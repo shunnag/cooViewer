@@ -191,7 +191,7 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         }
     }
 
-    func testPartialSpoolingReservesMissingArchiveBudgetUntilCompletion() async throws {
+    func testPartialSpoolingUsesWindowBudgetWithoutReservingMissingArchives() async throws {
         let root = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let png = TestFixtures.pngData(width: 4, height: 6)
@@ -215,16 +215,20 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         let budget = Int64(png.count * 3 - 1)
         await source.beginBackgroundPreparation(spoolSizeLimit: budget)
         let partialCount = await source.waitForSpoolCompletion()
-        XCTAssertEqual(partialCount, 0)
+        XCTAssertEqual(partialCount, 2)
         control.recover()
-        _ = try await source.entries()
+        let complete = try await source.entries()
         await source.beginBackgroundPreparation(spoolSizeLimit: budget)
         let completeCount = await source.waitForSpoolCompletion()
-        XCTAssertEqual(completeCount, 1)
+        XCTAssertEqual(completeCount, 2)
         XCTAssertLessThanOrEqual(Int64(completeCount * png.count), budget)
+        let recovered = try XCTUnwrap(complete.first { $0.pathInBook.hasPrefix("b.zip/") })
+        await source.noteReadingPosition(current: recovered, next: nil, previous: nil, forward: true)
+        let movedCount = await source.waitForSpoolCompletion()
+        XCTAssertEqual(movedCount, 1, "予算不足時は窓外の最初の巻を追い出して回復巻へ回す")
     }
 
-    func testCompleteSpoolDivisorExcludesCorruptCancelledAndEmptyArchives() async throws {
+    func testCompleteWindowBudgetExcludesCorruptCancelledAndEmptyArchives() async throws {
         let root = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let png = TestFixtures.pngData(width: 4, height: 6)
@@ -243,7 +247,7 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
-    func testSpoolDivisorCountsOnlyArchiveCards() async throws {
+    func testSpoolWindowDoesNotReserveArchiveOrPDFCards() async throws {
         let root = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let png = TestFixtures.pngData(width: 4, height: 6)
@@ -261,11 +265,11 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         let partial = try await source.partialEntries()
         XCTAssertEqual(partial.compactMap(\.unreadableVolume).map(\.relativePath), ["b.zip", "c.pdf"])
         await source.applyMediaProfile(MediaProfile(mediaClass: .slowLocal, spoolOverride: true))
-        // 書庫カードの枠を予約しない場合は、この予算でも 2 ページがスプールされてしまう。
+        // 書庫・PDF の欠落カードも除外子も枠を予約せず、現在巻へ全予算を回す(設計書 §5)。
         await source.beginBackgroundPreparation(spoolSizeLimit: Int64(png.count * 2))
         let reservedCount = await source.waitForSpoolCompletion()
-        XCTAssertEqual(reservedCount, 0)
-        // 書庫カードだけなら分母は 2。PDF まで数えると 2 ページ分の予算に届かない。
+        XCTAssertEqual(reservedCount, 2)
+        // 上限を増やしてもカードをスプールせず、完了巻を書き直さない。
         await source.beginBackgroundPreparation(spoolSizeLimit: Int64(png.count * 4))
         let count = await source.waitForSpoolCompletion()
         XCTAssertEqual(count, 2)

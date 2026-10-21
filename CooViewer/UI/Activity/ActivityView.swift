@@ -131,7 +131,7 @@ struct ActivityView: View {
         section(String(localized: "Archive spool")) {
             actualOnly(String(localized: "Spooled"),
                        "\(s.spooled) / \(s.total)"
-                       + (s.active ? " " + String(localized: "(active)") : ""))
+                       + (s.active ? " " + String(localized: "(active)") : s.paused ? " " + String(localized: "(paused)") : ""))
             usageRow(String(localized: "Disk used"), used: s.bytes, limit: s.limitBytes)
         }
     }
