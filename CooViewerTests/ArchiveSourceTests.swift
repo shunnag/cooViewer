@@ -959,7 +959,7 @@ final class ArchiveSourceTests: XCTestCase {
     func testInteractiveSpoolIsNotBlockedByBackgroundSpools() async throws {
         let gate = ArchiveSource.backgroundSpoolGate
         let limit = ProcessInfo.processInfo.physicalMemory < 12 << 30 ? 1 : 2
-        for _ in 0..<limit { await gate.acquire(interactive: false) }
+        for _ in 0..<limit { guard await gate.acquire(interactive: false) else { return } }
         let started = expectation(description: "対話スプール開始")
         let probe = SpoolEngineProbe(beforeSpoolRead: { index in if index == 0 { started.fulfill() } })
         let source = try Self.spoolSource(groups: [0, 0], probe: probe)
@@ -973,17 +973,22 @@ final class ArchiveSourceTests: XCTestCase {
     func testCancelledGateWaiterReleasesImmediately() async throws {
         let gate = ArchiveSource.backgroundSpoolGate
         let limit = ProcessInfo.processInfo.physicalMemory < 12 << 30 ? 1 : 2
-        for _ in 0..<limit { await gate.acquire(interactive: false) }
+        for _ in 0..<limit { guard await gate.acquire(interactive: false) else { return } }
         let probe = SpoolEngineProbe()
         let source = try Self.spoolSource(groups: [0, 0], probe: probe)
         await source.beginSpooling(sizeLimit: 1 << 30, interactive: false)
         while await gate.debugCounts().queued == 0 { await Task.yield() }
         await source.pauseSpooling()
-        for _ in 0..<limit { await gate.release() }
+        // 枠が埋まったままでも取消し完了まで進めること。
+        let stopped = expectation(description: "ゲート待機中の取消し完了")
+        let completion = Task { await source.waitForSpoolCompletion(); stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
         await source.waitForSpoolCompletion()
         let counts = await gate.debugCounts()
-        XCTAssertEqual(counts.active, 0)
+        XCTAssertEqual(counts.active, limit)
         XCTAssertEqual(counts.queued, 0)
+        for _ in 0..<limit { await gate.release() }
+        await completion.value
         XCTAssertEqual(probe.state.withLock { $0.spoolReads }, [])
         XCTAssertEqual(probe.state.withLock { $0.reopenCalls }, 0)
     }

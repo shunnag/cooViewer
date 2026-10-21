@@ -204,8 +204,12 @@ struct MediaProfile: Sendable, Equatable {
 actor SourceReadGate {
     private var limit: Int
     private var active = 0
-    private var interactiveWaiters: [CheckedContinuation<Void, Never>] = []
-    private var backgroundWaiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let token: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+    private var interactiveWaiters: [Waiter] = []
+    private var backgroundWaiters: [Waiter] = []
 
     init(limit: Int) {
         self.limit = max(1, limit)
@@ -216,24 +220,42 @@ actor SourceReadGate {
         wakeWaitersIfPossible()
     }
 
-    func acquire() async {
+    func acquire() async -> Bool {
         await acquire(interactive: Task.currentPriority >= .userInitiated)
     }
 
     /// レーン明示版。優先度継承が呼び出し元の意図と一致しない場合
     /// (サムネイルの可視セル要求 vs 先読みの区別など)に使う
-    func acquire(interactive: Bool) async {
+    func acquire(interactive: Bool) async -> Bool {
+        guard !Task.isCancelled else { return false }
         if active < limit {
             active += 1
-            return
+            return true
         }
-        await withCheckedContinuation { continuation in
-            if interactive {
-                interactiveWaiters.append(continuation)
-            } else {
-                backgroundWaiters.append(continuation)
+        let token = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // 登録前の取消しも拾い、取消し通知との前後関係による取り残しを防ぐ。
+                guard !Task.isCancelled else { continuation.resume(returning: false); return }
+                let waiter = Waiter(token: token, continuation: continuation)
+                if interactive {
+                    interactiveWaiters.append(waiter)
+                } else {
+                    backgroundWaiters.append(waiter)
+                }
             }
+        } onCancel: {
+            Task { await self.cancel(token) }
         }
+    }
+
+    private func cancel(_ token: UUID) {
+        if let index = interactiveWaiters.firstIndex(where: { $0.token == token }) {
+            interactiveWaiters.remove(at: index).continuation.resume(returning: false)
+        } else if let index = backgroundWaiters.firstIndex(where: { $0.token == token }) {
+            backgroundWaiters.remove(at: index).continuation.resume(returning: false)
+        }
+        // 解放が先に許可した枠は呼び出し元が所有し、通常の release で返す。
     }
 
     func release() {
@@ -246,14 +268,16 @@ actor SourceReadGate {
         (active, interactiveWaiters.count + backgroundWaiters.count)
     }
 
+    func hasAvailableSlot() -> Bool { active < limit }
+
     private func wakeWaitersIfPossible() {
         while active < limit,
               !interactiveWaiters.isEmpty || !backgroundWaiters.isEmpty {
             active += 1
             if !interactiveWaiters.isEmpty {
-                interactiveWaiters.removeFirst().resume()
+                interactiveWaiters.removeFirst().continuation.resume(returning: true)
             } else {
-                backgroundWaiters.removeFirst().resume()
+                backgroundWaiters.removeFirst().continuation.resume(returning: true)
             }
         }
     }
