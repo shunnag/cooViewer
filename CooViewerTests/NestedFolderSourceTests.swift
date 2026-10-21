@@ -136,6 +136,31 @@ final class NestedFolderSourceTests: XCTestCase {
                       "続き巻だけならフォルダは従来どおり(並列・日付ソート維持)")
     }
 
+    private func makeSplitRARCollection() throws -> NestedFolderSource {
+        for name in ["x.part1.rar", "x.part2.rar", "x.part3.rar"] {
+            try Data([0]).write(to: tempDir.appendingPathComponent(name))
+        }
+        try zipData([("page.avifs", png(width: 41))]).write(to: tempDir.appendingPathComponent("z.zip"))
+        return NestedFolderSource(folder: try FolderSource(url: tempDir, readSubFolders: false),
+                                  retryPolicy: .immediate)
+    }
+
+    func testSplitRARContinuationsAreSkippedNotExcluded() async throws {
+        let source = try makeSplitRARCollection()
+        let entries = try await source.entries()
+        let excluded = await source.excludedChildCount()
+        let cards = await source.cardChildren
+        XCTAssertEqual(excluded, 1)
+        XCTAssertTrue(cards.isEmpty)
+        XCTAssertEqual(entries.map(\.pathInBook), ["z.zip/page.avifs"])
+    }
+
+    func testSkippedRARContinuationsKeepLaterChildPageIDs() async throws {
+        let source = try makeSplitRARCollection()
+        let entries = try await source.entries()
+        XCTAssertEqual(entries.map(\.id), [4_000_000])
+    }
+
     /// パスワード入力をキャンセルした合本ソースを(EPUB 往復の復帰のように)
     /// 使い回したとき、provider を付け替えても再度尋ねないこと。
     /// openBookFlow の復帰時ソース再利用はこの契約(キャンセル記憶と構築済み

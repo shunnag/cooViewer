@@ -224,6 +224,41 @@ final class FolderSourceTests: XCTestCase {
         XCTAssertFalse(fallback.usedFastPath)
     }
 
+    private func assertRARContinuations(_ names: [String], expected: Set<String>) throws {
+        for name in names {
+            let url = tempDir.appendingPathComponent(name, isDirectory: false)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([0]).write(to: url)
+        }
+        let source = try FolderSource(url: tempDir, readSubFolders: true)
+        XCTAssertEqual(Set(source.splitContinuationCandidateIndices.map {
+            source.nestedBookCandidates[$0].relativePath
+        }), expected)
+        XCTAssertEqual(source.nestedBookCandidates.count, names.count)
+    }
+
+    func testRARPartContinuationsFlaggedWhenFirstPartPresent() throws {
+        try assertRARContinuations(["x.part1.rar", "x.part2.rar", "x.part3.rar"],
+                                   expected: ["x.part2.rar", "x.part3.rar"])
+    }
+
+    func testZeroPaddedPartSetRequiresSameWidth() throws {
+        try assertRARContinuations(["x.part01.rar", "x.part02.rar", "y.part1.rar", "y.part02.rar"],
+                                   expected: ["x.part02.rar"])
+    }
+
+    func testLonePartContinuationIsNotFlagged() throws {
+        try assertRARContinuations(["x.part2.rar"], expected: [])
+    }
+
+    func testPartSiblingMustBeInSameDirectory() throws {
+        try assertRARContinuations(["one/x.part1.rar", "two/x.part2.rar"], expected: [])
+    }
+
+    func testPartPrefixCaseMismatchIsNotFlagged() throws {
+        try assertRARContinuations(["X.part1.rar", "x.part2.rar"], expected: [])
+    }
+
     func testDateSortSupported() {
         XCTAssertTrue((try! FolderSource(url: tempDir, readSubFolders: false)).supportsDateSort)
     }
