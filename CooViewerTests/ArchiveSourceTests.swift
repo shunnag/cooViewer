@@ -660,6 +660,7 @@ final class ArchiveSourceTests: XCTestCase {
     func testAnimatedPageDataReusesDisplayExtraction() async throws {
         let probe = SpoolEngineProbe()
         let source = try Self.spoolSource(groups: [0, 0], probe: probe)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
         let page = try await source.entries()[1]
         _ = try await source.image(for: page, maxPixelSize: nil)
         let data = await source.imageData(for: page)
@@ -672,6 +673,7 @@ final class ArchiveSourceTests: XCTestCase {
         large.append(Data(count: 33 << 20))
         for probe in [SpoolEngineProbe(fileExtension: "jpg"), SpoolEngineProbe(data: large)] {
             let source = try Self.spoolSource(groups: [0, 0], probe: probe)
+            await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
             let page = PageEntry(id: 0, name: "page.\(probe.fileExtension)", pathInBook: "page.\(probe.fileExtension)",
                                  fileURL: nil, creationDate: nil, modificationDate: nil)
             _ = try await source.image(for: page, maxPixelSize: nil)
@@ -684,6 +686,7 @@ final class ArchiveSourceTests: XCTestCase {
     func testRecentRawDataSurvivesPrefetchOfNeighbours() async throws {
         let probe = SpoolEngineProbe()
         let source = try Self.spoolSource(groups: Array(repeating: 0, count: 8), probe: probe)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
         let pages = try await source.entries()
         for page in pages.prefix(7) { _ = try await source.image(for: page, maxPixelSize: nil) }
         let data = await source.imageData(for: pages[0])
@@ -694,6 +697,7 @@ final class ArchiveSourceTests: XCTestCase {
     func testRecentRawDataIsBoundedAndDroppedOnIdleRelease() async throws {
         let probe = SpoolEngineProbe()
         let source = try Self.spoolSource(groups: Array(repeating: 0, count: 9), probe: probe)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
         let pages = try await source.entries()
         for page in pages { _ = try await source.image(for: page, maxPixelSize: nil) }
         _ = await source.imageData(for: pages[0])
@@ -710,7 +714,6 @@ final class ArchiveSourceTests: XCTestCase {
         })
         let activeSource = try Self.spoolSource(groups: [0, 0], probe: activeProbe)
         let activePages = try await activeSource.entries()
-        _ = try await activeSource.image(for: activePages[1], maxPixelSize: nil)
         await activeSource.beginSpooling(sizeLimit: 1 << 30)
         await fulfillment(of: [started], timeout: 3)
         let released = await activeSource.releaseIdleDecodedState()
@@ -720,7 +723,7 @@ final class ArchiveSourceTests: XCTestCase {
         await activeSource.pauseSpooling()
         let activeData = await reader.value
         XCTAssertEqual(activeData, activeProbe.data)
-        XCTAssertEqual(activeProbe.state.withLock { $0.primaryReads }, [1, 1])
+        XCTAssertEqual(activeProbe.state.withLock { $0.primaryReads }, [1])
         release.signal()
         await activeSource.waitForSpoolCompletion()
 
@@ -729,6 +732,7 @@ final class ArchiveSourceTests: XCTestCase {
         large.append(Data(count: 23 << 20))
         let largeProbe = SpoolEngineProbe(data: large)
         let largeSource = try Self.spoolSource(groups: [0, 0, 0], probe: largeProbe)
+        await largeSource.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
         let largePages = try await largeSource.entries()
         for page in largePages { _ = try await largeSource.image(for: page, maxPixelSize: nil) }
         _ = await largeSource.imageData(for: largePages[0])
@@ -786,28 +790,208 @@ final class ArchiveSourceTests: XCTestCase {
         XCTFail("待ち手が登録されない")
     }
 
-    func testSerialDisplayUsesPrimaryWhenPrimaryLeadsSpool() async throws {
-        let started = expectation(description: "先頭を停止")
+    func testSerialSpoolAdoptsPrimaryThenBackfillsPrefix() async throws {
+        let started = expectation(description: "引き渡した位置から再開")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforePrimaryRead: { index in
+            if index == 11 { started.fulfill(); _ = release.wait(timeout: .now() + 10) }
+        })
+        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 16), probe: probe)
+        let pages = try await source.entries()
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
+        _ = await source.imageData(for: pages[10])
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await fulfillment(of: [started], timeout: 3)
+        let leading = Task { await source.imageData(for: pages[12]) }
+        let trailing = Task { await source.imageData(for: pages[5]) }
+        await Self.waitForWaiters(2, source: source)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [10, 11], "前方の続きを終える前に先頭を読み直さない")
+        release.signal()
+        let next = await leading.value
+        let data = await trailing.value
+        XCTAssertEqual(next, probe.data)
+        XCTAssertEqual(data, probe.data)
+        await source.waitForSpoolCompletion()
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [10] + Array(Int32(11)..<16) + Array(Int32(0)..<11))
+        XCTAssertEqual(probe.state.withLock { $0.spoolReads }, [], "新しい主エンジンは表示の再展開に使わない")
+        let waiters = await source.spoolWaiterCount
+        XCTAssertEqual(waiters, 0)
+    }
+
+    func testFirstDisplayStartsSerialSpoolBeforeRouting() async throws {
+        let started = expectation(description: "初表示がスプールを開始")
         let release = DispatchSemaphore(value: 0)
         defer { release.signal() }
         let probe = SpoolEngineProbe(beforeSpoolRead: { index in
             if index == 0 { started.fulfill(); _ = release.wait(timeout: .now() + 10) }
         })
-        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 16), probe: probe)
+        let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
         let pages = try await source.entries()
-        _ = await source.imageData(for: pages[10])
-        await source.beginSpooling(sizeLimit: 1 << 30)
+        let display = Task(priority: .userInitiated) { try await source.image(for: pages[2], maxPixelSize: nil) }
         await fulfillment(of: [started], timeout: 3)
-        let leading = await source.imageData(for: pages[11])
-        XCTAssertEqual(leading, probe.data)
-        let trailing = Task { await source.imageData(for: pages[5]) }
         await Self.waitForWaiters(1, source: source)
-        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [10, 11])
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
         release.signal()
-        let data = await trailing.value
+        let image = try await display.value
+        XCTAssertEqual(image.width, 4)
+        await source.waitForSpoolCompletion()
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
+    }
+
+    func testAdoptedTailAndPrefixWaitersResumeExactlyOnceOnEveryExit() async throws {
+        for prefix in [false, true] {
+            for action in ["complete", "pause", "discard", "abandon", "deinit"] {
+                let started = expectation(description: "引き渡し後の展開を停止")
+                let resumed = expectation(description: "全票を一度ずつ再開")
+                resumed.expectedFulfillmentCount = 8
+                let release = DispatchSemaphore(value: 0)
+                let once = OSAllocatedUnfairLock(initialState: false)
+                defer { release.signal() }
+                let blockedID: Int32 = prefix ? 0 : 2
+                let probe = SpoolEngineProbe(beforePrimaryRead: { id in
+                    if id == blockedID, once.withLock({ if $0 { return false }; $0 = true; return true }) {
+                        started.fulfill(); _ = release.wait(timeout: .now() + 10)
+                    }
+                })
+                var source: ArchiveSource? = try Self.spoolSource(groups: [0, 0, 0, 0], probe: probe)
+                let pages = try await source!.entries()
+                await source!.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
+                _ = await source!.imageData(for: pages[1])
+                await source!.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+                await source!.beginSpooling(sizeLimit: 1 << 30)
+                await fulfillment(of: [started], timeout: 3)
+                let waiters = source!.spoolWaitersForTesting
+                let tasks = (0..<8).map { _ in
+                    Task {
+                        do { _ = try await waiters.wait(for: prefix ? 1 : 3) }
+                        catch { XCTAssertTrue(error is CancellationError) }
+                        resumed.fulfill()
+                    }
+                }
+                while waiters.count < 8 { await Task.yield() }
+                for task in tasks.prefix(4) { task.cancel() }
+                var stop: Task<Void, Never>?
+                if action == "deinit" {
+                    weak let owner = source
+                    source = nil
+                    XCTAssertNil(owner)
+                } else if let retained = source {
+                    stop = Task {
+                        switch action {
+                        case "pause": await retained.pauseSpooling()
+                        case "discard": await retained.discardSpool()
+                        case "abandon": retained.abandonAssembly()
+                        default: break
+                        }
+                    }
+                }
+                if action == "complete" { release.signal() }
+                await fulfillment(of: [resumed], timeout: 3)
+                release.signal()
+                for task in tasks { await task.value }
+                await stop?.value
+                await source?.waitForSpoolCompletion()
+                XCTAssertEqual(waiters.count, 0)
+            }
+        }
+    }
+
+    func testWaiterIsNotRegisteredBeyondRemainingBudget() async throws {
+        let started = expectation(description: "先頭で停止")
+        let served = expectation(description: "予算外は直ちに主側へ")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { index in
+            if index == 0 { started.fulfill(); _ = release.wait(timeout: .now() + 10) }
+        })
+        let source = try Self.spoolSource(groups: [0, 0, 0, 0], probe: probe)
+        let pages = try await source.entries()
+        await source.beginSpooling(sizeLimit: Int64(probe.data.count * 2))
+        await fulfillment(of: [started], timeout: 3)
+        let display = Task {
+            let data = await source.imageData(for: pages[3])
+            served.fulfill()
+            return data
+        }
+        await fulfillment(of: [served], timeout: 3)
+        let data = await display.value
+        XCTAssertEqual(data, probe.data)
+        let waiters = await source.spoolWaiterCount
+        XCTAssertEqual(waiters, 0)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [3])
+        release.signal()
+        await source.waitForSpoolCompletion()
+    }
+
+    func testUnavailableInteractiveGateUsesPrimaryWithoutRegisteringWaiter() async throws {
+        let gate = ArchiveSource.interactiveSpoolGate
+        for _ in 0..<2 { guard await gate.acquire(interactive: true) else { return XCTFail("枠の確保失敗") } }
+        let probe = SpoolEngineProbe()
+        let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
+        let pages = try await source.entries()
+        let served = expectation(description: "対話枠が満杯なら主側を使用")
+        let display = Task(priority: .userInitiated) {
+            let data = await source.imageData(for: pages[1])
+            served.fulfill()
+            return data
+        }
+        await fulfillment(of: [served], timeout: 3)
+        let waiters = await source.spoolWaiterCount
+        XCTAssertEqual(waiters, 0)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [1])
+        for _ in 0..<2 { await gate.release() }
+        let data = await display.value
         XCTAssertEqual(data, probe.data)
         await source.waitForSpoolCompletion()
-        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [10, 11])
+    }
+
+    func testAdoptionBudgetsTailBeforeLargeUnspooledPrefix() async throws {
+        let data = TestFixtures.pngData(width: 4, height: 6)
+        let size = Int64(data.count)
+        let probe = SpoolEngineProbe(data: data, declaredSizes: [10_000, size, size])
+        let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
+        let pages = try await source.entries()
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
+        _ = await source.imageData(for: pages[0])
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+        await source.beginSpooling(sizeLimit: size * 2)
+        await source.waitForSpoolCompletion()
+        let stats = await source.spoolStats()
+        XCTAssertEqual(stats.spooled, 2)
+        XCTAssertTrue(stats.paused)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [0, 1, 2])
+    }
+
+    func testEncryptedAndSensitiveAdoptionAndPrefixNeverWritePlaintext() async throws {
+        for sensitive in [false, true] {
+            let probe = SpoolEngineProbe(encrypted: !sensitive)
+            let source = try Self.spoolSource(groups: [0, 0, 0, 0], probe: probe, sensitive: sensitive)
+            let pages = try await source.entries()
+            await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
+            _ = await source.imageData(for: pages[1])
+            await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+            await source.beginSpooling(sizeLimit: Int64(2 * (probe.data.count + 28)))
+            await source.waitForSpoolCompletion()
+            let prefix = await source.spoolStats()
+            XCTAssertEqual(prefix.spooled, 2)
+            await source.beginSpooling(sizeLimit: 1 << 30)
+            await source.waitForSpoolCompletion()
+            let directory = await source.spoolDirectoryForTesting
+            let files = try FileManager.default.contentsOfDirectory(at: XCTUnwrap(directory), includingPropertiesForKeys: nil)
+            XCTAssertEqual(files.count, 4)
+            for file in files {
+                let bytes = try Data(contentsOf: file)
+                XCTAssertNotEqual(bytes, probe.data)
+                XCTAssertNotEqual(bytes.prefix(4), probe.data.prefix(4))
+                XCTAssertEqual(bytes.count, probe.data.count + 28)
+            }
+            for page in pages {
+                let data = await source.imageData(for: page)
+                XCTAssertEqual(data, probe.data)
+            }
+        }
     }
 
     func testSpooledPageIsServedWhileSpoolEntryIsInFlight() async throws {
@@ -896,7 +1080,7 @@ final class ArchiveSourceTests: XCTestCase {
         await fulfillment(of: [started], timeout: 3)
         let oversized = Task { await source.imageData(for: pages[1]) }
         let missing = Task { await source.imageData(for: pages[2]) }
-        await Self.waitForWaiters(2, source: source)
+        await Self.waitForWaiters(1, source: source)
         release.signal()
         let noData = await oversized.value
         let data = await missing.value
@@ -920,6 +1104,63 @@ final class ArchiveSourceTests: XCTestCase {
         let data = await source.imageData(for: pages[7])
         XCTAssertEqual(data, probe.data)
         XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [7])
+    }
+
+    func testFirstDisplaySpoolAdoptsConfiguredLimitAndKeepsPrefix() async throws {
+        let started = expectation(description: "初表示スプールの後半で停止")
+        let release = DispatchSemaphore(value: 0)
+        let once = OSAllocatedUnfairLock(initialState: false)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { id in
+            if id == 1, once.withLock({ if $0 { return false }; $0 = true; return true }) {
+                started.fulfill(); _ = release.wait(timeout: .now() + 10)
+            }
+        })
+        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 8), probe: probe)
+        let pages = try await source.entries()
+        let display = Task.detached(priority: .userInitiated) { await source.imageData(for: pages[0]) }
+        await fulfillment(of: [started], timeout: 3)
+        let data = await display.value
+        XCTAssertEqual(data, probe.data)
+        let directory = await source.spoolDirectoryForTesting
+        let limit = Int64(probe.data.count * 3)
+        await source.beginBackgroundPreparation(spoolSizeLimit: limit)
+        release.signal()
+        await source.waitForSpoolCompletion()
+        let stats = await source.spoolStats()
+        let finalDirectory = await source.spoolDirectoryForTesting
+        XCTAssertEqual(stats.spooled, 3)
+        XCTAssertEqual(stats.bytes, limit)
+        XCTAssertEqual(finalDirectory, directory)
+        XCTAssertEqual(probe.state.withLock { $0.spoolReads.filter { $0 == 0 } }, [0])
+        XCTAssertEqual(probe.state.withLock { $0.spoolPriorities.last }, .userInitiated)
+    }
+
+    func testRunningSpoolAdoptsLargerLimitAndKeepsPrefix() async throws {
+        let started = expectation(description: "小さい上限の途中で停止")
+        let release = DispatchSemaphore(value: 0)
+        let once = OSAllocatedUnfairLock(initialState: false)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { id in
+            if id == 1, once.withLock({ if $0 { return false }; $0 = true; return true }) {
+                started.fulfill(); _ = release.wait(timeout: .now() + 10)
+            }
+        })
+        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 8), probe: probe)
+        _ = try await source.entries()
+        await source.beginSpooling(sizeLimit: Int64(probe.data.count * 2))
+        await fulfillment(of: [started], timeout: 3)
+        let directory = await source.spoolDirectoryForTesting
+        let limit = Int64(probe.data.count * 4)
+        await source.beginBackgroundPreparation(spoolSizeLimit: limit)
+        release.signal()
+        await source.waitForSpoolCompletion()
+        let stats = await source.spoolStats()
+        let finalDirectory = await source.spoolDirectoryForTesting
+        XCTAssertEqual(stats.spooled, 4)
+        XCTAssertEqual(stats.bytes, limit)
+        XCTAssertEqual(finalDirectory, directory)
+        XCTAssertEqual(probe.state.withLock { $0.spoolReads.filter { $0 == 0 } }, [0])
     }
 
     func testPausedSpoolResumesInSameDirectoryWithoutRewriting() async throws {
@@ -991,6 +1232,65 @@ final class ArchiveSourceTests: XCTestCase {
         await completion.value
         XCTAssertEqual(probe.state.withLock { $0.spoolReads }, [])
         XCTAssertEqual(probe.state.withLock { $0.reopenCalls }, 0)
+    }
+
+    func testDisplayPromotesBackgroundGateSpoolBeforeJoining() async throws {
+        let gate = ArchiveSource.backgroundSpoolGate
+        let limit = ProcessInfo.processInfo.physicalMemory < 12 << 30 ? 1 : 2
+        for _ in 0..<limit { guard await gate.acquire(interactive: false) else { return } }
+        let started = expectation(description: "対話枠へ切り替えて展開")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { id in
+            if id == 0 { started.fulfill(); _ = release.wait(timeout: .now() + 10) }
+        })
+        let source = try Self.spoolSource(groups: [0, 0], probe: probe)
+        let pages = try await source.entries()
+        await source.beginSpooling(sizeLimit: 1 << 30, interactive: false)
+        while await gate.debugCounts().queued == 0 { await Task.yield() }
+        let display = Task(priority: .userInitiated) { await source.imageData(for: pages[1]) }
+        await fulfillment(of: [started], timeout: 3)
+        let background = await gate.debugCounts()
+        XCTAssertEqual(background.active, limit)
+        XCTAssertEqual(background.queued, 0)
+        let interactive = await ArchiveSource.interactiveSpoolGate.debugCounts()
+        XCTAssertEqual(interactive.active, 1)
+        await Self.waitForWaiters(1, source: source)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
+        release.signal()
+        let data = await display.value
+        XCTAssertEqual(data, probe.data)
+        await source.waitForSpoolCompletion()
+        for _ in 0..<limit { await gate.release() }
+    }
+
+    func testPromotionMovesExistingBackgroundWaitersToInteractiveSpool() async throws {
+        let started = expectation(description: "背景展開の途中を停止")
+        let release = DispatchSemaphore(value: 0)
+        let once = OSAllocatedUnfairLock(initialState: false)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { id in
+            if id == 1, once.withLock({ if $0 { return false }; $0 = true; return true }) {
+                started.fulfill(); _ = release.wait(timeout: .now() + 10)
+            }
+        })
+        let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
+        let pages = try await source.entries()
+        await source.beginSpooling(sizeLimit: 1 << 30, interactive: false)
+        await fulfillment(of: [started], timeout: 3)
+        let prefetch = Task(priority: .utility) { await source.imageData(for: pages[2]) }
+        await Self.waitForWaiters(1, source: source)
+        let display = Task(priority: .userInitiated) { await source.imageData(for: pages[2]) }
+        await Self.waitForWaiters(2, source: source)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
+        release.signal()
+        let prefetched = await prefetch.value
+        let displayed = await display.value
+        XCTAssertEqual(prefetched, probe.data)
+        XCTAssertEqual(displayed, probe.data)
+        await source.waitForSpoolCompletion()
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
+        XCTAssertEqual(probe.state.withLock { $0.spoolPriorities.last }, .userInitiated)
     }
 
     func testSpoolWriteFailureResumesWaitersAndKeepsPrimaryState() async throws {
@@ -1190,13 +1490,13 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(probe.state.withLock { $0.liveSpoolEngines }, 0)
     }
 
-    private static func spoolSource(groups: [Int32], probe: SpoolEngineProbe) throws -> ArchiveSource {
+    private static func spoolSource(groups: [Int32], probe: SpoolEngineProbe, sensitive: Bool = false) throws -> ArchiveSource {
         let factory = ArchiveEngineFactory(
             openFile: { _, _, _ in SpoolTestArchiveEngine(groups: groups, probe: probe) },
             openData: { _, _, _ in SpoolTestArchiveEngine(groups: groups, probe: probe) })
         return try ArchiveSource(data: Data([0]), name: "spool.7z", nestingDepth: 0,
                                  unlocker: NestedUnlocker(), persistenceKey: .file(path: "/spool.7z"),
-                                 sensitive: false, engineFactory: factory)
+                                 sensitive: sensitive, engineFactory: factory)
     }
 
     func testGarbageArchiveDoesNotCrash() async throws {
@@ -1489,6 +1789,7 @@ final class SpoolEngineProbe: Sendable {
         var primaryReads: [Int32] = []
         var primaryReadSpoolCounts: [Int] = []
         var spoolReads: [Int32] = []
+        var spoolPriorities: [TaskPriority] = []
         var liveSpoolEngines = 0
         var primaryDiscards = 0
     }
@@ -1500,11 +1801,13 @@ final class SpoolEngineProbe: Sendable {
     let encrypted: Bool
     let canReopen: Bool
     let beforeSpoolRead: (@Sendable (Int32) -> Void)?
+    let beforePrimaryRead: (@Sendable (Int32) -> Void)?
     let onRelease: (@Sendable () -> Void)?
 
     init(canReopen: Bool = true, fileExtension: String = "avifs", data: Data? = nil, declaredSizes: [Int64?]? = nil,
          failedSpoolIDs: Set<Int32> = [], encrypted: Bool = false, onRelease: (@Sendable () -> Void)? = nil,
-         beforeSpoolRead: (@Sendable (Int32) -> Void)? = nil) {
+         beforeSpoolRead: (@Sendable (Int32) -> Void)? = nil,
+         beforePrimaryRead: (@Sendable (Int32) -> Void)? = nil) {
         self.declaredSizes = declaredSizes
         self.failedSpoolIDs = failedSpoolIDs
         self.encrypted = encrypted
@@ -1513,6 +1816,7 @@ final class SpoolEngineProbe: Sendable {
         self.canReopen = canReopen
         self.onRelease = onRelease
         self.beforeSpoolRead = beforeSpoolRead
+        self.beforePrimaryRead = beforePrimaryRead
     }
 }
 
@@ -1546,7 +1850,7 @@ final class SpoolTestArchiveEngine: ArchiveEngine {
     func contents(ofEntry index: Int32) -> Data? {
         let isSpool = self.isSpool
         probe.state.withLock {
-            if isSpool { $0.spoolReads.append(index) }
+            if isSpool { $0.spoolReads.append(index); $0.spoolPriorities.append(Task.currentPriority) }
             else {
                 $0.primaryReads.append(index)
                 $0.primaryReadSpoolCounts.append($0.spoolReads.count)
@@ -1555,7 +1859,7 @@ final class SpoolTestArchiveEngine: ArchiveEngine {
         if isSpool {
             probe.beforeSpoolRead?(index)
             if probe.failedSpoolIDs.contains(index) { return nil }
-        }
+        } else { probe.beforePrimaryRead?(index) }
         return probe.data
     }
     func discardDecodedState() {

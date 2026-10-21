@@ -72,6 +72,7 @@ actor NestedFolderSource: BookSource {
     private var windowChildren: [ArchiveSource] = []
     private var positionKnown = false
     private var readingPositionSequence: UInt64 = 0
+    private var readingForward = true
     private var windowGeneration = UUID()
     private var activeWindowChild: ArchiveSource?
     private var spooledChildren: [ObjectIdentifier: ArchiveSource] = [:]
@@ -344,7 +345,9 @@ actor NestedFolderSource: BookSource {
         }
         switch locations[entry.id] {
         case .child(let sourceIndex, let childEntry):
-            return try await children[sourceIndex].image(
+            let child = children[sourceIndex]
+            await prepareDisplayChild(at: sourceIndex)
+            return try await child.image(
                 for: childEntry, maxPixelSize: maxPixelSize)
         case .folder(let folderEntry):
             return try await folder.image(for: folderEntry, maxPixelSize: maxPixelSize)
@@ -355,7 +358,9 @@ actor NestedFolderSource: BookSource {
 
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
-            return try await children[sourceIndex].loupeImage(
+            let child = children[sourceIndex]
+            await prepareDisplayChild(at: sourceIndex)
+            return try await child.loupeImage(
                 for: childEntry, pixelScale: pixelScale)
         }
         return try await image(for: entry, maxPixelSize: nil)
@@ -376,7 +381,9 @@ actor NestedFolderSource: BookSource {
     func imageData(for entry: PageEntry) async -> Data? {
         switch locations[entry.id] {
         case .child(let sourceIndex, let childEntry):
-            return await children[sourceIndex].imageData(for: childEntry)
+            let child = children[sourceIndex]
+            await prepareDisplayChild(at: sourceIndex)
+            return await child.imageData(for: childEntry)
         case .folder(let folderEntry):
             return await folder.imageData(for: folderEntry)
         case nil:
@@ -418,16 +425,21 @@ actor NestedFolderSource: BookSource {
             windowChildren = children.compactMap { $0 as? ArchiveSource }.prefix(1).map { $0 }
             window = windowChildren.map(ObjectIdentifier.init)
         }
-        if windowTask == nil || changed { await scheduleWindow(interactive: positionKnown) }
+        if windowTask == nil || changed { scheduleWindow(interactive: positionKnown) }
     }
 
     func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool, sequence: UInt64) async {
         // 通知 Task の配送順が前後しても、新しい窓を古い位置で上書きしない。
         guard sequence > readingPositionSequence else { return }
         readingPositionSequence = sequence
+        readingForward = forward
         let targets = [archiveChild(for: current), archiveChild(for: forward ? next : previous)]
+        moveWindow(to: targets.compactMap { $0 })
+    }
+
+    private func moveWindow(to targets: [ArchiveSource]) {
         var seen: Set<ObjectIdentifier> = []
-        let sources = targets.compactMap { $0 }.filter { seen.insert(ObjectIdentifier($0)).inserted }
+        let sources = targets.filter { seen.insert(ObjectIdentifier($0)).inserted }
         let ids = sources.map(ObjectIdentifier.init)
         let changed = window != ids || !positionKnown
         positionKnown = true
@@ -440,7 +452,34 @@ actor NestedFolderSource: BookSource {
                 spoolLRU.append(id)
             }
         }
-        if spoolLimit != nil { await scheduleWindow(interactive: true) }
+        if spoolLimit != nil { scheduleWindow(interactive: true) }
+    }
+
+    private func prepareDisplayChild(at index: Int) async {
+        guard Task.currentPriority >= .userInitiated,
+              let child = children[index] as? ArchiveSource else { return }
+        if spoolLimit == nil { spoolLimit = ArchiveSource.defaultSpoolSizeLimit }
+        // 次枠への先読みやサムネイルも表示と同じ優先度なので、既存の窓は動かさない。
+        if !windowChildren.contains(where: { $0 === child }) || !positionKnown {
+            let neighbor = index + (readingForward ? 1 : -1)
+            let next = children.indices.contains(neighbor) ? children[neighbor] as? ArchiveSource : nil
+            // 通知 Task より表示が先行しても、転送前の同じ actor 区間で窓を動かす。
+            moveWindow(to: [child] + (next.map { [$0] } ?? []))
+        }
+        guard let spoolLimit, child.needsInteractiveSpoolPreparation else { return }
+        let generation = windowGeneration
+        let total = SpoolSpacePolicy.totalBudget(sizeLimit: spoolLimit)
+        // 別の子は取り消さず、稼働中の予算と未完了の書き込みも予約に含める。
+        // 開始できない要求のために次枠の展開を止めず、別の子の actor も待たない。
+        var remaining = total
+        for source in spooledChildren.values where source !== child {
+            remaining = max(0, remaining - source.reservedSpoolBytes)
+        }
+        spooledChildren[ObjectIdentifier(child)] = child
+        await child.beginSpooling(sizeLimit: remaining, interactive: true)
+        if generation != windowGeneration, !windowChildren.contains(where: { $0 === child }) {
+            child.cancelSpoolingForWindow()
+        }
     }
 
     func archiveChild(for entry: PageEntry?) -> ArchiveSource? {
@@ -448,19 +487,24 @@ actor NestedFolderSource: BookSource {
         return children[index] as? ArchiveSource
     }
 
-    private func scheduleWindow(interactive: Bool) async {
+    private func scheduleWindow(interactive: Bool) {
         let previousTask = windowTask
         previousTask?.cancel()
         let oldChild = activeWindowChild
         let targets = windowChildren
         let generation = UUID()
         windowGeneration = generation
-        if let oldChild, oldChild !== targets.first { await oldChild.pauseSpooling() }
-        guard generation == windowGeneration else { return }
+        if let oldChild, oldChild !== targets.first { oldChild.cancelSpoolingForWindow() }
         windowTask = Task { [weak self] in
-            if let oldChild {
+            if let oldChild, oldChild !== targets.first {
+                await oldChild.pauseSpooling()
                 // 取消し中の展開が戻るまで次の子を動かさず、同じ本では常に復号器 1 本にする。
                 await oldChild.waitForSpoolCompletion()
+            }
+            // 同じ子が背景準備中だった場合も、完了待ちに入る前に対話枠へ昇格する。
+            if interactive, let child = targets.first,
+               let budget = await self?.budgetForWindowChild(child, generation: generation) {
+                await child.beginSpooling(sizeLimit: budget, interactive: true)
             }
             await previousTask?.value
             for (index, child) in targets.enumerated() {
