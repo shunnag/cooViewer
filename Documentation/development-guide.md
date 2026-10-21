@@ -411,6 +411,10 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
      CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO OTHER_CODE_SIGN_FLAGS="--timestamp"
    ```
    素の Release ビルドは公証に落ちる(get-task-allow が残る+タイムスタンプ無し)。
+   `-scheme cooViewer` は付けない。2.0b48 の初回ビルドでは scheme 経由で
+   `ENABLE_CODE_COVERAGE=YES` が入り、実行ファイルにカバレッジ計測が埋め込まれた
+   (7.1 → 10.5 MB)。付けた場合は `ENABLE_CODE_COVERAGE=NO CLANG_COVERAGE_MAPPING=NO` を足し、
+   `nm -j build/Release/cooViewer.app/Contents/MacOS/cooViewer | grep -c __covrec` が 0 であることを確認する。
 5. zip 前に `ls build/Release/cooViewer.app/Contents/Frameworks` が
    `KaitoKit.framework` / `Sparkle.framework` / `Washi.framework` の 3 つだけであることと、
    `build/Release/cooViewer.app/Contents/Resources` に不要なライセンス文書が無いことを確認する。
