@@ -2,11 +2,30 @@ import CryptoKit
 import Foundation
 import os
 
+/// 主 actor から参照を外したエンジンを一度だけ別の所有者へ渡す。
+/// 非スレッド安全なエンジン自体は共有せず、ロック下の取り出しで移管を確定する。
+final class ArchiveEngineHandoff: @unchecked Sendable {
+    private let lock = NSLock()
+    private var engine: (any ArchiveEngine)?
+
+    init(_ engine: any ArchiveEngine) { self.engine = engine }
+
+    func take() -> any ArchiveEngine {
+        lock.withLock {
+            precondition(engine != nil)
+            let result = engine!
+            engine = nil
+            return result
+        }
+    }
+}
+
 /// 表示 actor を長い solid 展開で塞がない専用の所有者(設計書 §5、cooViewer-tg48・r1t2)。
 actor ArchiveSpoolWorker {
     private let archive: any ArchiveEngine
 
     init(archive: sending any ArchiveEngine) { self.archive = archive }
+    init(adopting handoff: ArchiveEngineHandoff) { archive = handoff.take() }
 
     func extract(_ index: Int32, key: SymmetricKey?, to fileURL: URL,
                  byteLimit: Int64 = .max) -> SpoolOutcome {
@@ -53,6 +72,7 @@ final class ArchiveSpoolWaiters: Sendable {
     private let pending = OSAllocatedUnfairLock(initialState: [UUID: Waiter]())
 
     var count: Int { pending.withLock { $0.count } }
+    var entryIDs: Set<Int> { pending.withLock { Set($0.values.map(\.entryID)) } }
 
     func wait(for id: Int, isolation: isolated (any Actor)? = #isolation) async throws -> Data? {
         let token = UUID()
