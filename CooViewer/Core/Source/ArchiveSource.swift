@@ -92,6 +92,7 @@ actor ArchiveSource: BookSource {
     private var spoolIsActive = false
     /// ゲート取得中の serial スプールだけが所有する独立した復号器(設計書 §5、cooViewer-r1t2)。
     private var spoolArchive: (any ArchiveEngine)?
+    private var recentRawData: [(id: Int, data: Data)] = []
     private var primaryHasDecodedState = false
     private var isBuilding = false
 
@@ -851,8 +852,27 @@ actor ArchiveSource: BookSource {
     }
 
     private func touchDecodedState() async {
-        guard primaryHasDecodedState || !extractors.isEmpty else { return }
+        // スプール済みの子も生データを持つ間は解放対象にし、最大 64 MiB を寿命まで保持しない(cooViewer-wlwp)。
+        guard primaryHasDecodedState || !extractors.isEmpty || !recentRawData.isEmpty else { return }
         await ArchiveDecodedStateCache.shared.recordUse(self)
+    }
+
+    // solid の巻き戻しを避けるため、表示後のアニメ判定へ渡す生データを短期間保持する(cooViewer-wlwp)。
+    private func rememberRawData(id: Int, data: Data) {
+        guard data.count <= 32 << 20 else { return }
+        recentRawData.removeAll { $0.id == id }
+        recentRawData.insert((id, data), at: 0)
+        var bytes = recentRawData.reduce(0) { $0 + $1.data.count }
+        while recentRawData.count > 8 || bytes > 64 << 20 {
+            bytes -= recentRawData.removeLast().data.count
+        }
+    }
+
+    private func rememberedRawData(id: Int) -> Data? {
+        guard let index = recentRawData.firstIndex(where: { $0.id == id }) else { return nil }
+        let value = recentRawData.remove(at: index)
+        recentRawData.insert(value, at: 0)
+        return value.data
     }
 
     private func nestedChildData(_ candidate: (index: Int32, path: String)) throws -> Data? {
@@ -905,6 +925,7 @@ actor ArchiveSource: BookSource {
         case .child(let sourceIndex, let childEntry):
             return await children[sourceIndex].imageData(for: childEntry)
         case .outer(let index):
+            if let data = rememberedRawData(id: entry.id) { return data }
             if let spooled = spooledData(for: entry.id) { return spooled }
             // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
             guard !exceedsPerPageDecodeLimit(index) else { return nil }
@@ -914,6 +935,7 @@ actor ArchiveSource: BookSource {
             // エントリ番号としてそのまま解釈する(ネスト id 域は 1M 以上
             // なので Int32 変換の失敗で自然に弾かれる)
             guard let index = Int32(exactly: entry.id) else { return nil }
+            if let data = rememberedRawData(id: entry.id) { return data }
             if let spooled = spooledData(for: entry.id) { return spooled }
             // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
             guard !exceedsPerPageDecodeLimit(index) else { return nil }
@@ -935,6 +957,9 @@ actor ArchiveSource: BookSource {
         case .child(let child, let childEntry):
             return try await child.image(for: childEntry, maxPixelSize: maxPixelSize)
         case .data(let data):
+            if AnimatedImage.candidateExtensions.contains((entry.name as NSString).pathExtension.lowercased()) {
+                await rememberRawData(id: entry.id, data: data)
+            }
             // nonisolated async はグローバル実行系で走るため、このデコードは
             // actor の外。展開・スプールと画像デコードが並行できる
             return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
@@ -945,6 +970,9 @@ actor ArchiveSource: BookSource {
             guard let data else {
                 try Task.checkCancellation()
                 throw BookSourceError.pageLoadFailed(entry.name)
+            }
+            if AnimatedImage.candidateExtensions.contains((entry.name as NSString).pathExtension.lowercased()) {
+                await rememberRawData(id: entry.id, data: data)
             }
             return try ImageDecoding.decode(data, maxPixelSize: maxPixelSize)
         }
@@ -1204,7 +1232,7 @@ actor ArchiveSource: BookSource {
         let probe = pool.first(where: { archive.entryIsEncrypted($0) }) ?? pool.first
         // 画像も書庫/PDF もない書庫は検証しようがない(=本としては空)。
         // 拒否すると正しいパスワードでも「試行超過」になってしまうため通す
-        guard let probe else { return .accepted }
+        guard let probe else { recentRawData.removeAll(); return .accepted }
         archive.setPassword(password)
         do {
             primaryHasDecodedState = true
@@ -1213,6 +1241,7 @@ actor ArchiveSource: BookSource {
             return PasswordCheck.classifyProbeFailure(error)
         }
         self.password = password
+        recentRawData.removeAll()
         // ネストした子の解除でも再利用できるよう記録する
         await unlocker.addKnown(password)
         return .accepted
@@ -1419,6 +1448,7 @@ actor ArchiveEntryExtractor {
 
 extension ArchiveSource: ArchiveDecodedStateOwner {
     func releaseIdleDecodedState() -> Bool {
+        recentRawData.removeAll()
         guard !isBuilding, !spoolIsActive,
               extractorBusyCounts.allSatisfy({ $0 == 0 }) else { return false }
         archive.discardDecodedState()

@@ -657,6 +657,40 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(repeated, finished)
     }
 
+    func testAnimatedPageDataReusesDisplayExtraction() async throws {
+        let probe = SpoolEngineProbe()
+        let source = try Self.spoolSource(groups: [0, 0], probe: probe)
+        let page = try await source.entries()[1]
+        _ = try await source.image(for: page, maxPixelSize: nil)
+        let data = await source.imageData(for: page)
+        XCTAssertEqual(data, probe.data)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [1])
+    }
+
+    func testRecentRawDataSkipsStillExtensionsAndOversizedEntries() async throws {
+        var large = TestFixtures.pngData(width: 4, height: 6)
+        large.append(Data(count: 33 << 20))
+        for probe in [SpoolEngineProbe(fileExtension: "jpg"), SpoolEngineProbe(data: large)] {
+            let source = try Self.spoolSource(groups: [0, 0], probe: probe)
+            let page = PageEntry(id: 0, name: "page.\(probe.fileExtension)", pathInBook: "page.\(probe.fileExtension)",
+                                 fileURL: nil, creationDate: nil, modificationDate: nil)
+            _ = try await source.image(for: page, maxPixelSize: nil)
+            let data = await source.imageData(for: page)
+            XCTAssertEqual(data, probe.data)
+            XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [0, 0])
+        }
+    }
+
+    func testRecentRawDataSurvivesPrefetchOfNeighbours() async throws {
+        let probe = SpoolEngineProbe()
+        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 8), probe: probe)
+        let pages = try await source.entries()
+        for page in pages.prefix(7) { _ = try await source.image(for: page, maxPixelSize: nil) }
+        let data = await source.imageData(for: pages[0])
+        XCTAssertEqual(data, probe.data)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, Array(Int32(0)..<7))
+    }
+
     func testSerialSpoolAndDisplayUseIndependentEngines() async throws {
         let started = expectation(description: "専用復号器で先頭ページを展開中")
         let displayRequested = expectation(description: "表示要求を投入")
@@ -1090,13 +1124,17 @@ private final class SpoolEngineProbe: Sendable {
         var primaryDiscards = 0
     }
     let state = OSAllocatedUnfairLock(initialState: State())
-    let data = TestFixtures.pngData(width: 4, height: 6)
+    let data: Data
+    let fileExtension: String
     let canReopen: Bool
     let beforeSpoolRead: (@Sendable (Int32) -> Void)?
     let onRelease: (@Sendable () -> Void)?
 
-    init(canReopen: Bool = true, onRelease: (@Sendable () -> Void)? = nil,
+    init(canReopen: Bool = true, fileExtension: String = "avifs", data: Data? = nil,
+         onRelease: (@Sendable () -> Void)? = nil,
          beforeSpoolRead: (@Sendable (Int32) -> Void)? = nil) {
+        self.data = data ?? TestFixtures.pngData(width: 4, height: 6)
+        self.fileExtension = fileExtension
         self.canReopen = canReopen
         self.onRelease = onRelease
         self.beforeSpoolRead = beforeSpoolRead
@@ -1146,7 +1184,7 @@ private final class SpoolTestArchiveEngine: ArchiveEngine {
         if !isSpool { probe.state.withLock { $0.primaryDiscards += 1 } }
     }
     func numberOfEntries() -> Int32 { Int32(groups.count) }
-    func name(ofEntry index: Int32) -> String? { "page-\(index).avifs" }
+    func name(ofEntry index: Int32) -> String? { "page-\(index).\(probe.fileExtension)" }
     func uncompressedSize(ofEntry index: Int32) -> Int64 { Int64(probe.data.count) }
     func entryHasSize(_ index: Int32) -> Bool { true }
     func entryIsDirectory(_ index: Int32) -> Bool { false }

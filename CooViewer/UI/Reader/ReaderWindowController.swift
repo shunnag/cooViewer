@@ -2774,7 +2774,6 @@ final class ReaderWindowController: NSWindowController {
     /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)
     private func startAnimationsIfNeeded(spread: Book.Spread) {
         guard settings.playAnimatedImages, let book else { return }
-        let animatable: Set<String> = ["gif", "png", "apng", "webp", "heics", "avif", "avifs"]
         for (position, index) in spread.indices.enumerated() {
             guard book.entries.indices.contains(index) else { continue }
             let entry = book.entries[index]
@@ -2782,7 +2781,7 @@ final class ReaderWindowController: NSWindowController {
             // 表示のたびに生データを読み直す無駄の防止)
             guard !book.probedStaticAnimationIDs.contains(entry.id) else { continue }
             let ext = (entry.name as NSString).pathExtension.lowercased()
-            guard animatable.contains(ext) else { continue }
+            guard AnimatedImage.candidateExtensions.contains(ext) else { continue }
             // デコード(最大 120 フレーム)はメインアクターの外で行う。
             // 解像度はページレイヤの実ピクセルに合わせる(全フレーム常駐のため、
             // 一律 2048px より大幅に省メモリ)
