@@ -72,6 +72,8 @@ final class Book {
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
     private var lastReadingPosition: (volume: Int, forward: Bool, generation: Int)?
+    // 復旧後の別 Book も同じソースを使うため、通知の連番はプロセス全体で共有する。
+    private static var readingPositionSequence: UInt64 = 0
     /// 見開き取得は同じ位置・並び・配置条件で完了した結果だけを採用する。
     /// ナビゲーション世代は後発のジャンプ/設定変更で旧判定を失効させる一方、
     /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
@@ -415,7 +417,9 @@ final class Book {
         let next = end < entries.count ? entries[end] : nil
         let source = source
         let forward = lastMoveForward
-        Task { await source.noteReadingPosition(current: current, next: next, previous: previous, forward: forward) }
+        Self.readingPositionSequence += 1
+        let sequence = Self.readingPositionSequence
+        Task { await source.noteReadingPosition(current: current, next: next, previous: previous, forward: forward, sequence: sequence) }
     }
 
     private func loadSpread(at index: Int) async -> Spread {

@@ -71,6 +71,7 @@ actor NestedFolderSource: BookSource {
     private var window: [ObjectIdentifier] = []
     private var windowChildren: [ArchiveSource] = []
     private var positionKnown = false
+    private var readingPositionSequence: UInt64 = 0
     private var windowGeneration = UUID()
     private var activeWindowChild: ArchiveSource?
     private var spooledChildren: [ObjectIdentifier: ArchiveSource] = [:]
@@ -420,7 +421,10 @@ actor NestedFolderSource: BookSource {
         if windowTask == nil || changed { await scheduleWindow(interactive: positionKnown) }
     }
 
-    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool) async {
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool, sequence: UInt64) async {
+        // 通知 Task の配送順が前後しても、新しい窓を古い位置で上書きしない。
+        guard sequence > readingPositionSequence else { return }
+        readingPositionSequence = sequence
         let targets = [archiveChild(for: current), archiveChild(for: forward ? next : previous)]
         var seen: Set<ObjectIdentifier> = []
         let sources = targets.compactMap { $0 }.filter { seen.insert(ObjectIdentifier($0)).inserted }

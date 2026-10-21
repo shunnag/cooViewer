@@ -11,11 +11,13 @@ final class CollectionSpoolWindowTests: XCTestCase {
         let pages: [PageEntry]
         let probes: [SpoolEngineProbe]
         let order: OSAllocatedUnfairLock<[(Int, Int32)]>
+        let sequence = OSAllocatedUnfairLock(initialState: UInt64(0))
 
         func page(_ child: Int) -> PageEntry { pages.first { $0.pathInBook.hasPrefix(String(format: "%03d.7z/", child)) }! }
         func note(_ child: Int, forward: Bool = true) async {
             await source.noteReadingPosition(current: page(child), next: probes.indices.contains(child + 1) ? page(child + 1) : nil,
-                previous: child > 0 ? page(child - 1) : nil, forward: forward)
+                previous: child > 0 ? page(child - 1) : nil, forward: forward,
+                sequence: sequence.withLock { $0 += 1; return $0 })
         }
     }
 
@@ -87,6 +89,19 @@ final class CollectionSpoolWindowTests: XCTestCase {
         XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [3, 3, 2, 2])
     }
 
+    func testReadingPositionIgnoresStaleAndDuplicateSequences() async throws {
+        let c = try await collection()
+        await c.source.noteReadingPosition(current: c.page(3), next: c.page(4), previous: c.page(2), forward: false, sequence: 2)
+        await c.source.noteReadingPosition(current: c.page(0), next: c.page(1), previous: nil, forward: true, sequence: 1)
+        await c.source.noteReadingPosition(current: c.page(4), next: c.page(5), previous: c.page(3), forward: true, sequence: 2)
+        await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
+        _ = await c.source.waitForSpoolCompletion()
+        XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [3, 3, 2, 2])
+        await c.source.noteReadingPosition(current: c.page(4), next: c.page(5), previous: c.page(3), forward: true, sequence: 3)
+        _ = await c.source.waitForSpoolCompletion()
+        XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [3, 3, 2, 2, 4, 4, 5, 5])
+    }
+
     func testDirectionFlipWithinChildSwapsSecondSweep() async throws {
         let started = expectation(description: "現在の子を停止")
         let release = DispatchSemaphore(value: 0)
@@ -142,7 +157,7 @@ final class CollectionSpoolWindowTests: XCTestCase {
     func testWindowSkipsNonArchiveNeighbor() async throws {
         let c = try await collection(pdfNeighbor: true)
         let neighbor = try XCTUnwrap(c.pages.first { $0.pathInBook.hasPrefix("002a.pdf/") })
-        await c.source.noteReadingPosition(current: c.page(2), next: neighbor, previous: c.page(1), forward: true)
+        await c.source.noteReadingPosition(current: c.page(2), next: neighbor, previous: c.page(1), forward: true, sequence: 1)
         await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
         _ = await c.source.waitForSpoolCompletion()
         XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [2, 2])
