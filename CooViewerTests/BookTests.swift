@@ -28,6 +28,22 @@ final class StubSource: BookSource, @unchecked Sendable {
     var decodedIDs: [Int] { decodeLock.withLock { decodedLog } }
     func resetDecodeLog() { decodeLock.withLock { decodedLog = [] } }
 
+    struct ReadingNote: Equatable {
+        let current: Int
+        let next: Int?
+        let previous: Int?
+        let forward: Bool
+    }
+    private var readingNotes: [ReadingNote] = []
+    var noteBlocker: (@Sendable () async -> Void)?
+    var notedPositions: [ReadingNote] { decodeLock.withLock { readingNotes } }
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool) async {
+        decodeLock.withLock {
+            readingNotes.append(ReadingNote(current: current.id, next: next?.id, previous: previous?.id, forward: forward))
+        }
+        await noteBlocker?()
+    }
+
     var parallelWindowAnswer = false
     var volumeKeys: [Int: Int] = [:]
     nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { volumeKeys[entry.id] ?? 0 }
@@ -138,6 +154,49 @@ final class BookTests: XCTestCase {
         book.reschedulePrefetch()
         await book.waitForPrefetch()
         XCTAssertEqual(stub.queriedWindows, [[7, 1, 9]])
+    }
+
+    func testReadingPositionNotificationDoesNotDelayDisplay() async throws {
+        let notified = expectation(description: "通知係を停止")
+        let displayed = expectation(description: "表示は通知を待たない")
+        let gate = AssemblyTestGate()
+        let stub = StubSource(sizes: [portrait])
+        stub.noteBlocker = { notified.fulfill(); await gate.wait() }
+        let book = try await Book.open(source: stub)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        let display = Task { _ = await book.currentSpread(); displayed.fulfill() }
+        await fulfillment(of: [notified, displayed], timeout: 3)
+        await gate.open()
+        await display.value
+    }
+
+    func testReadingPositionNotedOncePerVolumeAndDirection() async throws {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 6))
+        stub.volumeKeys = [0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 2]
+        let book = try await Book.open(source: stub)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        book.readMode = .rightToLeftSingle
+        _ = await book.currentSpread()
+        _ = await book.currentSpread()
+        book.goTo(index: 1)
+        _ = await book.currentSpread()
+        book.goTo(index: 2)
+        _ = await book.currentSpread()
+        _ = book.moveHalfNext()
+        _ = await book.currentSpread()
+        _ = book.moveHalfPrevious()
+        _ = await book.currentSpread()
+        for _ in 0..<10_000 {
+            if stub.notedPositions.count == 3 { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(stub.notedPositions, [
+            .init(current: 0, next: 2, previous: nil, forward: true),
+            .init(current: 2, next: 4, previous: 1, forward: true),
+            .init(current: 2, next: 4, previous: 1, forward: false),
+        ])
     }
 
     func testPrefetchTargetsDropBehindInOtherVolumeWhenMovingForward() {

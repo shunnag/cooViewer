@@ -83,15 +83,26 @@ actor ArchiveSource: BookSource {
     private enum SpoolState: Sendable {
         case idle
         case running(Task<Void, Never>)
+        case paused
         case finished
     }
     private var spoolState: SpoolState = .idle
     /// 全書庫を同時に復号すると、FD 以外に solid 辞書・先行復号も冊数分常駐する。
     /// 表示要求はこの枠を使わず、準備だけを本単位で制限する。
-    private static let spoolGate = SourceReadGate(limit: 4)
+    static let interactiveSpoolGate = SourceReadGate(limit: 2)
+    static let backgroundSpoolGate = SourceReadGate(limit: ProcessInfo.processInfo.physicalMemory < 12 << 30 ? 1 : 2)
     private var spoolIsActive = false
     /// ゲート取得中の serial スプールだけが所有する独立した復号器(設計書 §5、cooViewer-r1t2)。
-    private var spoolArchive: (any ArchiveEngine)?
+    private var spoolWorker: ArchiveSpoolWorker?
+    private var spoolGeneration = UUID()
+    private var retiredSpoolTask: Task<Void, Never>?
+    private var spoolCursor = -1
+    private var primaryCursor: Int?
+    private var skippedSpoolIDs: Set<Int> = []
+    private nonisolated let spoolWaiters = ArchiveSpoolWaiters()
+    nonisolated var spoolWaitersForTesting: ArchiveSpoolWaiters { spoolWaiters }
+    var spoolWaiterCount: Int { spoolWaiters.count }
+    var spoolDirectoryForTesting: URL? { spoolDirectory }
     private var recentRawData: [(id: Int, data: Data)] = []
     private var primaryHasDecodedState = false
     private var isBuilding = false
@@ -99,7 +110,7 @@ actor ArchiveSource: BookSource {
     private static let logger = Logger(
         subsystem: "jp.coo.cooViewer", category: "archive")
 
-    /// スプールする合計展開サイズの上限(これを超える書庫はオンデマンドのみ)
+    /// スプールする合計バイト数の上限。超過する書庫は先頭部分だけ保持する(設計書 §5)。
     static let defaultSpoolSizeLimit: Int64 = 4 << 30
 
     /// ネスト展開 1 エントリの展開後サイズ上限(zip 爆弾対策)。
@@ -579,6 +590,7 @@ actor ArchiveSource: BookSource {
 
     deinit {
         if case .running(let task) = spoolState { task.cancel() }
+        spoolWaiters.resume()
         // スプール Task は弱参照だけを持ち、専用復号器もこの actor とともに解放する(設計書 §5)。
         let directories = [spoolDirectory].compactMap(\.self) + nestedRoots
         if !directories.isEmpty {
@@ -603,7 +615,7 @@ actor ArchiveSource: BookSource {
         }
         task?.cancel()
         // 復号器の破棄は所有 actor 上で行う。同期 I/O 中の次の項目も abandoned で止める(設計書 §5)。
-        Task { await cancelSpooling() }
+        Task { await pauseSpooling() }
     }
 
     @discardableResult
@@ -850,6 +862,7 @@ actor ArchiveSource: BookSource {
     /// サイズ未申告で 0 等が返っても上限以下として通し、正規エントリは弾かない
     private func primaryContents(ofEntry index: Int32) -> Data? {
         primaryHasDecodedState = true
+        primaryCursor = Int(index) + 1
         return archive.contents(ofEntry: index)
     }
 
@@ -928,7 +941,9 @@ actor ArchiveSource: BookSource {
             return await children[sourceIndex].imageData(for: childEntry)
         case .outer(let index):
             if let data = rememberedRawData(id: entry.id) { return data }
-            if let spooled = spooledData(for: entry.id) { return spooled }
+            do { if let data = try await spooledOrWaitingData(for: entry.id) { return data } }
+            catch { return nil }
+            guard !Task.isCancelled else { return nil }
             // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
             guard !exceedsPerPageDecodeLimit(index) else { return nil }
             return primaryContents(ofEntry: index)
@@ -938,7 +953,9 @@ actor ArchiveSource: BookSource {
             // なので Int32 変換の失敗で自然に弾かれる)
             guard let index = Int32(exactly: entry.id) else { return nil }
             if let data = rememberedRawData(id: entry.id) { return data }
-            if let spooled = spooledData(for: entry.id) { return spooled }
+            do { if let data = try await spooledOrWaitingData(for: entry.id) { return data } }
+            catch { return nil }
+            guard !Task.isCancelled else { return nil }
             // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開しない
             guard !exceedsPerPageDecodeLimit(index) else { return nil }
             return primaryContents(ofEntry: index)
@@ -1020,16 +1037,15 @@ actor ArchiveSource: BookSource {
         return archive.uncompressedSize(ofEntry: index) > Self.perPageDecodeSizeLimit
     }
 
-    private func pageContent(for entry: PageEntry) throws -> PageContent {
+    private func pageContent(for entry: PageEntry) async throws -> PageContent {
         // actor の順番待ちの間に取り消された要求は、展開係の生成や展開に進まない
         // KaitoKit の open が取消しを検査する前にも、不要な係の生成をここで抑える(設計書 §3.1)。
         try Task.checkCancellation()
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             return .child(children[sourceIndex], childEntry)
         }
-        if let spooled = spooledData(for: entry.id) {
-            return .data(spooled)
-        }
+        if let data = try await spooledOrWaitingData(for: entry.id) { return .data(data) }
+        try Task.checkCancellation()
         guard let index = Int32(exactly: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
@@ -1130,7 +1146,7 @@ actor ArchiveSource: BookSource {
 
     private func releaseFinishedExtractorsIfIdle() {
         guard case .finished = spoolState, !extractors.isEmpty,
-              spooledIDs.count >= outerImages.count,
+              spooledIDs.count + skippedSpoolIDs.count >= outerImages.count,
               extractorBusyCounts.allSatisfy({ $0 == 0 }) else { return }
         extractors.removeAll()
         extractorBusyCounts.removeAll()
@@ -1238,6 +1254,7 @@ actor ArchiveSource: BookSource {
         archive.setPassword(password)
         do {
             primaryHasDecodedState = true
+            primaryCursor = Int(probe) + 1
             _ = try archive.readContents(ofEntry: probe)
         } catch {
             return PasswordCheck.classifyProbeFailure(error)
@@ -1253,140 +1270,235 @@ actor ArchiveSource: BookSource {
 
     /// 全ページのローカル展開を開始する(パスワード解除後に呼ぶこと)。
     /// 書庫順=エントリ順の逐次展開なので、ネットワーク越しでも solid 書庫でも
-    /// 最速のアクセスパターンになる。展開中のページ要求は従来経路で応える。
+    /// 最速のアクセスパターンになる。表示も稼働中の逐次展開へ合流する(設計書 §5)。
     /// ネスト分は展開時点でローカルファイルになっているため対象外。
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
         guard (try? await buildIfNeeded()) != nil else { return }
-        beginSpooling(sizeLimit: spoolSizeLimit)
+        beginSpooling(sizeLimit: spoolSizeLimit, interactive: Task.currentPriority >= .userInitiated)
     }
 
-    func beginSpooling(sizeLimit: Int64) {
-        guard !assemblyLifetime.withLock({ $0.abandoned }) else { return }
-        // 高速ローカルボリュームではランダムアクセスが安い形式(zip 系)の
-        // スプールを省き、二重書き込みを避ける(設計書 キャッシュ節)
+    func beginSpooling(sizeLimit: Int64, interactive: Bool = true) {
+        guard !Task.isCancelled, !assemblyLifetime.withLock({ $0.abandoned }), !outerImages.isEmpty else { return }
+        switch spoolState {
+        case .running, .finished: return
+        case .idle, .paused: break
+        }
         let independent = if case .perEntry = parallelMode { true } else { false }
         guard mediaProfile.shouldSpoolArchive(fileExtension: url.pathExtension,
-                                              independentEntries: independent) else {
-            return
+                                              independentEntries: independent) else { return }
+        let limit = SpoolSpacePolicy.totalBudget(sizeLimit: sizeLimit)
+        guard let first = outerImages.first(where: { !spooledIDs.contains($0.id) && !skippedSpoolIDs.contains($0.id) }) else { return }
+        let index = Int32(first.id)
+        let minimum = archive.entryHasSize(index) ? max(0, archive.uncompressedSize(ofEntry: index)) : 64 << 20
+        // マイクロスプールでゲートと回線を奪わない(cooViewer-tg48、設計書 §5)。
+        guard limit >= spooledBytes, minimum <= limit - spooledBytes else { return }
+        if spoolDirectory == nil {
+            spoolEncrypted = archive.isEncrypted() || password != nil || contentIsSensitive
+            let directory = Self.spoolRoot().appendingPathComponent(
+                "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)", isDirectory: true)
+            guard (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])) != nil else { return }
+            spoolDirectory = directory
         }
-        guard case .idle = spoolState, !outerImages.isEmpty else { return }
-        // 暗号化書庫の復号済みページを平文で temp に残さない(CWE-312。
-        // 保存パスワードの自動解錠で無人でも展開が走るため)。スプールは
-        // プロセス生存中しか読まれないので、鍵はメモリのみの使い捨て —
-        // プロセス終了で残骸ファイルは復号不能なゴミになる。暗号化祖先由来で
-        // sensitive な子(復号済み)がスプール経路に乗った場合も平文を書かない
-        // よう暗号化対象に含める(監査 #4。先回りの堅牢化)
-        spoolEncrypted = password != nil || contentIsSensitive
-        var total: Int64 = 0
-        for entry in outerImages {
-            // 64bit の uncompressedSize(ofEntry:) を使う。32bit の size(ofEntry:) は
-            // 2〜4GiB のエントリで負の Int32 を返し、Int64 化で total を減らして
-            // 予算判定をすり抜け、4GiB の天井を超えてスプールし得る(cooViewer-0jt)。
-            // サイズ不明(Int64.max)を加算すると複数件で桁溢れするため、未申告は
-            // オンデマンドへ残し、加算前に残予算と比較する(設計書 §2.4)。
-            let index = Int32(entry.id)
-            guard archive.entryHasSize(index) else { return }
-            let size = archive.uncompressedSize(ofEntry: index)
-            guard size >= 0, size <= sizeLimit - total else { return }
-            total += size
-        }
-
-        // ネスト temp(:359)と同じく所有者限定(0o700)で作る。復号済み平文が
-        // 乗り得るため他ユーザーから列挙・読み取りされないようにする(監査 #4)
-        let directory = Self.spoolRoot().appendingPathComponent(
-            "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)")
-        guard (try? FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700])) != nil else { return }
-        spoolDirectory = directory
-
+        diskSpoolLimit = nil
+        lastSpaceCheckBytes = spooledBytes
+        let generation = UUID()
+        spoolGeneration = generation
         let ids = outerImages.map(\.id)
+        let gate = interactive ? Self.interactiveSpoolGate : Self.backgroundSpoolGate
+        let retired = retiredSpoolTask
         let task = Task<Void, Never> { [weak self] in
-            await Self.spoolGate.acquire(interactive: false)
-            await self?.markSpoolingActive()
-            for id in ids {
-                if Task.isCancelled { break }
-                await self?.spoolEntry(id)
-                // 表示中のページ要求が割り込めるよう 1 エントリごとに譲る
-                await Task.yield()
+            // 同じ子をすぐ再開しても、取消し中の復号器と二重に動かさない(設計書 §5)。
+            await retired?.value
+            await gate.acquire(interactive: interactive)
+            if !Task.isCancelled, await self?.markSpoolingActive(generation) == true {
+                spoolLoop: for id in ids {
+                    guard !Task.isCancelled else { break }
+                    guard let step = await self?.willSpool(id, generation: generation, sizeLimit: limit) else { break }
+                    switch step {
+                    case .skip: continue
+                    case .extract(let worker, let key, let file, let remaining):
+                        let outcome = await worker.extract(Int32(id), key: key, to: file, byteLimit: remaining)
+                        guard await self?.didSpool(id, outcome: outcome, generation: generation, directory: file.deletingLastPathComponent()) == true else { break spoolLoop }
+                    case .primary:
+                        guard await self?.spoolPrimary(id, generation: generation, sizeLimit: limit) == true else { break spoolLoop }
+                    }
+                    await Task.yield()
+                }
             }
-            await self?.finishSpooling()
+            await self?.finishSpooling(generation)
             await self?.touchDecodedState()
-            await Self.spoolGate.release()
+            await gate.release()
         }
         spoolState = .running(task)
     }
 
-    private func markSpoolingActive() {
-        guard !Task.isCancelled, !assemblyLifetime.withLock({ $0.abandoned }) else { return }
+    private func markSpoolingActive(_ generation: UUID) -> Bool {
+        guard generation == spoolGeneration, !Task.isCancelled,
+              !assemblyLifetime.withLock({ $0.abandoned }) else { return false }
         spoolIsActive = true
-        if case .serial = parallelMode {
-            // 表示と同じ復号器を使うと前後に飛び、solid ブロックを毎回先頭から展開し直す。
-            // 待機中の子は復号器を持たず、再オープン失敗時は従来の主書庫へ戻す(設計書 §5、cooViewer-r1t2)。
-            spoolArchive = archive.reopened()
+        spoolCursor = -1
+        if case .serial = parallelMode, let engine = archive.reopened() {
+            spoolWorker = ArchiveSpoolWorker(archive: engine)
         }
+        return true
     }
 
-    private func cancelSpooling() {
-        if case .running(let task) = spoolState { task.cancel() }
-        spoolArchive = nil
+    private enum SpoolStep: Sendable {
+        case skip
+        case primary
+        case extract(ArchiveSpoolWorker, SymmetricKey?, URL, Int64)
     }
 
-    private func finishSpooling() {
-        spoolArchive = nil
-        archive.discardDecodedState()
-        primaryHasDecodedState = false
+    private func willSpool(_ id: Int, generation: UUID, sizeLimit: Int64) -> SpoolStep? {
+        guard generation == spoolGeneration, spoolIsActive, !Task.isCancelled,
+              !assemblyLifetime.withLock({ $0.abandoned }), let directory = spoolDirectory else { return nil }
+        if spooledIDs.contains(id) || skippedSpoolIDs.contains(id) { return .skip }
+        spoolCursor = id
+        if exceedsPerPageDecodeLimit(Int32(id)) {
+            skippedSpoolIDs.insert(id)
+            spoolWaiters.resume(id)
+            return .skip
+        }
+        // 空き容量は開始前と 64 MiB ごとに再評価し、未知サイズも書き込み前に実サイズで止める。
+        if spooledBytes - lastSpaceCheckBytes >= 64 << 20 {
+            diskSpoolLimit = SpoolSpacePolicy.totalBudget(sizeLimit: sizeLimit)
+            lastSpaceCheckBytes = spooledBytes
+        }
+        let remaining = max(0, min(sizeLimit, diskSpoolLimit ?? sizeLimit) - spooledBytes)
+        let overhead: Int64 = spoolEncrypted ? 28 : 0
+        if archive.entryHasSize(Int32(id)) {
+            let size = archive.uncompressedSize(ofEntry: Int32(id))
+            guard size >= 0, remaining >= overhead, size <= remaining - overhead else { return nil }
+        }
+        if let spoolWorker {
+            return .extract(spoolWorker, spoolEncrypted ? spoolKey : nil,
+                            directory.appendingPathComponent(String(id), isDirectory: false), remaining)
+        }
+        return .primary
+    }
+    private var lastSpaceCheckBytes: Int64 = 0
+    private var diskSpoolLimit: Int64?
+
+    private func spoolPrimary(_ id: Int, generation: UUID, sizeLimit: Int64) -> Bool {
+        guard generation == spoolGeneration, !Task.isCancelled, let directory = spoolDirectory else { return false }
+        let outcome: SpoolOutcome
+        if let data = primaryContents(ofEntry: Int32(id)) {
+            outcome = ArchiveSpoolWorker.store(data, key: spoolEncrypted ? spoolKey : nil,
+                to: directory.appendingPathComponent(String(id), isDirectory: false),
+                byteLimit: max(0, min(sizeLimit, diskSpoolLimit ?? sizeLimit) - spooledBytes))
+        } else { outcome = .skipped }
+        return didSpool(id, outcome: outcome, generation: generation, directory: directory)
+    }
+
+    private func didSpool(_ id: Int, outcome: SpoolOutcome, generation: UUID, directory: URL) -> Bool {
+        // pause と atomic write 完了が競争しても、同じディレクトリの実バイトを台帳から落とさない。
+        // discard 後の古い結果だけは、新しいスプールへ書き戻さない(設計書 §5)。
+        guard directory == spoolDirectory else { return false }
+        let active = generation == spoolGeneration && spoolIsActive && !Task.isCancelled
+        if case .stored(_, let bytes) = outcome, spooledIDs.insert(id).inserted { spooledBytes += bytes }
+        guard active else { return false }
+        switch outcome {
+        case .stored(let data, _):
+            spoolWaiters.resume(id, data: data)
+        case .skipped:
+            skippedSpoolIDs.insert(id)
+            spoolWaiters.resume(id)
+        case .failed:
+            spoolWaiters.resume(id)
+            return false
+        }
+        return true
+    }
+
+    func pauseSpooling() {
+        guard case .running(let task) = spoolState else { return }
+        task.cancel()
+        retiredSpoolTask = task
+        spoolGeneration = UUID()
         spoolIsActive = false
-        spoolState = .finished
-        releaseFinishedExtractorsIfIdle()
+        spoolWorker = nil
+        spoolState = .paused
+        spoolWaiters.resume()
     }
 
-    /// スプール完了を待つ(テスト・診断用)
+    func discardSpool() async {
+        pauseSpooling()
+        let retired = retiredSpoolTask
+        let directory = spoolDirectory
+        spoolDirectory = nil
+        spooledIDs.removeAll()
+        skippedSpoolIDs.removeAll()
+        spooledBytes = 0
+        recentRawData.removeAll()
+        spoolState = .idle
+        // 取消し直前の atomic write も終わってからディレクトリを消す(設計書 §5)。
+        let cleanup = Task.detached(priority: .utility) {
+            await retired?.value
+            if let directory { try? FileManager.default.removeItem(at: directory) }
+        }
+        await cleanup.value
+    }
+
+    private func finishSpooling(_ generation: UUID) {
+        guard generation == spoolGeneration else { return }
+        spoolWorker = nil
+        spoolIsActive = false
+        if spooledIDs.count + skippedSpoolIDs.count == outerImages.count {
+            archive.discardDecodedState()
+            primaryCursor = nil
+            primaryHasDecodedState = false
+            spoolState = .finished
+            releaseFinishedExtractorsIfIdle()
+        } else { spoolState = .paused }
+        spoolWaiters.resume()
+    }
+
+    private func spooledOrWaitingData(for id: Int) async throws -> Data? {
+        if let data = spooledData(for: id) { return data }
+        guard !spooledIDs.contains(id) else { return nil }
+        guard case .serial = parallelMode, spoolIsActive, spoolWorker != nil,
+              id >= spoolCursor, !skippedSpoolIDs.contains(id) else { return nil }
+        if let primaryCursor, spoolCursor < primaryCursor, primaryCursor <= id { return nil }
+        // 登録までは同じ actor 上で行い、完了と登録の隙間を作らない(設計書 §5)。
+        let data = try await spoolWaiters.wait(for: id)
+        try Task.checkCancellation()
+        return data ?? spooledData(for: id)
+    }
+
+    func spoolDemandBytes() -> Int64? {
+        var result: Int64 = 0
+        for entry in outerImages where !spooledIDs.contains(entry.id) && !skippedSpoolIDs.contains(entry.id) {
+            let index = Int32(entry.id)
+            guard archive.entryHasSize(index) else { return nil }
+            let size = archive.uncompressedSize(ofEntry: index)
+            guard size >= 0, size <= Int64.max - result else { return nil }
+            result += size
+        }
+        return result
+    }
+
+    /// スプール完了を待つ(テスト・診断用)。一時停止時も取消し中の復号器の終了まで待つ。
     func waitForSpoolCompletion() async {
         if case .running(let task) = spoolState { await task.value }
+        else { await retiredSpoolTask?.value }
     }
 
     var spooledEntryCount: Int { spooledIDs.count }
-    /// スプール済みバイト量(アクティビティ窓向け。書き込み時に累積)
     private var spooledBytes: Int64 = 0
 
-    /// アクティビティ窓向けのスプール実態スナップショット
     struct SpoolStats: Sendable, Equatable {
         let spooled: Int
         let total: Int
         let bytes: Int64
         let active: Bool
+        let paused: Bool
     }
     func spoolStats() -> SpoolStats {
         let active = if case .running = spoolState { true } else { false }
+        let paused = if case .paused = spoolState { true } else { false }
         return SpoolStats(spooled: spooledIDs.count, total: outerImages.count,
-                          bytes: spooledBytes, active: active)
-    }
-
-    private func spoolEntry(_ id: Int) {
-        guard !Task.isCancelled, !assemblyLifetime.withLock({ $0.abandoned }) else { return }
-        guard let directory = spoolDirectory, !spooledIDs.contains(id) else { return }
-        // zip 爆弾対策: 宣言展開サイズが上限超のエントリは展開(スプール)しない
-        guard !exceedsPerPageDecodeLimit(Int32(id)) else { return }
-        let extracted: Data?
-        if let spoolArchive {
-            extracted = spoolArchive.contents(ofEntry: Int32(id))
-        } else {
-            extracted = primaryContents(ofEntry: Int32(id))
-        }
-        guard var data = extracted else { return }
-        if spoolEncrypted {
-            // seal 失敗時は書かない(平文フォールバック禁止)
-            guard let sealed = SuperResCacheCrypto.seal(data, using: spoolKey) else {
-                return
-            }
-            data = sealed
-        }
-        let fileURL = directory.appendingPathComponent(String(id))
-        if (try? data.write(to: fileURL, options: .atomic)) != nil {
-            spooledIDs.insert(id)
-            spooledBytes += Int64(data.count)
-        }
+                          bytes: spooledBytes, active: active, paused: paused)
     }
 
     private func spooledData(for id: Int) -> Data? {
@@ -1454,6 +1566,7 @@ extension ArchiveSource: ArchiveDecodedStateOwner {
         guard !isBuilding, !spoolIsActive,
               extractorBusyCounts.allSatisfy({ $0 == 0 }) else { return false }
         archive.discardDecodedState()
+        primaryCursor = nil
         primaryHasDecodedState = false
         extractors.removeAll()
         extractorBusyCounts.removeAll()

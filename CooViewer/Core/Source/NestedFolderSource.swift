@@ -66,7 +66,15 @@ actor NestedFolderSource: BookSource {
     private var lastAssemblyFailure: AssemblyFailure?
     private var hasPageList = false
     private(set) var cardChildren: [UnreadableVolumeMarker] = []
-    private var archiveCardCount = 0
+    private var spoolLimit: Int64?
+    private var windowTask: Task<Void, Never>?
+    private var window: [ObjectIdentifier] = []
+    private var windowChildren: [ArchiveSource] = []
+    private var positionKnown = false
+    private var windowGeneration = UUID()
+    private var activeWindowChild: ArchiveSource?
+    private var spooledChildren: [ObjectIdentifier: ArchiveSource] = [:]
+    private var spoolLRU: [ObjectIdentifier] = []
 
     var canOpenPartial: Bool {
         lastAssemblyFailure?.volumeUnavailable == false
@@ -188,7 +196,6 @@ actor NestedFolderSource: BookSource {
         let candidates = folder.nestedBookCandidates
         let causes = Dictionary((failure?.failures ?? []).map { ($0.relativePath, $0.cause) },
                                 uniquingKeysWith: { first, _ in first })
-        archiveCardCount = 0
         locations.removeAll()
         children.removeAll()
         cardChildren.removeAll()
@@ -208,7 +215,6 @@ actor NestedFolderSource: BookSource {
                 let marker = UnreadableVolumeMarker(relativePath: candidate.relativePath,
                     cause: causes[candidate.relativePath])
                 cardChildren.append(marker)
-                if SupportedTypes.isArchive(candidate.fileURL) { archiveCardCount += 1 }
                 result.append(PageEntry(id: (position + 1) * Self.nestedIDStride + (Self.nestedIDStride - 1),
                     name: candidate.fileURL.lastPathComponent, pathInBook: candidate.relativePath,
                     fileURL: nil, creationDate: nil,
@@ -402,29 +408,128 @@ actor NestedFolderSource: BookSource {
         return await children[sourceIndex].archiveEngineKind(for: childEntry)
     }
 
-    /// 子の書庫のスプールを開始する(ネットワークボリューム上のフォルダ対策)。
-    /// 上限はスプールし得る子(書庫)の数で等分し、フォルダ全体で
-    /// spoolSizeLimit を超えないようにする。PDF 等はスプールしないため数えない
+    /// 等分せず、読んでいる子と隣の子へ全予算を順に回す(cooViewer-tg48、設計書 §5)。
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
         if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return } }
-        let archiveChildren = children.compactMap { $0 as? ArchiveSource }
-        guard !archiveChildren.isEmpty else { return }
-        // カードの書庫分だけ枠を予約し、スプールしない除外・省略巻で完全版の配分を減らさない(設計書 §7.4、§2.4、仕様書 §4.17)。
-        // 子・カード数に比例するループでは、isDirectory 未指定の appendingPathComponent による同期 I/O を避ける(設計書 §7.4)。
-        let perChild = spoolSizeLimit / Int64(archiveChildren.count + archiveCardCount)
-        for child in archiveChildren {
-            await child.beginBackgroundPreparation(spoolSizeLimit: perChild)
+        let changed = spoolLimit != spoolSizeLimit
+        spoolLimit = spoolSizeLimit
+        if !positionKnown {
+            windowChildren = children.compactMap { $0 as? ArchiveSource }.prefix(1).map { $0 }
+            window = windowChildren.map(ObjectIdentifier.init)
+        }
+        if windowTask == nil || changed { await scheduleWindow(interactive: positionKnown) }
+    }
+
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool) async {
+        let targets = [archiveChild(for: current), archiveChild(for: forward ? next : previous)]
+        var seen: Set<ObjectIdentifier> = []
+        let sources = targets.compactMap { $0 }.filter { seen.insert(ObjectIdentifier($0)).inserted }
+        let ids = sources.map(ObjectIdentifier.init)
+        let changed = window != ids || !positionKnown
+        positionKnown = true
+        guard changed else { return }
+        window = ids
+        windowChildren = sources
+        for id in ids {
+            if spooledChildren[id] != nil {
+                spoolLRU.removeAll { $0 == id }
+                spoolLRU.append(id)
+            }
+        }
+        if spoolLimit != nil { await scheduleWindow(interactive: true) }
+    }
+
+    func archiveChild(for entry: PageEntry?) -> ArchiveSource? {
+        guard let entry, case .child(let index, _) = locations[entry.id] else { return nil }
+        return children[index] as? ArchiveSource
+    }
+
+    private func scheduleWindow(interactive: Bool) async {
+        let previousTask = windowTask
+        previousTask?.cancel()
+        let oldChild = activeWindowChild
+        let targets = windowChildren
+        let generation = UUID()
+        windowGeneration = generation
+        if let oldChild, oldChild !== targets.first { await oldChild.pauseSpooling() }
+        guard generation == windowGeneration else { return }
+        windowTask = Task { [weak self] in
+            if let oldChild {
+                // 取消し中の展開が戻るまで次の子を動かさず、同じ本では常に復号器 1 本にする。
+                await oldChild.waitForSpoolCompletion()
+            }
+            await previousTask?.value
+            for (index, child) in targets.enumerated() {
+                guard !Task.isCancelled,
+                      let budget = await self?.budgetForWindowChild(child, generation: generation) else { return }
+                await child.beginSpooling(sizeLimit: budget, interactive: interactive && index == 0)
+                await child.waitForSpoolCompletion()
+                await self?.recordSpool(child, generation: generation)
+            }
+            await self?.finishedWindow(generation)
         }
     }
 
-    /// 合本内の準備完了を実時間の待機なしで観測する診断口(設計書 §2.4、§7.4)。
-    func waitForSpoolCompletion() async -> Int {
-        let archives = children.compactMap { $0 as? ArchiveSource }
-        var count = 0
-        for archive in archives {
-            await archive.waitForSpoolCompletion()
-            count += await archive.spooledEntryCount
+    private func budgetForWindowChild(_ child: ArchiveSource, generation: UUID) async -> Int64? {
+        guard generation == windowGeneration, let spoolLimit, !Task.isCancelled else { return nil }
+        let total = SpoolSpacePolicy.totalBudget(sizeLimit: spoolLimit)
+        var sizes: [ObjectIdentifier: Int64] = [:]
+        // 台帳はスプールを持つ子だけ。全 children をページ送りごとに走査しない(設計書 §5)。
+        for (id, source) in spooledChildren {
+            let stats = await source.spoolStats()
+            guard generation == windowGeneration, !Task.isCancelled else { return nil }
+            if stats.bytes == 0, !stats.active { spooledChildren[id] = nil }
+            else { sizes[id] = stats.bytes }
         }
+        var live = sizes.values.reduce(0, +)
+        let need = await child.spoolDemandBytes() ?? max(0, total - live)
+        guard generation == windowGeneration, !Task.isCancelled else { return nil }
+        // 読んだ順の台帳を一度だけ走査するので、追い出しはスプール済み冊数に比例する。
+        for id in spoolLRU where !window.contains(id) {
+            guard live > total || need > total - live else { break }
+            if let source = spooledChildren[id] {
+                await source.discardSpool()
+                guard generation == windowGeneration, !Task.isCancelled else { return nil }
+                live -= sizes[id] ?? 0
+                spooledChildren[id] = nil
+            }
+        }
+        spoolLRU.removeAll { spooledChildren[$0] == nil }
+        let id = ObjectIdentifier(child)
+        let budget = max(0, total - (live - (sizes[id] ?? 0)))
+        activeWindowChild = child
+        spooledChildren[id] = child
+        spoolLRU.removeAll { $0 == id }
+        spoolLRU.append(id)
+        return budget
+    }
+
+    private func recordSpool(_ child: ArchiveSource, generation: UUID) async {
+        let stats = await child.spoolStats()
+        guard generation == windowGeneration else { return }
+        if stats.bytes == 0 {
+            let id = ObjectIdentifier(child)
+            spooledChildren[id] = nil
+            spoolLRU.removeAll { $0 == id }
+        }
+        activeWindowChild = nil
+    }
+
+    private func finishedWindow(_ generation: UUID) {
+        if generation == windowGeneration { windowTask = nil }
+    }
+
+    deinit {
+        windowTask?.cancel()
+        if let child = activeWindowChild { Task { await child.pauseSpooling() } }
+    }
+
+    /// 合本の窓の完了を待つ診断口。表示経路からは呼ばない(設計書 §5、§7.4)。
+    func waitForSpoolCompletion() async -> Int {
+        let task = windowTask
+        await task?.value
+        var count = 0
+        for archive in spooledChildren.values { count += await archive.spooledEntryCount }
         return count
     }
 
