@@ -43,6 +43,16 @@ final class MediaProfileTests: XCTestCase {
 
     // MARK: - 方針表
 
+    func testCollectionAssemblyLanesByMediaClass() {
+        for (mediaClass, expected) in [(MediaProfile.MediaClass.network, 16), (.unknown, 4),
+                                        (.slowLocal, 4), (.fastLocal, 4)] {
+            for conserve in [false, true] {
+                XCTAssertEqual(MediaProfile(mediaClass: mediaClass, conserveEnergy: conserve)
+                    .collectionAssemblyLanes, expected)
+            }
+        }
+    }
+
     func testUnknownProfileKeepsLegacyBehavior() {
         // unknown は従来の固定動作と同値であること(判定不能時の回帰防止)
         let profile = MediaProfile(mediaClass: .unknown, conserveEnergy: false)

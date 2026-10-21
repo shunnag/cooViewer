@@ -50,6 +50,9 @@ struct MediaProfile: Sendable, Equatable {
 
     // MARK: - 方針(設計書のポリシー表)
 
+    /// ネットワークの待ち時間を並列化する。ローカルは未計測のため従来幅を保つ(設計書 §7.4)。
+    var collectionAssemblyLanes: Int { mediaClass == .network ? 16 : 4 }
+
     /// 書庫をローカル一時展開(スプール)するか。
     /// 高速ローカルではランダムアクセスが安い zip 系のスプールをやめて
     /// 二重書き込みを避ける。solid 圧縮になり得る形式(rar/7z/lha/sit/sitx/sea)は
