@@ -23,6 +23,8 @@ protocol ArchiveEngine: AnyObject {
     func isEncrypted() -> Bool
     func setPassword(_ password: String)
     func solidGroup(ofEntry index: Int32) -> Int32
+    /// 入力と解析済み一覧を共有し、独立した復号位置を持つエンジンを返す(設計書 §5)。
+    func reopened() -> (any ArchiveEngine)?
     func discardDecodedState()
 
     static var defaultZipLazyLocalHeaders: Bool { get }
@@ -30,6 +32,7 @@ protocol ArchiveEngine: AnyObject {
 }
 
 extension ArchiveEngine {
+    func reopened() -> (any ArchiveEngine)? { nil }
     func discardDecodedState() {}
     /// nil しか返せないエンジン(テストの偽エンジン)向けの既定。環境要因ではない
     /// エラーにして、プローブの分類では従来どおり誤パスワード側に落とす
@@ -259,6 +262,11 @@ final class KaitoKitEngine: ArchiveEngine {
     func solidGroup(ofEntry index: Int32) -> Int32 {
         guard let group = entry(at: index)?.solidGroup else { return -1 }
         return Int32(exactly: group) ?? -1
+    }
+
+    func reopened() -> (any ArchiveEngine)? {
+        guard let reopened = try? reader.reopen() else { return nil }
+        return KaitoKitEngine(reader: reopened, limits: limits)
     }
 
     /// 全画像のスプール後は、末尾の非画像 entry のため残った solid 状態も解放する。
