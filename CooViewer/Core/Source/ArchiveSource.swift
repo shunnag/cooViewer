@@ -1310,7 +1310,10 @@ actor ArchiveSource: BookSource {
         let task = Task<Void, Never> { [weak self] in
             // 同じ子をすぐ再開しても、取消し中の復号器と二重に動かさない(設計書 §5)。
             await retired?.value
-            await gate.acquire(interactive: interactive)
+            guard await gate.acquire(interactive: interactive) else {
+                await self?.finishSpooling(generation)
+                return
+            }
             if !Task.isCancelled, await self?.markSpoolingActive(generation) == true {
                 spoolLoop: for id in ids {
                     guard !Task.isCancelled else { break }

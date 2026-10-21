@@ -166,7 +166,7 @@ final class MediaProfileTests: XCTestCase {
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<12 {
                 group.addTask {
-                    await gate.acquire()
+                    guard await gate.acquire() else { return }
                     await counter.enter()
                     try? await Task.sleep(for: .milliseconds(15))
                     await counter.exit()
@@ -184,12 +184,12 @@ final class MediaProfileTests: XCTestCase {
         // 表示用(userInitiated)の待ち手は、先に並んでいた背景(utility)の
         // 待ち行列を追い越して先に許可されること
         let gate = SourceReadGate(limit: 1)
-        await gate.acquire()  // 埋めておく
+        guard await gate.acquire() else { return }  // 埋めておく
 
         let order = OrderRecorder()
         let background = (0..<3).map { index in
             Task(priority: .utility) {
-                await gate.acquire()
+                guard await gate.acquire() else { return }
                 await order.record("bg\(index)")
                 await gate.release()
             }
@@ -197,7 +197,7 @@ final class MediaProfileTests: XCTestCase {
         // 背景の待ち手が並ぶまで少し待つ
         try? await Task.sleep(for: .milliseconds(50))
         let interactive = Task(priority: .userInitiated) {
-            await gate.acquire()
+            guard await gate.acquire() else { return }
             await order.record("interactive")
             await gate.release()
         }
@@ -214,9 +214,9 @@ final class MediaProfileTests: XCTestCase {
 
     func testReadGateLimitIncreaseWakesWaiters() async {
         let gate = SourceReadGate(limit: 1)
-        await gate.acquire()
+        guard await gate.acquire() else { return }
         let waiter = Task {
-            await gate.acquire()
+            guard await gate.acquire() else { return false }
             await gate.release()
             return true
         }
