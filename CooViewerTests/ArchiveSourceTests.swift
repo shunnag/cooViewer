@@ -657,6 +657,145 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(repeated, finished)
     }
 
+    func testSerialSpoolAndDisplayUseIndependentEngines() async throws {
+        let started = expectation(description: "専用復号器で先頭ページを展開中")
+        let displayRequested = expectation(description: "表示要求を投入")
+        displayRequested.expectedFulfillmentCount = 2
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { index in
+            if index == 0 {
+                started.fulfill()
+                XCTAssertEqual(release.wait(timeout: .now() + 10), .success)
+            }
+        })
+        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 64), probe: probe)
+        let pages = try await source.entries()
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await fulfillment(of: [started], timeout: 3)
+        let display = Task(priority: .userInitiated) {
+            displayRequested.fulfill()
+            return try await source.image(for: pages[62], maxPixelSize: nil)
+        }
+        let imageData = Task(priority: .userInitiated) {
+            displayRequested.fulfill()
+            return await source.imageData(for: pages[63])
+        }
+        await fulfillment(of: [displayRequested], timeout: 3)
+        release.signal()
+        let image = try await display.value
+        let data = await imageData.value
+        XCTAssertEqual(image.width, 4)
+        XCTAssertEqual(data, probe.data)
+        await source.waitForSpoolCompletion()
+        let state = probe.state.withLock { $0 }
+        XCTAssertEqual(state.reopenCalls, 1)
+        XCTAssertEqual(state.primaryReads.sorted(), [62, 63], "表示と画像データ取得は主書庫を使う")
+        XCTAssertEqual(state.spoolReads, Array(Int32(0)..<64), "スプールは専用復号器で単調増加する")
+        XCTAssertTrue(state.primaryReadSpoolCounts.allSatisfy { $0 > 0 && $0 < 64 },
+                      "両経路ともスプール途中の未展開ページを読む")
+        XCTAssertEqual(state.liveSpoolEngines, 0, "ソースを保持していても完了で専用復号器を解放する")
+        XCTAssertEqual(state.primaryDiscards, 1, "完了時の主書庫の復号状態解放を維持する")
+        let stats = await source.spoolStats()
+        XCTAssertEqual(stats.spooled, 64)
+        XCTAssertFalse(stats.active)
+    }
+
+    func testSerialSpoolFallsBackWhenReopeningFails() async throws {
+        let probe = SpoolEngineProbe(canReopen: false)
+        let source = try Self.spoolSource(groups: [0, 0, 0, 0], probe: probe)
+        let pages = try await source.entries()
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await source.waitForSpoolCompletion()
+        let state = probe.state.withLock { $0 }
+        XCTAssertEqual(state.reopenCalls, 1)
+        XCTAssertEqual(state.primaryReads, [0, 1, 2, 3])
+        XCTAssertEqual(state.spoolReads, [])
+        XCTAssertEqual(state.liveSpoolEngines, 0)
+        let stats = await source.spoolStats()
+        XCTAssertEqual(stats.spooled, 4)
+        XCTAssertFalse(stats.active)
+        let data = await source.imageData(for: pages[3])
+        XCTAssertEqual(data, probe.data)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [0, 1, 2, 3],
+                       "完了後はスプール済みのファイルを読む")
+    }
+
+    func testParallelSpoolModesDoNotReopenEngine() async throws {
+        for groups: [Int32] in [[-1, -1, -1, -1], [0, 0, 1, 1]] {
+            let probe = SpoolEngineProbe()
+            let source = try Self.spoolSource(groups: groups, probe: probe)
+            let mode = await source.parallelGranularityForTesting
+            XCTAssertEqual(mode, groups[0] == -1 ? "perEntry" : "byGroup")
+            await source.beginSpooling(sizeLimit: 1 << 30)
+            await source.waitForSpoolCompletion()
+            let state = probe.state.withLock { $0 }
+            XCTAssertEqual(state.reopenCalls, 0)
+            XCTAssertEqual(state.primaryReads, [0, 1, 2, 3])
+            XCTAssertEqual(state.spoolReads, [])
+            let count = await source.spooledEntryCount
+            XCTAssertEqual(count, 4)
+        }
+    }
+
+    func testAbandoningAssemblyCancelsSpoolAndReleasesEngine() async throws {
+        let started = expectation(description: "取消し前のスプールを開始")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforeSpoolRead: { index in
+            if index == 0 {
+                started.fulfill()
+                XCTAssertEqual(release.wait(timeout: .now() + 10), .success)
+            }
+        })
+        let source = try Self.spoolSource(groups: [0, 0, 0, 0], probe: probe)
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertEqual(probe.state.withLock { $0.liveSpoolEngines }, 1)
+        source.abandonAssembly()
+        release.signal()
+        await source.waitForSpoolCompletion()
+        let state = probe.state.withLock { $0 }
+        XCTAssertEqual(state.spoolReads, [0], "放棄後は次のエントリへ進まない")
+        XCTAssertEqual(state.primaryReads, [])
+        XCTAssertEqual(state.liveSpoolEngines, 0)
+        let stats = await source.spoolStats()
+        XCTAssertFalse(stats.active)
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        XCTAssertEqual(probe.state.withLock { $0.reopenCalls }, 1, "放棄したソースは再開しない")
+    }
+
+    func testSourceDeinitReleasesSpoolEngine() async throws {
+        let started = expectation(description: "解放前のスプールを開始")
+        let released = expectation(description: "ソースとともに専用復号器を解放")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(onRelease: { released.fulfill() }) { index in
+            if index == 0 {
+                started.fulfill()
+                XCTAssertEqual(release.wait(timeout: .now() + 10), .success)
+            }
+        }
+        var source: ArchiveSource? = try Self.spoolSource(groups: [0, 0, 0, 0], probe: probe)
+        await source?.beginSpooling(sizeLimit: 1 << 30)
+        await fulfillment(of: [started], timeout: 3)
+        weak let weakSource = source
+        source = nil
+        release.signal()
+        await fulfillment(of: [released], timeout: 3)
+        XCTAssertNil(weakSource)
+        XCTAssertEqual(probe.state.withLock { $0.liveSpoolEngines }, 0)
+    }
+
+    private static func spoolSource(groups: [Int32], probe: SpoolEngineProbe) throws -> ArchiveSource {
+        let factory = ArchiveEngineFactory(
+            openFile: { _, _, _ in SpoolTestArchiveEngine(groups: groups, probe: probe) },
+            openData: { _, _, _ in SpoolTestArchiveEngine(groups: groups, probe: probe) })
+        return try ArchiveSource(data: Data([0]), name: "spool.7z", nestingDepth: 0,
+                                 unlocker: NestedUnlocker(), persistenceKey: .file(path: "/spool.7z"),
+                                 sensitive: false, engineFactory: factory)
+    }
+
     func testGarbageArchiveDoesNotCrash() async throws {
         let url = tempDir.appendingPathComponent("garbage.zip")
         try Data((0..<256).map { _ in UInt8.random(in: 0...255) }).write(to: url)
@@ -938,6 +1077,85 @@ final class NestedArchiveTests: XCTestCase {
         let image = try await source.image(for: entries[1], maxPixelSize: nil)
         XCTAssertEqual(image.width, 10)
     }
+}
+
+/// 復号器そのものを保持せずに、使用先と寿命を actor の外から観測する(設計書 §5、cooViewer-r1t2)。
+private final class SpoolEngineProbe: Sendable {
+    struct State: Sendable {
+        var reopenCalls = 0
+        var primaryReads: [Int32] = []
+        var primaryReadSpoolCounts: [Int] = []
+        var spoolReads: [Int32] = []
+        var liveSpoolEngines = 0
+        var primaryDiscards = 0
+    }
+    let state = OSAllocatedUnfairLock(initialState: State())
+    let data = TestFixtures.pngData(width: 4, height: 6)
+    let canReopen: Bool
+    let beforeSpoolRead: (@Sendable (Int32) -> Void)?
+    let onRelease: (@Sendable () -> Void)?
+
+    init(canReopen: Bool = true, onRelease: (@Sendable () -> Void)? = nil,
+         beforeSpoolRead: (@Sendable (Int32) -> Void)? = nil) {
+        self.canReopen = canReopen
+        self.onRelease = onRelease
+        self.beforeSpoolRead = beforeSpoolRead
+    }
+}
+
+/// solid グループを固定し、インスタンスごとに展開要求を記録する偽エンジン。
+private final class SpoolTestArchiveEngine: ArchiveEngine {
+    private let groups: [Int32]
+    private let probe: SpoolEngineProbe
+    private let isSpool: Bool
+
+    init(groups: [Int32], probe: SpoolEngineProbe, isSpool: Bool = false) {
+        self.groups = groups
+        self.probe = probe
+        self.isSpool = isSpool
+        if isSpool { probe.state.withLock { $0.liveSpoolEngines += 1 } }
+    }
+    init?(file path: String, role: ArchiveReaderRole) { return nil }
+    init?(data: Data, role: ArchiveReaderRole) { return nil }
+
+    deinit {
+        if isSpool {
+            probe.state.withLock { $0.liveSpoolEngines -= 1 }
+            probe.onRelease?()
+        }
+    }
+
+    func reopened() -> (any ArchiveEngine)? {
+        probe.state.withLock { $0.reopenCalls += 1 }
+        guard probe.canReopen else { return nil }
+        return SpoolTestArchiveEngine(groups: groups, probe: probe, isSpool: true)
+    }
+    func contents(ofEntry index: Int32) -> Data? {
+        let isSpool = self.isSpool
+        probe.state.withLock {
+            if isSpool { $0.spoolReads.append(index) }
+            else {
+                $0.primaryReads.append(index)
+                $0.primaryReadSpoolCounts.append($0.spoolReads.count)
+            }
+        }
+        if isSpool { probe.beforeSpoolRead?(index) }
+        return probe.data
+    }
+    func discardDecodedState() {
+        if !isSpool { probe.state.withLock { $0.primaryDiscards += 1 } }
+    }
+    func numberOfEntries() -> Int32 { Int32(groups.count) }
+    func name(ofEntry index: Int32) -> String? { "page-\(index).avifs" }
+    func uncompressedSize(ofEntry index: Int32) -> Int64 { Int64(probe.data.count) }
+    func entryHasSize(_ index: Int32) -> Bool { true }
+    func entryIsDirectory(_ index: Int32) -> Bool { false }
+    func entryIsEncrypted(_ index: Int32) -> Bool { false }
+    func isEncrypted() -> Bool { false }
+    func setPassword(_ password: String) {}
+    func solidGroup(ofEntry index: Int32) -> Int32 { groups[Int(index)] }
+    static var defaultZipLazyLocalHeaders: Bool { true }
+    static func setDefaultZipLazyLocalHeaders(_ enabled: Bool) {}
 }
 
 private extension ArchiveSource {

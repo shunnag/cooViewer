@@ -109,7 +109,7 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         let cards = partial.filter { $0.unreadableVolume != nil }
         XCTAssertEqual(cards.map(\.id), [2_999_999, 5_999_999])
         XCTAssertEqual(Set(partial.map(\.id)).count, partial.count)
-        XCTAssertEqual(cards.map { $0.unreadableVolume?.cause }, [.accessDenied, .accessDenied])
+        XCTAssertEqual(cards.map { $0.unreadableVolume?.cause }, [.diskFull, .diskFull])
         for entry in cards { _ = try await source.image(for: entry, maxPixelSize: 80) }
         _ = try await source.partialEntries()
         XCTAssertEqual(control.calls, before)
@@ -265,7 +265,7 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         for name in ["a.zip", "b.zip"] { try Data().write(to: root.appendingPathComponent(name)) }
         let factory = ArchiveEngineFactory(openFile: { _, path, _ in
-            if URL(fileURLWithPath: path).lastPathComponent == "b.zip" { throw KaitoError.io(EACCES) }
+            if URL(fileURLWithPath: path).lastPathComponent == "b.zip" { throw KaitoError.io(ENOSPC) }
             return StrideBoundaryArchiveEngine()
         }, openData: { _, _, _ in nil })
         let clock = AssemblyTestClock { _ in }
@@ -324,7 +324,8 @@ private final class PartialAssemblyOpenControl: Sendable {
                 $0.calls[name, default: 0] += 1
                 return $0.failing.contains(name)
             }
-            if fails { throw KaitoError.io(EACCES) }
+            // 恒久的な権限拒否ではなく、同意と回復が必要な環境要因を再現する(設計書 §7.4)。
+            if fails { throw KaitoError.io(ENOSPC) }
             return try ArchiveEngineFactory.live.openFile(kind, path, role)
         }, openData: { _, _, _ in nil })
     }
