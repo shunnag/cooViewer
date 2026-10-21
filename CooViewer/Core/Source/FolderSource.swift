@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 
 /// フォルダを本として読む(仕様書 §4.1)。
@@ -91,6 +92,7 @@ final class FolderSource: BookSource {
         fileURLs.sort { $0.path < $1.path }
 
         let basePath = url.standardizedFileURL.path
+        let fastPrefixes = Self.fastPrefixes(for: url, standardizedBasePath: basePath)
         var entries: [PageEntry] = []
         var candidates: [(fileURL: URL, relativePath: String)] = []
         for fileURL in fileURLs {
@@ -104,10 +106,8 @@ final class FolderSource: BookSource {
             let values = try? fileURL.resourceValues(forKeys: Set(keys))
             if values?.isDirectory == true { continue }
 
-            let fullPath = fileURL.standardizedFileURL.path
-            var relativePath = fullPath.hasPrefix(basePath)
-                ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
-            if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+            let relativePath = Self.relativePath(of: fileURL, fastPrefixes: fastPrefixes,
+                                                 standardizedBasePath: basePath).path
 
             if isImage {
                 entries.append(PageEntry(
@@ -124,6 +124,41 @@ final class FolderSource: BookSource {
         }
         self.pageEntries = entries
         self.nestedBookCandidates = candidates
+    }
+
+    nonisolated static func fastPrefixes(for url: URL, standardizedBasePath: String) -> [String] {
+        // NFC 綴りの入力を Foundation が NFD に変える場合、実パス候補だけが検査を通る。
+        // この場合も従来経路に戻し、正規化形が異なる入力の永続キーを保つ(設計書 §7.4)。
+        guard url.path.utf8.elementsEqual(url.path.decomposedStringWithCanonicalMapping.utf8) else { return [] }
+        var paths = [url.path]
+        if let resolved = realpath(url.path, nil) {
+            paths.append(String(cString: resolved))
+            free(resolved)
+        }
+        // 列挙 URL の実パス表記も受けるが、大小文字・正規化形の違いは従来経路へ戻す(設計書 §7.4)。
+        return paths.filter {
+            URL(fileURLWithPath: $0).standardizedFileURL.path.utf8.elementsEqual(standardizedBasePath.utf8)
+        }
+    }
+
+    nonisolated static func relativePath(of fileURL: URL, fastPrefixes: [String],
+                                         standardizedBasePath basePath: String)
+        -> (path: String, usedFastPath: Bool) {
+        let rawPath = fileURL.path
+        for prefix in fastPrefixes {
+            let directoryPrefix = prefix + "/"
+            guard rawPath.utf8.starts(with: directoryPrefix.utf8) else { continue }
+            let rest = String(decoding: rawPath.utf8.dropFirst(directoryPrefix.utf8.count), as: UTF8.self)
+            guard rest.split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { continue }
+            return (rest, true)
+        }
+        // しおり・サムネイルの永続キーは、前提外の URL の従来の癖まで保つ(設計書 §7.4)。
+        let fullPath = fileURL.standardizedFileURL.path
+        var relativePath = fullPath.hasPrefix(basePath)
+            ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
+        if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+        return (relativePath, false)
     }
 
     func entries() async throws -> [PageEntry] {
