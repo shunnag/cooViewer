@@ -51,6 +51,7 @@ actor NestedFolderSource: BookSource {
     private var lastAssemblyFailure: AssemblyFailure?
     private var hasPageList = false
     private(set) var cardChildren: [UnreadableVolumeMarker] = []
+    private var archiveCardCount = 0
 
     var canOpenPartial: Bool {
         lastAssemblyFailure?.volumeUnavailable == false
@@ -167,6 +168,9 @@ actor NestedFolderSource: BookSource {
 
     private func assemble(images: [PageEntry], failure: AssemblyFailure?) -> [PageEntry] {
         let candidates = folder.nestedBookCandidates
+        let causes = Dictionary((failure?.failures ?? []).map { ($0.relativePath, $0.cause) },
+                                uniquingKeysWith: { first, _ in first })
+        archiveCardCount = 0
         locations.removeAll()
         children.removeAll()
         cardChildren.removeAll()
@@ -182,10 +186,11 @@ actor NestedFolderSource: BookSource {
             if let prepared = preparedChildren[position] {
                 register(child: prepared.source, childEntries: prepared.entries,
                          candidate: candidate, ordinal: position + 1, into: &result)
-            } else if let failure, !excludedOrdinals.contains(position), !skippedOrdinals.contains(position) {
+            } else if failure != nil, !excludedOrdinals.contains(position), !skippedOrdinals.contains(position) {
                 let marker = UnreadableVolumeMarker(relativePath: candidate.relativePath,
-                    cause: failure.failures.first { $0.relativePath == candidate.relativePath }?.cause)
+                    cause: causes[candidate.relativePath])
                 cardChildren.append(marker)
+                if SupportedTypes.isArchive(candidate.fileURL) { archiveCardCount += 1 }
                 result.append(PageEntry(id: (position + 1) * Self.nestedIDStride + (Self.nestedIDStride - 1),
                     name: candidate.fileURL.lastPathComponent, pathInBook: candidate.relativePath,
                     fileURL: nil, creationDate: nil,
@@ -387,9 +392,7 @@ actor NestedFolderSource: BookSource {
         let archiveChildren = children.compactMap { $0 as? ArchiveSource }
         guard !archiveChildren.isEmpty else { return }
         // カードの書庫分だけ枠を予約し、スプールしない除外・省略巻で完全版の配分を減らさない(設計書 §7.4、§2.4、仕様書 §4.17)。
-        let archiveCardCount = cardChildren.filter {
-            SupportedTypes.isArchive(url.appendingPathComponent($0.relativePath))
-        }.count
+        // 子・カード数に比例するループでは、isDirectory 未指定の appendingPathComponent による同期 I/O を避ける(設計書 §7.4)。
         let perChild = spoolSizeLimit / Int64(archiveChildren.count + archiveCardCount)
         for child in archiveChildren {
             await child.beginBackgroundPreparation(spoolSizeLimit: perChild)
@@ -465,7 +468,9 @@ actor NestedFolderSource: BookSource {
     /// ページの実体ファイル: フォルダ直下の画像はその画像、子の本のページは
     /// その書庫/PDF ファイル(Finder 表示・ファイル情報用)
     func containerFileURL(for entry: PageEntry) async -> URL {
-        if let marker = entry.unreadableVolume { return url.appendingPathComponent(marker.relativePath) }
+        if let marker = entry.unreadableVolume {
+            return url.appendingPathComponent(marker.relativePath, isDirectory: false)
+        }
         if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return url } }
         switch locations[entry.id] {
         case .child(let sourceIndex, _):
@@ -489,22 +494,22 @@ actor NestedFolderSource: BookSource {
 }
 
 extension NestedFolderSource {
-    static func syntheticFailure() async -> (NestedFolderSource, AssemblyFailure) {
+    static func syntheticFailure(failures: [ChildReadFailure]? = nil) async -> (NestedFolderSource, AssemblyFailure) {
         let url = URL(fileURLWithPath: "/synthetic/図面集")
         let paths = (1...5).map { String(format: "A-%03d.zip", $0) }
         let source = NestedFolderSource(folder: FolderSource(snapshotURL: url, images: [], nestedPaths: paths))
-        let failure = await source.prepareSynthetic(paths: paths)
+        let failure = await source.prepareSynthetic(paths: paths, failures: failures)
         return (source, failure)
     }
 
-    private func prepareSynthetic(paths: [String]) -> AssemblyFailure {
+    private func prepareSynthetic(paths: [String], failures: [ChildReadFailure]?) -> AssemblyFailure {
         for ordinal in [0, 2, 4] {
-            let child = SyntheticCollectionVolume(url: url.appendingPathComponent(paths[ordinal]))
+            let child = SyntheticCollectionVolume(url: url.appendingPathComponent(paths[ordinal], isDirectory: false))
             preparedChildren[ordinal] = AssemblyPreparedChild(source: child,
                 entries: child.pages, excludedCount: 0)
         }
-        let failure = AssemblyFailure(failures: [1, 3].map { ordinal in
-            ChildReadFailure(relativePath: paths[ordinal], url: url.appendingPathComponent(paths[ordinal]),
+        let failure = AssemblyFailure(failures: failures ?? [1, 3].map { ordinal in
+            ChildReadFailure(relativePath: paths[ordinal], url: url.appendingPathComponent(paths[ordinal], isDirectory: false),
                 cause: ordinal == 1 ? .accessDenied : .connectionLost, retryClass: .persistent)
         }, total: 5, sourceURL: url)
         lastAssemblyFailure = failure
