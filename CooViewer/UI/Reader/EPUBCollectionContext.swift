@@ -17,6 +17,7 @@ struct EPUBCollectionContext {
     /// 合本のエントリ列とソース(EPUB 内からもコレクション全体の
     /// サムネイル一覧を出すために持ち回る。ソースは参照なので軽い)
     let entries: [PageEntry]
+    let reflowPlaceholders: [(index: Int, url: URL)]
     let source: any BookSource
     /// 一覧の見開きペア判定用(合本の設定を引き継ぐ)
     let singleSetting: Int
@@ -25,4 +26,23 @@ struct EPUBCollectionContext {
     let bookmarkedPages: Set<Int>
     /// EPUB 往復でも今回の同意と部分一覧を保ち、復帰で完全版の再読込を強制しない(設計書 §7.4、§2.4)。
     var partialRecovery: ReaderWindowController.FailedOpen? = nil
+
+    init(folderURL: URL, entryIndex: Int, entryCount: Int, readsFromLeft: Bool,
+         entries: [PageEntry], reflowPlaceholders: [(index: Int, url: URL)]? = nil,
+         source: any BookSource, singleSetting: Int, coverSingle: Bool,
+         bookmarkedPages: Set<Int>, partialRecovery: ReaderWindowController.FailedOpen? = nil) {
+        self.folderURL = folderURL
+        self.entryIndex = entryIndex
+        self.entryCount = entryCount
+        self.readsFromLeft = readsFromLeft
+        self.entries = entries
+        self.reflowPlaceholders = reflowPlaceholders ?? entries.enumerated().compactMap { index, entry in
+            entry.reflowEPUBURL.map { (index: index, url: $0) }
+        }
+        self.source = source
+        self.singleSetting = singleSetting
+        self.coverSingle = coverSingle
+        self.bookmarkedPages = bookmarkedPages
+        self.partialRecovery = partialRecovery
+    }
 }

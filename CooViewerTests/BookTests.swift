@@ -57,6 +57,63 @@ final class StubSource: BookSource, @unchecked Sendable {
 final class BookTests: XCTestCase {
     private let portrait = CGSize(width: 70, height: 100)   // 0.7 <= 0.74 → 見開き候補
 
+    private func makePlaceholderBook() -> Book {
+        let entries = ["a", "b", "c"].enumerated().map { index, name in
+            PageEntry(id: index, name: name, pathInBook: name, fileURL: nil,
+                      creationDate: Date(timeIntervalSince1970: Double(3 - index)), modificationDate: nil,
+                      reflowEPUBURL: index == 2 ? nil : URL(fileURLWithPath: "/stub/" + name + ".epub"))
+        }
+        return Book(source: StubSource(sizes: Array(repeating: portrait, count: 3)),
+                    prepared: Book.prepare(url: URL(fileURLWithPath: "/stub/book"), entries: entries,
+                                           sortMode: .name, identity: .init()))
+    }
+
+    func testReflowPlaceholdersScannedOncePerEntriesGeneration() async {
+        let book = makePlaceholderBook()
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 0)
+        XCTAssertEqual(book.reflowPlaceholders.map(\.index), [0, 1])
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 1)
+        await book.setSortMode(.creationDate).value
+        _ = book.reflowPlaceholders
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 2)
+        let empty = Book(source: StubSource(sizes: []), prepared: .empty(for: URL(fileURLWithPath: "/stub/empty")))
+        XCTAssertTrue(empty.reflowPlaceholders.isEmpty)
+        XCTAssertTrue(empty.reflowPlaceholders.isEmpty)
+        XCTAssertEqual(empty.reflowPlaceholderScanCount, 1)
+    }
+
+    func testReflowPlaceholdersFollowSortOrder() async {
+        let book = makePlaceholderBook()
+        let before = book.reflowPlaceholders.map(\.url)
+        let generation = book.entriesGeneration
+        await book.setSortMode(.creationDate).value
+        XCTAssertEqual(book.entriesGeneration, generation + 1)
+        let expected = book.entries.enumerated().compactMap { index, entry in
+            entry.reflowEPUBURL.map { (index: index, url: $0) }
+        }
+        XCTAssertEqual(book.reflowPlaceholders.map(\.index), expected.map(\.index))
+        XCTAssertEqual(book.reflowPlaceholders.map(\.url), expected.map(\.url))
+        XCTAssertEqual(book.reflowPlaceholders.map(\.url), Array(before.reversed()))
+    }
+
+    func testEntriesGenerationAdvancesOnlyWhenEntriesChange() async {
+        let book = makePlaceholderBook()
+        let generation = book.entriesGeneration
+        _ = book.reflowPlaceholders
+        book.goTo(index: 2)
+        book.readMode = .rightToLeftSingle
+        book.coverSingleFirst = true
+        book.bookmarks = []
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.entriesGeneration, generation)
+        await book.setSortMode(.creationDate).value
+        XCTAssertEqual(book.entriesGeneration, generation + 1)
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.entriesGeneration, generation + 1)
+    }
+
     func testSkipClampsExtremeOffsetsBeforeAdding() async throws {
         let book = try await Book.open(source: StubSource(sizes: Array(repeating: portrait, count: 5)))
         book.goTo(index: 2)
