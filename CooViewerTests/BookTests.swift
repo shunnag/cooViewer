@@ -33,13 +33,14 @@ final class StubSource: BookSource, @unchecked Sendable {
         let next: Int?
         let previous: Int?
         let forward: Bool
+        let sequence: UInt64
     }
     private var readingNotes: [ReadingNote] = []
     var noteBlocker: (@Sendable () async -> Void)?
     var notedPositions: [ReadingNote] { decodeLock.withLock { readingNotes } }
-    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool) async {
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool, sequence: UInt64) async {
         decodeLock.withLock {
-            readingNotes.append(ReadingNote(current: current.id, next: next?.id, previous: previous?.id, forward: forward))
+            readingNotes.append(ReadingNote(current: current.id, next: next?.id, previous: previous?.id, forward: forward, sequence: sequence))
         }
         await noteBlocker?()
     }
@@ -192,11 +193,31 @@ final class BookTests: XCTestCase {
             if stub.notedPositions.count == 3 { break }
             await Task.yield()
         }
-        XCTAssertEqual(stub.notedPositions, [
-            .init(current: 0, next: 2, previous: nil, forward: true),
-            .init(current: 2, next: 4, previous: 1, forward: true),
-            .init(current: 2, next: 4, previous: 1, forward: false),
+        let notes = stub.notedPositions.sorted { $0.sequence < $1.sequence }
+        let start = try XCTUnwrap(notes.first?.sequence)
+        XCTAssertEqual(notes, [
+            .init(current: 0, next: 2, previous: nil, forward: true, sequence: start),
+            .init(current: 2, next: 4, previous: 1, forward: true, sequence: start + 1),
+            .init(current: 2, next: 4, previous: 1, forward: false, sequence: start + 2),
         ])
+    }
+
+    func testReadingPositionSequencesIncreaseAcrossBooksSharingSource() async throws {
+        let stub = StubSource(sizes: [portrait])
+        for expectedCount in 1...2 {
+            let book = try await Book.open(source: stub)
+            book.prefetchAhead = 0
+            book.prefetchBehind = 0
+            _ = await book.currentSpread()
+            for _ in 0..<10_000 {
+                if stub.notedPositions.count == expectedCount { break }
+                await Task.yield()
+            }
+            XCTAssertEqual(stub.notedPositions.count, expectedCount)
+        }
+        let notes = stub.notedPositions
+        XCTAssertEqual(notes.count, 2)
+        if notes.count == 2 { XCTAssertGreaterThan(notes[1].sequence, notes[0].sequence) }
     }
 
     func testPrefetchTargetsDropBehindInOtherVolumeWhenMovingForward() {

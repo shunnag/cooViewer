@@ -223,7 +223,7 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         XCTAssertEqual(completeCount, 2)
         XCTAssertLessThanOrEqual(Int64(completeCount * png.count), budget)
         let recovered = try XCTUnwrap(complete.first { $0.pathInBook.hasPrefix("b.zip/") })
-        await source.noteReadingPosition(current: recovered, next: nil, previous: nil, forward: true)
+        await source.noteReadingPosition(current: recovered, next: nil, previous: nil, forward: true, sequence: 1)
         let movedCount = await source.waitForSpoolCompletion()
         XCTAssertEqual(movedCount, 1, "予算不足時は窓外の最初の巻を追い出して回復巻へ回す")
     }
