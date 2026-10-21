@@ -9,7 +9,25 @@ import Foundation
 @MainActor
 final class Book {
     let source: any BookSource
-    private(set) var entries: [PageEntry]
+    private(set) var entries: [PageEntry] {
+        didSet { entriesGeneration &+= 1 }
+    }
+    private(set) var entriesGeneration = 0
+    private var placeholderGeneration = -1
+    private var cachedReflowPlaceholders: [(index: Int, url: URL)] = []
+    private(set) var reflowPlaceholderScanCount = 0
+
+    /// 毎ページの全件走査を避け、同数の並べ替えも世代で失効させる(設計書 §7.4)。
+    var reflowPlaceholders: [(index: Int, url: URL)] {
+        if placeholderGeneration != entriesGeneration {
+            cachedReflowPlaceholders = entries.enumerated().compactMap { index, entry in
+                entry.reflowEPUBURL.map { (index: index, url: $0) }
+            }
+            placeholderGeneration = entriesGeneration
+            reflowPlaceholderScanCount += 1
+        }
+        return cachedReflowPlaceholders
+    }
     let missingVolumeCount: Int
     var isSyntheticPreview = false
     var isPartial: Bool { missingVolumeCount > 0 }
