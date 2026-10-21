@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import KaitoKit
 
-/// 破損・非対応の子だけを従来どおり除外し、資源不足や I/O 失敗を合本の成功にしない。
+/// 破損・非対応と合本の恒久的な子の失敗を区別し、環境要因の失敗を成功にしない。
 enum SourceReadFailure {
     enum RetryClass: Sendable, Equatable {
         case transient, network, reopen, persistent, structural, cancelled
@@ -62,6 +62,19 @@ enum SourceReadFailure {
 
     static func assemblyFailure(in error: any Error) -> AssemblyFailure? {
         chain(error).compactMap { $0 as? AssemblyFailure }.first
+    }
+
+    static func isPermanentCollectionChildFailure(_ error: any Error) -> Bool {
+        guard assemblyFailure(in: error) == nil, retryClass(error) == .persistent else { return false }
+        let errors = chain(error)
+        // Cocoa の不在・権限エラーで、下層の別の I/O 障害を隠さない(設計書 §7.4)。
+        if let code = errors.compactMap({ errno($0) }).first {
+            return [ENOENT, ENOTDIR, ELOOP, EACCES, EPERM].contains(code)
+        }
+        return errors.contains {
+            let failure = $0 as NSError
+            return failure.domain == NSCocoaErrorDomain && [4, 260, 257].contains(failure.code)
+        }
     }
 
     private static func chain(_ error: any Error) -> [any Error] {

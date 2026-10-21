@@ -5,6 +5,29 @@ import XCTest
 @testable import cooViewer
 
 final class AssemblyRetryTests: XCTestCase {
+    func testPermanentCollectionChildClassificationPreservesEnvironmentalErrors() {
+        let permanent = [ENOENT, ENOTDIR, ELOOP, EACCES, EPERM]
+        let environmental = [EIO, ETIMEDOUT, ENOTCONN, ENETDOWN, ENETUNREACH, EHOSTDOWN,
+            EHOSTUNREACH, ENXIO, ECONNRESET, EMFILE, ENFILE, EAGAIN, ENOMEM, ESTALE, ENOSPC, EROFS]
+        for code in permanent + environmental {
+            for error in [KaitoError.io(code) as any Error,
+                          NSError(domain: NSPOSIXErrorDomain, code: Int(code))] {
+                XCTAssertEqual(SourceReadFailure.isPermanentCollectionChildFailure(wrap(error)),
+                               permanent.contains(code), "errno \(code)")
+                let cocoa = NSError(domain: NSCocoaErrorDomain, code: 260,
+                    userInfo: [NSUnderlyingErrorKey: error])
+                XCTAssertEqual(SourceReadFailure.isPermanentCollectionChildFailure(cocoa), permanent.contains(code))
+            }
+        }
+        for code in [4, 260, 257] {
+            XCTAssertTrue(SourceReadFailure.isPermanentCollectionChildFailure(
+                NSError(domain: NSCocoaErrorDomain, code: code)))
+        }
+        let inner = AssemblyFailure(failures: [.init(relativePath: "inner.zip", url: url,
+            error: KaitoError.io(ENOENT))], total: 1, sourceURL: url)
+        XCTAssertFalse(SourceReadFailure.isPermanentCollectionChildFailure(wrap(inner)))
+    }
+
     func testClassificationTableAndUnderlyingErrors() {
         let table: [(Int32, RetryClass, ReadFailureCause)] = [
             (EMFILE, .transient, .repeatedFailure), (ENFILE, .transient, .repeatedFailure),
