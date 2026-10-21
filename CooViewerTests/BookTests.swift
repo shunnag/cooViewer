@@ -28,11 +28,15 @@ final class StubSource: BookSource, @unchecked Sendable {
     var decodedIDs: [Int] { decodeLock.withLock { decodedLog } }
     func resetDecodeLog() { decodeLock.withLock { decodedLog = [] } }
 
+    var parallelWindowAnswer = false
+    var volumeKeys: [Int: Int] = [:]
+    nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { volumeKeys[entry.id] ?? 0 }
+
     private var windowQueries: [[Int]] = []
     var queriedWindows: [[Int]] { decodeLock.withLock { windowQueries } }
     func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool {
         decodeLock.withLock { windowQueries.append(ids) }
-        return false
+        return parallelWindowAnswer
     }
 
     init(sizes: [CGSize]) {
@@ -134,6 +138,62 @@ final class BookTests: XCTestCase {
         book.reschedulePrefetch()
         await book.waitForPrefetch()
         XCTAssertEqual(stub.queriedWindows, [[7, 1, 9]])
+    }
+
+    func testPrefetchTargetsDropBehindInOtherVolumeWhenMovingForward() {
+        let result = Book.prefetchTargets(currentIndex: 4, displayCount: 1, ahead: 3, behind: 4,
+                                          forward: true, count: 10, volumeKey: { $0 / 3 })
+        XCTAssertEqual(result, [5, 6, 7, 3])
+    }
+
+    func testPrefetchTargetsKeepBehindAcrossVolumesWhenMovingBackward() {
+        let result = Book.prefetchTargets(currentIndex: 4, displayCount: 1, ahead: 2, behind: 4,
+                                          forward: false, count: 10, volumeKey: { $0 / 3 })
+        XCTAssertEqual(result, [3, 2, 1, 0, 5, 6])
+    }
+
+    func testSerialPrefetchTargetsAscendByIDWithinVolume() {
+        let targets = [(index: 0, id: 9, volume: 0), (index: 1, id: 2, volume: 0),
+                       (index: 2, id: 12, volume: 1), (index: 3, id: 10, volume: 1),
+                       (index: 4, id: 3, volume: 0), (index: 5, id: 1, volume: 0)]
+        XCTAssertEqual(Book.serialOrder(targets, aheadCount: 4), [1, 0, 3, 2, 5, 4])
+        XCTAssertEqual(Book.serialOrder([], aheadCount: 0), [])
+    }
+
+    func testParallelPrefetchTargetsKeepDisplayOrder() async {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10))
+        stub.parallelWindowAnswer = true
+        let entries = [0, 9, 2, 7].map { id in
+            PageEntry(id: id, name: "p\(id)", pathInBook: "p\(id)", fileURL: nil,
+                      creationDate: nil, modificationDate: nil)
+        }
+        let book = Book(source: stub, prepared: .init(sortedEntries: entries, cacheKey: "parallel-order"))
+        book.prefetchAhead = 3
+        book.prefetchBehind = 0
+        book.mediaProfile = MediaProfile(mediaClass: .slowLocal)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        XCTAssertEqual(stub.decodedIDs, [9, 2, 7])
+    }
+
+    func testDefaultVolumeKeyKeepsSingleVolumeBehaviour() {
+        for forward in [true, false] {
+            let result = Book.prefetchTargets(currentIndex: 3, displayCount: 2, ahead: 3, behind: 2,
+                                              forward: forward, count: 8, volumeKey: { _ in 0 })
+            XCTAssertEqual(result, forward ? [5, 6, 7, 2, 1] : [2, 1, 5, 6, 7])
+        }
+    }
+
+    func testWindowQueryReceivesFilteredTargetIDs() async {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10))
+        stub.volumeKeys = [0: 0, 1: 0, 2: 1, 3: 1, 4: 2]
+        let book = try! await Book.open(source: stub)
+        book.prefetchAhead = 2
+        book.prefetchBehind = 2
+        book.goTo(index: 2)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        XCTAssertEqual(stub.queriedWindows, [[3, 4]])
     }
 
     func testDefaultWindowQueryFallsBackToWholeSourceAnswer() async {

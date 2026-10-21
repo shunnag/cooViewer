@@ -804,13 +804,42 @@ final class Book {
     /// 張り直すので再呼び出しは安全。
     func reschedulePrefetch() { schedulePrefetch() }
 
+    static func prefetchTargets(currentIndex: Int, displayCount: Int, ahead: Int, behind: Int,
+                                forward: Bool, count: Int, volumeKey: (Int) -> Int) -> [Int] {
+        guard currentIndex >= 0, currentIndex < count else { return [] }
+        let after = currentIndex + min(max(displayCount, 0), count - currentIndex)
+        let aheadTargets = (0..<min(max(ahead, 0), count - after)).map { after + $0 }
+        let behindTargets = (0..<min(max(behind, 0), currentIndex)).map { currentIndex - 1 - $0 }
+            .filter { !forward || volumeKey($0) == volumeKey(currentIndex) }
+        return forward ? aheadTargets + behindTargets : behindTargets + aheadTargets
+    }
+
+    static func serialOrder(_ targets: [(index: Int, id: Int, volume: Int)], aheadCount: Int) -> [Int] {
+        var result: [Int] = []
+        let boundary = min(max(0, aheadCount), targets.count)
+        // 群と巻の順は保つ。外側 id は書庫 index、合本 id は子の entries() 順の offset
+        // なので、同じ巻の id 昇順なら solid の巻き戻しを減らせる(仕様書 §4.5、設計書 §3.1)。
+        for range in [0..<boundary, boundary..<targets.count] {
+            var start = range.lowerBound
+            while start < range.upperBound {
+                var end = start + 1
+                while end < range.upperBound, targets[end].volume == targets[start].volume { end += 1 }
+                result.append(contentsOf: targets[start..<end].sorted { $0.id < $1.id }.map(\.index))
+                start = end
+            }
+        }
+        return result
+    }
+
     private func schedulePrefetch() {
         prefetchTask?.cancel()
-        let ahead = (0..<max(0, prefetchAhead)).map { currentIndex + lastDisplayCount + $0 }
-        let behind = prefetchBehind > 0
-            ? (1...prefetchBehind).map { currentIndex - $0 } : []
-        let targets = (lastMoveForward ? ahead + behind : behind + ahead)
-            .filter { entries.indices.contains($0) }
+        let targets = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
+            ahead: prefetchAhead, behind: prefetchBehind, forward: lastMoveForward, count: entries.count,
+            volumeKey: { source.prefetchVolumeKey(for: entries[$0]) })
+        let captured = targets.map { (index: $0, id: entries[$0].id,
+                                      volume: source.prefetchVolumeKey(for: entries[$0])) }
+        let aheadCount = targets.filter { $0 > currentIndex }.count
+        let leadingCount = lastMoveForward ? aheadCount : targets.count - aheadCount
         // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)
         let width = max(1, mediaProfile.bookPrefetchConcurrency)
         let source = source
@@ -837,7 +866,7 @@ final class Book {
                     }
                 }
             } else {
-                for target in targets {
+                for target in Self.serialOrder(captured, aheadCount: leadingCount) {
                     if Task.isCancelled { return }
                     _ = await self.image(at: target)
                 }

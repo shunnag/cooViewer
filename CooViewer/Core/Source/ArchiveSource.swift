@@ -126,6 +126,8 @@ actor ArchiveSource: BookSource {
     /// ネストページの id 基数(最上位のエントリ番号と衝突しない大きさ)
     private static let nestedIDStride = 1_000_000
 
+    nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { entry.id / Self.nestedIDStride }
+
     nonisolated var supportsDateSort: Bool { false }
     /// エントリ独立圧縮の形式(構造を調べるまでもなく常にエントリ独立)
     private static let nonSolidExtensions: Set<String> = ["zip", "cbz"]

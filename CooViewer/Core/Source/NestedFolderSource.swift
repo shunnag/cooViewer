@@ -16,6 +16,8 @@ actor NestedFolderSource: BookSource {
     private let engineFactory: ArchiveEngineFactory
     private let retryPolicy: AssemblyRetryPolicy
 
+    nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { entry.id / Self.nestedIDStride }
+
     nonisolated var supportsDateSort: Bool { false }
     /// フォルダ画像はゲート制御下で並列。子(書庫/PDF)が全員「いまの状態で
     /// 並列可」のときのみ本全体を並列にする(solid 書庫の巻き戻し防止)

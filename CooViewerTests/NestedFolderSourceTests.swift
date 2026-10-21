@@ -38,6 +38,19 @@ final class NestedFolderSourceTests: XCTestCase {
         return try XCTUnwrap(document.dataRepresentation())
     }
 
+    func testPrefetchVolumeKeySeparatesChildrenAndFolderImages() async throws {
+        try png(width: 40).write(to: tempDir.appendingPathComponent("00.avifs"))
+        try zipData([("a.avifs", png(width: 41)), ("b.avifs", png(width: 42))])
+            .write(to: tempDir.appendingPathComponent("10.zip"))
+        try zipData([("a.avifs", png(width: 43))]).write(to: tempDir.appendingPathComponent("20.zip"))
+        let source = NestedFolderSource(folder: try FolderSource(url: tempDir, readSubFolders: false))
+        let pages = try await source.entries()
+        XCTAssertEqual(pages.map { source.prefetchVolumeKey(for: $0) }, [0, 1, 1, 2])
+        let card = PageEntry(id: 3_999_999, name: "missing.zip", pathInBook: "missing.zip", fileURL: nil,
+                             creationDate: nil, modificationDate: nil)
+        XCTAssertEqual(source.prefetchVolumeKey(for: card), 3)
+    }
+
     /// 画像だけのフォルダは従来どおり FolderSource(並列・日付ソート可)のまま
     func testPlainImageFolderStaysFolderSource() async throws {
         try png(width: 40).write(to: tempDir.appendingPathComponent("a.png"))
