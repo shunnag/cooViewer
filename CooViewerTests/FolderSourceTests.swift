@@ -69,6 +69,161 @@ final class FolderSourceTests: XCTestCase {
         XCTAssertEqual(image.height, 2)
     }
 
+    // 相対パスの検証は OS の UTI 登録状態に依存しない拡張子を使う。
+    private func makeRelativePathFixture() throws -> URL {
+        let root = tempDir.appendingPathComponent("paths", isDirectory: true)
+        let sub = root.appendingPathComponent("sub", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        for (directory, name) in [(root, "a.avifs"), (sub, "c.avifs"),
+                                  (root, "book.zip"), (root, "book.pdf")] {
+            try Data().write(to: directory.appendingPathComponent(name, isDirectory: false))
+        }
+        return root
+    }
+
+    private func legacyRelativePath(fileURL: URL, folderURL: URL) -> String {
+        let basePath = folderURL.standardizedFileURL.path
+        let fullPath = fileURL.standardizedFileURL.path
+        var relativePath = fullPath.hasPrefix(basePath)
+            ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
+        if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+        return relativePath
+    }
+
+    private func assertLegacyPaths(at url: URL, recursive: Bool = false,
+                                   expectedFast: Bool = true,
+                                   file: StaticString = #filePath, line: UInt = #line) async throws {
+        let source = try FolderSource(url: url, readSubFolders: recursive)
+        let entries = try await source.entries()
+        var urls: [URL]
+        if recursive {
+            let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+                at: url, includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]))
+            urls = enumerator.allObjects.compactMap { $0 as? URL }
+        } else {
+            urls = try FileManager.default.contentsOfDirectory(at: url,
+                includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        }
+        urls.sort { $0.path < $1.path }
+        urls = urls.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
+                && (["png", "jpg", "avifs"].contains($0.pathExtension) || SupportedTypes.isBookFile($0))
+        }
+        let images = urls.filter { ["png", "jpg", "avifs"].contains($0.pathExtension) }
+        let books = urls.filter { !["png", "jpg", "avifs"].contains($0.pathExtension) }
+        XCTAssertEqual(entries.map { Array($0.pathInBook.utf8) },
+                       images.map { Array(legacyRelativePath(fileURL: $0, folderURL: url).utf8) },
+                       file: file, line: line)
+        XCTAssertEqual(entries.map(\.fileURL), images.map { Optional($0) }, file: file, line: line)
+        XCTAssertEqual(entries.map(\.id), Array(images.indices), file: file, line: line)
+        XCTAssertEqual(source.nestedBookCandidates.map { Array($0.relativePath.utf8) },
+                       books.map { Array(legacyRelativePath(fileURL: $0, folderURL: url).utf8) },
+                       file: file, line: line)
+        let base = url.standardizedFileURL.path
+        let prefixes = FolderSource.fastPrefixes(for: url, standardizedBasePath: base)
+        for child in urls {
+            let result = FolderSource.relativePath(of: child, fastPrefixes: prefixes, standardizedBasePath: base)
+            XCTAssertEqual(Array(result.path.utf8), Array(legacyRelativePath(fileURL: child, folderURL: url).utf8),
+                           file: file, line: line)
+            XCTAssertEqual(result.usedFastPath, expectedFast, child.path, file: file, line: line)
+        }
+    }
+
+    func testRelativePathsMatchLegacyForVarSpelledTempURL() async throws {
+        let root = try makeRelativePathFixture()
+        let path = root.path.hasPrefix("/private/var/") ? String(root.path.dropFirst(8)) : root.path
+        XCTAssertTrue(path.hasPrefix("/var/"))
+        try await assertLegacyPaths(at: URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    func testRelativePathsMatchLegacyForPrivatePrefixedURL() async throws {
+        let root = try makeRelativePathFixture()
+        let path = root.path.hasPrefix("/private/") ? root.path : "/private" + root.path
+        try await assertLegacyPaths(at: URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    func testRelativePathsMatchLegacyForDotDotURL() async throws {
+        let root = try makeRelativePathFixture()
+        try await assertLegacyPaths(at: URL(fileURLWithPath: root.path + "/sub/..", isDirectory: true))
+    }
+
+    func testRelativePathsMatchLegacyRecursively() async throws {
+        let root = try makeRelativePathFixture()
+        let deep = root.appendingPathComponent("sub/deep", isDirectory: true)
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        for name in ["image.avifs", "book.zip", "book.pdf"] {
+            try Data().write(to: deep.appendingPathComponent(name, isDirectory: false))
+        }
+        try await assertLegacyPaths(at: root, recursive: true)
+    }
+
+    func testRelativePathsMatchLegacyForDecomposedUnicodeNames() async throws {
+        let folder = tempDir.appendingPathComponent("cafe\u{301}", isDirectory: true)
+        let sub = folder.appendingPathComponent("e\u{301}tage", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        for name in ["cafe\u{301}.avifs", "cafe\u{301}.zip"] {
+            try Data().write(to: sub.appendingPathComponent(name, isDirectory: false))
+        }
+        try await assertLegacyPaths(at: folder, recursive: true)
+        let encoded = try XCTUnwrap(folder.path.precomposedStringWithCanonicalMapping
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed))
+        let composed = try XCTUnwrap(URL(string: "file://" + encoded + "/"))
+        try await assertLegacyPaths(at: composed, recursive: true, expectedFast: false)
+    }
+
+    func testCaseMismatchedFolderURLKeepsLegacyRelativePaths() async throws {
+        let folder = tempDir.appendingPathComponent("MixedCase", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data().write(to: folder.appendingPathComponent("a.avifs", isDirectory: false))
+        let mismatched = tempDir.appendingPathComponent("mixedcase", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: mismatched.path) else {
+            throw XCTSkip("大小文字を区別するファイルシステム")
+        }
+        try await assertLegacyPaths(at: mismatched, expectedFast: false)
+    }
+
+    func testSymlinkedLeafFileKeepsLegacyRelativePath() async throws {
+        let root = try makeRelativePathFixture()
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("linked.avifs"),
+                                                   withDestinationURL: root.appendingPathComponent("a.avifs"))
+        try await assertLegacyPaths(at: root)
+    }
+
+    func testSymlinkedFolderURLBehavesAsBefore() throws {
+        let link = tempDir.appendingPathComponent("linked", isDirectory: false)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: tempDir.appendingPathComponent("sub"))
+        XCTAssertThrowsError(try FileManager.default.contentsOfDirectory(at: link,
+            includingPropertiesForKeys: [.isDirectoryKey]))
+        XCTAssertThrowsError(try FolderSource(url: link, readSubFolders: false))
+    }
+
+    func testFastRelativePathHelperBranches() {
+        let base = "/synthetic/base"
+        let cases: [(String, Bool)] = [
+            (base + "/sub/a.png", true), (base + "/a.png", true),
+            (base, false), (base + "Extra/a.png", false),
+            (base + "/sub/../a.png", false), (base + "/./a.png", false),
+            ("/synthetic/cafe\u{301}/a.png", false),
+        ]
+        for (path, fast) in cases {
+            let url = URL(fileURLWithPath: path, isDirectory: false)
+            let result = FolderSource.relativePath(of: url, fastPrefixes: [base], standardizedBasePath: base)
+            XCTAssertEqual(result.usedFastPath, fast, path)
+            XCTAssertEqual(Array(result.path.utf8), Array(legacyRelativePath(
+                fileURL: url, folderURL: URL(fileURLWithPath: base, isDirectory: true)).utf8))
+        }
+        let unicode = FolderSource.relativePath(of: URL(fileURLWithPath: "/synthetic/cafe\u{301}/a.png"),
+            fastPrefixes: ["/synthetic/café"], standardizedBasePath: "/synthetic/café")
+        XCTAssertFalse(unicode.usedFastPath)
+        let emptyComponent = FolderSource.relativePath(of: URL(string: "file://" + base + "//a.png")!,
+            fastPrefixes: [base], standardizedBasePath: base)
+        XCTAssertFalse(emptyComponent.usedFastPath)
+        let fallback = FolderSource.relativePath(of: URL(fileURLWithPath: base + "/a.png"),
+            fastPrefixes: [], standardizedBasePath: base)
+        XCTAssertFalse(fallback.usedFastPath)
+    }
+
     func testDateSortSupported() {
         XCTAssertTrue((try! FolderSource(url: tempDir, readSubFolders: false)).supportsDateSort)
     }
