@@ -682,6 +682,23 @@ final class PageEntryDisplayTitleTests: XCTestCase {
 
 /// 書庫の拡張子判定(仕様書 §2.1 の archiveTypes、§2.3 の番号系列、設計書 §2.4)
 final class ArchiveExtensionTests: XCTestCase {
+    func testRARPartPatternMatchesKaitoKitRules() throws {
+        let first = try XCTUnwrap(SupportedTypes.rarPartPattern("x.part1.rar"))
+        XCTAssertEqual(first.prefix, "x")
+        XCTAssertEqual(first.number, 1)
+        let upper = try XCTUnwrap(SupportedTypes.rarPartPattern("X.PART02.RAR"))
+        XCTAssertEqual(upper.prefix, "X")
+        XCTAssertEqual(upper.marker, ".PART")
+        XCTAssertEqual(upper.digits, "02")
+        XCTAssertEqual(upper.number, 2)
+        XCTAssertEqual(upper.ext, ".RAR")
+        XCTAssertEqual(SupportedTypes.rarPartPattern("x.part1.part3.rar")?.prefix, "x.part1")
+        for name in ["x.part0.rar", "x.partA.rar", "x.part2.cbr", "x.rar", "x.part.rar",
+                     "x.part２.rar", "x.part18446744073709551616.rar"] {
+            XCTAssertNil(SupportedTypes.rarPartPattern(name), name)
+        }
+    }
+
     func testComicBookSevenZipArchives() {
         XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.cb7")))
         XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.CB7")))

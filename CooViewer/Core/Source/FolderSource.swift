@@ -11,12 +11,14 @@ final class FolderSource: BookSource {
     /// フォルダ内の書庫/PDF(旧実装はネスト COImageLoader として本に統合した。
     /// 統合は NestedFolderSource が担い、本クラスは列挙のみ行う)
     let nestedBookCandidates: [(fileURL: URL, relativePath: String)]
+    let splitContinuationCandidateIndices: Set<Int>
 
     /// 撮影用の不変スナップショットは実フォルダや利用者の履歴に触れない(設計書 §7.4)。
     init(snapshotURL: URL, images: [PageEntry], nestedPaths: [String]) {
         url = snapshotURL
         pageEntries = images
         nestedBookCandidates = nestedPaths.map { (snapshotURL.appendingPathComponent($0), $0) }
+        splitContinuationCandidateIndices = []
     }
 
     var supportsDateSort: Bool { true }
@@ -124,6 +126,18 @@ final class FolderSource: BookSource {
         }
         self.pageEntries = entries
         self.nestedBookCandidates = candidates
+        // バイト一致の先頭巻が同じ親にある場合だけ省略する。偶然この命名の別々の単独書庫も
+        // 続き巻とみなす残余リスクがある。候補は残し、後続ページの id を保つ(設計書 §2.4)。
+        let paths = Set(candidates.map { Array($0.relativePath.utf8) })
+        self.splitContinuationCandidateIndices = Set(candidates.indices.filter { index in
+            let path = candidates[index].relativePath
+            let name = (path as NSString).lastPathComponent
+            guard let part = SupportedTypes.rarPartPattern(name), part.number >= 2 else { return false }
+            let parent = String(path.dropLast(name.count))
+            let first = parent + part.prefix + part.marker
+                + String(repeating: "0", count: part.digits.count - 1) + "1" + part.ext
+            return paths.contains(Array(first.utf8))
+        })
     }
 
     nonisolated static func fastPrefixes(for url: URL, standardizedBasePath: String) -> [String] {

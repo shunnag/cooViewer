@@ -146,6 +146,7 @@ actor NestedFolderSource: BookSource {
             skippedOrdinals.removeAll()
             preparedCandidateIdentity = identity
         }
+        skippedOrdinals.formUnion(folder.splitContinuationCandidateIndices)
         let pendingCandidates = candidates.indices.filter {
             preparedChildren[$0] == nil && !excludedOrdinals.contains($0) && !skippedOrdinals.contains($0)
         }.map { AssemblyCandidate(ordinal: $0, relativePath: candidates[$0].relativePath,
