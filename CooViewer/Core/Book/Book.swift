@@ -293,8 +293,11 @@ final class Book {
         // 巻き込まないように独立タスクで走らせる
         let source = source
         let cap = displayPixelCap
+        let display = PageRequestIntent.isDisplay
         let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
-            try? await source.image(for: entry, maxPixelSize: cap)
+            await PageRequestIntent.$isDisplay.withValue(display) {
+                try? await source.image(for: entry, maxPixelSize: cap)
+            }
         }
         inFlightToken &+= 1
         let token = inFlightToken
@@ -390,7 +393,9 @@ final class Book {
         while !entries.isEmpty, !Task.isCancelled {
             let revision = stateRevision
             noteReadingPositionIfNeeded()
-            let spread = await loadSpread(at: currentIndex)
+            let spread = await PageRequestIntent.$isDisplay.withValue(true) {
+                await loadSpread(at: currentIndex)
+            }
             // 旧ページの取得中に位置/ソート/見開き条件が変わったら再計算する。
             // 画像と番号の対応、次ページの送り幅を同じ状態で確定するため。
             guard revision == stateRevision else { continue }
