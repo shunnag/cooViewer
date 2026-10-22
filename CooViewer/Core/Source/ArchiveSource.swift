@@ -1771,8 +1771,8 @@ actor ArchiveSource: BookSource {
     }
 
     /// 先読みが solid の主展開を始めてよいか。スプールの開始が見込まれる間は断る(CV4-1、設計書 §5)。
-    /// 断るのは未開始の走査と、末尾走査中に後で届く先頭部分だけ。方針「しない」・予算外・
-    /// 停止中は従来どおり主書庫で読み、走査が届く id は spooledOrWaitingData が待つ。
+    /// 未開始・ゲート待ちの走査と、末尾走査中に後で届く先頭部分を断る。方針「しない」・予算外・
+    /// 停止中は従来どおり主書庫で読み、稼働中の走査が届く id は spooledOrWaitingData が待つ。
     private func shouldDeclinePrefetch(_ id: Int) -> Bool {
         guard PageRequestIntent.isPrefetch, !PageRequestIntent.isDisplay, case .serial = parallelMode,
               mediaProfileApplied, spoolSettingsConfigured,
@@ -1783,7 +1783,12 @@ actor ArchiveSource: BookSource {
         case .idle:
             return budgetForSpoolStart(sizeLimit: spoolSizeLimit) != nil
         case .running(let task):
-            guard !task.isCancelled, spoolOrderPosition < spoolTailCount,
+            guard !task.isCancelled else { return false }
+            let generation = spoolGeneration
+            let ownsGate = spoolReservation.withLock { $0.generation == generation && $0.hasGate }
+            // 枠待ちでは待機票を登録できないため、主展開へ進まず予算内の先読みを断る(CV5-1)。
+            if !spoolIsActive && !ownsGate && spoolWillReach(id) { return true }
+            guard spoolOrderPosition < spoolTailCount,
                   let offset = spoolOrderOffsets[id], offset >= spoolTailCount else { return false }
             return spoolWillReachAfterTail(offset)
         case .paused, .finished:
