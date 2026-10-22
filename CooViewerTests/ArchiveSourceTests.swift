@@ -889,6 +889,56 @@ final class ArchiveSourceTests: XCTestCase {
         }
     }
 
+    func testPrefetchDeclinesWhileSerialSpoolWaitsForBackgroundGate() async throws {
+        let probe = SpoolEngineProbe()
+        let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
+        await source.configureSpooling(sizeLimit: 1 << 30)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+        let pages = try await source.entries()
+        let gate = ArchiveSource.backgroundSpoolGate
+        var acquired = 0
+        while await gate.tryAcquire() { acquired += 1 }
+        let held = acquired
+        defer {
+            source.cancelSpoolingForWindow()
+            Task { for _ in 0..<held { await gate.release() } }
+        }
+        XCTAssertGreaterThan(held, 0)
+        let started = await source.beginSpooling(sizeLimit: 1 << 30, interactive: false)
+        XCTAssertTrue(started)
+        for _ in 0..<10_000 {
+            if await gate.debugCounts().queued > 0 { break }
+            await Task.yield()
+        }
+        let queued = await gate.debugCounts().queued
+        XCTAssertGreaterThan(queued, 0, "背景走査をゲート待ちに留める")
+        XCTAssertTrue(source.hasRunningSpool)
+        let stats = await source.spoolStats()
+        XCTAssertEqual(stats.bytes, 0)
+        XCTAssertEqual(stats.spooled, 0)
+        let clock = ContinuousClock()
+        let start = clock.now
+        for page in [pages[0], pages[2]] {
+            do {
+                _ = try await PageRequestIntent.$isPrefetch.withValue(true) {
+                    try await source.image(for: page, maxPixelSize: nil)
+                }
+                XCTFail("ゲート待ちの走査より先に主展開へ進まない")
+            } catch BookSourceError.temporarilyUnavailable {
+            } catch {
+                XCTFail("先読みの辞退以外の失敗: \(error)")
+            }
+        }
+        XCTAssertLessThan(clock.now - start, .seconds(1), "先読みはゲートを待たず速やかに断る")
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
+        XCTAssertEqual(probe.state.withLock { $0.spoolReads }, [])
+        XCTAssertEqual(probe.state.withLock { $0.reopenCalls }, 0)
+        let waiters = await source.spoolWaiterCount
+        XCTAssertEqual(waiters, 0)
+        await source.pauseSpooling()
+        await source.waitForSpoolCompletion()
+    }
+
     func testPrefetchDeclinesHeadDuringTailPassButWaitsForTail() async throws {
         let started = expectation(description: "引き渡した位置から末尾を走査中")
         let release = DispatchSemaphore(value: 0)
