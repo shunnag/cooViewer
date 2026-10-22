@@ -276,9 +276,14 @@ final class Book {
 
     // MARK: - 画像ロード
 
+    /// 辞退だけを合流側で再試行できるよう、通常の復号失敗と区別する(CV5-2)。
+    private struct ImageLoadResult: Sendable {
+        let image: CGImage?
+        let declined: Bool
+    }
     /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
     /// デコードに合流し、同じページを二重にデコードしないための単一飛行
-    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, task: Task<CGImage?, Never>)] = [:]
+    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, task: Task<ImageLoadResult, Never>)] = [:]
     private var inFlightToken = 0
 
     func image(at index: Int) async -> CGImage? {
@@ -289,27 +294,37 @@ final class Book {
         let display = PageRequestIntent.isDisplay
         let prefetch = PageRequestIntent.isPrefetch
         if let running = inFlightLoads[key] {
-            let image = await running.task.value
-            // 先読みの辞退(nil)を表示へ引き継がず、表示の意図で読み直す(CV4-1)。
-            // 再登録された先読みへ再び合流して循環しないよう、一覧は見直さない。
-            guard image == nil, display, running.prefetch else { return image }
+            let result = await running.task.value
+            // 表示と見開き判定は先読みの辞退だけを読み直し、復号失敗を再試行しない(CV5-2)。
+            guard result.declined, !prefetch, running.prefetch else { return result.image }
             if let hit = cache.image(for: key) { return hit }
+            // 別の合流要求が始めた再読込を共有する。先読みへは再合流せず循環を防ぐ。
+            if let reissued = inFlightLoads[key], !reissued.prefetch {
+                return await reissued.task.value.image
+            }
         }
         // detached: 先読みのキャンセルが、合流している表示要求まで
         // 巻き込まないように独立タスクで走らせる
         let source = source
         let cap = displayPixelCap
-        let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
+        let task = Task<ImageLoadResult, Never>.detached(priority: .userInitiated) {
             await PageRequestIntent.$isDisplay.withValue(display) {
                 await PageRequestIntent.$isPrefetch.withValue(prefetch) {
-                    try? await source.image(for: entry, maxPixelSize: cap)
+                    do {
+                        let image = try await source.image(for: entry, maxPixelSize: cap)
+                        return ImageLoadResult(image: image, declined: false)
+                    } catch BookSourceError.temporarilyUnavailable {
+                        return ImageLoadResult(image: nil, declined: true)
+                    } catch {
+                        return ImageLoadResult(image: nil, declined: false)
+                    }
                 }
             }
         }
         inFlightToken &+= 1
         let token = inFlightToken
         inFlightLoads[key] = (token, prefetch, task)
-        let image = await task.value
+        let image = await task.value.image
         // 上限の値が一周しても旧要求は復活させない。失効と登録を同じ
         // MainActor で完結させ、古い小画像が新しい大画像を上書きするのを防ぐ。
         guard inFlightLoads[key]?.token == token else { return image }
