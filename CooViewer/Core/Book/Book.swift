@@ -9,7 +9,25 @@ import Foundation
 @MainActor
 final class Book {
     let source: any BookSource
-    private(set) var entries: [PageEntry]
+    private(set) var entries: [PageEntry] {
+        didSet { entriesGeneration &+= 1 }
+    }
+    private(set) var entriesGeneration = 0
+    private var placeholderGeneration = -1
+    private var cachedReflowPlaceholders: [(index: Int, url: URL)] = []
+    private(set) var reflowPlaceholderScanCount = 0
+
+    /// 毎ページの全件走査を避け、同数の並べ替えも世代で失効させる(設計書 §7.4)。
+    var reflowPlaceholders: [(index: Int, url: URL)] {
+        if placeholderGeneration != entriesGeneration {
+            cachedReflowPlaceholders = entries.enumerated().compactMap { index, entry in
+                entry.reflowEPUBURL.map { (index: index, url: $0) }
+            }
+            placeholderGeneration = entriesGeneration
+            reflowPlaceholderScanCount += 1
+        }
+        return cachedReflowPlaceholders
+    }
     let missingVolumeCount: Int
     var isSyntheticPreview = false
     var isPartial: Bool { missingVolumeCount > 0 }
@@ -53,6 +71,9 @@ final class Book {
     private let sorter: any PageSorting
     private var prefetchTask: Task<Void, Never>?
     private var lastDisplayCount = 1
+    private var lastReadingPosition: (volume: Int, forward: Bool, generation: Int)?
+    // 復旧後の別 Book も同じソースを使うため、通知の連番はプロセス全体で共有する。
+    private static var readingPositionSequence: UInt64 = 0
     /// 見開き取得は同じ位置・並び・配置条件で完了した結果だけを採用する。
     /// ナビゲーション世代は後発のジャンプ/設定変更で旧判定を失効させる一方、
     /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
@@ -255,9 +276,14 @@ final class Book {
 
     // MARK: - 画像ロード
 
+    /// 辞退だけを合流側で再試行できるよう、通常の復号失敗と区別する(CV5-2)。
+    private struct ImageLoadResult: Sendable {
+        let image: CGImage?
+        let declined: Bool
+    }
     /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
     /// デコードに合流し、同じページを二重にデコードしないための単一飛行
-    private var inFlightLoads: [Int: (token: Int, task: Task<CGImage?, Never>)] = [:]
+    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, task: Task<ImageLoadResult, Never>)] = [:]
     private var inFlightToken = 0
 
     func image(at index: Int) async -> CGImage? {
@@ -265,20 +291,40 @@ final class Book {
         let entry = entries[index]
         let key = entry.id
         if let hit = cache.image(for: key) { return hit }
+        let display = PageRequestIntent.isDisplay
+        let prefetch = PageRequestIntent.isPrefetch
         if let running = inFlightLoads[key] {
-            return await running.task.value
+            let result = await running.task.value
+            // 表示と見開き判定は先読みの辞退だけを読み直し、復号失敗を再試行しない(CV5-2)。
+            guard result.declined, !prefetch, running.prefetch else { return result.image }
+            if let hit = cache.image(for: key) { return hit }
+            // 別の合流要求が始めた再読込を共有する。先読みへは再合流せず循環を防ぐ。
+            if let reissued = inFlightLoads[key], !reissued.prefetch {
+                return await reissued.task.value.image
+            }
         }
         // detached: 先読みのキャンセルが、合流している表示要求まで
         // 巻き込まないように独立タスクで走らせる
         let source = source
         let cap = displayPixelCap
-        let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
-            try? await source.image(for: entry, maxPixelSize: cap)
+        let task = Task<ImageLoadResult, Never>.detached(priority: .userInitiated) {
+            await PageRequestIntent.$isDisplay.withValue(display) {
+                await PageRequestIntent.$isPrefetch.withValue(prefetch) {
+                    do {
+                        let image = try await source.image(for: entry, maxPixelSize: cap)
+                        return ImageLoadResult(image: image, declined: false)
+                    } catch BookSourceError.temporarilyUnavailable {
+                        return ImageLoadResult(image: nil, declined: true)
+                    } catch {
+                        return ImageLoadResult(image: nil, declined: false)
+                    }
+                }
+            }
         }
         inFlightToken &+= 1
         let token = inFlightToken
-        inFlightLoads[key] = (token, task)
-        let image = await task.value
+        inFlightLoads[key] = (token, prefetch, task)
+        let image = await task.value.image
         // 上限の値が一周しても旧要求は復活させない。失効と登録を同じ
         // MainActor で完結させ、古い小画像が新しい大画像を上書きするのを防ぐ。
         guard inFlightLoads[key]?.token == token else { return image }
@@ -368,7 +414,10 @@ final class Book {
     func currentSpread() async -> Spread {
         while !entries.isEmpty, !Task.isCancelled {
             let revision = stateRevision
-            let spread = await loadSpread(at: currentIndex)
+            noteReadingPositionIfNeeded()
+            let spread = await PageRequestIntent.$isDisplay.withValue(true) {
+                await loadSpread(at: currentIndex)
+            }
             // 旧ページの取得中に位置/ソート/見開き条件が変わったら再計算する。
             // 画像と番号の対応、次ページの送り幅を同じ状態で確定するため。
             guard revision == stateRevision else { continue }
@@ -377,6 +426,27 @@ final class Book {
             return spread
         }
         return Spread(indices: [], images: [])
+    }
+
+    private func noteReadingPositionIfNeeded() {
+        guard entries.indices.contains(currentIndex) else { return }
+        let current = entries[currentIndex]
+        let volume = source.prefetchVolumeKey(for: current)
+        if let lastReadingPosition, lastReadingPosition.volume == volume,
+           lastReadingPosition.forward == lastMoveForward, lastReadingPosition.generation == entriesGeneration { return }
+        lastReadingPosition = (volume, lastMoveForward, entriesGeneration)
+        // 今の巻だけを走査し、合本 actor や別の子を表示経路で待たない(cooViewer-tg48、設計書 §5)。
+        var first = currentIndex
+        var end = currentIndex + 1
+        while first > 0, source.prefetchVolumeKey(for: entries[first - 1]) == volume { first -= 1 }
+        while end < entries.count, source.prefetchVolumeKey(for: entries[end]) == volume { end += 1 }
+        let previous = first > 0 ? entries[first - 1] : nil
+        let next = end < entries.count ? entries[end] : nil
+        let source = source
+        let forward = lastMoveForward
+        Self.readingPositionSequence += 1
+        let sequence = Self.readingPositionSequence
+        Task { await source.noteReadingPosition(current: current, next: next, previous: previous, forward: forward, sequence: sequence) }
     }
 
     private func loadSpread(at index: Int) async -> Spread {
@@ -786,42 +856,88 @@ final class Book {
     /// 張り直すので再呼び出しは安全。
     func reschedulePrefetch() { schedulePrefetch() }
 
+    static func prefetchTargets(currentIndex: Int, displayCount: Int, ahead: Int, behind: Int,
+                                forward: Bool, count: Int, volumeKey: (Int) -> Int) -> [Int] {
+        guard currentIndex >= 0, currentIndex < count else { return [] }
+        let after = currentIndex + min(max(displayCount, 0), count - currentIndex)
+        let aheadTargets = (0..<min(max(ahead, 0), count - after)).map { after + $0 }
+        let behindTargets = (0..<min(max(behind, 0), currentIndex)).map { currentIndex - 1 - $0 }
+            .filter { !forward || volumeKey($0) == volumeKey(currentIndex) }
+        return forward ? aheadTargets + behindTargets : behindTargets + aheadTargets
+    }
+
+    static func serialOrder(_ targets: [(index: Int, id: Int, volume: Int)], aheadCount: Int) -> [Int] {
+        var result: [Int] = []
+        let boundary = min(max(0, aheadCount), targets.count)
+        // 群と巻の順は保つ。外側 id は書庫 index、合本 id は子の entries() 順の offset
+        // なので、同じ巻の id 昇順なら solid の巻き戻しを減らせる(仕様書 §4.5、設計書 §3.1)。
+        for range in [0..<boundary, boundary..<targets.count] {
+            var start = range.lowerBound
+            while start < range.upperBound {
+                var end = start + 1
+                while end < range.upperBound, targets[end].volume == targets[start].volume { end += 1 }
+                result.append(contentsOf: targets[start..<end].sorted { $0.id < $1.id }.map(\.index))
+                start = end
+            }
+        }
+        return result
+    }
+
     private func schedulePrefetch() {
         prefetchTask?.cancel()
-        let ahead = (0..<max(0, prefetchAhead)).map { currentIndex + lastDisplayCount + $0 }
-        let behind = prefetchBehind > 0
-            ? (1...prefetchBehind).map { currentIndex - $0 } : []
-        let targets = (lastMoveForward ? ahead + behind : behind + ahead)
-            .filter { entries.indices.contains($0) }
+        // 同じ名前の source を宣言より前のクロージャで参照すると Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、クロージャより先にローカルへ取る。
+        let source = source
+        let entries = entries
+        let targets = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
+            ahead: prefetchAhead, behind: prefetchBehind, forward: lastMoveForward, count: entries.count,
+            volumeKey: { source.prefetchVolumeKey(for: entries[$0]) })
+        let captured = targets.map { (index: $0, id: entries[$0].id,
+                                      volume: source.prefetchVolumeKey(for: entries[$0])) }
+        let aheadCount = targets.filter { $0 > currentIndex }.count
+        let leadingCount = lastMoveForward ? aheadCount : targets.count - aheadCount
         // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)
         let width = max(1, mediaProfile.bookPrefetchConcurrency)
-        let source = source
 
+        let targetIDs = targets.map { entries[$0].id }
         prefetchTask = Task { [weak self] in
-            guard let self else { return }
-            // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
-            // ソースの「現在の状態」(スプール完了・形式)で判断する
-            let parallel = await source.currentlySupportsParallelPageLoads()
-            if parallel {
-                await withTaskGroup(of: Void.self) { group in
-                    var iterator = targets.makeIterator()
-                    for _ in 0..<width {
-                        if let target = iterator.next() {
-                            group.addTask { _ = await self.image(at: target) }
-                        }
-                    }
-                    while await group.next() != nil {
-                        if Task.isCancelled { break }
-                        if let target = iterator.next() {
-                            group.addTask { _ = await self.image(at: target) }
-                        }
+            await self?.runPrefetch(targets: targets, captured: captured, targetIDs: targetIDs,
+                                    leadingCount: leadingCount, width: width, source: source)
+        }
+    }
+
+    private func runPrefetch(targets: [Int], captured: [(index: Int, id: Int, volume: Int)],
+                             targetIDs: [Int], leadingCount: Int, width: Int, source: any BookSource) async {
+        // 先読みの意図は子タスクにも継がせ、表示とサムネイルには付けない(CV4-1)。
+        await PageRequestIntent.$isPrefetch.withValue(true) {
+            await prefetchPages(targets: targets, captured: captured, targetIDs: targetIDs,
+                                leadingCount: leadingCount, width: width, source: source)
+        }
+    }
+
+    private func prefetchPages(targets: [Int], captured: [(index: Int, id: Int, volume: Int)],
+                               targetIDs: [Int], leadingCount: Int, width: Int, source: any BookSource) async {
+        // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
+        // ソースの「現在の状態」(スプール完了・形式)で判断する
+        let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
+        if parallel {
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = targets.makeIterator()
+                for _ in 0..<width {
+                    if let target = iterator.next() {
+                        group.addTask { _ = await self.image(at: target) }
                     }
                 }
-            } else {
-                for target in targets {
-                    if Task.isCancelled { return }
-                    _ = await self.image(at: target)
+                while await group.next() != nil {
+                    if Task.isCancelled { break }
+                    if let target = iterator.next() {
+                        group.addTask { _ = await self.image(at: target) }
+                    }
                 }
+            }
+        } else {
+            for target in Self.serialOrder(captured, aheadCount: leadingCount) {
+                if Task.isCancelled { return }
+                _ = await self.image(at: target)
             }
         }
     }

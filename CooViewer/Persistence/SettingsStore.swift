@@ -36,6 +36,7 @@ final class SettingsStore {
             "PasswordVaultEnabled": true,
             "PlayAnimatedImages": true,
             "ArchiveEngine": ArchiveEngineKind.kaitokit.rawValue,
+            "RAR5QuickOpen": true,
             "EPUBPinchFontScale": true,
             "EPUBPageMargins": 1,
             "EPUBTheme": 0,                    // 0=システム / 1=ライト / 2=ダーク

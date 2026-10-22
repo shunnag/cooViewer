@@ -122,6 +122,16 @@
         }
       }
     },
+    "(paused)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(一時停止中)"
+          }
+        }
+      }
+    },
     "(active)": {
       "localizations": {
         "ja": {

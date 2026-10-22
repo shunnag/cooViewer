@@ -25,8 +25,38 @@ final class StubSource: BookSource, @unchecked Sendable {
     /// ロックで保護)。同期の見開き決定が余分なデコードをしないか検証する用
     private let decodeLock = NSLock()
     private var decodedLog: [Int] = []
+    private var intentLog: [Bool] = []
+    var displayIntents: [Bool] { decodeLock.withLock { intentLog } }
     var decodedIDs: [Int] { decodeLock.withLock { decodedLog } }
     func resetDecodeLog() { decodeLock.withLock { decodedLog = [] } }
+
+    struct ReadingNote: Equatable {
+        let current: Int
+        let next: Int?
+        let previous: Int?
+        let forward: Bool
+        let sequence: UInt64
+    }
+    private var readingNotes: [ReadingNote] = []
+    var noteBlocker: (@Sendable () async -> Void)?
+    var notedPositions: [ReadingNote] { decodeLock.withLock { readingNotes } }
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool, sequence: UInt64) async {
+        decodeLock.withLock {
+            readingNotes.append(ReadingNote(current: current.id, next: next?.id, previous: previous?.id, forward: forward, sequence: sequence))
+        }
+        await noteBlocker?()
+    }
+
+    var parallelWindowAnswer = false
+    var volumeKeys: [Int: Int] = [:]
+    nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { volumeKeys[entry.id] ?? 0 }
+
+    private var windowQueries: [[Int]] = []
+    var queriedWindows: [[Int]] { decodeLock.withLock { windowQueries } }
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool {
+        decodeLock.withLock { windowQueries.append(ids) }
+        return parallelWindowAnswer
+    }
 
     init(sizes: [CGSize]) {
         self.sizes = sizes
@@ -45,7 +75,8 @@ final class StubSource: BookSource, @unchecked Sendable {
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
-        decodeLock.withLock { decodedLog.append(entry.id) }
+        let display = PageRequestIntent.isDisplay
+        decodeLock.withLock { decodedLog.append(entry.id); intentLog.append(display) }
         let size = sizes[entry.id]
         return try ImageDecoding.decode(
             TestFixtures.pngData(width: Int(size.width), height: Int(size.height)),
@@ -53,9 +84,429 @@ final class StubSource: BookSource, @unchecked Sendable {
     }
 }
 
+/// 先読みを辞退・失敗させる solid 書庫の代役。最初の先読みを止めて合流を作る(CV4-1、CV5-2)。
+final class DecliningPrefetchSource: BookSource, @unchecked Sendable {
+    struct Request: Equatable {
+        let id: Int
+        let display: Bool
+        let prefetch: Bool
+    }
+    let url = URL(fileURLWithPath: "/stub/declining")
+    var supportsDateSort: Bool { false }
+    private let lock = NSLock()
+    private var log: [Request] = []
+    private var blockedOnce = false
+    private var reloadNotified = false
+    let prefetchStarted: XCTestExpectation
+    private let prefetchError: BookSourceError
+    private let reloadStarted: XCTestExpectation?
+    let release = DispatchSemaphore(value: 0)
+    let reloadRelease = DispatchSemaphore(value: 0)
+    var requests: [Request] { lock.withLock { log } }
+
+    init(prefetchStarted: XCTestExpectation, prefetchError: BookSourceError? = nil,
+         reloadStarted: XCTestExpectation? = nil) {
+        self.prefetchStarted = prefetchStarted
+        self.prefetchError = prefetchError ?? .temporarilyUnavailable(URL(fileURLWithPath: "/stub/declining"))
+        self.reloadStarted = reloadStarted
+    }
+
+    /// 同期の待機は非同期文脈から直接呼べないため、同期関数に包む。
+    private func waitForRelease() { _ = release.wait(timeout: .now() + 10) }
+    private func waitForReloadRelease() { _ = reloadRelease.wait(timeout: .now() + 10) }
+
+    func entries() async throws -> [PageEntry] {
+        (0..<4).map { index in
+            PageEntry(id: index, name: String(format: "p%03d.png", index),
+                      pathInBook: String(format: "p%03d.png", index),
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        let request = Request(id: entry.id, display: PageRequestIntent.isDisplay, prefetch: PageRequestIntent.isPrefetch)
+        let block = lock.withLock {
+            log.append(request)
+            defer { if request.prefetch { blockedOnce = true } }
+            return request.prefetch && !blockedOnce
+        }
+        if request.prefetch {
+            if block {
+                prefetchStarted.fulfill()
+                waitForRelease()
+            }
+            throw prefetchError
+        }
+        if let reloadStarted {
+            let notify = lock.withLock {
+                guard !reloadNotified else { return false }
+                reloadNotified = true
+                return true
+            }
+            if notify { reloadStarted.fulfill() }
+            waitForReloadRelease()
+        }
+        return try ImageDecoding.decode(TestFixtures.pngData(width: 70, height: 100), maxPixelSize: maxPixelSize)
+    }
+}
+
 @MainActor
 final class BookTests: XCTestCase {
     private let portrait = CGSize(width: 70, height: 100)   // 0.7 <= 0.74 → 見開き候補
+
+    private func makePlaceholderBook() -> Book {
+        let entries = ["a", "b", "c"].enumerated().map { index, name in
+            PageEntry(id: index, name: name, pathInBook: name, fileURL: nil,
+                      creationDate: Date(timeIntervalSince1970: Double(3 - index)), modificationDate: nil,
+                      reflowEPUBURL: index == 2 ? nil : URL(fileURLWithPath: "/stub/" + name + ".epub"))
+        }
+        return Book(source: StubSource(sizes: Array(repeating: portrait, count: 3)),
+                    prepared: Book.prepare(url: URL(fileURLWithPath: "/stub/book"), entries: entries,
+                                           sortMode: .name, identity: .init()))
+    }
+
+    func testOnlyCurrentSpreadSetsDisplayIntentOnDetachedImageLoads() async throws {
+        let source = StubSource(sizes: Array(repeating: portrait, count: 3))
+        let book = try await Book.open(source: source)
+        book.readMode = .rightToLeftSingle
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        _ = await book.image(at: 2)
+        _ = await book.currentSpread()
+        XCTAssertEqual(source.decodedIDs, [2, 0])
+        XCTAssertEqual(source.displayIntents, [false, true])
+    }
+
+    func testDisplayJoiningDeclinedPrefetchReloadsWithDisplayIntentAndNothingIsCached() async throws {
+        let started = expectation(description: "先読みを停止")
+        let source = DecliningPrefetchSource(prefetchStarted: started)
+        defer { source.release.signal() }
+        let book = try await Book.open(source: source)
+        book.readMode = .rightToLeftSingle
+        book.prefetchAhead = 1
+        book.prefetchBehind = 0
+        book.reschedulePrefetch()
+        await fulfillment(of: [started], timeout: 3)
+        let display = Task { @MainActor in
+            await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+        }
+        // 表示要求が進行中の先読みへ合流してから、先読みを辞退させる。
+        try await Task.sleep(for: .milliseconds(100))
+        source.release.signal()
+        let image = await display.value
+        XCTAssertNotNil(image, "表示は先読みの辞退を失敗として引き継がない")
+        await book.waitForPrefetch()
+        XCTAssertEqual(source.requests, [.init(id: 1, display: false, prefetch: true),
+                                         .init(id: 1, display: true, prefetch: false)])
+        // 辞退した先読みは画像もサイズも失敗印も残さず、次の要求は改めてソースへ届く。
+        book.goTo(index: 1)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        let declined = await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 2) }
+        XCTAssertNil(declined)
+        let plain = await book.image(at: 2)
+        XCTAssertNotNil(plain)
+        XCTAssertEqual(source.requests.filter { $0.id == 2 },
+                       [.init(id: 2, display: false, prefetch: true), .init(id: 2, display: false, prefetch: true),
+                        .init(id: 2, display: false, prefetch: false)])
+        XCTAssertEqual(book.pageCacheStats().count, 2)
+    }
+
+    func testGoToLastJoiningDeclinedPrefetchReloadsWithoutDisplayIntent() async throws {
+        let started = expectation(description: "先読みを停止")
+        let joined = expectation(description: "巻末ジャンプが先読みに合流")
+        let source = DecliningPrefetchSource(prefetchStarted: started)
+        defer { source.release.signal() }
+        let book = try await Book.open(source: source)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        let prefetch = Task { @MainActor in
+            await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 2) }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        let navigation = Task { @MainActor in
+            joined.fulfill()
+            return await book.goToLast()
+        }
+        await fulfillment(of: [joined], timeout: 3)
+        XCTAssertEqual(book.pageCacheStats().count, 0)
+        source.release.signal()
+        let declined = await prefetch.value
+        let moved = await navigation.value
+        XCTAssertNil(declined)
+        XCTAssertTrue(moved)
+        XCTAssertEqual(book.currentIndex, 2, "辞退した先読みを寸法不明とせず、末尾の二枚を組にする")
+        XCTAssertEqual(source.requests, [.init(id: 2, display: false, prefetch: true),
+                                         .init(id: 2, display: false, prefetch: false),
+                                         .init(id: 3, display: false, prefetch: false)])
+        XCTAssertEqual(book.pageCacheStats().count, 2)
+    }
+
+    func testDisplayJoiningFailedPrefetchDoesNotReload() async throws {
+        let started = expectation(description: "失敗予定の先読みを停止")
+        let joined = expectation(description: "表示が先読みに合流")
+        let source = DecliningPrefetchSource(prefetchStarted: started,
+                                            prefetchError: .pageLoadFailed("復号失敗"))
+        defer { source.release.signal() }
+        let book = try await Book.open(source: source)
+        let prefetch = Task { @MainActor in
+            await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 1) }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        let display = Task { @MainActor in
+            joined.fulfill()
+            return await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+        }
+        await fulfillment(of: [joined], timeout: 3)
+        source.release.signal()
+        let failed = await prefetch.value
+        let image = await display.value
+        XCTAssertNil(failed)
+        XCTAssertNil(image, "通常の復号失敗は表示の合流でも再試行しない")
+        XCTAssertEqual(source.requests, [.init(id: 1, display: false, prefetch: true)])
+        XCTAssertEqual(book.pageCacheStats().count, 0)
+    }
+
+    func testTwoDisplayJoinersShareOneReloadAfterDeclinedPrefetch() async throws {
+        let started = expectation(description: "先読みを停止")
+        let joined = expectation(description: "二件の表示が先読みに合流")
+        joined.expectedFulfillmentCount = 2
+        let reloadStarted = expectation(description: "辞退後の再読込は一件")
+        let source = DecliningPrefetchSource(prefetchStarted: started, reloadStarted: reloadStarted)
+        defer {
+            source.release.signal()
+            source.reloadRelease.signal()
+            source.reloadRelease.signal()
+        }
+        let book = try await Book.open(source: source)
+        let prefetch = Task { @MainActor in
+            await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 1) }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        let displays = (0..<2).map { _ in
+            Task { @MainActor in
+                joined.fulfill()
+                return await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+            }
+        }
+        await fulfillment(of: [joined], timeout: 3)
+        source.release.signal()
+        await fulfillment(of: [reloadStarted], timeout: 3)
+        // 再読込を止め、もう一件もキャッシュ命中ではなく進行中の要求へ合流させる。
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(source.requests.count, 2)
+        source.reloadRelease.signal()
+        source.reloadRelease.signal()
+        let declined = await prefetch.value
+        XCTAssertNil(declined)
+        for display in displays {
+            let image = await display.value
+            XCTAssertNotNil(image)
+        }
+        XCTAssertEqual(source.requests, [.init(id: 1, display: false, prefetch: true),
+                                         .init(id: 1, display: true, prefetch: false)])
+        XCTAssertEqual(book.pageCacheStats().count, 1)
+        XCTAssertEqual(book.inFlightLoadCount, 0)
+    }
+
+    func testReflowPlaceholdersScannedOncePerEntriesGeneration() async {
+        let book = makePlaceholderBook()
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 0)
+        XCTAssertEqual(book.reflowPlaceholders.map(\.index), [0, 1])
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 1)
+        await book.setSortMode(.creationDate).value
+        _ = book.reflowPlaceholders
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 2)
+        let empty = Book(source: StubSource(sizes: []), prepared: .empty(for: URL(fileURLWithPath: "/stub/empty")))
+        XCTAssertTrue(empty.reflowPlaceholders.isEmpty)
+        XCTAssertTrue(empty.reflowPlaceholders.isEmpty)
+        XCTAssertEqual(empty.reflowPlaceholderScanCount, 1)
+    }
+
+    func testReflowPlaceholdersFollowSortOrder() async {
+        let book = makePlaceholderBook()
+        let before = book.reflowPlaceholders.map(\.url)
+        let generation = book.entriesGeneration
+        await book.setSortMode(.creationDate).value
+        XCTAssertEqual(book.entriesGeneration, generation + 1)
+        let expected = book.entries.enumerated().compactMap { index, entry in
+            entry.reflowEPUBURL.map { (index: index, url: $0) }
+        }
+        XCTAssertEqual(book.reflowPlaceholders.map(\.index), expected.map(\.index))
+        XCTAssertEqual(book.reflowPlaceholders.map(\.url), expected.map(\.url))
+        XCTAssertEqual(book.reflowPlaceholders.map(\.url), Array(before.reversed()))
+    }
+
+    func testEntriesGenerationAdvancesOnlyWhenEntriesChange() async {
+        let book = makePlaceholderBook()
+        let generation = book.entriesGeneration
+        _ = book.reflowPlaceholders
+        book.goTo(index: 2)
+        book.readMode = .rightToLeftSingle
+        book.coverSingleFirst = true
+        book.bookmarks = []
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.entriesGeneration, generation)
+        await book.setSortMode(.creationDate).value
+        XCTAssertEqual(book.entriesGeneration, generation + 1)
+        _ = book.reflowPlaceholders
+        XCTAssertEqual(book.entriesGeneration, generation + 1)
+    }
+
+    func testPrefetchAsksSourceWithWindowEntryIDs() async {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10))
+        let entries = [9, 4, 7, 1].map { id in
+            PageEntry(id: id, name: "p\(id)", pathInBook: "p\(id)", fileURL: nil,
+                      creationDate: nil, modificationDate: nil)
+        }
+        let book = Book(source: stub, prepared: .init(sortedEntries: entries, cacheKey: "window-query"))
+        book.prefetchAhead = 2
+        book.prefetchBehind = 1
+        book.goTo(index: 1)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        XCTAssertEqual(stub.queriedWindows, [[7, 1, 9]])
+    }
+
+    func testReadingPositionNotificationDoesNotDelayDisplay() async throws {
+        let notified = expectation(description: "通知係を停止")
+        let displayed = expectation(description: "表示は通知を待たない")
+        let gate = AssemblyTestGate()
+        let stub = StubSource(sizes: [portrait])
+        stub.noteBlocker = { notified.fulfill(); await gate.wait() }
+        let book = try await Book.open(source: stub)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        let display = Task { _ = await book.currentSpread(); displayed.fulfill() }
+        await fulfillment(of: [notified, displayed], timeout: 3)
+        await gate.open()
+        await display.value
+    }
+
+    func testReadingPositionNotedOncePerVolumeAndDirection() async throws {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 6))
+        stub.volumeKeys = [0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 2]
+        let book = try await Book.open(source: stub)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        book.readMode = .rightToLeftSingle
+        _ = await book.currentSpread()
+        _ = await book.currentSpread()
+        book.goTo(index: 1)
+        _ = await book.currentSpread()
+        book.goTo(index: 2)
+        _ = await book.currentSpread()
+        _ = book.moveHalfNext()
+        _ = await book.currentSpread()
+        _ = book.moveHalfPrevious()
+        _ = await book.currentSpread()
+        for _ in 0..<10_000 {
+            if stub.notedPositions.count == 3 { break }
+            await Task.yield()
+        }
+        let notes = stub.notedPositions.sorted { $0.sequence < $1.sequence }
+        let start = try XCTUnwrap(notes.first?.sequence)
+        XCTAssertEqual(notes, [
+            .init(current: 0, next: 2, previous: nil, forward: true, sequence: start),
+            .init(current: 2, next: 4, previous: 1, forward: true, sequence: start + 1),
+            .init(current: 2, next: 4, previous: 1, forward: false, sequence: start + 2),
+        ])
+    }
+
+    func testReadingPositionSequencesIncreaseAcrossBooksSharingSource() async throws {
+        let stub = StubSource(sizes: [portrait])
+        for expectedCount in 1...2 {
+            let book = try await Book.open(source: stub)
+            book.prefetchAhead = 0
+            book.prefetchBehind = 0
+            _ = await book.currentSpread()
+            for _ in 0..<10_000 {
+                if stub.notedPositions.count == expectedCount { break }
+                await Task.yield()
+            }
+            XCTAssertEqual(stub.notedPositions.count, expectedCount)
+        }
+        let notes = stub.notedPositions
+        XCTAssertEqual(notes.count, 2)
+        if notes.count == 2 { XCTAssertGreaterThan(notes[1].sequence, notes[0].sequence) }
+    }
+
+    func testPrefetchTargetsDropBehindInOtherVolumeWhenMovingForward() {
+        let result = Book.prefetchTargets(currentIndex: 4, displayCount: 1, ahead: 3, behind: 4,
+                                          forward: true, count: 10, volumeKey: { $0 / 3 })
+        XCTAssertEqual(result, [5, 6, 7, 3])
+    }
+
+    func testPrefetchTargetsKeepBehindAcrossVolumesWhenMovingBackward() {
+        let result = Book.prefetchTargets(currentIndex: 4, displayCount: 1, ahead: 2, behind: 4,
+                                          forward: false, count: 10, volumeKey: { $0 / 3 })
+        XCTAssertEqual(result, [3, 2, 1, 0, 5, 6])
+    }
+
+    func testSerialPrefetchTargetsAscendByIDWithinVolume() {
+        let targets = [(index: 0, id: 9, volume: 0), (index: 1, id: 2, volume: 0),
+                       (index: 2, id: 12, volume: 1), (index: 3, id: 10, volume: 1),
+                       (index: 4, id: 3, volume: 0), (index: 5, id: 1, volume: 0)]
+        XCTAssertEqual(Book.serialOrder(targets, aheadCount: 4), [1, 0, 3, 2, 5, 4])
+        XCTAssertEqual(Book.serialOrder([], aheadCount: 0), [])
+    }
+
+    func testParallelPrefetchTargetsKeepDisplayOrder() async {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10))
+        stub.parallelWindowAnswer = true
+        let entries = [0, 9, 2, 7].map { id in
+            PageEntry(id: id, name: "p\(id)", pathInBook: "p\(id)", fileURL: nil,
+                      creationDate: nil, modificationDate: nil)
+        }
+        let book = Book(source: stub, prepared: .init(sortedEntries: entries, cacheKey: "parallel-order"))
+        book.prefetchAhead = 3
+        book.prefetchBehind = 0
+        book.mediaProfile = MediaProfile(mediaClass: .slowLocal)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        XCTAssertEqual(stub.decodedIDs, [9, 2, 7])
+    }
+
+    func testDefaultVolumeKeyKeepsSingleVolumeBehaviour() {
+        for forward in [true, false] {
+            let result = Book.prefetchTargets(currentIndex: 3, displayCount: 2, ahead: 3, behind: 2,
+                                              forward: forward, count: 8, volumeKey: { _ in 0 })
+            XCTAssertEqual(result, forward ? [5, 6, 7, 2, 1] : [2, 1, 5, 6, 7])
+        }
+    }
+
+    func testWindowQueryReceivesFilteredTargetIDs() async {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10))
+        stub.volumeKeys = [0: 0, 1: 0, 2: 1, 3: 1, 4: 2]
+        let book = try! await Book.open(source: stub)
+        book.prefetchAhead = 2
+        book.prefetchBehind = 2
+        book.goTo(index: 2)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        XCTAssertEqual(stub.queriedWindows, [[3, 4]])
+    }
+
+    func testDefaultWindowQueryFallsBackToWholeSourceAnswer() async {
+        struct WholeSourceStub: BookSource {
+            let url = URL(fileURLWithPath: "/stub/whole")
+            let supportsDateSort = false
+            let supportsParallelPageLoads = true
+            let answer: Bool
+            func entries() async throws -> [PageEntry] { [] }
+            func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+                throw BookSourceError.pageLoadFailed(entry.name)
+            }
+            func currentlySupportsParallelPageLoads() async -> Bool { answer }
+        }
+        for answer in [false, true] {
+            let source: any BookSource = WholeSourceStub(answer: answer)
+            let result = await source.currentlySupportsParallelPageLoads(forEntryIDs: [42])
+            XCTAssertEqual(result, answer)
+        }
+    }
 
     func testSkipClampsExtremeOffsetsBeforeAdding() async throws {
         let book = try await Book.open(source: StubSource(sizes: Array(repeating: portrait, count: 5)))

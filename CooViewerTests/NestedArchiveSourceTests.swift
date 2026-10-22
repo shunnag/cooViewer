@@ -300,6 +300,72 @@ final class NestedArchiveSourceTests: XCTestCase {
         XCTAssertEqual(image.width, 40)
     }
 
+    func testEncryptedArchivePrefixAndResumedSpoolIsNotPlaintext() async throws {
+        let files = (0..<4).map { (name: "p\($0).avifs", data: png(width: 40 + $0)) }
+        let url = try encryptedZipContaining(files, password: "sesame", label: "prefix")
+        let source = try ArchiveSource(url: url)
+        let check = await source.checkAndSetPassword("sesame")
+        XCTAssertEqual(check, .accepted)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network))
+        let limit = Int64(files.prefix(2).reduce(0) { $0 + $1.data.count + 28 })
+        await source.beginSpooling(sizeLimit: limit)
+        await source.waitForSpoolCompletion()
+        let prefix = await source.spoolStats()
+        XCTAssertTrue(prefix.paused)
+        XCTAssertEqual(prefix.spooled, 2)
+        let directory = await source.spoolDirectoryForTesting
+        try assertSealedSpool(directory, expectedCount: 2)
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await source.waitForSpoolCompletion()
+        let resumed = await source.spoolDirectoryForTesting
+        XCTAssertEqual(directory, resumed)
+        try assertSealedSpool(resumed, expectedCount: 4)
+        let pages = try await source.entries()
+        for (page, file) in zip(pages, files) {
+            let data = await source.imageData(for: page)
+            XCTAssertEqual(data, file.data)
+        }
+    }
+
+    func testSpoolOfEncryptedArchiveIsSealedRegardlessOfPasswordPath() async throws {
+        // 書庫の暗号化フラグだけでも封印する。保存済み・先行設定済みパスワードでも平文にしない(設計書 §5)。
+        for setPassword in [false, true] {
+            let probe = SpoolEngineProbe(encrypted: true)
+            let factory = ArchiveEngineFactory(openFile: { _, _, _ in nil }, openData: { _, _, _ in
+                SpoolTestArchiveEngine(groups: [0, 0], probe: probe)
+            })
+            let source = try ArchiveSource(data: Data([0]), name: "sealed.7z", nestingDepth: 0,
+                unlocker: NestedUnlocker(), persistenceKey: .file(path: "/synthetic/sealed.7z"),
+                sensitive: false, engineFactory: factory)
+            if setPassword {
+                let check = await source.checkAndSetPassword("sesame")
+                XCTAssertEqual(check, .accepted)
+            }
+            await source.beginSpooling(sizeLimit: 1 << 30)
+            await source.waitForSpoolCompletion()
+            let directory = await source.spoolDirectoryForTesting
+            try assertSealedSpool(directory, expectedCount: 2)
+            let page = try await source.entries()[0]
+            let data = await source.imageData(for: page)
+            XCTAssertEqual(data, probe.data)
+        }
+    }
+
+    private func assertSealedSpool(_ directory: URL?, expectedCount: Int) throws {
+        let directory = try XCTUnwrap(directory)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, expectedCount)
+        let permissions = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o700)
+        for file in files {
+            let raw = try Data(contentsOf: file)
+            XCTAssertNotEqual(raw.prefix(4), Data([0x89, 0x50, 0x4e, 0x47]))
+            XCTAssertNotEqual(raw.prefix(2), Data([0xff, 0xd8]))
+            let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+            XCTAssertEqual(permissions?.intValue, 0o600)
+        }
+    }
+
     /// 暗号化されたネスト書庫は provider に問い合わせて解除し、本に取り込むこと
     func testEncryptedNestedChildUnlockedViaProvider() async throws {
         let inner = try encryptedZipData(widths: [41, 42], password: "sesame", label: "a")

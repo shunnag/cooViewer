@@ -59,6 +59,7 @@ struct ActivitySnapshot: Sendable, Equatable {
         let bytes: Int64
         let limitBytes: Int64     // 計画
         let active: Bool
+        var paused: Bool = false
     }
     struct ML: Sendable, Equatable {
         let noiseState: String
@@ -249,11 +250,16 @@ final class ActivityMonitor: ObservableObject {
             memoryPressure: pressureLevel)
 
         var spool: ActivitySnapshot.Spool?
-        if let archive = controller.currentArchiveSource {
+        let archive: ArchiveSource?
+        if let collection = book.source as? NestedFolderSource, book.entries.indices.contains(book.currentPageIndex) {
+            // 診断だけが子へ問い合わせる。表示経路では合本 actor の応答を待たない(設計書 §5)。
+            archive = await collection.archiveChild(for: book.entries[book.currentPageIndex])
+        } else { archive = controller.currentArchiveSource }
+        if let archive {
             let s = await archive.spoolStats()
             spool = ActivitySnapshot.Spool(
                 spooled: s.spooled, total: s.total, bytes: s.bytes,
-                limitBytes: settings.archiveSpoolSizeLimit, active: s.active)
+                limitBytes: settings.archiveSpoolSizeLimit, active: s.active, paused: s.paused)
         }
 
         let cacheStats = book.pageCacheStats()

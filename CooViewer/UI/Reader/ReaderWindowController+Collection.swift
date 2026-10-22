@@ -21,6 +21,7 @@ extension ReaderWindowController {
             entryCount: book.pageCount,
             readsFromLeft: book.readMode.readsFromLeft,
             entries: book.entries,
+            reflowPlaceholders: book.reflowPlaceholders,
             source: book.source,
             singleSetting: book.singleSetting,
             coverSingle: book.coverSingleFirst,
@@ -112,6 +113,7 @@ extension ReaderWindowController {
             entryCount: context.entryCount,
             readsFromLeft: context.readsFromLeft,
             entries: context.entries,
+            reflowPlaceholders: context.reflowPlaceholders,
             source: context.source,
             singleSetting: context.singleSetting,
             coverSingle: context.coverSingle,
@@ -237,21 +239,21 @@ extension ReaderWindowController {
     func ensureCollectionPageMap() {
         let folderURL: URL
         let entries: [PageEntry]
+        let placeholders: [(index: Int, url: URL)]
         let collectionSource: any BookSource
         if let context = epubCollectionContext {
             folderURL = context.folderURL
             entries = context.entries
+            placeholders = context.reflowPlaceholders
             collectionSource = context.source
         } else if let book, book.source is NestedFolderSource {
             folderURL = book.source.url
             entries = book.entries
+            placeholders = book.reflowPlaceholders
             collectionSource = book.source
         } else {
             collectionPageMaps.reset()
             return
-        }
-        let placeholders = entries.enumerated().compactMap { index, entry in
-            entry.reflowEPUBURL.map { (index: index, url: $0) }
         }
         guard !placeholders.isEmpty else {
             collectionPageMaps.reset()

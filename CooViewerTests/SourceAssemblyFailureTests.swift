@@ -26,7 +26,9 @@ final class SourceAssemblyFailureTests: XCTestCase {
             try zip().write(to: url)
             sources.append(try ArchiveSource(url: url, engineFactory: factory))
         }
-        for source in sources { await source.beginSpooling(sizeLimit: 1 << 20) }
+        for (index, source) in sources.enumerated() {
+            await source.beginSpooling(sizeLimit: 1 << 20, interactive: index.isMultiple(of: 2))
+        }
         for source in sources {
             await source.waitForSpoolCompletion()
             let count = await source.spooledEntryCount
@@ -34,7 +36,7 @@ final class SourceAssemblyFailureTests: XCTestCase {
         }
         let result = activity.withLock { $0 }
         XCTAssertGreaterThan(result.peak, 1)
-        XCTAssertLessThanOrEqual(result.peak, 4)
+        XCTAssertLessThanOrEqual(result.peak, 2 + (ProcessInfo.processInfo.physicalMemory < 12 << 30 ? 1 : 2))
         XCTAssertEqual(result.reads, 12)
         XCTAssertEqual(result.discarded, 12)
     }

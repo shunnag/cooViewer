@@ -391,14 +391,13 @@ actor ThumbnailCache {
             return image
         }
         // 実生成(ソース展開・レンダリング)だけを全体ゲートで絞る。
-        // ゲートはキャンセルで抜けられないので、行列に入る前にもう一度
-        // キャンセル済みを弾く(キャンセル嵐が生きた生成を待たせないように)
+        // 行列へ入る前と待機中の両方で取消しを受け付ける。
         guard !Task.isCancelled else { return nil }
         // 可視セル要求は優先レーン。1 段目(このゲート)は明示レーンで指定し、
         // 2 段目(source 内の FolderSource.readGate、currentPriority 推論)は
         // 生成タスクを urgent 時 userInitiated で起動することで対話レーンへ寄せる
         // (:131 参照。ここで明示レーンにするだけでは 2 段目で背面に落ちる)
-        await gate.acquire(interactive: urgent)
+        guard await gate.acquire(interactive: urgent) else { return nil }
         let image: CGImage?
         if Task.isCancelled {
             image = nil

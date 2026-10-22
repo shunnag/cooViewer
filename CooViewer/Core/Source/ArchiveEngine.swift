@@ -24,7 +24,7 @@ protocol ArchiveEngine: AnyObject {
     func setPassword(_ password: String)
     func solidGroup(ofEntry index: Int32) -> Int32
     /// 入力と解析済み一覧を共有し、独立した復号位置を持つエンジンを返す(設計書 §5)。
-    func reopened() -> (any ArchiveEngine)?
+    func reopened() -> sending (any ArchiveEngine)?
     func discardDecodedState()
 
     static var defaultZipLazyLocalHeaders: Bool { get }
@@ -32,7 +32,7 @@ protocol ArchiveEngine: AnyObject {
 }
 
 extension ArchiveEngine {
-    func reopened() -> (any ArchiveEngine)? { nil }
+    func reopened() -> sending (any ArchiveEngine)? { nil }
     func discardDecodedState() {}
     /// nil しか返せないエンジン(テストの偽エンジン)向けの既定。環境要因ではない
     /// エラーにして、プローブの分類では従来どおり誤パスワード側に落とす
@@ -137,10 +137,42 @@ struct ArchiveDecodeBudget: Sendable, Equatable {
 final class KaitoKitEngine: ArchiveEngine {
     private var reader: ArchiveReader
     private let limits: ReadLimits
+    private let input: Input
+    private var options: ReaderOptions
+    private var quickOpenRecoveryAttempted = false
     private static let lazyLocalHeaders = OSAllocatedUnfairLock(initialState: true)
 
+    private enum Input: Sendable {
+        case file(String, ArchiveQuickOpenPolicy.Identity?)
+        case data(Data)
+
+        var identity: ArchiveQuickOpenPolicy.Identity? {
+            if case .file(_, let identity) = self { return identity }
+            return nil
+        }
+
+        var identityForLookup: ArchiveQuickOpenPolicy.Identity? {
+            guard case .file(let path, let identity) = self else { return nil }
+            return identity ?? ArchiveQuickOpenPolicy.identityForOpen(path: path)
+        }
+
+        var identityForMismatch: ArchiveQuickOpenPolicy.Identity? {
+            guard case .file(let path, let identity) = self else { return nil }
+            return identity ?? ArchiveQuickOpenPolicy.Identity(path: path)
+        }
+
+        func open(options: ReaderOptions) throws -> sending ArchiveReader {
+            switch self {
+            case .file(let path, _):
+                try ArchiveReader.open(url: URL(fileURLWithPath: path), options: options)
+            case .data(let data):
+                try ArchiveReader.open(data: data, options: options)
+            }
+        }
+    }
+
     /// 電力状態・電力方針と同じく、物理メモリと圧迫段階も open 時点の値を固定する(設計書 §5)。
-    private static func options(role: ArchiveReaderRole) -> ReaderOptions {
+    static func options(role: ArchiveReaderRole, defaults: UserDefaults = .standard) -> ReaderOptions {
         let powerPolicy = PowerStateMonitor.shared.powerPolicy
         var options = ArchiveDecodeBudget(
             role: role,
@@ -152,39 +184,51 @@ final class KaitoKitEngine: ArchiveEngine {
             .readerOptions(lazyLocalHeaders: defaultZipLazyLocalHeaders)
         // 解析結果と solid 状態を維持し、未使用 FD だけをプロセス共通の LRU で制限する。
         options.fileAccessPolicy = .bounded
+        options.rar5QuickOpenPolicy = ArchiveQuickOpenPolicy.isEnabled(defaults: defaults)
+            ? .highLatencyInput : .never
         return options
     }
 
-    private init(reader: ArchiveReader, limits: ReadLimits) {
+    private init(reader: ArchiveReader, input: Input, options: ReaderOptions) {
         self.reader = reader
-        self.limits = limits
+        self.input = input
+        self.options = options
+        self.limits = options.limits
+    }
+
+    private convenience init(input: Input, options: ReaderOptions) throws {
+        var options = options
+        if let identity = input.identity, ArchiveQuickOpenPolicy.isDistrusted(identity) {
+            options.rar5QuickOpenPolicy = .never
+        }
+        try self.init(reader: input.open(options: options), input: input, options: options)
+    }
+
+    convenience init(file path: String, options: ReaderOptions) throws {
+        try self.init(input: .file(path, ArchiveQuickOpenPolicy.identityForOpen(path: path)), options: options)
+    }
+
+    convenience init(data: Data, options: ReaderOptions) throws {
+        try self.init(input: .data(data), options: options)
     }
 
     /// 生成窓口は errno を保持する。protocol の旧 failable init は偽エンジン向けに残す。
     static func open(file path: String, role: ArchiveReaderRole) throws -> KaitoKitEngine {
-        let options = Self.options(role: role)
-        return try KaitoKitEngine(reader: ArchiveReader.open(url: URL(fileURLWithPath: path), options: options),
-                                  limits: options.limits)
+        try KaitoKitEngine(file: path, options: Self.options(role: role))
     }
 
     static func open(data: Data, role: ArchiveReaderRole) throws -> KaitoKitEngine {
-        let options = Self.options(role: role)
-        return try KaitoKitEngine(reader: ArchiveReader.open(data: data, options: options), limits: options.limits)
+        try KaitoKitEngine(data: data, options: Self.options(role: role))
     }
 
-    init?(file path: String, role: ArchiveReaderRole) {
-        let options = Self.options(role: role)
-        guard let reader = try? ArchiveReader.open(url: URL(fileURLWithPath: path),
-                                                   options: options) else { return nil }
-        self.reader = reader
-        limits = options.limits
+    convenience init?(file path: String, role: ArchiveReaderRole) {
+        do { try self.init(file: path, options: Self.options(role: role)) }
+        catch { return nil }
     }
 
-    init?(data: Data, role: ArchiveReaderRole) {
-        let options = Self.options(role: role)
-        guard let reader = try? ArchiveReader.open(data: data, options: options) else { return nil }
-        self.reader = reader
-        limits = options.limits
+    convenience init?(data: Data, role: ArchiveReaderRole) {
+        do { try self.init(data: data, options: Self.options(role: role)) }
+        catch { return nil }
     }
 
     private func entry(at index: Int32) -> ArchiveEntry? {
@@ -208,9 +252,40 @@ final class KaitoKitEngine: ArchiveEngine {
 
     /// 従来の nil 条件(無効な番号・未設定パスワード)も KaitoError で表す
     func readContents(ofEntry index: Int32) throws -> Data {
+        do { return try readCurrentContents(ofEntry: index) }
+        catch {
+            guard options.rar5QuickOpenPolicy != .never, !quickOpenRecoveryAttempted,
+                  ArchiveQuickOpenPolicy.isVerificationMismatch(error) else { throw error }
+            quickOpenRecoveryAttempted = true
+            if let identity = input.identityForMismatch { ArchiveQuickOpenPolicy.distrust(identity) }
+            let (replacement, safeOptions) = try readerWithoutQuickOpen()
+            reader = replacement
+            options = safeOptions
+            // 再試行は一度だけ。同じ一覧と確認できた通常索引の reader に限る。
+            return try readCurrentContents(ofEntry: index)
+        }
+    }
+
+    private func readCurrentContents(ofEntry index: Int32) throws -> Data {
         guard let entry = entry(at: index) else { throw KaitoError.notFound("entry \(index)") }
         guard !entry.isEncrypted || reader.password != nil else { throw KaitoError.passwordRequired }
         return try readAll(entry)
+    }
+
+    /// reopen は未検証の一覧と不一致の状態も共有するため、元の入力から解析し直す。
+    /// 一覧が違うと既存のページ番号が別の本文を指すので、差し替えず壊れページに留める。
+    private func readerWithoutQuickOpen() throws -> sending (ArchiveReader, ReaderOptions) {
+        var safeOptions = options
+        safeOptions.rar5QuickOpenPolicy = .never
+        safeOptions.password = reader.password
+        let replacement = try input.open(options: safeOptions)
+        guard replacement.entries.count == reader.entries.count,
+              zip(replacement.entries, reader.entries).allSatisfy({
+                  $0.name == $1.name && $0.uncompressedSize == $1.uncompressedSize
+              }) else {
+            throw KaitoError.malformed("RAR5 quick-open listing does not match the archive listing")
+        }
+        return (replacement, safeOptions)
     }
 
     /// 互換層と同じ確保上限・256 KiB 単位・宣言サイズ不足時の失敗を保つ。
@@ -264,9 +339,16 @@ final class KaitoKitEngine: ArchiveEngine {
         return Int32(exactly: group) ?? -1
     }
 
-    func reopened() -> (any ArchiveEngine)? {
+    func reopened() -> sending (any ArchiveEngine)? {
+        // 別の展開係が不一致を検出した後の複製も、不信任の索引を引き継がない。
+        if let identity = input.identityForLookup, ArchiveQuickOpenPolicy.isDistrusted(identity),
+           options.rar5QuickOpenPolicy != .never {
+            guard let (replacement, safeOptions) = try? readerWithoutQuickOpen() else { return nil }
+            return KaitoKitEngine(reader: replacement, input: input, options: safeOptions)
+        }
+        guard !quickOpenRecoveryAttempted || options.rar5QuickOpenPolicy == .never else { return nil }
         guard let reopened = try? reader.reopen() else { return nil }
-        return KaitoKitEngine(reader: reopened, limits: limits)
+        return KaitoKitEngine(reader: reopened, input: input, options: options)
     }
 
     /// 全画像のスプール後は、末尾の非画像 entry のため残った solid 状態も解放する。
