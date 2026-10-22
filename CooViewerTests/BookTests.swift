@@ -84,7 +84,7 @@ final class StubSource: BookSource, @unchecked Sendable {
     }
 }
 
-/// 先読みの意図を断る solid 書庫の代役。最初の先読みだけ止めて、表示の合流を作れるようにする(CV4-1)。
+/// 先読みを辞退・失敗させる solid 書庫の代役。最初の先読みを止めて合流を作る(CV4-1、CV5-2)。
 final class DecliningPrefetchSource: BookSource, @unchecked Sendable {
     struct Request: Equatable {
         let id: Int
@@ -96,16 +96,24 @@ final class DecliningPrefetchSource: BookSource, @unchecked Sendable {
     private let lock = NSLock()
     private var log: [Request] = []
     private var blockedOnce = false
+    private var reloadNotified = false
     let prefetchStarted: XCTestExpectation
+    private let prefetchError: BookSourceError
+    private let reloadStarted: XCTestExpectation?
     let release = DispatchSemaphore(value: 0)
+    let reloadRelease = DispatchSemaphore(value: 0)
     var requests: [Request] { lock.withLock { log } }
 
-    init(prefetchStarted: XCTestExpectation) {
+    init(prefetchStarted: XCTestExpectation, prefetchError: BookSourceError? = nil,
+         reloadStarted: XCTestExpectation? = nil) {
         self.prefetchStarted = prefetchStarted
+        self.prefetchError = prefetchError ?? .temporarilyUnavailable(URL(fileURLWithPath: "/stub/declining"))
+        self.reloadStarted = reloadStarted
     }
 
     /// 同期の待機は非同期文脈から直接呼べないため、同期関数に包む。
     private func waitForRelease() { _ = release.wait(timeout: .now() + 10) }
+    private func waitForReloadRelease() { _ = reloadRelease.wait(timeout: .now() + 10) }
 
     func entries() async throws -> [PageEntry] {
         (0..<4).map { index in
@@ -127,7 +135,16 @@ final class DecliningPrefetchSource: BookSource, @unchecked Sendable {
                 prefetchStarted.fulfill()
                 waitForRelease()
             }
-            throw BookSourceError.temporarilyUnavailable(url)
+            throw prefetchError
+        }
+        if let reloadStarted {
+            let notify = lock.withLock {
+                guard !reloadNotified else { return false }
+                reloadNotified = true
+                return true
+            }
+            if notify { reloadStarted.fulfill() }
+            waitForReloadRelease()
         }
         return try ImageDecoding.decode(TestFixtures.pngData(width: 70, height: 100), maxPixelSize: maxPixelSize)
     }
@@ -193,6 +210,103 @@ final class BookTests: XCTestCase {
                        [.init(id: 2, display: false, prefetch: true), .init(id: 2, display: false, prefetch: true),
                         .init(id: 2, display: false, prefetch: false)])
         XCTAssertEqual(book.pageCacheStats().count, 2)
+    }
+
+    func testGoToLastJoiningDeclinedPrefetchReloadsWithoutDisplayIntent() async throws {
+        let started = expectation(description: "先読みを停止")
+        let joined = expectation(description: "巻末ジャンプが先読みに合流")
+        let source = DecliningPrefetchSource(prefetchStarted: started)
+        defer { source.release.signal() }
+        let book = try await Book.open(source: source)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        let prefetch = Task { @MainActor in
+            await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 2) }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        let navigation = Task { @MainActor in
+            joined.fulfill()
+            return await book.goToLast()
+        }
+        await fulfillment(of: [joined], timeout: 3)
+        XCTAssertEqual(book.pageCacheStats().count, 0)
+        source.release.signal()
+        let declined = await prefetch.value
+        let moved = await navigation.value
+        XCTAssertNil(declined)
+        XCTAssertTrue(moved)
+        XCTAssertEqual(book.currentIndex, 2, "辞退した先読みを寸法不明とせず、末尾の二枚を組にする")
+        XCTAssertEqual(source.requests, [.init(id: 2, display: false, prefetch: true),
+                                         .init(id: 2, display: false, prefetch: false),
+                                         .init(id: 3, display: false, prefetch: false)])
+        XCTAssertEqual(book.pageCacheStats().count, 2)
+    }
+
+    func testDisplayJoiningFailedPrefetchDoesNotReload() async throws {
+        let started = expectation(description: "失敗予定の先読みを停止")
+        let joined = expectation(description: "表示が先読みに合流")
+        let source = DecliningPrefetchSource(prefetchStarted: started,
+                                            prefetchError: .pageLoadFailed("復号失敗"))
+        defer { source.release.signal() }
+        let book = try await Book.open(source: source)
+        let prefetch = Task { @MainActor in
+            await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 1) }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        let display = Task { @MainActor in
+            joined.fulfill()
+            return await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+        }
+        await fulfillment(of: [joined], timeout: 3)
+        source.release.signal()
+        let failed = await prefetch.value
+        let image = await display.value
+        XCTAssertNil(failed)
+        XCTAssertNil(image, "通常の復号失敗は表示の合流でも再試行しない")
+        XCTAssertEqual(source.requests, [.init(id: 1, display: false, prefetch: true)])
+        XCTAssertEqual(book.pageCacheStats().count, 0)
+    }
+
+    func testTwoDisplayJoinersShareOneReloadAfterDeclinedPrefetch() async throws {
+        let started = expectation(description: "先読みを停止")
+        let joined = expectation(description: "二件の表示が先読みに合流")
+        joined.expectedFulfillmentCount = 2
+        let reloadStarted = expectation(description: "辞退後の再読込は一件")
+        let source = DecliningPrefetchSource(prefetchStarted: started, reloadStarted: reloadStarted)
+        defer {
+            source.release.signal()
+            source.reloadRelease.signal()
+            source.reloadRelease.signal()
+        }
+        let book = try await Book.open(source: source)
+        let prefetch = Task { @MainActor in
+            await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 1) }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        let displays = (0..<2).map { _ in
+            Task { @MainActor in
+                joined.fulfill()
+                return await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+            }
+        }
+        await fulfillment(of: [joined], timeout: 3)
+        source.release.signal()
+        await fulfillment(of: [reloadStarted], timeout: 3)
+        // 再読込を止め、もう一件もキャッシュ命中ではなく進行中の要求へ合流させる。
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(source.requests.count, 2)
+        source.reloadRelease.signal()
+        source.reloadRelease.signal()
+        let declined = await prefetch.value
+        XCTAssertNil(declined)
+        for display in displays {
+            let image = await display.value
+            XCTAssertNotNil(image)
+        }
+        XCTAssertEqual(source.requests, [.init(id: 1, display: false, prefetch: true),
+                                         .init(id: 1, display: true, prefetch: false)])
+        XCTAssertEqual(book.pageCacheStats().count, 1)
+        XCTAssertEqual(book.inFlightLoadCount, 0)
     }
 
     func testReflowPlaceholdersScannedOncePerEntriesGeneration() async {
