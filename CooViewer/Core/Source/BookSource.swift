@@ -2,6 +2,11 @@ import CoreGraphics
 import Foundation
 import Washi
 
+/// 表示だけが準備窓を動かす。優先度は先読みや可視サムネイルとも共有されるため使わない。
+enum PageRequestIntent {
+    @TaskLocal static var isDisplay = false
+}
+
 enum BookSourceError: Error {
     case unreadable(URL)
     case unsupportedFormat(URL)
@@ -95,6 +100,9 @@ protocol BookSource: Sendable {
     /// beginBackgroundPreparation より前に呼ぶこと
     func applyMediaProfile(_ profile: MediaProfile) async
 
+    /// 初表示より前に上限を確定する。準備の開始とは分けて子孫へ伝える(設計書 §5)。
+    func configureSpooling(sizeLimit: Int64) async
+
     /// 最上位ダイアログでの「パスワードを保存」同意をネスト子へ引き継ぐ
     /// (同意済みパスワードで解錠された子は子のキーでも保存される。設計書 §2.4)
     func notePasswordSaveConsent(_ password: String) async
@@ -147,6 +155,7 @@ extension BookSource {
         entry.fileURL ?? url
     }
     func applyMediaProfile(_ profile: MediaProfile) async {}
+    func configureSpooling(sizeLimit: Int64) async {}
     func metadata() async -> ComicInfo? { nil }
     func preparsedReflowPublication(for url: URL) async -> EPUBPublication? { nil }
     func layoutSinglePageIndices() async -> Set<Int> { [] }

@@ -25,6 +25,8 @@ final class StubSource: BookSource, @unchecked Sendable {
     /// ロックで保護)。同期の見開き決定が余分なデコードをしないか検証する用
     private let decodeLock = NSLock()
     private var decodedLog: [Int] = []
+    private var intentLog: [Bool] = []
+    var displayIntents: [Bool] { decodeLock.withLock { intentLog } }
     var decodedIDs: [Int] { decodeLock.withLock { decodedLog } }
     func resetDecodeLog() { decodeLock.withLock { decodedLog = [] } }
 
@@ -73,7 +75,8 @@ final class StubSource: BookSource, @unchecked Sendable {
     }
 
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
-        decodeLock.withLock { decodedLog.append(entry.id) }
+        let display = PageRequestIntent.isDisplay
+        decodeLock.withLock { decodedLog.append(entry.id); intentLog.append(display) }
         let size = sizes[entry.id]
         return try ImageDecoding.decode(
             TestFixtures.pngData(width: Int(size.width), height: Int(size.height)),
@@ -94,6 +97,18 @@ final class BookTests: XCTestCase {
         return Book(source: StubSource(sizes: Array(repeating: portrait, count: 3)),
                     prepared: Book.prepare(url: URL(fileURLWithPath: "/stub/book"), entries: entries,
                                            sortMode: .name, identity: .init()))
+    }
+
+    func testOnlyCurrentSpreadSetsDisplayIntentOnDetachedImageLoads() async throws {
+        let source = StubSource(sizes: Array(repeating: portrait, count: 3))
+        let book = try await Book.open(source: source)
+        book.readMode = .rightToLeftSingle
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        _ = await book.image(at: 2)
+        _ = await book.currentSpread()
+        XCTAssertEqual(source.decodedIDs, [2, 0])
+        XCTAssertEqual(source.displayIntents, [false, true])
     }
 
     func testReflowPlaceholdersScannedOncePerEntriesGeneration() async {
