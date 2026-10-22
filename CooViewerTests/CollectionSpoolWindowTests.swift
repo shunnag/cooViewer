@@ -21,7 +21,7 @@ final class CollectionSpoolWindowTests: XCTestCase {
         }
     }
 
-    private func collection(_ count: Int = 6, applyProfile: Bool = true, pdfNeighbor: Bool = false, pagesPerChild: Int = 2,
+    private func collection(_ count: Int = 6, applyProfile: Bool = true, pdfNeighbors: Int = 0, pagesPerChild: Int = 2,
                             declaredSizes: [[Int64?]]? = nil,
                             block: (@Sendable (Int, Int32) -> Void)? = nil,
                             primaryBlock: (@Sendable (Int, Int32) -> Void)? = nil) async throws -> Collection {
@@ -37,8 +37,9 @@ final class CollectionSpoolWindowTests: XCTestCase {
             }, beforePrimaryRead: { entry in primaryBlock?(child, entry) })
         }
         for child in 0..<count { try Data([0]).write(to: root.appendingPathComponent(String(format: "%03d.7z", child))) }
-        if pdfNeighbor {
-            let url = root.appendingPathComponent("002a.pdf")
+        // 子 002 と 003 の間に 1 ページの PDF を並べる(002a.pdf、002b.pdf …)。
+        for suffix in ["a", "b", "c"].prefix(pdfNeighbors) {
+            let url = root.appendingPathComponent("002\(suffix).pdf")
             var box = CGRect(x: 0, y: 0, width: 40, height: 60)
             let consumer = try XCTUnwrap(CGDataConsumer(url: url as CFURL))
             let context = try XCTUnwrap(CGContext(consumer: consumer, mediaBox: &box, nil))
@@ -54,7 +55,7 @@ final class CollectionSpoolWindowTests: XCTestCase {
         await source.configureSpooling(sizeLimit: 4 << 20)
         if applyProfile { await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true)) }
         let pages = try await source.entries()
-        XCTAssertEqual(pages.count, count * pagesPerChild + (pdfNeighbor ? 1 : 0))
+        XCTAssertEqual(pages.count, count * pagesPerChild + pdfNeighbors)
         return Collection(source: source, pages: pages, probes: probes, order: order)
     }
 
@@ -418,13 +419,14 @@ final class CollectionSpoolWindowTests: XCTestCase {
         XCTAssertEqual(c.probes[5].state.withLock { $0.spoolReads }, [0, 1])
     }
 
-    func testWindowSkipsNonArchiveNeighbor() async throws {
-        let c = try await collection(pdfNeighbor: true)
+    func testWindowLooksPastNonArchiveNeighborByChildOrder() async throws {
+        let c = try await collection(pdfNeighbors: 1)
         let neighbor = try XCTUnwrap(c.pages.first { $0.pathInBook.hasPrefix("002a.pdf/") })
         await c.source.noteReadingPosition(current: c.page(2), next: neighbor, previous: c.page(1), forward: true, sequence: 1)
         await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
         _ = await c.source.waitForSpoolCompletion()
-        XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [2, 2])
+        // CV4-1: 隣が PDF でも、子の順で 2 つ目までにある書庫を窓に入れる。
+        XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [2, 2, 3, 3])
     }
 
     func testBeginBeforePositionStartsFirstArchiveChildOnBackgroundLane() async throws {
@@ -608,4 +610,132 @@ final class CollectionSpoolWindowTests: XCTestCase {
     }
 
 
+    // MARK: - CV4-1: 窓は子の順で次の書庫を含み、先読みはスプールより先に主展開へ進まない
+
+    private func pdfPage(_ c: Collection, _ suffix: String) throws -> PageEntry {
+        try XCTUnwrap(c.pages.first { $0.pathInBook.hasPrefix("002\(suffix).pdf/") })
+    }
+
+    func testReadingPDFChildStartsNextArchiveSpoolWithoutDisplayRequest() async throws {
+        let c = try await collection(pdfNeighbors: 2)
+        await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
+        _ = await c.source.waitForSpoolCompletion()
+        let before = c.order.withLock { $0.count }
+        // meas5 所見 2 と同じ並び: PDF の子に着地し、次の巻も PDF、その次が solid 書庫。
+        await c.source.noteReadingPosition(current: try pdfPage(c, "a"), next: try pdfPage(c, "b"),
+            previous: c.page(2), forward: true, sequence: c.sequence.withLock { $0 += 1; return $0 })
+        _ = await c.source.waitForSpoolCompletion()
+        let child = await c.source.archiveChild(for: c.page(3))!
+        XCTAssertTrue(child.hasFinishedSpool, "表示要求なしで次の書庫のスプールを始める")
+        XCTAssertEqual(c.order.withLock { Array($0.dropFirst(before).map(\.0)) }, [3, 3])
+        XCTAssertEqual(c.probes[3].state.withLock { $0.primaryReads }, [])
+    }
+
+    func testWindowSearchStopsAfterTwoChildren() async throws {
+        let c = try await collection(pdfNeighbors: 3)
+        await c.source.noteReadingPosition(current: try pdfPage(c, "a"), next: try pdfPage(c, "b"),
+            previous: c.page(2), forward: true, sequence: 1)
+        await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
+        _ = await c.source.waitForSpoolCompletion()
+        XCTAssertEqual(c.probes[3].state.withLock { $0.reopenCalls }, 0, "PDF が続く先の遠い子は引き込まない")
+        XCTAssertEqual(c.probes[3].state.withLock { $0.spoolReads }, [])
+    }
+
+    func testReadingChildSpoolRunsBeforeNextArchiveAndIsNotCancelled() async throws {
+        let started = expectation(description: "読書中の子を停止")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let c = try await collection(pdfNeighbors: 1) { child, entry in
+            if child == 2, entry == 0 { started.fulfill(); _ = release.wait(timeout: .now() + 10) }
+        }
+        await c.source.noteReadingPosition(current: c.page(2), next: try pdfPage(c, "a"), previous: c.page(1),
+            forward: true, sequence: 1)
+        await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
+        await fulfillment(of: [started], timeout: 3)
+        let current = await c.source.archiveChild(for: c.page(2))!
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(c.probes[3].state.withLock { $0.reopenCalls }, 0, "次の書庫は読書中の子の完了まで始めない")
+        XCTAssertTrue(current.hasRunningSpool)
+        XCTAssertFalse(current.needsInteractiveSpoolPreparation, "窓に次の子を足しても読書中の子を取り消さない")
+        release.signal()
+        _ = await c.source.waitForSpoolCompletion()
+        XCTAssertEqual(c.order.withLock { $0.map(\.0) }, [2, 2, 3, 3])
+        XCTAssertEqual(c.probes[2].state.withLock { $0.spoolReads }, [0, 1], "読書中の子は最初からやり直さない")
+        XCTAssertEqual(c.probes[2].state.withLock { $0.reopenCalls }, 1)
+    }
+
+    func testPrefetchIntoUnspooledSerialChildDeclinesWithoutPrimary() async throws {
+        let c = try await collection()
+        let child = await c.source.archiveChild(for: c.page(3))!
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            _ = try await PageRequestIntent.$isPrefetch.withValue(true) {
+                try await c.source.image(for: c.page(3), maxPixelSize: nil)
+            }
+            XCTFail("スプールの開始前の先読みは主展開へ進まず断る")
+        } catch {}
+        XCTAssertLessThan(clock.now - start, .seconds(1))
+        XCTAssertEqual(c.probes[3].state.withLock { $0.primaryReads }, [], "r4/r6 の同期主展開を起こさない")
+        XCTAssertEqual(c.probes[3].state.withLock { $0.reopenCalls }, 0)
+        let directory = await child.spoolDirectoryForTesting
+        XCTAssertNil(directory, "断った先読みはスプールも始めない")
+        // 表示は従来どおりスプールを始めて読む。
+        let image = try await PageRequestIntent.$isDisplay.withValue(true) {
+            try await c.source.image(for: c.page(3), maxPixelSize: nil)
+        }
+        XCTAssertEqual(image.width, 4)
+        XCTAssertEqual(c.probes[3].state.withLock { $0.primaryReads }, [])
+        _ = await c.source.waitForSpoolCompletion()
+        await child.waitForSpoolCompletion()
+    }
+
+    func testPrefetchStillUsesPrimaryUnderNeverPolicy() async throws {
+        let c = try await collection()
+        await c.source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
+        let image = try await PageRequestIntent.$isPrefetch.withValue(true) {
+            try await c.source.image(for: c.page(3), maxPixelSize: nil)
+        }
+        XCTAssertEqual(image.width, 4)
+        XCTAssertEqual(c.probes[3].state.withLock { $0.primaryReads }, [0])
+        XCTAssertEqual(c.probes[3].state.withLock { $0.reopenCalls }, 0)
+    }
+
+    func testRecordSpoolKeepsChildWhoseDisplaySpoolIsRunningWithZeroBytes() async throws {
+        let blocked = expectation(description: "表示が始めた走査の先頭で停止")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let c = try await collection(2) { child, entry in
+            if child == 1, entry == 0 { blocked.fulfill(); _ = release.wait(timeout: .now() + 10) }
+        }
+        // 背景枠を埋め、窓が始めた次の子の走査を枠待ちのまま留める。
+        let gate = ArchiveSource.backgroundSpoolGate
+        var acquired = 0
+        while await gate.tryAcquire() { acquired += 1 }
+        let held = acquired
+        addTeardownBlock { for _ in 0..<held { await gate.release() } }
+        let next = await c.source.archiveChild(for: c.page(1))!
+        await c.note(0)
+        await c.source.beginBackgroundPreparation(spoolSizeLimit: 4 << 20)
+        for _ in 0..<1_000 {
+            if next.hasRunningSpool { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(next.hasRunningSpool)
+        // 窓の準備係が次の子の完了待ちに入ってから、表示で対話枠へ昇格させる。
+        try await Task.sleep(for: .milliseconds(200))
+        let display = Task.detached(priority: .userInitiated) {
+            try await PageRequestIntent.$isDisplay.withValue(true) {
+                try await c.source.image(for: c.page(1), maxPixelSize: nil)
+            }
+        }
+        await fulfillment(of: [blocked], timeout: 3)
+        // 旧走査の終了で窓が recordSpool を通過するまで待つ(新しい走査は 0 バイトのまま)。
+        try await Task.sleep(for: .milliseconds(200))
+        release.signal()
+        _ = try await display.value
+        await next.waitForSpoolCompletion()
+        let count = await c.source.waitForSpoolCompletion()
+        XCTAssertEqual(count, 4, "0 バイトで稼働中の子を台帳から落とさない")
+    }
 }
