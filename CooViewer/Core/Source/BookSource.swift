@@ -2,6 +2,13 @@ import CoreGraphics
 import Foundation
 import Washi
 
+/// 表示だけが準備窓を動かす。優先度は先読みや可視サムネイルとも共有されるため使わない。
+enum PageRequestIntent {
+    @TaskLocal static var isDisplay = false
+    /// 本の先読みだけが立てる。開始予定のスプールより先に solid の主展開へ進まない(CV4-1、設計書 §5)。
+    @TaskLocal static var isPrefetch = false
+}
+
 enum BookSourceError: Error {
     case unreadable(URL)
     case unsupportedFormat(URL)
@@ -41,6 +48,15 @@ protocol BookSource: Sendable {
     /// いまの状態での並列可否(書庫: 全スプール済み or 非 solid 形式のみ true。
     /// solid 書庫の順不同展開によるストリーム巻き戻しを避ける)
     func currentlySupportsParallelPageLoads() async -> Bool
+
+    /// 先読み窓に含まれるページだけの並列可否。既定はソース全体の答えを使う。
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool
+
+    /// 先読みの巻境界。actor を待たずに判定する(仕様書 §4.5、設計書 §3.1)。
+    nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int
+
+    /// 読書位置を準備係へ知らせる。表示側は待たずに通知する(設計書 §5)。
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool, sequence: UInt64) async
 
     /// 開いた直後のバックグラウンド準備(書庫のローカルスプール等)。
     /// パスワード解除後に一度だけ呼ばれる。すぐ戻ること。
@@ -86,6 +102,9 @@ protocol BookSource: Sendable {
     /// beginBackgroundPreparation より前に呼ぶこと
     func applyMediaProfile(_ profile: MediaProfile) async
 
+    /// 初表示より前に上限を確定する。準備の開始とは分けて子孫へ伝える(設計書 §5)。
+    func configureSpooling(sizeLimit: Int64) async
+
     /// 最上位ダイアログでの「パスワードを保存」同意をネスト子へ引き継ぐ
     /// (同意済みパスワードで解錠された子は子のキーでも保存される。設計書 §2.4)
     func notePasswordSaveConsent(_ password: String) async
@@ -116,6 +135,11 @@ extension BookSource {
     func checkAndSetPassword(_ password: String) async -> PasswordCheck { .accepted }
     var supportsParallelPageLoads: Bool { false }
     func currentlySupportsParallelPageLoads() async -> Bool { supportsParallelPageLoads }
+    func currentlySupportsParallelPageLoads(forEntryIDs ids: [Int]) async -> Bool {
+        await currentlySupportsParallelPageLoads()
+    }
+    nonisolated func prefetchVolumeKey(for entry: PageEntry) -> Int { 0 }
+    func noteReadingPosition(current: PageEntry, next: PageEntry?, previous: PageEntry?, forward: Bool, sequence: UInt64) async {}
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {}
     func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         try await image(for: entry, maxPixelSize: nil)
@@ -133,6 +157,7 @@ extension BookSource {
         entry.fileURL ?? url
     }
     func applyMediaProfile(_ profile: MediaProfile) async {}
+    func configureSpooling(sizeLimit: Int64) async {}
     func metadata() async -> ComicInfo? { nil }
     func preparsedReflowPublication(for url: URL) async -> EPUBPublication? { nil }
     func layoutSinglePageIndices() async -> Set<Int> { [] }

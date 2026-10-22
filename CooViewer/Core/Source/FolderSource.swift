@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 
 /// フォルダを本として読む(仕様書 §4.1)。
@@ -10,12 +11,14 @@ final class FolderSource: BookSource {
     /// フォルダ内の書庫/PDF(旧実装はネスト COImageLoader として本に統合した。
     /// 統合は NestedFolderSource が担い、本クラスは列挙のみ行う)
     let nestedBookCandidates: [(fileURL: URL, relativePath: String)]
+    let splitContinuationCandidateIndices: Set<Int>
 
     /// 撮影用の不変スナップショットは実フォルダや利用者の履歴に触れない(設計書 §7.4)。
     init(snapshotURL: URL, images: [PageEntry], nestedPaths: [String]) {
         url = snapshotURL
         pageEntries = images
         nestedBookCandidates = nestedPaths.map { (snapshotURL.appendingPathComponent($0), $0) }
+        splitContinuationCandidateIndices = []
     }
 
     var supportsDateSort: Bool { true }
@@ -91,6 +94,7 @@ final class FolderSource: BookSource {
         fileURLs.sort { $0.path < $1.path }
 
         let basePath = url.standardizedFileURL.path
+        let fastPrefixes = Self.fastPrefixes(for: url, standardizedBasePath: basePath)
         var entries: [PageEntry] = []
         var candidates: [(fileURL: URL, relativePath: String)] = []
         for fileURL in fileURLs {
@@ -104,10 +108,8 @@ final class FolderSource: BookSource {
             let values = try? fileURL.resourceValues(forKeys: Set(keys))
             if values?.isDirectory == true { continue }
 
-            let fullPath = fileURL.standardizedFileURL.path
-            var relativePath = fullPath.hasPrefix(basePath)
-                ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
-            if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+            let relativePath = Self.relativePath(of: fileURL, fastPrefixes: fastPrefixes,
+                                                 standardizedBasePath: basePath).path
 
             if isImage {
                 entries.append(PageEntry(
@@ -124,6 +126,53 @@ final class FolderSource: BookSource {
         }
         self.pageEntries = entries
         self.nestedBookCandidates = candidates
+        // バイト一致の先頭巻が同じ親にある場合だけ省略する。偶然この命名の別々の単独書庫も
+        // 続き巻とみなす残余リスクがある。候補は残し、後続ページの id を保つ(設計書 §2.4)。
+        let paths = Set(candidates.map { Array($0.relativePath.utf8) })
+        self.splitContinuationCandidateIndices = Set(candidates.indices.filter { index in
+            let path = candidates[index].relativePath
+            let name = (path as NSString).lastPathComponent
+            guard let part = SupportedTypes.rarPartPattern(name), part.number >= 2 else { return false }
+            let parent = String(path.dropLast(name.count))
+            let first = parent + part.prefix + part.marker
+                + String(repeating: "0", count: part.digits.count - 1) + "1" + part.ext
+            return paths.contains(Array(first.utf8))
+        })
+    }
+
+    nonisolated static func fastPrefixes(for url: URL, standardizedBasePath: String) -> [String] {
+        // NFC 綴りの入力を Foundation が NFD に変える場合、実パス候補だけが検査を通る。
+        // この場合も従来経路に戻し、正規化形が異なる入力の永続キーを保つ(設計書 §7.4)。
+        guard url.path.utf8.elementsEqual(url.path.decomposedStringWithCanonicalMapping.utf8) else { return [] }
+        var paths = [url.path]
+        if let resolved = realpath(url.path, nil) {
+            paths.append(String(cString: resolved))
+            free(resolved)
+        }
+        // 列挙 URL の実パス表記も受けるが、大小文字・正規化形の違いは従来経路へ戻す(設計書 §7.4)。
+        return paths.filter {
+            URL(fileURLWithPath: $0).standardizedFileURL.path.utf8.elementsEqual(standardizedBasePath.utf8)
+        }
+    }
+
+    nonisolated static func relativePath(of fileURL: URL, fastPrefixes: [String],
+                                         standardizedBasePath basePath: String)
+        -> (path: String, usedFastPath: Bool) {
+        let rawPath = fileURL.path
+        for prefix in fastPrefixes {
+            let directoryPrefix = prefix + "/"
+            guard rawPath.utf8.starts(with: directoryPrefix.utf8) else { continue }
+            let rest = String(decoding: rawPath.utf8.dropFirst(directoryPrefix.utf8.count), as: UTF8.self)
+            guard rest.split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { continue }
+            return (rest, true)
+        }
+        // しおり・サムネイルの永続キーは、前提外の URL の従来の癖まで保つ(設計書 §7.4)。
+        let fullPath = fileURL.standardizedFileURL.path
+        var relativePath = fullPath.hasPrefix(basePath)
+            ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
+        if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+        return (relativePath, false)
     }
 
     func entries() async throws -> [PageEntry] {
@@ -140,7 +189,7 @@ final class FolderSource: BookSource {
     func imageData(for entry: PageEntry) async -> Data? {
         guard let fileURL = entry.fileURL else { return nil }
         // アニメーション用の生データ読みも同じゲートを通す(全読者を制御)
-        await readGate.acquire()
+        guard await readGate.acquire() else { return nil }
         let data = try? Data(contentsOf: fileURL)
         await readGate.release()
         return data
@@ -153,7 +202,7 @@ final class FolderSource: BookSource {
         }
         // ゲートはディスク I/O のみを絞る。デコード(CPU)はゲート外で行い、
         // 多コアの並列デコードを活かす(HDD でもゲート保持時間が短くなる)
-        await readGate.acquire()
+        guard await readGate.acquire() else { throw CancellationError() }
         let data: Data
         do {
             try Task.checkCancellation()

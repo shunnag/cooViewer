@@ -252,6 +252,8 @@ final class ReaderWindowController: NSWindowController {
     private var cursorHideTimer: Timer?
     /// アプリと同寿命のため解除しない(Swift 6 の nonisolated deinit 制約)
     private var settingsObserver: (any NSObjectProtocol)?
+    private var spoolSettingsTask: Task<Void, Never>?
+    private var appliedSpoolSettings: (book: ObjectIdentifier, limit: Int64, policy: SettingsStore.SpoolPolicy)?
     private var powerStateObserver: (any NSObjectProtocol)?
     private var memoryPressureObserver: (any NSObjectProtocol)?
     /// ウインドウの隠蔽・アプリの前面性(先読みの実行モードを変える)
@@ -665,8 +667,30 @@ final class ReaderWindowController: NSWindowController {
                 }
             }
             applyAdvancedSettings(to: book)
+            applySpoolSettings(to: book)
         }
         readerView.singleSetting = settings.singleSetting
+    }
+
+    private func applySpoolSettings(to book: Book) {
+        let limit = settings.archiveSpoolSizeLimit
+        let policy = settings.archiveSpoolPolicy
+        let id = ObjectIdentifier(book)
+        if let appliedSpoolSettings, appliedSpoolSettings.book == id,
+           appliedSpoolSettings.limit == limit, appliedSpoolSettings.policy == policy { return }
+        appliedSpoolSettings = (id, limit, policy)
+        spoolSettingsTask?.cancel()
+        spoolSettingsTask = Task { [weak self, weak book] in
+            guard let self, let book, self.book === book, !Task.isCancelled else { return }
+            let profile = await self.effectiveMediaProfile(for: book.source.url)
+            guard self.book === book, !Task.isCancelled else { return }
+            book.mediaProfile = profile
+            await book.source.applyMediaProfile(profile)
+            guard self.book === book, !Task.isCancelled else { return }
+            await book.source.configureSpooling(sizeLimit: limit)
+            guard self.book === book, !Task.isCancelled else { return }
+            await book.source.beginBackgroundPreparation(spoolSizeLimit: limit)
+        }
     }
 
     /// UserDefaults 全体の通知から EPUB に関係する変更だけを抽出する
@@ -1549,14 +1573,12 @@ final class ReaderWindowController: NSWindowController {
             saveCurrentBookState()
             dismissEPUBMode()  // EPUB モード中なら位置を保存して画像表示へ戻す
 
-            // 置き場所の速度判定は本の展開と並行に走らせる(設計書 キャッシュ節)。
-            // [#1] 初回描画をこの判定でブロックしないため Task にして待たない(async let は
-            // 宣言スコープ外から await できないので Task を使う)。確定プロファイルは描画後に
-            // バックグラウンドで .value を待って適用する。内蔵 SSD は IOKit、ネットワークは
-            // statfs で即答なので実質同時。外付けの不明メディア初回のみ最大 ~250ms のベンチ
-            // マークが走るが、その分だけ先に 1 ページ目を描ける(結果はボリュームでキャッシュ)。
-            let probeURL = bookURL
-            let mediaProfileTask = Task { await self.effectiveMediaProfile(for: probeURL) }
+            // 初表示が準備を開始できるので、組み立て前に実プロファイルと設定を確定する(設計書 §5)。
+            let realProfile = await effectiveMediaProfile(for: bookURL)
+            let mediaProfileTask = Task { realProfile }
+            await source.configureSpooling(sizeLimit: settings.archiveSpoolSizeLimit)
+            await source.applyMediaProfile(realProfile)
+            guard generation == openGeneration, !Task.isCancelled else { return }
             let book: Book
             if let returningPartial, let previous = returningPartial.partialState,
                returningPartial.source.url == source.url {
@@ -1622,10 +1644,7 @@ final class ReaderWindowController: NSWindowController {
                 useLayoutHints: settings.useComicInfoLayoutHints)
             book.singleSetting = settings.singleSetting
             book.coverSingleFirst = settings.spreadCoverSingle
-            // [#1] まず保守的な unknown で表示に進む(既定と同値=従来動作)。
-            // 確定プロファイルは描画後にバックグラウンドで適用する(下記)。
-            book.mediaProfile = .unknown
-            await source.applyMediaProfile(.unknown)
+            book.mediaProfile = realProfile
             applyAdvancedSettings(to: book)
             // comicInfo/loadComicInfoState/applyMediaProfile の await を跨いだ間に
             // 新しいオープンが始まっていたら、ここで自己状態を commit しない
@@ -1671,6 +1690,7 @@ final class ReaderWindowController: NSWindowController {
             endOpeningProgress(generation: generation)
             preparedNextEPUB = nil
             replaceBook(book, persistence: persistence)
+            appliedSpoolSettings = (ObjectIdentifier(book), settings.archiveSpoolSizeLimit, settings.archiveSpoolPolicy)
             if book.isPartial, var retained = returningPartial {
                 retained.placeholder = book
                 retained.partialState = PartialBookState(entries: book.entries, sortMode: book.sortMode,
@@ -2714,7 +2734,11 @@ final class ReaderWindowController: NSWindowController {
                     // 先読み済みならキャッシュ命中、未了なら進行中のデコードに
                     // 合流。HDR(>8bit)ページは通常表示側もリサンプルしないので
                     // 対象外(以降はさらに遠いページなので打ち切ってよい)
-                    guard let image = await book.image(at: index),
+                    // 先読みと同じく、開始予定のスプールより先に solid の主展開へ進ませない(CV4-1)。
+                    let loaded = await PageRequestIntent.$isPrefetch.withValue(true) {
+                        await book.image(at: index)
+                    }
+                    guard let image = loaded,
                           image.bitsPerComponent <= 8 else { return }
                     images.append(image)
                 }
@@ -2769,7 +2793,6 @@ final class ReaderWindowController: NSWindowController {
     /// アニメーション画像(GIF/WebP 等)の再生(設定でオフ可。設計書 §5)
     private func startAnimationsIfNeeded(spread: Book.Spread) {
         guard settings.playAnimatedImages, let book else { return }
-        let animatable: Set<String> = ["gif", "png", "apng", "webp", "heics", "avif", "avifs"]
         for (position, index) in spread.indices.enumerated() {
             guard book.entries.indices.contains(index) else { continue }
             let entry = book.entries[index]
@@ -2777,7 +2800,7 @@ final class ReaderWindowController: NSWindowController {
             // 表示のたびに生データを読み直す無駄の防止)
             guard !book.probedStaticAnimationIDs.contains(entry.id) else { continue }
             let ext = (entry.name as NSString).pathExtension.lowercased()
-            guard animatable.contains(ext) else { continue }
+            guard AnimatedImage.candidateExtensions.contains(ext) else { continue }
             // デコード(最大 120 フレーム)はメインアクターの外で行う。
             // 解像度はページレイヤの実ピクセルに合わせる(全フレーム常駐のため、
             // 一律 2048px より大幅に省メモリ)
@@ -3786,6 +3809,9 @@ extension ReaderWindowController {
             do {
                 await bindAssemblyHandlers(source: failed.source, generation: generation)
                 guard generation == openGeneration, !Task.isCancelled else { return }
+                await failed.source.configureSpooling(sizeLimit: settings.archiveSpoolSizeLimit)
+                await failed.source.applyMediaProfile(await effectiveMediaProfile(for: failed.source.url))
+                guard generation == openGeneration, !Task.isCancelled else { return }
                 let complete = try await Book.open(source: failed.source,
                     sortMode: failed.placeholder?.sortMode ?? failed.partialState?.sortMode ?? settings.sortMode,
                     cacheByteLimit: settings.pageCacheByteLimit, probe: fileSystemProbe)
@@ -3838,7 +3864,11 @@ extension ReaderWindowController {
     private func adoptRecoveredBook(_ next: Book, replacing failed: FailedOpen, generation: Int) async {
         next.isSyntheticPreview = failed.isSynthetic
         next.readMode = settings.readMode
-        let mediaProfileTask = Task { await self.effectiveMediaProfile(for: next.source.url) }
+        let realProfile = await effectiveMediaProfile(for: next.source.url)
+        let mediaProfileTask = Task { realProfile }
+        await next.source.configureSpooling(sizeLimit: settings.archiveSpoolSizeLimit)
+        await next.source.applyMediaProfile(realProfile)
+        next.mediaProfile = realProfile
         // 読み方向は巻の欠落でずれないため、番号ヒントと分けて従来の優先順位を保つ(設計書 §7.4、§2.4)。
         if settings.respectComicInfoReadingDirection,
            let rtl = await next.comicInfo()?.manga.readsRightToLeft {
@@ -3890,6 +3920,7 @@ extension ReaderWindowController {
         endOpeningProgress(generation: generation)
         preparedNextEPUB = nil
         replaceBook(next, persistence: persistence)
+        appliedSpoolSettings = (ObjectIdentifier(next), settings.archiveSpoolSizeLimit, settings.archiveSpoolPolicy)
         loadedAnimationFrameCaps.removeAll()
         readerView.resampleKeyPrefix = next.cacheKey
         currentBookIsEncrypted = encrypted

@@ -40,6 +40,23 @@ final class EPUBCollectionTests: XCTestCase {
         }
     }
 
+    func testCollectionContextCarriesPlaceholderIndices() async throws {
+        let source = PlaceholderStubSource(count: 5, placeholderIndices: [1, 4])
+        let book = try await Book.open(source: source)
+        let cached = book.reflowPlaceholders
+        let context = EPUBCollectionContext(folderURL: source.url, entryIndex: 1, entryCount: 5,
+            readsFromLeft: false, entries: book.entries, reflowPlaceholders: cached, source: source,
+            singleSetting: 0, coverSingle: false, bookmarkedPages: [])
+        XCTAssertEqual(context.reflowPlaceholders.map(\.index), [1, 4])
+        XCTAssertEqual(context.reflowPlaceholders.map(\.url), cached.map(\.url))
+        let fallback = EPUBCollectionContext(folderURL: source.url, entryIndex: 4, entryCount: 5,
+            readsFromLeft: false, entries: book.entries, source: source,
+            singleSetting: 0, coverSingle: false, bookmarkedPages: [])
+        XCTAssertEqual(fallback.reflowPlaceholders.map(\.index), cached.map(\.index))
+        XCTAssertEqual(fallback.reflowPlaceholders.map(\.url), cached.map(\.url))
+        XCTAssertEqual(book.reflowPlaceholderScanCount, 1)
+    }
+
     func testPlaceholderNeverPairsIntoSpread() async throws {
         // 縦長 3 ページ(通常なら 0+1 が見開き)。1 が代理ページなら常に単独
         let source = PlaceholderStubSource(count: 3, placeholderIndices: [1])

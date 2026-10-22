@@ -191,7 +191,7 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         }
     }
 
-    func testPartialSpoolingReservesMissingArchiveBudgetUntilCompletion() async throws {
+    func testPartialSpoolingUsesWindowBudgetWithoutReservingMissingArchives() async throws {
         let root = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let png = TestFixtures.pngData(width: 4, height: 6)
@@ -215,16 +215,20 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         let budget = Int64(png.count * 3 - 1)
         await source.beginBackgroundPreparation(spoolSizeLimit: budget)
         let partialCount = await source.waitForSpoolCompletion()
-        XCTAssertEqual(partialCount, 0)
+        XCTAssertEqual(partialCount, 2)
         control.recover()
-        _ = try await source.entries()
+        let complete = try await source.entries()
         await source.beginBackgroundPreparation(spoolSizeLimit: budget)
         let completeCount = await source.waitForSpoolCompletion()
-        XCTAssertEqual(completeCount, 1)
+        XCTAssertEqual(completeCount, 2)
         XCTAssertLessThanOrEqual(Int64(completeCount * png.count), budget)
+        let recovered = try XCTUnwrap(complete.first { $0.pathInBook.hasPrefix("b.zip/") })
+        await source.noteReadingPosition(current: recovered, next: nil, previous: nil, forward: true, sequence: 1)
+        let movedCount = await source.waitForSpoolCompletion()
+        XCTAssertEqual(movedCount, 1, "予算不足時は窓外の最初の巻を追い出して回復巻へ回す")
     }
 
-    func testCompleteSpoolDivisorExcludesCorruptCancelledAndEmptyArchives() async throws {
+    func testCompleteWindowBudgetExcludesCorruptCancelledAndEmptyArchives() async throws {
         let root = try TestFixtures.makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let png = TestFixtures.pngData(width: 4, height: 6)
@@ -241,6 +245,54 @@ final class PartialOpenAssemblyRegressionTests: XCTestCase {
         await source.beginBackgroundPreparation(spoolSizeLimit: Int64(png.count * 2))
         let count = await source.waitForSpoolCompletion()
         XCTAssertEqual(count, 2)
+    }
+
+    func testSpoolWindowDoesNotReserveArchiveOrPDFCards() async throws {
+        let root = try TestFixtures.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let png = TestFixtures.pngData(width: 4, height: 6)
+        try TestFixtures.storedZip(entries: ["1.avifs", "2.avifs"].map { (Array($0.utf8), png) })
+            .write(to: root.appendingPathComponent("a.zip"))
+        for name in ["b.zip", "c.pdf"] { try Data().write(to: root.appendingPathComponent(name)) }
+        var policy = AssemblyRetryPolicy.immediate
+        policy.beforeChildAttempt = { path in
+            if path == "b.zip" || path == "c.pdf" { throw KaitoError.io(ENOSPC) }
+        }
+        let source = NestedFolderSource(folder: try FolderSource(url: root, readSubFolders: false),
+                                        retryPolicy: policy)
+        do { _ = try await source.entries(); XCTFail("失敗した巻を残す") }
+        catch { XCTAssertTrue(error is AssemblyFailure) }
+        let partial = try await source.partialEntries()
+        XCTAssertEqual(partial.compactMap(\.unreadableVolume).map(\.relativePath), ["b.zip", "c.pdf"])
+        await source.applyMediaProfile(MediaProfile(mediaClass: .slowLocal, spoolOverride: true))
+        // 書庫・PDF の欠落カードも除外子も枠を予約せず、現在巻へ全予算を回す(設計書 §5)。
+        await source.beginBackgroundPreparation(spoolSizeLimit: Int64(png.count * 2))
+        let reservedCount = await source.waitForSpoolCompletion()
+        XCTAssertEqual(reservedCount, 2)
+        // 上限を増やしてもカードをスプールせず、完了巻を書き直さない。
+        await source.beginBackgroundPreparation(spoolSizeLimit: Int64(png.count * 4))
+        let count = await source.waitForSpoolCompletion()
+        XCTAssertEqual(count, 2)
+    }
+
+    func testCardCauseUsesFirstMatchingFailure() async throws {
+        let url = URL(fileURLWithPath: "/synthetic/図面集/A-002.zip", isDirectory: false)
+        let failures = [SourceReadFailure.ReadFailureCause.accessDenied, .diskFull].map {
+            ChildReadFailure(relativePath: "A-002.zip", url: url, cause: $0, retryClass: .persistent)
+        }
+        let (source, _) = await NestedFolderSource.syntheticFailure(failures: failures)
+        let entries = try await source.partialEntries()
+        XCTAssertEqual(entries.first { $0.pathInBook == "A-002.zip" }?.unreadableVolume?.cause, .accessDenied)
+    }
+
+    func testContainerFileURLForCardDoesNotNeedExistingFile() async throws {
+        let (source, _) = await NestedFolderSource.syntheticFailure()
+        let entries = try await source.partialEntries()
+        let card = try XCTUnwrap(entries.first { $0.unreadableVolume != nil })
+        let url = await source.containerFileURL(for: card)
+        XCTAssertTrue(url.isFileURL)
+        XCTAssertFalse(url.hasDirectoryPath)
+        XCTAssertEqual(url.path, source.url.path + "/" + card.pathInBook)
     }
 
     private func writeExcludedAndSkippedArchives(in root: URL, png: Data) throws {

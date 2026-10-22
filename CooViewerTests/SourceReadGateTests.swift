@@ -6,13 +6,85 @@ import XCTest
 /// サムネイルの可視セル要求(urgent)が、見えない画面の先読みの行列を
 /// 追い越して先に生成へ入れることの根拠(cooViewer-19t)。
 final class SourceReadGateTests: XCTestCase {
+    func testTryAcquireTakesSlotAtomicallyWithoutQueueing() async {
+        let gate = SourceReadGate(limit: 1)
+        let first = await gate.tryAcquire()
+        XCTAssertTrue(first)
+        let second = await gate.tryAcquire()
+        XCTAssertFalse(second)
+        let full = await gate.debugCounts()
+        XCTAssertEqual(full.active, 1)
+        XCTAssertEqual(full.queued, 0)
+        await gate.release()
+        let third = await gate.tryAcquire()
+        XCTAssertTrue(third)
+        await gate.release()
+        let empty = await gate.debugCounts()
+        XCTAssertEqual(empty.active, 0)
+    }
+
+    func testCancelledBeforeAcquireDoesNotTakeSlot() async {
+        let gate = SourceReadGate(limit: 1)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await gate.acquire(interactive: true)
+        }
+        let acquired = await task.value
+        XCTAssertFalse(acquired)
+        let counts = await gate.debugCounts()
+        XCTAssertEqual(counts.active, 0)
+        XCTAssertEqual(counts.queued, 0)
+    }
+
+    func testCancelWhileParkedDoesNotLeakSlot() async {
+        for interactive in [false, true] {
+            let gate = SourceReadGate(limit: 1)
+            guard await gate.acquire() else { return XCTFail("取得失敗") }
+            let parked = Task { await gate.acquire(interactive: interactive) }
+            while await gate.debugCounts().queued == 0 { await Task.yield() }
+            parked.cancel()
+            let acquired = await parked.value
+            XCTAssertFalse(acquired)
+            let counts = await gate.debugCounts()
+            XCTAssertEqual(counts.active, 1)
+            XCTAssertEqual(counts.queued, 0)
+            await gate.release()
+            guard await gate.acquire() else { return XCTFail("後続の取得失敗") }
+            await gate.release()
+            let final = await gate.debugCounts()
+            XCTAssertEqual(final.active, 0)
+        }
+    }
+
+    func testCancelRacingReleaseResumesExactlyOnce() async {
+        for _ in 0..<100 {
+            let gate = SourceReadGate(limit: 1)
+            guard await gate.acquire() else { return XCTFail("取得失敗") }
+            let parked = Task {
+                let acquired = await gate.acquire(interactive: true)
+                if acquired { await gate.release() }
+            }
+            while await gate.debugCounts().queued == 0 { await Task.yield() }
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { parked.cancel() }
+                group.addTask { await gate.release() }
+            }
+            await parked.value
+            let counts = await gate.debugCounts()
+            XCTAssertEqual(counts.active, 0)
+            XCTAssertEqual(counts.queued, 0)
+            guard await gate.acquire() else { return XCTFail("後続の取得失敗") }
+            await gate.release()
+        }
+    }
+
     func testInteractiveLaneOvertakesBackgroundQueue() async throws {
         let gate = SourceReadGate(limit: 1)
-        await gate.acquire(interactive: false)  // スロットを占有して行列を作る
+        guard await gate.acquire(interactive: false) else { return }  // スロットを占有して行列を作る
 
         let order = OrderRecorder()
         let background = Task {
-            await gate.acquire(interactive: false)
+            guard await gate.acquire(interactive: false) else { return }
             await order.note("background")
             await gate.release()
         }
@@ -21,7 +93,7 @@ final class SourceReadGateTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(5))
         }
         let interactive = Task {
-            await gate.acquire(interactive: true)
+            guard await gate.acquire(interactive: true) else { return }
             await order.note("interactive")
             await gate.release()
         }
@@ -41,11 +113,11 @@ final class SourceReadGateTests: XCTestCase {
     /// userInitiated で起動する 470 修正が依拠する「優先度→レーン」写像を被覆する
     func testInferredInteractiveLaneOvertakesBackgroundQueue() async throws {
         let gate = SourceReadGate(limit: 1)
-        await gate.acquire(interactive: false)  // スロットを占有
+        guard await gate.acquire(interactive: false) else { return }  // スロットを占有
 
         let order = OrderRecorder()
         let background = Task(priority: .utility) {
-            await gate.acquire()  // 推論 → utility なので background レーン
+            guard await gate.acquire() else { return }  // 推論 → utility なので background レーン
             await order.note("background")
             await gate.release()
         }
@@ -53,7 +125,7 @@ final class SourceReadGateTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(5))
         }
         let interactive = Task(priority: .userInitiated) {
-            await gate.acquire()  // 推論 → userInitiated なので interactive レーン
+            guard await gate.acquire() else { return }  // 推論 → userInitiated なので interactive レーン
             await order.note("interactive")
             await gate.release()
         }

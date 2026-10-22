@@ -36,6 +36,18 @@ enum SupportedTypes {
         return ext != "001"
     }
 
+    /// KaitoKit と同じ規則で .partN.rar を分解し、元の綴りを保つ(設計書 §2.4)。
+    static func rarPartPattern(_ name: String)
+        -> (prefix: String, marker: String, digits: String, number: UInt64, ext: String)? {
+        guard name.lowercased().hasSuffix(".rar") else { return nil }
+        let stem = String(name.dropLast(4))
+        guard let marker = stem.range(of: ".part", options: [.backwards, .caseInsensitive]) else { return nil }
+        let digits = String(stem[marker.upperBound...])
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ (0x30...0x39).contains($0) }),
+              let number = UInt64(digits), number > 0 else { return nil }
+        return (String(stem[..<marker.lowerBound]), String(stem[marker]), digits, number, String(name.suffix(4)))
+    }
+
     static func isPDF(_ url: URL) -> Bool {
         url.pathExtension.lowercased() == "pdf"
     }
