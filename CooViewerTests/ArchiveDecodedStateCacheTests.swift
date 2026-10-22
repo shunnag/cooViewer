@@ -98,8 +98,16 @@ final class ArchiveDecodedStateCacheTests: XCTestCase {
             XCTAssertEqual(image.width, 40 + index)
             sources.append(source)
         }
+        // 共有キャッシュへの利用記録と解放は非同期なので、保持数が上限に収まるまで待つ。
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
         var retained = 0
-        for source in sources { retained += await source.extractorCount }
+        while true {
+            retained = 0
+            for source in sources { retained += await source.extractorCount }
+            if retained <= ArchiveDecodedStateCache.maximumIdleBooks || clock.now >= deadline { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertLessThanOrEqual(retained, ArchiveDecodedStateCache.maximumIdleBooks)
         for index in [0, 19, 1, 18] {
             let pages = try await sources[index].entries()
