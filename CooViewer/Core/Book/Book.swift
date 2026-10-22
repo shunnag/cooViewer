@@ -898,18 +898,23 @@ final class Book {
 
         let targetIDs = targets.map { entries[$0].id }
         prefetchTask = Task { [weak self] in
-            guard let self else { return }
-            // 先読みの意図は子タスクにも継がせ、表示とサムネイルには付けない(CV4-1)。
-            await PageRequestIntent.$isPrefetch.withValue(true) {
-                await self.runPrefetch(targets: targets, captured: captured, targetIDs: targetIDs,
-                                      leadingCount: leadingCount, width: width, source: source)
-            }
+            await self?.runPrefetch(targets: targets, captured: captured, targetIDs: targetIDs,
+                                    leadingCount: leadingCount, width: width, source: source)
         }
     }
 
-    // Xcode 26.6 は withValue 内の入れ子クロージャでコンパイラが落ちる(ClosureLifetimeFixup)ため、本体を分ける。
+    // Task の弱参照から取り出した self を withValue のクロージャで使うと Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、withValue は通常のメソッドから呼ぶ。
     private func runPrefetch(targets: [Int], captured: [(index: Int, id: Int, volume: Int)],
                              targetIDs: [Int], leadingCount: Int, width: Int, source: any BookSource) async {
+        // 先読みの意図は子タスクにも継がせ、表示とサムネイルには付けない(CV4-1)。
+        await PageRequestIntent.$isPrefetch.withValue(true) {
+            await prefetchPages(targets: targets, captured: captured, targetIDs: targetIDs,
+                                leadingCount: leadingCount, width: width, source: source)
+        }
+    }
+
+    private func prefetchPages(targets: [Int], captured: [(index: Int, id: Int, volume: Int)],
+                               targetIDs: [Int], leadingCount: Int, width: Int, source: any BookSource) async {
         // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
         // ソースの「現在の状態」(スプール完了・形式)で判断する
         let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
