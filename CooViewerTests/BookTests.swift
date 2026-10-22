@@ -84,6 +84,55 @@ final class StubSource: BookSource, @unchecked Sendable {
     }
 }
 
+/// 先読みの意図を断る solid 書庫の代役。最初の先読みだけ止めて、表示の合流を作れるようにする(CV4-1)。
+final class DecliningPrefetchSource: BookSource, @unchecked Sendable {
+    struct Request: Equatable {
+        let id: Int
+        let display: Bool
+        let prefetch: Bool
+    }
+    let url = URL(fileURLWithPath: "/stub/declining")
+    var supportsDateSort: Bool { false }
+    private let lock = NSLock()
+    private var log: [Request] = []
+    private var blockedOnce = false
+    let prefetchStarted: XCTestExpectation
+    let release = DispatchSemaphore(value: 0)
+    var requests: [Request] { lock.withLock { log } }
+
+    init(prefetchStarted: XCTestExpectation) {
+        self.prefetchStarted = prefetchStarted
+    }
+
+    /// 同期の待機は非同期文脈から直接呼べないため、同期関数に包む。
+    private func waitForRelease() { _ = release.wait(timeout: .now() + 10) }
+
+    func entries() async throws -> [PageEntry] {
+        (0..<4).map { index in
+            PageEntry(id: index, name: String(format: "p%03d.png", index),
+                      pathInBook: String(format: "p%03d.png", index),
+                      fileURL: nil, creationDate: nil, modificationDate: nil)
+        }
+    }
+
+    func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+        let request = Request(id: entry.id, display: PageRequestIntent.isDisplay, prefetch: PageRequestIntent.isPrefetch)
+        let block = lock.withLock {
+            log.append(request)
+            defer { if request.prefetch { blockedOnce = true } }
+            return request.prefetch && !blockedOnce
+        }
+        if request.prefetch {
+            if block {
+                prefetchStarted.fulfill()
+                waitForRelease()
+            }
+            throw BookSourceError.temporarilyUnavailable(url)
+        }
+        return try ImageDecoding.decode(TestFixtures.pngData(width: 70, height: 100), maxPixelSize: maxPixelSize)
+    }
+}
+
 @MainActor
 final class BookTests: XCTestCase {
     private let portrait = CGSize(width: 70, height: 100)   // 0.7 <= 0.74 → 見開き候補
@@ -109,6 +158,41 @@ final class BookTests: XCTestCase {
         _ = await book.currentSpread()
         XCTAssertEqual(source.decodedIDs, [2, 0])
         XCTAssertEqual(source.displayIntents, [false, true])
+    }
+
+    func testDisplayJoiningDeclinedPrefetchReloadsWithDisplayIntentAndNothingIsCached() async throws {
+        let started = expectation(description: "先読みを停止")
+        let source = DecliningPrefetchSource(prefetchStarted: started)
+        defer { source.release.signal() }
+        let book = try await Book.open(source: source)
+        book.readMode = .rightToLeftSingle
+        book.prefetchAhead = 1
+        book.prefetchBehind = 0
+        book.reschedulePrefetch()
+        await fulfillment(of: [started], timeout: 3)
+        let display = Task { @MainActor in
+            await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+        }
+        // 表示要求が進行中の先読みへ合流してから、先読みを辞退させる。
+        try await Task.sleep(for: .milliseconds(100))
+        source.release.signal()
+        let image = await display.value
+        XCTAssertNotNil(image, "表示は先読みの辞退を失敗として引き継がない")
+        await book.waitForPrefetch()
+        XCTAssertEqual(source.requests, [.init(id: 1, display: false, prefetch: true),
+                                         .init(id: 1, display: true, prefetch: false)])
+        // 辞退した先読みは画像もサイズも失敗印も残さず、次の要求は改めてソースへ届く。
+        book.goTo(index: 1)
+        book.reschedulePrefetch()
+        await book.waitForPrefetch()
+        let declined = await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 2) }
+        XCTAssertNil(declined)
+        let plain = await book.image(at: 2)
+        XCTAssertNotNil(plain)
+        XCTAssertEqual(source.requests.filter { $0.id == 2 },
+                       [.init(id: 2, display: false, prefetch: true), .init(id: 2, display: false, prefetch: true),
+                        .init(id: 2, display: false, prefetch: false)])
+        XCTAssertEqual(book.pageCacheStats().count, 2)
     }
 
     func testReflowPlaceholdersScannedOncePerEntriesGeneration() async {

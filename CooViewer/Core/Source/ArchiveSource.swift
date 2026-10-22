@@ -1110,6 +1110,8 @@ actor ArchiveSource: BookSource {
         guard let index = Int32(exactly: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
+        // 主展開で actor を塞ぐ前に断り、表示とスプールの開始を待たせない(CV4-1)。
+        if shouldDeclinePrefetch(entry.id) { throw BookSourceError.temporarilyUnavailable(url) }
         if let (poolIndex, extractor) = acquireExtractor(for: entry.id) {
             return .pooled(poolIndex: poolIndex, extractor: extractor,
                            entryIndex: index)
@@ -1766,6 +1768,36 @@ actor ArchiveSource: BookSource {
             return try await spooledOrWaitingData(for: id)
         }
         return data ?? spooledData(for: id)
+    }
+
+    /// 先読みが solid の主展開を始めてよいか。スプールの開始が見込まれる間は断る(CV4-1、設計書 §5)。
+    /// 断るのは未開始の走査と、末尾走査中に後で届く先頭部分だけ。方針「しない」・予算外・
+    /// 停止中は従来どおり主書庫で読み、走査が届く id は spooledOrWaitingData が待つ。
+    private func shouldDeclinePrefetch(_ id: Int) -> Bool {
+        guard PageRequestIntent.isPrefetch, !PageRequestIntent.isDisplay, case .serial = parallelMode,
+              mediaProfileApplied, spoolSettingsConfigured,
+              !spooledIDs.contains(id), !skippedSpoolIDs.contains(id),
+              !exceedsPerPageDecodeLimit(Int32(id)),
+              !assemblyLifetime.withLock({ $0.abandoned }) else { return false }
+        switch spoolState {
+        case .idle:
+            return budgetForSpoolStart(sizeLimit: spoolSizeLimit) != nil
+        case .running(let task):
+            guard !task.isCancelled, spoolOrderPosition < spoolTailCount,
+                  let offset = spoolOrderOffsets[id], offset >= spoolTailCount else { return false }
+            return spoolWillReachAfterTail(offset)
+        case .paused, .finished:
+            return false
+        }
+    }
+
+    /// 末尾走査の後で先頭部分のこの位置まで予算内に届くか(spoolWillReach の末尾条件を除いた判定)。
+    private func spoolWillReachAfterTail(_ offset: Int) -> Bool {
+        guard spoolCosts.indices.contains(offset + 1), spoolCosts.indices.contains(spoolOrderPosition),
+              spoolUnknownCosts[offset + 1] == spoolUnknownCosts[spoolOrderPosition] else { return false }
+        let cost = spoolCosts[offset + 1] - spoolCosts[spoolOrderPosition]
+        let remaining = max(0, min(spoolBudget, diskSpoolLimit ?? spoolBudget) - spooledBytes)
+        return cost <= remaining
     }
 
     func spoolDemandBytes() -> Int64? {

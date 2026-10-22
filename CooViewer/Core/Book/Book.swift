@@ -278,7 +278,7 @@ final class Book {
 
     /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
     /// デコードに合流し、同じページを二重にデコードしないための単一飛行
-    private var inFlightLoads: [Int: (token: Int, task: Task<CGImage?, Never>)] = [:]
+    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, task: Task<CGImage?, Never>)] = [:]
     private var inFlightToken = 0
 
     func image(at index: Int) async -> CGImage? {
@@ -286,22 +286,29 @@ final class Book {
         let entry = entries[index]
         let key = entry.id
         if let hit = cache.image(for: key) { return hit }
+        let display = PageRequestIntent.isDisplay
+        let prefetch = PageRequestIntent.isPrefetch
         if let running = inFlightLoads[key] {
-            return await running.task.value
+            let image = await running.task.value
+            // 先読みの辞退(nil)を表示へ引き継がず、表示の意図で読み直す(CV4-1)。
+            // 再登録された先読みへ再び合流して循環しないよう、一覧は見直さない。
+            guard image == nil, display, running.prefetch else { return image }
+            if let hit = cache.image(for: key) { return hit }
         }
         // detached: 先読みのキャンセルが、合流している表示要求まで
         // 巻き込まないように独立タスクで走らせる
         let source = source
         let cap = displayPixelCap
-        let display = PageRequestIntent.isDisplay
         let task = Task<CGImage?, Never>.detached(priority: .userInitiated) {
             await PageRequestIntent.$isDisplay.withValue(display) {
-                try? await source.image(for: entry, maxPixelSize: cap)
+                await PageRequestIntent.$isPrefetch.withValue(prefetch) {
+                    try? await source.image(for: entry, maxPixelSize: cap)
+                }
             }
         }
         inFlightToken &+= 1
         let token = inFlightToken
-        inFlightLoads[key] = (token, task)
+        inFlightLoads[key] = (token, prefetch, task)
         let image = await task.value
         // 上限の値が一周しても旧要求は復活させない。失効と登録を同じ
         // MainActor で完結させ、古い小画像が新しい大画像を上書きするのを防ぐ。
@@ -877,28 +884,31 @@ final class Book {
         let targetIDs = targets.map { entries[$0].id }
         prefetchTask = Task { [weak self] in
             guard let self else { return }
-            // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
-            // ソースの「現在の状態」(スプール完了・形式)で判断する
-            let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
-            if parallel {
-                await withTaskGroup(of: Void.self) { group in
-                    var iterator = targets.makeIterator()
-                    for _ in 0..<width {
-                        if let target = iterator.next() {
-                            group.addTask { _ = await self.image(at: target) }
+            // 先読みの意図は子タスクにも継がせ、表示とサムネイルには付けない(CV4-1)。
+            await PageRequestIntent.$isPrefetch.withValue(true) {
+                // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
+                // ソースの「現在の状態」(スプール完了・形式)で判断する
+                let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
+                if parallel {
+                    await withTaskGroup(of: Void.self) { group in
+                        var iterator = targets.makeIterator()
+                        for _ in 0..<width {
+                            if let target = iterator.next() {
+                                group.addTask { _ = await self.image(at: target) }
+                            }
+                        }
+                        while await group.next() != nil {
+                            if Task.isCancelled { break }
+                            if let target = iterator.next() {
+                                group.addTask { _ = await self.image(at: target) }
+                            }
                         }
                     }
-                    while await group.next() != nil {
-                        if Task.isCancelled { break }
-                        if let target = iterator.next() {
-                            group.addTask { _ = await self.image(at: target) }
-                        }
+                } else {
+                    for target in Self.serialOrder(captured, aheadCount: leadingCount) {
+                        if Task.isCancelled { return }
+                        _ = await self.image(at: target)
                     }
-                }
-            } else {
-                for target in Self.serialOrder(captured, aheadCount: leadingCount) {
-                    if Task.isCancelled { return }
-                    _ = await self.image(at: target)
                 }
             }
         }

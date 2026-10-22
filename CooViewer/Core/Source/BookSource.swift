@@ -5,6 +5,8 @@ import Washi
 /// 表示だけが準備窓を動かす。優先度は先読みや可視サムネイルとも共有されるため使わない。
 enum PageRequestIntent {
     @TaskLocal static var isDisplay = false
+    /// 本の先読みだけが立てる。開始予定のスプールより先に solid の主展開へ進まない(CV4-1、設計書 §5)。
+    @TaskLocal static var isPrefetch = false
 }
 
 enum BookSourceError: Error {
