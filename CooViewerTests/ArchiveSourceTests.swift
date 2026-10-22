@@ -845,6 +845,90 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
     }
 
+    // MARK: - CV4-1: 先読みはスプールの開始が見込まれる間 solid の主展開を始めない
+
+    func testPrefetchDeclinesBeforeSerialSpoolStartsWithoutTouchingPrimary() async throws {
+        let probe = SpoolEngineProbe()
+        let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
+        await source.configureSpooling(sizeLimit: 1 << 30)
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+        let pages = try await source.entries()
+        for page in [pages[0], pages[2]] {
+            do {
+                _ = try await PageRequestIntent.$isPrefetch.withValue(true) {
+                    try await source.image(for: page, maxPixelSize: nil)
+                }
+                XCTFail("未開始のスプールを待つ先読みは断る")
+            } catch {}
+        }
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [])
+        XCTAssertEqual(probe.state.withLock { $0.reopenCalls }, 0)
+        let directory = await source.spoolDirectoryForTesting
+        XCTAssertNil(directory)
+        let waiters = await source.spoolWaiterCount
+        XCTAssertEqual(waiters, 0)
+        // 表示の意図を持たない通常の要求(サムネイル等)は従来どおり主書庫で読む。
+        let thumbnail = try await source.image(for: pages[1], maxPixelSize: 100)
+        XCTAssertEqual(thumbnail.width, 4)
+        XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [1])
+    }
+
+    func testPrefetchStillUsesPrimaryUnderNeverPolicyOrZeroBudget() async throws {
+        for never in [true, false] {
+            let probe = SpoolEngineProbe()
+            let source = try Self.spoolSource(groups: [0, 0, 0], probe: probe)
+            await source.configureSpooling(sizeLimit: never ? 1 << 30 : 0)
+            await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: never ? false : true))
+            let pages = try await source.entries()
+            let image = try await PageRequestIntent.$isPrefetch.withValue(true) {
+                try await source.image(for: pages[2], maxPixelSize: nil)
+            }
+            XCTAssertEqual(image.width, 4)
+            XCTAssertEqual(probe.state.withLock { $0.primaryReads }, [2], never ? "方針「しない」" : "予算外")
+            XCTAssertEqual(probe.state.withLock { $0.reopenCalls }, 0)
+        }
+    }
+
+    func testPrefetchDeclinesHeadDuringTailPassButWaitsForTail() async throws {
+        let started = expectation(description: "引き渡した位置から末尾を走査中")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = SpoolEngineProbe(beforePrimaryRead: { index in
+            if index == 11 { started.fulfill(); _ = release.wait(timeout: .now() + 10) }
+        })
+        let source = try Self.spoolSource(groups: Array(repeating: 0, count: 16), probe: probe)
+        let pages = try await source.entries()
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: false))
+        _ = await source.imageData(for: pages[10])
+        await source.applyMediaProfile(MediaProfile(mediaClass: .network, spoolOverride: true))
+        await source.beginSpooling(sizeLimit: 1 << 30)
+        await fulfillment(of: [started], timeout: 3)
+        do {
+            _ = try await PageRequestIntent.$isPrefetch.withValue(true) {
+                try await source.image(for: pages[5], maxPixelSize: nil)
+            }
+            XCTFail("末尾走査中の先頭部分は先読みで主展開しない")
+        } catch {}
+        XCTAssertEqual(probe.state.withLock { $0.spoolReads }, [], "新しい主エンジンで先頭を展開しない")
+        let tail = Task {
+            try await PageRequestIntent.$isPrefetch.withValue(true) {
+                try await source.image(for: pages[13], maxPixelSize: nil)
+            }
+        }
+        await Self.waitForWaiters(1, source: source)
+        release.signal()
+        let image = try await tail.value
+        XCTAssertEqual(image.width, 4, "走査が届く末尾の先読みは従来どおり待つ")
+        await source.waitForSpoolCompletion()
+        XCTAssertEqual(probe.state.withLock { $0.spoolReads }, [])
+        let late = try await PageRequestIntent.$isPrefetch.withValue(true) {
+            try await source.image(for: pages[5], maxPixelSize: nil)
+        }
+        XCTAssertEqual(late.width, 4, "スプール済みになれば先読みも読める")
+        let waiters = await source.spoolWaiterCount
+        XCTAssertEqual(waiters, 0)
+    }
+
     func testAdoptedTailAndPrefixWaitersResumeExactlyOnceOnEveryExit() async throws {
         for prefix in [false, true] {
             for action in ["complete", "pause", "discard", "abandon", "deinit"] {

@@ -2734,7 +2734,11 @@ final class ReaderWindowController: NSWindowController {
                     // 先読み済みならキャッシュ命中、未了なら進行中のデコードに
                     // 合流。HDR(>8bit)ページは通常表示側もリサンプルしないので
                     // 対象外(以降はさらに遠いページなので打ち切ってよい)
-                    guard let image = await book.image(at: index),
+                    // 先読みと同じく、開始予定のスプールより先に solid の主展開へ進ませない(CV4-1)。
+                    let loaded = await PageRequestIntent.$isPrefetch.withValue(true) {
+                        await book.image(at: index)
+                    }
+                    guard let image = loaded,
                           image.bitsPerComponent <= 8 else { return }
                     images.append(image)
                 }
