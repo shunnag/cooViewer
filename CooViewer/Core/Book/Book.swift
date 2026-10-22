@@ -885,6 +885,9 @@ final class Book {
 
     private func schedulePrefetch() {
         prefetchTask?.cancel()
+        // 同じ名前の source を宣言より前のクロージャで参照すると Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、クロージャより先にローカルへ取る。
+        let source = source
+        let entries = entries
         let targets = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
             ahead: prefetchAhead, behind: prefetchBehind, forward: lastMoveForward, count: entries.count,
             volumeKey: { source.prefetchVolumeKey(for: entries[$0]) })
@@ -894,7 +897,6 @@ final class Book {
         let leadingCount = lastMoveForward ? aheadCount : targets.count - aheadCount
         // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)
         let width = max(1, mediaProfile.bookPrefetchConcurrency)
-        let source = source
 
         let targetIDs = targets.map { entries[$0].id }
         prefetchTask = Task { [weak self] in
@@ -903,7 +905,6 @@ final class Book {
         }
     }
 
-    // Task の弱参照から取り出した self を withValue のクロージャで使うと Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、withValue は通常のメソッドから呼ぶ。
     private func runPrefetch(targets: [Int], captured: [(index: Int, id: Int, volume: Int)],
                              targetIDs: [Int], leadingCount: Int, width: Int, source: any BookSource) async {
         // 先読みの意図は子タスクにも継がせ、表示とサムネイルには付けない(CV4-1)。
