@@ -451,7 +451,15 @@ actor NestedFolderSource: BookSource {
         guard sequence > readingPositionSequence else { return }
         readingPositionSequence = sequence
         readingForward = forward
-        let targets = [archiveChild(for: current), archiveChild(for: forward ? next : previous)].compactMap { $0 }
+        let targets: [ArchiveSource]
+        if let reading = childIndex(for: current) {
+            targets = windowTargets(reading: reading, forward: forward)
+        } else if let neighbor = childIndex(for: forward ? next : previous) {
+            // 直下画像を読んでいる間は、隣の巻の先頭の子から数える。
+            targets = nearestArchiveChild(from: neighbor, forward: forward).map { [$0] } ?? []
+        } else {
+            targets = []
+        }
         if preparationStarted, mediaProfileApplied, let first = targets.first {
             _ = await startDisplaySpool(first, generation: windowGeneration)
         }
@@ -480,9 +488,7 @@ actor NestedFolderSource: BookSource {
     private func prepareDisplayChild(at index: Int) async {
         guard PageRequestIntent.isDisplay, mediaProfileApplied, spoolLimit != nil,
               let child = children[index] as? ArchiveSource else { return }
-        let neighbor = index + (readingForward ? 1 : -1)
-        let next = children.indices.contains(neighbor) ? children[neighbor] as? ArchiveSource : nil
-        let targets = [child] + (next.map { [$0] } ?? [])
+        let targets = windowTargets(reading: index, forward: readingForward)
         let generation = windowGeneration
         let wasPreparing = preparationStarted
         guard await startDisplaySpool(child, generation: generation), generation == windowGeneration else { return }
@@ -536,8 +542,32 @@ actor NestedFolderSource: BookSource {
     }
 
     func archiveChild(for entry: PageEntry?) -> ArchiveSource? {
-        guard let entry, case .child(let index, _) = locations[entry.id] else { return nil }
+        guard let index = childIndex(for: entry) else { return nil }
         return children[index] as? ArchiveSource
+    }
+
+    private func childIndex(for entry: PageEntry?) -> Int? {
+        guard let entry, case .child(let index, _) = locations[entry.id] else { return nil }
+        return index
+    }
+
+    /// 読書中の子(書庫なら)と、読む向きで最も近い書庫の子。ページではなく子の順で数え、
+    /// PDF の子を読んでいる間も次の書庫のスプールを先に始める(CV4-1、cooViewer-kjw7)。
+    private func windowTargets(reading index: Int, forward: Bool) -> [ArchiveSource] {
+        let reading = children.indices.contains(index) ? children[index] as? ArchiveSource : nil
+        let neighbor = nearestArchiveChild(from: index + (forward ? 1 : -1), forward: forward)
+        return [reading, neighbor].compactMap { $0 }
+    }
+
+    /// 起点を含む 2 つの子だけを探し、PDF が続いても遠い子を窓へ引き込まない(CV4-1)。
+    private func nearestArchiveChild(from start: Int, forward: Bool) -> ArchiveSource? {
+        let step = forward ? 1 : -1
+        for offset in 0..<2 {
+            let index = start + offset * step
+            guard children.indices.contains(index) else { return nil }
+            if let archive = children[index] as? ArchiveSource { return archive }
+        }
+        return nil
     }
 
     private func scheduleWindow(interactive: Bool) {
@@ -607,7 +637,8 @@ actor NestedFolderSource: BookSource {
     private func recordSpool(_ child: ArchiveSource, generation: UUID) async {
         let stats = await child.spoolStats()
         guard generation == windowGeneration else { return }
-        if stats.bytes == 0 {
+        // 完了待ちの後に表示が始めた走査はまだ 0 バイトでも台帳に残し、総予算から外さない(D3)。
+        if stats.bytes == 0, !child.hasRunningSpool {
             let id = ObjectIdentifier(child)
             spooledChildren[id] = nil
             spoolLRU.removeAll { $0 == id }
