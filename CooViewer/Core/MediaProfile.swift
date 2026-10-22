@@ -268,7 +268,12 @@ actor SourceReadGate {
         (active, interactiveWaiters.count + backgroundWaiters.count)
     }
 
-    func hasAvailableSlot() -> Bool { active < limit }
+    /// 判定と取得を同じ actor 区間で行い、他の本の完走を表示に待たせない。
+    func tryAcquire() -> Bool {
+        guard !Task.isCancelled, active < limit else { return false }
+        active += 1
+        return true
+    }
 
     private func wakeWaitersIfPossible() {
         while active < limit,

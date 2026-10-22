@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import os
 import Washi
 
 /// フォルダ内の書庫/PDF を子ソースとして同じ本に統合するフォルダの本
@@ -67,6 +68,9 @@ actor NestedFolderSource: BookSource {
     private var hasPageList = false
     private(set) var cardChildren: [UnreadableVolumeMarker] = []
     private var spoolLimit: Int64?
+    private var preparationStarted = false
+    private var collectionSpoolBudget: Int64 = 0
+    private var mediaProfileApplied = false
     private var windowTask: Task<Void, Never>?
     private var window: [ObjectIdentifier] = []
     private var windowChildren: [ArchiveSource] = []
@@ -74,6 +78,7 @@ actor NestedFolderSource: BookSource {
     private var readingPositionSequence: UInt64 = 0
     private var readingForward = true
     private var windowGeneration = UUID()
+    private nonisolated let windowEpoch = OSAllocatedUnfairLock(initialState: UUID())
     private var activeWindowChild: ArchiveSource?
     private var spooledChildren: [ObjectIdentifier: ArchiveSource] = [:]
     private var spoolLRU: [ObjectIdentifier] = []
@@ -162,6 +167,8 @@ actor NestedFolderSource: BookSource {
         let candidates = folder.nestedBookCandidates
         let unlocker = unlocker
         let profile = mediaProfile
+        let spoolLimit = spoolLimit
+        let profileApplied = mediaProfileApplied
         let lanes = Self.testingAssemblyLanes ?? profile.collectionAssemblyLanes
         let preferredEngine = preferredEngine
         let engineFactory = engineFactory
@@ -185,7 +192,7 @@ actor NestedFolderSource: BookSource {
             onProgress: { done, total in await self.notifyAssemblyProgress(done, total: total, buildID: id) },
             onComplete: { ordinal, child in await self.keepPrepared(child, ordinal: ordinal, buildID: id) }) { candidate in
                 try await Self.prepareChild(
-                    candidate: (candidate.url, candidate.relativePath), unlocker: unlocker, profile: profile,
+                    candidate: (candidate.url, candidate.relativePath), unlocker: unlocker, profile: profile, spoolLimit: spoolLimit, profileApplied: profileApplied,
                     preferredEngine: preferredEngine, engineFactory: engineFactory, retryPolicy: policy)
             }
         guard buildTask?.id == id else { throw CancellationError() }
@@ -234,13 +241,13 @@ actor NestedFolderSource: BookSource {
     /// 破損・解除不能・恒久的な子の失敗を除外に数え、意図的な省略とは区別する(仕様書 §4.17、設計書 §7.4)。
     private static func prepareChild(
         candidate: (fileURL: URL, relativePath: String),
-        unlocker: NestedUnlocker, profile: MediaProfile,
+        unlocker: NestedUnlocker, profile: MediaProfile, spoolLimit: Int64?, profileApplied: Bool,
         preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory,
         retryPolicy: AssemblyRetryPolicy
     ) async throws -> AssemblyChildPreparation {
         do {
             return try await prepareReadableChild(candidate: candidate, unlocker: unlocker,
-                profile: profile, preferredEngine: preferredEngine, engineFactory: engineFactory,
+                profile: profile, spoolLimit: spoolLimit, profileApplied: profileApplied, preferredEngine: preferredEngine, engineFactory: engineFactory,
                 retryPolicy: retryPolicy)
         } catch {
             if SourceReadFailure.mustPropagate(error) { throw error }
@@ -250,7 +257,7 @@ actor NestedFolderSource: BookSource {
 
     private static func prepareReadableChild(
         candidate: (fileURL: URL, relativePath: String),
-        unlocker: NestedUnlocker, profile: MediaProfile,
+        unlocker: NestedUnlocker, profile: MediaProfile, spoolLimit: Int64?, profileApplied: Bool,
         preferredEngine: ArchiveEngineKind, engineFactory: ArchiveEngineFactory,
         retryPolicy: AssemblyRetryPolicy
     ) async throws -> AssemblyChildPreparation {
@@ -297,11 +304,12 @@ actor NestedFolderSource: BookSource {
             guard try await unlocker.unlockForAssembly(child, name: name,
                                         persistenceKey: childKey) else { return .excluded }
         }
+        if let spoolLimit { await child.configureSpooling(sizeLimit: spoolLimit) }
+        if profileApplied { await child.applyMediaProfile(profile) }
         let childEntries = try await AssemblyPreparation.entriesForOwnedChild(child)
         guard !childEntries.isEmpty else {
             return await child.excludedChildCount() > 0 ? .excluded : .skipped
         }
-        await child.applyMediaProfile(profile)
         return .ready(AssemblyPreparedChild(source: child, entries: childEntries,
                                             excludedCount: await child.excludedChildCount()))
     }
@@ -347,8 +355,10 @@ actor NestedFolderSource: BookSource {
         case .child(let sourceIndex, let childEntry):
             let child = children[sourceIndex]
             await prepareDisplayChild(at: sourceIndex)
-            return try await child.image(
-                for: childEntry, maxPixelSize: maxPixelSize)
+            // 合本の開始・登録を通さず子だけが表示スプールを始めることを防ぐ。
+            return try await PageRequestIntent.$isDisplay.withValue(false) {
+                try await child.image(for: childEntry, maxPixelSize: maxPixelSize)
+            }
         case .folder(let folderEntry):
             return try await folder.image(for: folderEntry, maxPixelSize: maxPixelSize)
         case nil:
@@ -360,8 +370,9 @@ actor NestedFolderSource: BookSource {
         if case .child(let sourceIndex, let childEntry) = locations[entry.id] {
             let child = children[sourceIndex]
             await prepareDisplayChild(at: sourceIndex)
-            return try await child.loupeImage(
-                for: childEntry, pixelScale: pixelScale)
+            return try await PageRequestIntent.$isDisplay.withValue(false) {
+                try await child.loupeImage(for: childEntry, pixelScale: pixelScale)
+            }
         }
         return try await image(for: entry, maxPixelSize: nil)
     }
@@ -383,7 +394,9 @@ actor NestedFolderSource: BookSource {
         case .child(let sourceIndex, let childEntry):
             let child = children[sourceIndex]
             await prepareDisplayChild(at: sourceIndex)
-            return await child.imageData(for: childEntry)
+            return await PageRequestIntent.$isDisplay.withValue(false) {
+                await child.imageData(for: childEntry)
+            }
         case .folder(let folderEntry):
             return await folder.imageData(for: folderEntry)
         case nil:
@@ -419,11 +432,16 @@ actor NestedFolderSource: BookSource {
     /// 等分せず、読んでいる子と隣の子へ全予算を順に回す(cooViewer-tg48、設計書 §5)。
     func beginBackgroundPreparation(spoolSizeLimit: Int64) async {
         if !hasPageList { guard (try? await buildIfNeeded()) != nil else { return } }
-        let changed = spoolLimit != spoolSizeLimit
-        spoolLimit = spoolSizeLimit
+        let wasPreparing = preparationStarted
+        let changed = updateSpoolLimit(spoolSizeLimit)
+        preparationStarted = true
         if !positionKnown {
             windowChildren = children.compactMap { $0 as? ArchiveSource }.prefix(1).map { $0 }
             window = windowChildren.map(ObjectIdentifier.init)
+        }
+        if changed, wasPreparing {
+            await adjustRunningSpools()
+            guard spoolLimit == spoolSizeLimit, !Task.isCancelled else { return }
         }
         if windowTask == nil || changed { scheduleWindow(interactive: positionKnown) }
     }
@@ -433,8 +451,12 @@ actor NestedFolderSource: BookSource {
         guard sequence > readingPositionSequence else { return }
         readingPositionSequence = sequence
         readingForward = forward
-        let targets = [archiveChild(for: current), archiveChild(for: forward ? next : previous)]
-        moveWindow(to: targets.compactMap { $0 })
+        let targets = [archiveChild(for: current), archiveChild(for: forward ? next : previous)].compactMap { $0 }
+        if preparationStarted, mediaProfileApplied, let first = targets.first {
+            _ = await startDisplaySpool(first, generation: windowGeneration)
+        }
+        guard sequence == readingPositionSequence else { return }
+        moveWindow(to: targets)
     }
 
     private func moveWindow(to targets: [ArchiveSource]) {
@@ -452,34 +474,65 @@ actor NestedFolderSource: BookSource {
                 spoolLRU.append(id)
             }
         }
-        if spoolLimit != nil { scheduleWindow(interactive: true) }
+        if preparationStarted, spoolLimit != nil { scheduleWindow(interactive: true) }
     }
 
     private func prepareDisplayChild(at index: Int) async {
-        guard Task.currentPriority >= .userInitiated,
+        guard PageRequestIntent.isDisplay, mediaProfileApplied, spoolLimit != nil,
               let child = children[index] as? ArchiveSource else { return }
-        if spoolLimit == nil { spoolLimit = ArchiveSource.defaultSpoolSizeLimit }
-        // 次枠への先読みやサムネイルも表示と同じ優先度なので、既存の窓は動かさない。
-        if !windowChildren.contains(where: { $0 === child }) || !positionKnown {
-            let neighbor = index + (readingForward ? 1 : -1)
-            let next = children.indices.contains(neighbor) ? children[neighbor] as? ArchiveSource : nil
-            // 通知 Task より表示が先行しても、転送前の同じ actor 区間で窓を動かす。
-            moveWindow(to: [child] + (next.map { [$0] } ?? []))
-        }
-        guard let spoolLimit, child.needsInteractiveSpoolPreparation else { return }
+        let neighbor = index + (readingForward ? 1 : -1)
+        let next = children.indices.contains(neighbor) ? children[neighbor] as? ArchiveSource : nil
+        let targets = [child] + (next.map { [$0] } ?? [])
         let generation = windowGeneration
-        let total = SpoolSpacePolicy.totalBudget(sizeLimit: spoolLimit)
-        // 別の子は取り消さず、稼働中の予算と未完了の書き込みも予約に含める。
-        // 開始できない要求のために次枠の展開を止めず、別の子の actor も待たない。
-        var remaining = total
-        for source in spooledChildren.values where source !== child {
-            remaining = max(0, remaining - source.reservedSpoolBytes)
+        let wasPreparing = preparationStarted
+        guard await startDisplaySpool(child, generation: generation), generation == windowGeneration else { return }
+        preparationStarted = true
+        if !windowChildren.contains(where: { $0 === child }) || !positionKnown { moveWindow(to: targets) }
+        if !wasPreparing, windowTask == nil { scheduleWindow(interactive: true) }
+    }
+
+    private func startDisplaySpool(_ child: ArchiveSource, generation: UUID) async -> Bool {
+        guard generation == windowGeneration, spoolLimit != nil, mediaProfileApplied else { return false }
+        windowEpoch.withLock { $0 = generation }
+        let others = spooledChildren.values.filter { $0 !== child }
+        let releasing = Set(others.map(ObjectIdentifier.init))
+        // 開始できた場合だけ旧窓を取り消す。取消し中の書き込みは予算に残す。
+        let budget = availableSpoolBudget(for: child, releasing: releasing)
+        let epoch = windowEpoch
+        let started = await child.beginSpoolingForDisplay(sizeLimit: budget) {
+            epoch.withLock {
+                guard $0 == generation else { return false }
+                for source in others { source.cancelSpoolingForWindow() }
+                return true
+            }
         }
-        spooledChildren[ObjectIdentifier(child)] = child
-        await child.beginSpooling(sizeLimit: remaining, interactive: true)
-        if generation != windowGeneration, !windowChildren.contains(where: { $0 === child }) {
-            child.cancelSpoolingForWindow()
+        guard started || child.hasFinishedSpool else { return false }
+        guard generation == windowGeneration else {
+            registerSpool(child, active: false)
+            if !windowChildren.contains(where: { $0 === child }) { child.cancelSpoolingForWindow() }
+            return false
         }
+        // 開始した子を同じ actor 区間で台帳と LRU に登録し、次の窓移動で必ず回収する。
+        registerSpool(child, active: started)
+        return true
+    }
+
+    private func registerSpool(_ child: ArchiveSource, active: Bool = true) {
+        let id = ObjectIdentifier(child)
+        if active { activeWindowChild = child }
+        spooledChildren[id] = child
+        spoolLRU.removeAll { $0 == id }
+        spoolLRU.append(id)
+    }
+
+    /// 表示・窓の予約・追い出しで同じ台帳を使い、空き容量由来の総予算は設定時に固定する。
+    private func availableSpoolBudget(for child: ArchiveSource, releasing: Set<ObjectIdentifier> = []) -> Int64 {
+        var remaining = collectionSpoolBudget
+        for (id, source) in spooledChildren where source !== child {
+            let reserved = releasing.contains(id) ? source.usedSpoolBytes : source.reservedSpoolBytes
+            remaining = max(0, remaining - reserved)
+        }
+        return remaining
     }
 
     func archiveChild(for entry: PageEntry?) -> ArchiveSource? {
@@ -490,27 +543,22 @@ actor NestedFolderSource: BookSource {
     private func scheduleWindow(interactive: Bool) {
         let previousTask = windowTask
         previousTask?.cancel()
-        let oldChild = activeWindowChild
         let targets = windowChildren
         let generation = UUID()
+        windowEpoch.withLock { $0 = generation }
         windowGeneration = generation
-        if let oldChild, oldChild !== targets.first { oldChild.cancelSpoolingForWindow() }
         windowTask = Task { [weak self] in
-            if let oldChild, oldChild !== targets.first {
-                await oldChild.pauseSpooling()
-                // 取消し中の展開が戻るまで次の子を動かさず、同じ本では常に復号器 1 本にする。
-                await oldChild.waitForSpoolCompletion()
-            }
-            // 同じ子が背景準備中だった場合も、完了待ちに入る前に対話枠へ昇格する。
+            // 昇格と着地は開始成功時だけ旧巻を止め、別の子 actor の完了を表示に待たせない。
             if interactive, let child = targets.first,
-               let budget = await self?.budgetForWindowChild(child, generation: generation) {
-                await child.beginSpooling(sizeLimit: budget, interactive: true)
+               await self?.startDisplaySpool(child, generation: generation) == true {
+                await self?.cancelOutOfWindowSpools(generation: generation)
             }
             await previousTask?.value
             for (index, child) in targets.enumerated() {
                 guard !Task.isCancelled,
                       let budget = await self?.budgetForWindowChild(child, generation: generation) else { return }
-                await child.beginSpooling(sizeLimit: budget, interactive: interactive && index == 0)
+                let started = await child.beginSpooling(sizeLimit: budget, interactive: interactive && index == 0)
+                await self?.recordStartedSpool(child, started: started, generation: generation)
                 await child.waitForSpoolCompletion()
                 await self?.recordSpool(child, generation: generation)
             }
@@ -518,37 +566,41 @@ actor NestedFolderSource: BookSource {
         }
     }
 
-    private func budgetForWindowChild(_ child: ArchiveSource, generation: UUID) async -> Int64? {
-        guard generation == windowGeneration, let spoolLimit, !Task.isCancelled else { return nil }
-        let total = SpoolSpacePolicy.totalBudget(sizeLimit: spoolLimit)
-        var sizes: [ObjectIdentifier: Int64] = [:]
-        // 台帳はスプールを持つ子だけ。全 children をページ送りごとに走査しない(設計書 §5)。
-        for (id, source) in spooledChildren {
-            let stats = await source.spoolStats()
-            guard generation == windowGeneration, !Task.isCancelled else { return nil }
-            if stats.bytes == 0, !stats.active { spooledChildren[id] = nil }
-            else { sizes[id] = stats.bytes }
+    private func cancelOutOfWindowSpools(generation: UUID) {
+        guard generation == windowGeneration else { return }
+        // 完了済みの巻への後退では onStart が呼ばれない。旧窓の終了待ちより先に
+        // 窓外を取り消し、現在のエントリ境界で止める。開始不能な着地では呼ばない。
+        for (id, source) in spooledChildren where !window.contains(id) {
+            source.cancelSpoolingForWindow()
         }
-        var live = sizes.values.reduce(0, +)
-        let need = await child.spoolDemandBytes() ?? max(0, total - live)
+    }
+
+    private func recordStartedSpool(_ child: ArchiveSource, started: Bool, generation: UUID) {
+        guard started, generation == windowGeneration else { return }
+        registerSpool(child)
+    }
+
+    private func budgetForWindowChild(_ child: ArchiveSource, generation: UUID) async -> Int64? {
+        guard generation == windowGeneration, spoolLimit != nil, !Task.isCancelled else { return nil }
+        let permitted = await child.canBeginSpooling(sizeLimit: collectionSpoolBudget)
         guard generation == windowGeneration, !Task.isCancelled else { return nil }
-        // 読んだ順の台帳を一度だけ走査するので、追い出しはスプール済み冊数に比例する。
+        guard permitted else { return 0 }
+        let ownBytes = child.usedSpoolBytes
+        let need = await child.spoolDemandBytes() ?? collectionSpoolBudget
+        guard generation == windowGeneration, !Task.isCancelled else { return nil }
+        // 表示経路は他の子を待たず、追い出しだけを窓の準備係に任せる(設計書 §5)。
         for id in spoolLRU where !window.contains(id) {
-            guard live > total || need > total - live else { break }
-            if let source = spooledChildren[id] {
+            let budget = availableSpoolBudget(for: child)
+            guard need > max(0, budget - ownBytes) else { break }
+            if let source = spooledChildren[id], !source.hasRunningSpool {
                 await source.discardSpool()
                 guard generation == windowGeneration, !Task.isCancelled else { return nil }
-                live -= sizes[id] ?? 0
                 spooledChildren[id] = nil
             }
         }
         spoolLRU.removeAll { spooledChildren[$0] == nil }
-        let id = ObjectIdentifier(child)
-        let budget = max(0, total - (live - (sizes[id] ?? 0)))
-        activeWindowChild = child
-        spooledChildren[id] = child
-        spoolLRU.removeAll { $0 == id }
-        spoolLRU.append(id)
+        let budget = availableSpoolBudget(for: child)
+        registerSpool(child, active: false)
         return budget
     }
 
@@ -560,7 +612,7 @@ actor NestedFolderSource: BookSource {
             spooledChildren[id] = nil
             spoolLRU.removeAll { $0 == id }
         }
-        activeWindowChild = nil
+        if activeWindowChild === child { activeWindowChild = nil }
     }
 
     private func finishedWindow(_ generation: UUID) {
@@ -653,12 +705,50 @@ actor NestedFolderSource: BookSource {
         }
     }
 
+    @discardableResult
+    private func updateSpoolLimit(_ sizeLimit: Int64) -> Bool {
+        guard spoolLimit != sizeLimit else { return false }
+        spoolLimit = sizeLimit
+        collectionSpoolBudget = SpoolSpacePolicy.totalBudget(sizeLimit: sizeLimit)
+        return true
+    }
+
+    /// 設定の総上限は合本の台帳にだけ入れ、子の予算は窓が配り直す(CV3-1、CV3-4)。
+    func configureSpooling(sizeLimit: Int64) async {
+        let changed = updateSpoolLimit(sizeLimit)
+        for child in preparedChildren.values {
+            guard spoolLimit == sizeLimit, !Task.isCancelled else { return }
+            if let archive = child.source as? ArchiveSource {
+                await archive.configureSpooling(sizeLimit: sizeLimit, adjustsRunningSpool: false)
+            } else {
+                await child.source.configureSpooling(sizeLimit: sizeLimit)
+            }
+        }
+        // 直後の beginBackgroundPreparation は同じ上限で呼ばれ変更を検出できないため、ここで配り直す。
+        guard changed, preparationStarted, spoolLimit == sizeLimit, !Task.isCancelled else { return }
+        await adjustRunningSpools()
+        guard spoolLimit == sizeLimit, !Task.isCancelled else { return }
+        scheduleWindow(interactive: positionKnown)
+    }
+
+    /// 窓の再計画は旧窓の完了を待つため、稼働中の子の予算は先にその場で詰め直す。
+    /// 解凍位置は巻き戻さず、超過分は現在のエントリ境界で止まる(CV3-4、設計書 §5)。
+    private func adjustRunningSpools() async {
+        let budget = collectionSpoolBudget
+        for source in spooledChildren.values where source.hasRunningSpool {
+            guard collectionSpoolBudget == budget, !Task.isCancelled else { return }
+            await source.adjustRunningSpoolLimit(availableSpoolBudget(for: source))
+        }
+    }
+
     /// プロファイルはフォルダ(読み取りゲート)と、生成済み/今後生成される
     /// 子ソース(書庫のスプール方針)の両方へ配る
     func applyMediaProfile(_ profile: MediaProfile) async {
         mediaProfile = profile
+        mediaProfileApplied = true
         await folder.applyMediaProfile(profile)
         for child in preparedChildren.values {
+            guard mediaProfile == profile, !Task.isCancelled else { return }
             await child.source.applyMediaProfile(profile)
         }
     }

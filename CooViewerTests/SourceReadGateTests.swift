@@ -6,6 +6,23 @@ import XCTest
 /// サムネイルの可視セル要求(urgent)が、見えない画面の先読みの行列を
 /// 追い越して先に生成へ入れることの根拠(cooViewer-19t)。
 final class SourceReadGateTests: XCTestCase {
+    func testTryAcquireTakesSlotAtomicallyWithoutQueueing() async {
+        let gate = SourceReadGate(limit: 1)
+        let first = await gate.tryAcquire()
+        XCTAssertTrue(first)
+        let second = await gate.tryAcquire()
+        XCTAssertFalse(second)
+        let full = await gate.debugCounts()
+        XCTAssertEqual(full.active, 1)
+        XCTAssertEqual(full.queued, 0)
+        await gate.release()
+        let third = await gate.tryAcquire()
+        XCTAssertTrue(third)
+        await gate.release()
+        let empty = await gate.debugCounts()
+        XCTAssertEqual(empty.active, 0)
+    }
+
     func testCancelledBeforeAcquireDoesNotTakeSlot() async {
         let gate = SourceReadGate(limit: 1)
         let task = Task {
