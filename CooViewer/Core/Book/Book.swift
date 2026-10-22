@@ -901,30 +901,37 @@ final class Book {
             guard let self else { return }
             // 先読みの意図は子タスクにも継がせ、表示とサムネイルには付けない(CV4-1)。
             await PageRequestIntent.$isPrefetch.withValue(true) {
-                // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
-                // ソースの「現在の状態」(スプール完了・形式)で判断する
-                let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
-                if parallel {
-                    await withTaskGroup(of: Void.self) { group in
-                        var iterator = targets.makeIterator()
-                        for _ in 0..<width {
-                            if let target = iterator.next() {
-                                group.addTask { _ = await self.image(at: target) }
-                            }
-                        }
-                        while await group.next() != nil {
-                            if Task.isCancelled { break }
-                            if let target = iterator.next() {
-                                group.addTask { _ = await self.image(at: target) }
-                            }
-                        }
-                    }
-                } else {
-                    for target in Self.serialOrder(captured, aheadCount: leadingCount) {
-                        if Task.isCancelled { return }
-                        _ = await self.image(at: target)
+                await self.runPrefetch(targets: targets, captured: captured, targetIDs: targetIDs,
+                                      leadingCount: leadingCount, width: width, source: source)
+            }
+        }
+    }
+
+    // Xcode 26.6 は withValue 内の入れ子クロージャでコンパイラが落ちる(ClosureLifetimeFixup)ため、本体を分ける。
+    private func runPrefetch(targets: [Int], captured: [(index: Int, id: Int, volume: Int)],
+                             targetIDs: [Int], leadingCount: Int, width: Int, source: any BookSource) async {
+        // solid 書庫のストリーム巻き戻しを避けるため、並列可否は
+        // ソースの「現在の状態」(スプール完了・形式)で判断する
+        let parallel = await source.currentlySupportsParallelPageLoads(forEntryIDs: targetIDs)
+        if parallel {
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = targets.makeIterator()
+                for _ in 0..<width {
+                    if let target = iterator.next() {
+                        group.addTask { _ = await self.image(at: target) }
                     }
                 }
+                while await group.next() != nil {
+                    if Task.isCancelled { break }
+                    if let target = iterator.next() {
+                        group.addTask { _ = await self.image(at: target) }
+                    }
+                }
+            }
+        } else {
+            for target in Self.serialOrder(captured, aheadCount: leadingCount) {
+                if Task.isCancelled { return }
+                _ = await self.image(at: target)
             }
         }
     }
