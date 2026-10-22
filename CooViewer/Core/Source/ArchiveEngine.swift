@@ -143,12 +143,22 @@ final class KaitoKitEngine: ArchiveEngine {
     private static let lazyLocalHeaders = OSAllocatedUnfairLock(initialState: true)
 
     private enum Input: Sendable {
-        case file(String, ArchiveQuickOpenPolicy.Identity)
+        case file(String, ArchiveQuickOpenPolicy.Identity?)
         case data(Data)
 
         var identity: ArchiveQuickOpenPolicy.Identity? {
             if case .file(_, let identity) = self { return identity }
             return nil
+        }
+
+        var identityForLookup: ArchiveQuickOpenPolicy.Identity? {
+            guard case .file(let path, let identity) = self else { return nil }
+            return identity ?? ArchiveQuickOpenPolicy.identityForOpen(path: path)
+        }
+
+        var identityForMismatch: ArchiveQuickOpenPolicy.Identity? {
+            guard case .file(let path, let identity) = self else { return nil }
+            return identity ?? ArchiveQuickOpenPolicy.Identity(path: path)
         }
 
         func open(options: ReaderOptions) throws -> sending ArchiveReader {
@@ -195,7 +205,7 @@ final class KaitoKitEngine: ArchiveEngine {
     }
 
     convenience init(file path: String, options: ReaderOptions) throws {
-        try self.init(input: .file(path, ArchiveQuickOpenPolicy.Identity(path: path)), options: options)
+        try self.init(input: .file(path, ArchiveQuickOpenPolicy.identityForOpen(path: path)), options: options)
     }
 
     convenience init(data: Data, options: ReaderOptions) throws {
@@ -247,7 +257,7 @@ final class KaitoKitEngine: ArchiveEngine {
             guard options.rar5QuickOpenPolicy != .never, !quickOpenRecoveryAttempted,
                   ArchiveQuickOpenPolicy.isVerificationMismatch(error) else { throw error }
             quickOpenRecoveryAttempted = true
-            if let identity = input.identity { ArchiveQuickOpenPolicy.distrust(identity) }
+            if let identity = input.identityForMismatch { ArchiveQuickOpenPolicy.distrust(identity) }
             let (replacement, safeOptions) = try readerWithoutQuickOpen()
             reader = replacement
             options = safeOptions
@@ -331,7 +341,7 @@ final class KaitoKitEngine: ArchiveEngine {
 
     func reopened() -> sending (any ArchiveEngine)? {
         // 別の展開係が不一致を検出した後の複製も、不信任の索引を引き継がない。
-        if let identity = input.identity, ArchiveQuickOpenPolicy.isDistrusted(identity),
+        if let identity = input.identityForLookup, ArchiveQuickOpenPolicy.isDistrusted(identity),
            options.rar5QuickOpenPolicy != .never {
             guard let (replacement, safeOptions) = try? readerWithoutQuickOpen() else { return nil }
             return KaitoKitEngine(reader: replacement, input: input, options: safeOptions)
