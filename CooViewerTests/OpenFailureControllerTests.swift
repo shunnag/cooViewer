@@ -152,6 +152,20 @@ final class OpenFailureControllerTests: XCTestCase {
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
     }
 
+    func testCloseCancelsPendingOpenTask() async throws {
+        let (controller, _, _) = try makeController()
+        let started = XCTestExpectation(description: "組み立て開始")
+        let gate = OpenFailureTestGate()
+        let source = OpenFailureTestSource(url: url, error: makeFailure(), started: started, gate: gate)
+        controller.openSourceFactory = { _ in source }
+        let pending = controller.openBook(at: url)
+        await fulfillment(of: [started], timeout: 2)
+        controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        XCTAssertTrue(pending.isCancelled)
+        await gate.release()
+        await pending.value
+    }
+
     func testCloseClearsFailureAndOtherOpenKeepsItUntilNewPresentation() async throws {
         let (controller, _, _) = try makeController()
         let source = OpenFailureTestSource(url: url, error: makeFailure())

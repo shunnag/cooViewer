@@ -61,8 +61,13 @@ SOURCE_INPUTS=("$SOURCE_DIR/Sources" "$SOURCE_DIR/Package.swift"
 if [[ -f "$SOURCE_DIR/Package.resolved" ]]; then
     SOURCE_INPUTS+=("$SOURCE_DIR/Package.resolved")
 fi
+# 親リポジトリの revision を誤記せず、配布物にはソースの版だけを残す。
+SOURCE_REVISION=""
+if [[ "$(git -C "$SOURCE_DIR" rev-parse --show-toplevel 2>/dev/null || true)" == "$SOURCE_DIR" ]]; then
+    SOURCE_REVISION="$(git -C "$SOURCE_DIR" describe --tags --always --dirty)"
+fi
 SOURCE_FINGERPRINT="$(/bin/zsh "$FINGERPRINT_SCRIPT" "${SOURCE_INPUTS[@]}")"
-STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${KAITOKIT_ARCHS}"$'\n'"${SOURCE_FINGERPRINT}"
+STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${KAITOKIT_ARCHS}"$'\n'"${SOURCE_REVISION}"$'\n'"${SOURCE_FINGERPRINT}"
 
 # 同じソース内容・コンパイラ・アーキテクチャ指定なら再配置しない。
 if [[ -f "$DESTINATION_EXECUTABLE" && \
@@ -94,5 +99,10 @@ mkdir -p "${DESTINATION_FRAMEWORK:h}"
 rm -f "$STAMP_FILE"
 rm -rf "$DESTINATION_FRAMEWORK"
 /usr/bin/ditto "$SOURCE_FRAMEWORK" "$DESTINATION_FRAMEWORK"
+if [[ -n "$SOURCE_REVISION" ]]; then
+    plutil -replace KaitoKitSourceRevision -string "$SOURCE_REVISION" \
+        "$DESTINATION_FRAMEWORK/Versions/A/Resources/Info.plist"
+fi
+codesign --force --sign - "$DESTINATION_FRAMEWORK"
 printf '%s\n' "$STAMP_VALUE" > "$STAMP_FILE"
 echo "Installed $DESTINATION_FRAMEWORK ($SWIFT_VERSION)"

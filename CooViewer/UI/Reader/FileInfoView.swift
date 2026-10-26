@@ -117,6 +117,7 @@ struct FileInfoContent: View {
 
     private func styledRowValue(_ value: String) -> some View {
         Text(value)
+            .lineLimit(40)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

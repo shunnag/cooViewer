@@ -32,7 +32,7 @@ enum MediaSpeedProbe {
     private static func profileSync(path: String) -> MediaProfile {
         var fsInfo = statfs()
         guard statfs(path, &fsInfo) == 0 else {
-            logger.info("statfs failed for \(path, privacy: .public); using unknown profile")
+            logger.info("statfs failed for \(path); using unknown profile")
             return .unknown
         }
         let mountPoint = withUnsafeBytes(of: fsInfo.f_mntonname) { raw in

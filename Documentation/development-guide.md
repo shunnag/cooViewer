@@ -266,6 +266,9 @@ stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-pro
 
 ## 3. テスト
 
+GitHub Actions はコミット SHA で固定し、Dependabot で月 1 回、更新を 1 つの PR にまとめて追跡します。
+`brew install` は従来どおりバージョンを固定しない方針です。
+
 - ロジック(ソート・見開き判定・バインディング・レイアウト・永続化・検索
   など)には必ず CooViewerTests のユニットテストを付ける(設計書 §7.6)。
 - テスト実行は XCTest ホストとしてアプリを起動するが、`AutomatedRun.isXCTest`
@@ -396,6 +399,13 @@ tag と commit を記す。
 StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 [PR 2 検証記録の付録](verification/2026-09-15-xadmaster-framework-removal.md#付録-stuffit-統合時の検証記録)へ移した。
 
+両 framework の Info.plist には、ソースが git checkout の最上位の場合に限り
+`KaitoKitSourceRevision` / `WashiSourceRevision`(`git describe --tags --always --dirty`)を記録する。
+開発機の絶対パスは同梱しない。KaitoKit の stamp は最終行がソース fingerprint で、revision はその前に置く。
+鍵導出は reader/password ごとで reopen 時に満額へ戻り、1 冊の総量は KaitoKit だけでは縛れない。
+サイズ未宣言 entry の最終上限、機微なネスト子の無上限のメモリ常駐、Washi の外部参照と bidi 表示の
+残余は [architecture.md](architecture.md) の予算・残余の節を参照する。
+
 ## 4. リリース手順(2.0b41 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
 
 1. pbxproj の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` を bump(各 4 箇所)。
@@ -427,8 +437,15 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
    `--prerelease`)。リリースノートには 1.x へ戻す場合のデータ消去手順
    (日英併記)を必ず含める。
 8. `Scripts/make-appcast.sh <stapled-zip> <version> <build>` で appcast.xml に
-   `<item>` を追加(EdDSA 署名はログインキーチェーンの鍵)→ master へ
+   `<item>` を追加し、feed 全体を署名・検証(EdDSA 署名は login keychain の鍵)→ master へ
    コミット・push → フィードの `length=` が実ファイルサイズと一致するか確認。
+   鍵は 1 台の login keychain にしか無いので、運用開始前に Sparkle の
+   `generate_keys -x <file>` で秘密鍵をバックアップし、安全に保管する。
+   `make-appcast.sh` の順序は item 挿入 → feed 署名 → 検証。appcast.xml を手で編集した場合も
+   必ず `Frameworks/Sparkle-dist/bin/sign_update appcast.xml` で再署名し、`--verify appcast.xml` で確認する。
+   鍵を失うと `SURequireSignedFeed` を有効にした版の利用者には 20 日間更新が出ない
+   (失効猶予は Sparkle の既定値)。CI は鍵を使わず署名コメントの存在だけを検査し、
+   未署名の移行期間中は警告で通す。署名警告コメントがあるのに署名コメントが無い場合は失敗する。
 9. マージ済みの `release/X.YbN` ブランチをローカル・リモートとも削除する。
 
 **開発機での禁止事項**: `defaults delete jp.coo.cooViewer BookStateStoreVersion`
@@ -468,6 +485,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 | KaitoKit / Washi framework のリンクエラー | ターゲットに x86_64 が混入。`ARCHS = arm64` を確認 |
 | バンドルに削除したはずの framework が残る | legacy build location は差分ビルドで古い Embed 成果物を消さない。`rm -rf build/Release`(Debug なら `build/Debug`)してから再ビルド。2.0b37 で実測 |
 | 公証が Invalid | Sparkle 内部の再署名漏れ(sign-sparkle-nested.sh)か、素の Release ビルド |
+| path を含む診断ログ | `privacy: .public` を付けず、os_log の既定 private を使う。in-process の診断記録は維持する |
 | 自動更新が来ない | appcast.xml の `length=` 不一致・資産名が `cooViewer-<ver>.zip` でない |
 | xcstrings が巨大 diff | 再シリアライズしてしまった。テキストブロック挿入だけに戻す |
 | 設定変更が反映されない | defaults キー名の相違か、applySettings の反映点が未実装 |

@@ -18,6 +18,36 @@ final class OpenFailureMessageTests: XCTestCase {
             volumeUnavailable: unavailable, sourceURL: url)
     }
 
+    func testChildNameCannotInjectFailureLines() throws {
+        let child = ChildReadFailure(relativePath: "dir/巻\n偽案内\u{2028}続き.zip",
+            url: url, cause: .accessDenied, retryClass: .persistent)
+        let failure = AssemblyFailure(failures: [child], total: 1, unchecked: 0,
+            volumeUnavailable: false, sourceURL: url)
+        let text = OpenFailureMessage.text(for: failure, bookName: "本", bundle: try japaneseBundle())
+        XCTAssertEqual(text.components(separatedBy: .newlines).count, 4)
+        XCTAssertTrue(text.contains("巻 偽案内 続き.zip"))
+    }
+
+    func testUnreadableMarkerNameCannotInjectLines() {
+        let plain = UnreadableVolumeMarker(relativePath: "巻.zip", cause: .accessDenied).message
+        let injected = UnreadableVolumeMarker(relativePath: "巻\r\n偽案内\u{2029}.zip", cause: .accessDenied).message
+        XCTAssertEqual(injected.components(separatedBy: .newlines).count,
+                       plain.components(separatedBy: .newlines).count)
+    }
+
+    @MainActor
+    func testPasswordPromptNameCannotInjectLines() {
+        let text = ReaderWindowController.nestedPasswordMessage(name: "巻\n偽案内\u{2029}.zip")
+        XCTAssertEqual(text.components(separatedBy: .newlines).count, 1)
+        XCTAssertTrue(text.contains("巻 偽案内 .zip"))
+    }
+
+    func testEntryNameFormatterClampsAndPreservesBidiPolicy() {
+        XCTAssertEqual(EntryNameFormatter.forDisplay("\u{202E}" + String(repeating: "名", count: 200), limit: 80).count, 80)
+        XCTAssertEqual(EntryNameFormatter.forDisplay("\u{202E}名", limit: 120), "\u{202E}名")
+        XCTAssertEqual(EntryNameFormatter.forDisplay("名", limit: 0), "")
+    }
+
     func testOneFailure() throws {
         let text = OpenFailureMessage.text(for: failure([.accessDenied]), bookName: "図面集",
                                            bundle: try japaneseBundle())

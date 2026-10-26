@@ -25,6 +25,8 @@ typealias NestedPasswordProvider =
 actor NestedUnlocker {
     private var knownPasswords: [String]
     private var promptingDisabled = false
+    // 同じ鍵の正規コレクションは成功で戻し、8 子連続の全敗で自動の鍵導出を止める。
+    private var consecutiveAutomaticFailures = 0
     private var provider: NestedPasswordProvider?
     private let vault: PasswordVault?
     /// ユーザーが「保存」に同意したパスワード(ダイアログのチェックボックス、
@@ -118,36 +120,44 @@ actor NestedUnlocker {
         // 死にかけたボリュームへ残りのパスワードを順に試したり尋ねたりせず、従来の
         // 無言スキップと同じ扱いで外す(cooViewer-3tfd)。キャンセルとは違い、
         // 他の子への問い合わせは止めない
-        if let vault, let saved = await vault.password(for: persistenceKey) {
-            guard !Task.isCancelled else { return .cancelled }
-            switch await child.checkAndSetPassword(saved) {
-            case .accepted:
-                consentedPasswords.insert(saved)
-                // 兄弟の子(特に PDF は checkAndSetPassword が addKnown を呼ばない)
-                // にも展延できるよう既知パスワードとしても記録する
-                addKnown(saved)
-                sawUnlockedChild = true
-                return .unlocked
-            case .unreadable:
-                return .unreadable
-            case .rejected:
-                break
-            }
-        }
-        for password in knownPasswords {
-            guard !Task.isCancelled else { return .cancelled }
-            switch await child.checkAndSetPassword(password) {
-            case .accepted:
-                if consentedPasswords.contains(password) {
-                    await vault?.save(password, for: persistenceKey)
+        if consecutiveAutomaticFailures < 8 {
+            var attempted = false
+            if let vault, let saved = await vault.password(for: persistenceKey) {
+                guard !Task.isCancelled else { return .cancelled }
+                attempted = true
+                switch await child.checkAndSetPassword(saved) {
+                case .accepted:
+                    consentedPasswords.insert(saved)
+                    // 兄弟の子(特に PDF は checkAndSetPassword が addKnown を呼ばない)
+                    // にも展延できるよう既知パスワードとしても記録する
+                    addKnown(saved)
+                    consecutiveAutomaticFailures = 0
+                    sawUnlockedChild = true
+                    return .unlocked
+                case .unreadable:
+                    return .unreadable
+                case .rejected:
+                    break
                 }
-                sawUnlockedChild = true
-                return .unlocked
-            case .unreadable:
-                return .unreadable
-            case .rejected:
-                continue
             }
+            for password in knownPasswords {
+                guard !Task.isCancelled else { return .cancelled }
+                attempted = true
+                switch await child.checkAndSetPassword(password) {
+                case .accepted:
+                    if consentedPasswords.contains(password) {
+                        await vault?.save(password, for: persistenceKey)
+                    }
+                    consecutiveAutomaticFailures = 0
+                    sawUnlockedChild = true
+                    return .unlocked
+                case .unreadable:
+                    return .unreadable
+                case .rejected:
+                    continue
+                }
+            }
+            if attempted { consecutiveAutomaticFailures += 1 }
         }
         guard let provider, !promptingDisabled else {
             sawSkippedChild = true
@@ -169,6 +179,7 @@ actor NestedUnlocker {
             }
             switch await child.checkAndSetPassword(answer.password) {
             case .accepted:
+                consecutiveAutomaticFailures = 0
                 addKnown(answer.password)
                 if answer.saveRequested {
                     consentedPasswords.insert(answer.password)
