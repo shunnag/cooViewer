@@ -139,6 +139,7 @@ final class ReaderWindowController: NSWindowController {
         alert.addButton(withTitle: String(localized: "Cancel"))
         return alert.runModal() == .alertFirstButtonReturn
     }
+    private var openBookTask: Task<Void, Never>?
     private var openFailureProbe: (id: UUID, task: Task<Void, Never>)?
     private var openFailureProbeNeedsRecheck = false
     private var openFailureObservers: [any NSObjectProtocol] = []
@@ -1258,6 +1259,11 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
+    static func nestedPasswordMessage(name: String) -> String {
+        let name = EntryNameFormatter.forDisplay(name, limit: 80)
+        return String(localized: "“\(name)” in this book is password-protected.")
+    }
+
     // MARK: - 本を開く
 
     /// URL から本を開く。単一画像は親フォルダに読み替える(仕様書 §4.1.2 手順 2)。
@@ -1274,12 +1280,15 @@ final class ReaderWindowController: NSWindowController {
         openGeneration &+= 1
         let generation = openGeneration
         beginOpeningFromFailure(generation: generation, name: url.lastPathComponent)
-        return Task {
+        openBookTask?.cancel()
+        let task = Task {
             await openBookFlow(url: url, atPage: page, atLastPage: atLastPage,
                                generation: generation,
                                allowCollectionDrill: allowCollectionDrill,
                                fromSlideshow: fromSlideshow)
         }
+        openBookTask = task
+        return task
     }
 
     private func openBookFlow(url: URL, atPage: Int?, atLastPage: Bool,
@@ -1592,8 +1601,12 @@ final class ReaderWindowController: NSWindowController {
                             cacheByteLimit: settings.pageCacheByteLimit)
                 book.isSyntheticPreview = returningPartial.isSynthetic
             } else {
-                book = try await Book.open(source: source, sortMode: settings.sortMode,
-                                          cacheByteLimit: settings.pageCacheByteLimit, probe: fileSystemProbe)
+                book = try await withTaskCancellationHandler {
+                    try await Book.open(source: source, sortMode: settings.sortMode,
+                                        cacheByteLimit: settings.pageCacheByteLimit, probe: fileSystemProbe)
+                } onCancel: {
+                    (source as? ArchiveSource)?.abandonAssembly()
+                }
             }
             book.isSyntheticPreview = book.isSyntheticPreview || isSynthetic
             guard generation == openGeneration else { return }
@@ -2170,6 +2183,8 @@ final class ReaderWindowController: NSWindowController {
         }
         // 閉じた窓を遅いオープン/EPUB 提示で再構成しない。未開始 Task も失効する。
         openGeneration &+= 1
+        openBookTask?.cancel()
+        openBookTask = nil
         clearFailedOpen()
         epubPresentEpoch &+= 1
         isOpeningBook = false
@@ -2253,8 +2268,7 @@ final class ReaderWindowController: NSWindowController {
                     return nil
                 }
                 let alert = NSAlert()
-                alert.messageText = String(
-                    localized: "“\(name)” in this book is password-protected.")
+                alert.messageText = Self.nestedPasswordMessage(name: name)
                 // 2 回目以降は誤入力を伝える(外側書庫のダイアログと同じ書式)
                 alert.informativeText = attempt == 1
                     ? String(localized: "Enter the password to include it.")

@@ -7,7 +7,7 @@ struct UnreadableVolumeMarker: Sendable, Hashable {
     let cause: ReadFailureCause?
 
     var message: String {
-        let name = (relativePath as NSString).lastPathComponent
+        let name = EntryNameFormatter.forDisplay((relativePath as NSString).lastPathComponent, limit: 120)
         let reason = cause.map { OpenFailureMessage.causeText($0) }
             ?? String(localized: "This volume could not be checked")
         return name + "\n\n" + reason + "\n\n" + String(localized:

@@ -67,6 +67,25 @@ final class RetroImageDecodingTests: XCTestCase {
         return Data(d)
     }
 
+    func testMagRejectsOutputOver256MiBEvenWithPackedBufferUnderLimit() {
+        var data = makeMag(right: 65_535, bottom: 512, flagA: [], flagB: [], colors: [])
+        data[16] = 1 // 16 色の縦 2 倍。packed は約 16 MiB、RGBA は 256 MiB 超。
+        XCTAssertNil(RetroImageDecoding.decode(data))
+    }
+
+    func testMag640By400StillDecodes() throws {
+        let data = makeMag(right: 639, bottom: 399, flagA: [], flagB: [], colors: [])
+        let image = try XCTUnwrap(RetroImageDecoding.decode(data))
+        XCTAssertEqual(image.width, 640)
+        XCTAssertEqual(image.height, 400)
+    }
+
+    func testRetroInputOver64MiBIsRejected() {
+        var data = makeMag(right: 7, bottom: 1, flagA: [], flagB: [], colors: [])
+        data.append(Data(repeating: 0, count: (64 << 20) + 1 - data.count))
+        XCTAssertNil(RetroImageDecoding.decode(data))
+    }
+
     // MARK: - パレット拡張(仕様の例)
 
     func testExpandComponentMatchesSpecExamples() {

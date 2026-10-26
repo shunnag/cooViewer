@@ -55,5 +55,10 @@ text = text.replace(marker, marker + "\n" + item, 1)
 open("appcast.xml", "w").write(text)
 EOF
 
+# item の挿入後に署名し、その署名を検証する順序を崩さない。
+"$SIGN_UPDATE" appcast.xml
+"$SIGN_UPDATE" --verify appcast.xml
+
 echo "appcast.xml updated for $VERSION (build $BUILD)."
 echo "Commit & push appcast.xml to master so the feed URL serves it."
+echo "appcast.xml を手で編集したら、必ず sign_update appcast.xml で再署名してください。"

@@ -17,6 +17,10 @@ on:
   schedule:
     - cron: '17 21 * * 1'
 
+# この workflow は token を使わない。
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
@@ -26,7 +30,17 @@ jobs:
         os: [macos-26, xcode-27]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check appcast signature comment
+        run: |
+          if grep -q 'sparkle-sign-warning' appcast.xml; then
+            grep -q 'sparkle-signatures:' appcast.xml
+          elif grep -q 'sparkle-signatures:' appcast.xml; then
+            echo "::warning::Signed appcast is missing the Sparkle warning comment."
+          else
+            echo "::warning::appcast.xml is unsigned; sign it before releasing signed-feed clients."
+          fi
 
       - name: Clone KaitoKit and Washi
         run: |

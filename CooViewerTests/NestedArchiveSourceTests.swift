@@ -18,6 +18,46 @@ final class NestedArchiveSourceTests: XCTestCase {
         try FileManager.default.removeItem(at: tempDir)
     }
 
+    func testNestedCandidateLimitCountsExcludedVolumes() async throws {
+        try await ArchiveSource.$testingNestedAvailableCapacity.withValue({ _ in 100 << 30 }) {
+            let child = zipData([("page.avifs", png(width: 2))])
+            let url = try writeZip(named: "many.zip", (0..<2_000).map { ("\($0).zip", child) })
+            let source = try ArchiveSource(url: url)
+            let entries = try await source.entries()
+            let excluded = await source.excludedChildCount()
+            XCTAssertEqual(entries.count, 1_024)
+            XCTAssertEqual(excluded, 976)
+        }
+    }
+
+    func testNestedTempSpacePolicyRejectsLowUnknownAndCumulativeCapacity() {
+        XCTAssertFalse(ArchiveSource.nestedTempHasRoom(size: 1, usedBytes: 0, availableCapacity: 256 << 20))
+        XCTAssertFalse(ArchiveSource.nestedTempHasRoom(size: 1, usedBytes: 0, availableCapacity: nil))
+        XCTAssertFalse(ArchiveSource.nestedTempHasRoom(size: 1, usedBytes: 4 << 30, availableCapacity: 100 << 30))
+        XCTAssertFalse(ArchiveSource.nestedTempHasRoom(size: 100, usedBytes: 0, availableCapacity: 999))
+        XCTAssertTrue(ArchiveSource.nestedTempHasRoom(size: 1 << 20, usedBytes: 0, availableCapacity: 10 << 30))
+    }
+
+    func testInsufficientSpaceSkipsNestedTempWrite() async throws {
+        let child = zipData([("page.avifs", png(width: 2))])
+        let url = try writeZip(named: "low-space.zip", [("child.zip", child)])
+        let entries = try await ArchiveSource.$testingNestedAvailableCapacity.withValue({ _ in 0 }) {
+            let source = try ArchiveSource(url: url)
+            return try await source.entries()
+        }
+        XCTAssertTrue(entries.isEmpty)
+    }
+
+    func testLongNestedTempNamePreservesExtensionAndPages() async throws {
+        try await ArchiveSource.$testingNestedAvailableCapacity.withValue({ _ in 100 << 30 }) {
+            let name = String(repeating: "a", count: 252) + ".zip"
+            let child = zipData([("page.avifs", png(width: 2))])
+            let source = try ArchiveSource(url: writeZip(named: "long-name.zip", [(name, child)]))
+            let entries = try await source.entries()
+            XCTAssertEqual(entries.map(\.pathInBook), [name + "/page.avifs"])
+        }
+    }
+
     /// 幅をページの「内容マーカー」に使う(width が一致すれば正しい画像)
     private func png(width: Int) -> Data {
         TestFixtures.pngData(width: width, height: 60)

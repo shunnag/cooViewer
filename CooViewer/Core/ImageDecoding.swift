@@ -70,7 +70,10 @@ enum ImageDecoding {
                 kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
                 kCGImageSourceShouldCacheImmediately: true,
             ]
-            if let hdr = CGImageSourceCreateImageAtIndex(
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? Int.max
+            let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? Int.max
+            if max(width, height) <= 8192, let hdr = CGImageSourceCreateImageAtIndex(
                 source, 0, hdrOptions as CFDictionary),
                max(hdr.width, hdr.height) <= 8192 {
                 return hdr
