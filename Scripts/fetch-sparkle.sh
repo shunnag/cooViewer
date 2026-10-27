@@ -7,8 +7,8 @@
 # EN: verifying its SHA-256. Bump SPARKLE_VERSION and SPARKLE_SHA256 together.
 set -euo pipefail
 
-SPARKLE_VERSION="2.10.0"
-SPARKLE_SHA256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
+SPARKLE_VERSION="2.10.1"
+SPARKLE_SHA256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
 
 cd "$(dirname "$0")/.."
 FW_DIR="$PWD/Frameworks"
