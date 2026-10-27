@@ -93,6 +93,14 @@ final class PasswordCheckTests: XCTestCase {
         XCTAssertFalse(reused)
     }
 
+    func testProbeLimitExceededIsUnreadable() async throws {
+        let passwords = OSAllocatedUnfairLock(initialState: [String]())
+        let source = try makeSource(failure: KaitoError.limitExceeded("probe"),
+            unlocker: NestedUnlocker(), passwords: passwords)
+        let check = await source.checkAndSetPassword("pw")
+        XCTAssertEqual(check, .unreadable)
+    }
+
     func testProbeCancellationIsUnreadable() async throws {
         let passwords = OSAllocatedUnfairLock(initialState: [String]())
         let source = try makeSource(failure: CancellationError(), unlocker: NestedUnlocker(),
@@ -105,7 +113,7 @@ final class PasswordCheckTests: XCTestCase {
     func testProbePasswordAndStructuralFailuresAreRejected() async throws {
         let failures: [KaitoError] = [
             .wrongPassword, .checksumMismatch(entry: 0), .malformed("probe"),
-            .truncated, .limitExceeded("probe"), .unsupportedMethod("probe"),
+            .truncated, .unsupportedMethod("probe"),
             .passwordRequired, .notFound("probe"),
         ]
         for failure in failures {
@@ -134,7 +142,7 @@ final class PasswordCheckTests: XCTestCase {
         XCTAssertEqual(passwords.withLock { $0 }, ["pw", "pw"])
     }
 
-    /// 分類の純関数: io と取消だけが unreadable
+    /// 分類の純関数: io・取消・読取上限は unreadable
     func testClassifyProbeFailure() {
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.io(ENXIO)), .unreadable)
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(CancellationError()), .unreadable)
@@ -142,7 +150,7 @@ final class PasswordCheckTests: XCTestCase {
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.truncated), .rejected)
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.checksumMismatch(entry: 1)), .rejected)
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.malformed("x")), .rejected)
-        XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.limitExceeded("x")), .rejected)
+        XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.limitExceeded("x")), .unreadable)
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(KaitoError.unsupportedMethod("x")), .rejected)
         XCTAssertEqual(PasswordCheck.classifyProbeFailure(BookSourceError.pageLoadFailed("x")), .rejected)
     }

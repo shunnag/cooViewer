@@ -117,7 +117,7 @@ enum PageFileInfo {
         func add(_ label: String, _ value: String?) {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let trimmed, !trimmed.isEmpty {
-                rows.append(Row(label: label, value: trimmed))
+                rows.append(Row(label: label, value: String(trimmed.prefix(2000))))
             }
         }
         add(String(localized: "Series"), info.series)

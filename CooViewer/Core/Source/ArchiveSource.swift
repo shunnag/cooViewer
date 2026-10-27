@@ -64,6 +64,10 @@ actor ArchiveSource: BookSource {
     private var excludedCount = 0
 
     private var nestedRoots: [URL] = []
+    private var nestedTempBytes: Int64 = 0
+    // 実在する合本は数十〜数百巻。自動展開が百万件へ膨らむのを防ぐ。
+    static let maxNestedChildren = 1_024
+    @TaskLocal static var testingNestedAvailableCapacity: (@Sendable (URL) -> Int64?)?
     private var nestedRootCleanup: Task<Void, Never>?
     private var password: String?
     /// ネスト書庫/PDF のロック解除係(本の全ネスト階層で共有)
@@ -475,7 +479,7 @@ actor ArchiveSource: BookSource {
             if SourceReadFailure.mustPropagate(error) { throw error }
             let message = "\(url.path): \(String(describing: error))"
             ArchiveEngineDiagnostics.recordError(message: message)
-            logger.error("Archive open failed: \(message, privacy: .public)")
+            logger.error("Archive open failed: \(message)")
             throw BookSourceError.unreadable(url)
         }
     }
@@ -494,7 +498,7 @@ actor ArchiveSource: BookSource {
             if SourceReadFailure.mustPropagate(error) { throw error }
             let message = "\(name): \(String(describing: error))"
             ArchiveEngineDiagnostics.recordError(message: message)
-            logger.error("Archive open failed: \(message, privacy: .public)")
+            logger.error("Archive open failed: \(message)")
             throw BookSourceError.unreadable(displayURL)
         }
     }
@@ -516,7 +520,7 @@ actor ArchiveSource: BookSource {
                 let message = "\(url.path): \(String(describing: error))"
                 ArchiveEngineDiagnostics.recordRetry(message: message)
                 logger.info(
-                    "\(kind.displayName, privacy: .public) mmap open failed; retrying file once: \(message, privacy: .public)")
+                    "\(kind.displayName, privacy: .public) mmap open failed; retrying file once: \(message)")
                 archive = try open(file: url.path, kind: kind, factory: factory)
                 retainedData = nil
             }
@@ -706,13 +710,21 @@ actor ArchiveSource: BookSource {
     private func build() async throws -> [PageEntry] {
         isBuilding = true
         defer { isBuilding = false }
-        excludedCount = 0
-        let candidates = nestedCandidates
+        let candidates = Array(nestedCandidates.prefix(Self.maxNestedChildren))
+        excludedCount = nestedCandidates.count - candidates.count
+        let root = nestedTempRoot()
+        // 準備係は detached Task で走るため、注入値をここで捕まえて渡す。
+        let availableCapacity: @Sendable (URL) -> Int64? = Self.testingNestedAvailableCapacity ?? { directory in
+            (try? directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage
+        }
         let context = NestedPreparationContext(
             depth: nestingDepth, sensitive: contentIsSensitive || archive.isEncrypted(),
             unlocker: unlocker, persistenceKey: persistenceKey, engine: preferredEngine,
             factory: engineFactory, policy: retryPolicy, powerState: powerState,
-            poolSizing: extractorPoolSizing, root: nestedTempRoot())
+            poolSizing: extractorPoolSizing, writeTemp: { candidate, data in
+                try await self.writeNestedTemp(candidate, data: data, root: root, availableCapacity: availableCapacity)
+            })
         await nestedRootCleanup?.value
         let prepared = try await AssemblyPreparation.run(
             candidates: candidates.enumerated().map {
@@ -794,7 +806,7 @@ actor ArchiveSource: BookSource {
         let policy: AssemblyRetryPolicy
         let powerState: any PowerStateProviding
         let poolSizing: @Sendable (Bool) -> Int
-        let root: URL
+        let writeTemp: @Sendable ((index: Int32, path: String), Data) async throws -> URL?
     }
 
     private func prepareNestedChild(_ candidate: (index: Int32, path: String),
@@ -859,12 +871,16 @@ actor ArchiveSource: BookSource {
             } else {
                 // 非機微 EPUB は data 経路へ統一しない。従来の temp+mmap なら
                 // 退避可能な展開バイトが、常駐ヒープへ変わるメモリ退行を避ける
-                let fileURL = try writeNestedTemp(candidate, data: data, root: context.root)
-                let filePublication = try await EPUBStagingArea.shared.openPublication(at: fileURL)
-                let epub = try EPUBSource(
+                guard let fileURL = try await context.writeTemp(candidate, data) else { return .skipped }
+                do {
+                    let filePublication = try await EPUBStagingArea.shared.openPublication(at: fileURL)
+                    child = try EPUBSource(
                         publication: filePublication, url: fileURL,
                         precomputedImageOnlyPageInfos: imageOnlyPageInfos)
-                child = epub
+                } catch {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    throw error
+                }
             }
             // EPUBSource は FXL または画像のみの非 DRM に限る。通常のリフロー・
             // DRM・破損は仕様書 §4.17 に従い黙って除外し、unlocker には渡さない
@@ -872,8 +888,12 @@ actor ArchiveSource: BookSource {
             if useMemory {
                 child = try PDFSource(data: data)
             } else {
-                let fileURL = try writeNestedTemp(candidate, data: data, root: context.root)
-                child = try PDFSource(url: fileURL)
+                guard let fileURL = try await context.writeTemp(candidate, data) else { return .skipped }
+                do { child = try PDFSource(url: fileURL) }
+                catch {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    throw error
+                }
             }
         } else if useMemory {
             let nested = try ArchiveSource(
@@ -883,13 +903,17 @@ actor ArchiveSource: BookSource {
                 extractorPoolSizing: extractorPoolSizing)
             child = nested
         } else {
-            let fileURL = try writeNestedTemp(candidate, data: data, root: context.root)
-            let nested = try ArchiveSource(
+            guard let fileURL = try await context.writeTemp(candidate, data) else { return .skipped }
+            do {
+                child = try ArchiveSource(
                     url: fileURL, nestingDepth: nestingDepth + 1,
                     unlocker: unlocker, persistenceKey: childKey, sensitive: sensitive,
                     preferredEngine: preferredEngine, engineFactory: engineFactory, retryPolicy: retryPolicy, powerState: powerState,
                     extractorPoolSizing: extractorPoolSizing)
-            child = nested
+            } catch {
+                try? FileManager.default.removeItem(at: fileURL)
+                throw error
+            }
         }
         // 暗号化された子は共有アンロッカーで解除する(保存済み→既知→入力依頼)。
         // 解除できない/キャンセルされた子は本から外す(§4.17 の黙殺方針。
@@ -966,6 +990,7 @@ actor ArchiveSource: BookSource {
     /// 直読みするため暗号化不可(設計書 §2.4 の残余リスク)なので、権限を所有者限定にする
     private func nestedTempRoot() -> URL {
         // 打ち切った子が後から戻っても、新しい構築の一時ファイルを上書きさせない(設計書 §7.4)。
+        nestedTempBytes = 0
         let retiredRoots = nestedRoots
         nestedRootCleanup = Task.detached(priority: .utility) {
             // 世代ごとの隔離は残し、再構築のたびに大きな展開ファイルを蓄積させない(設計書 §2.4、§7.4)。
@@ -977,14 +1002,27 @@ actor ArchiveSource: BookSource {
         return root
     }
 
-    private static func writeNestedTemp(_ candidate: (index: Int32, path: String),
-                                        data: Data, root: URL) throws -> URL {
+    /// 空き容量と累計の判定は注入可能な純関数にまとめる。
+    static func nestedTempHasRoom(size: Int, usedBytes: Int64, availableCapacity: Int64?) -> Bool {
+        // 既定スプールと同じ 4 GiB を本ごとの上限にし、空きの 1/10 と 256 MiB の余裕も守る。
+        EPUBStagingArea.SpacePolicy(totalCap: defaultSpoolSizeLimit).hasRoom(
+            forFileOfSize: size, liveBytes: usedBytes, availableCapacity: availableCapacity)
+    }
+
+    private func writeNestedTemp(_ candidate: (index: Int32, path: String),
+                                 data: Data, root: URL, availableCapacity: @Sendable (URL) -> Int64?) throws -> URL? {
         try Task.checkCancellation()
+        guard nestedRoots.last == root else { throw CancellationError() }
+        let directory = FileManager.default.temporaryDirectory
+        let available = availableCapacity(directory)
+        guard Self.nestedTempHasRoom(size: data.count, usedBytes: nestedTempBytes,
+                                     availableCapacity: available) else { return nil }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let fileURL = root.appendingPathComponent(
-            "\(candidate.index)-\((candidate.path as NSString).lastPathComponent)")
+            "\(candidate.index)-" + String((candidate.path as NSString).lastPathComponent.suffix(200)))
         try data.write(to: fileURL, options: .atomic)
+        nestedTempBytes += Int64(data.count)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                ofItemAtPath: fileURL.path)
         return fileURL

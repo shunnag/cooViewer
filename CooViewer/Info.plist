@@ -6,6 +6,10 @@
 	<string>©coo, 2005</string>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/shunnag/cooViewer/master/appcast.xml</string>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
 	<key>SUPublicEDKey</key>
 	<string>Uv/vfCACTENgdAolafjMCY9fDZO6VOex/GM1sa5vCks=</string>
 	<key>CFBundleDocumentTypes</key>

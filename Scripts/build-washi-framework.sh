@@ -59,8 +59,13 @@ SOURCE_INPUTS=("$SOURCE_DIR/Sources" "$SOURCE_DIR/Package.swift"
 if [[ -f "$SOURCE_DIR/Package.resolved" ]]; then
     SOURCE_INPUTS+=("$SOURCE_DIR/Package.resolved")
 fi
+# 親リポジトリの revision を誤記せず、配布物にはソースの版だけを残す。
+SOURCE_REVISION=""
+if [[ "$(git -C "$SOURCE_DIR" rev-parse --show-toplevel 2>/dev/null || true)" == "$SOURCE_DIR" ]]; then
+    SOURCE_REVISION="$(git -C "$SOURCE_DIR" describe --tags --always --dirty)"
+fi
 SOURCE_FINGERPRINT="$(/bin/zsh "$FINGERPRINT_SCRIPT" "${SOURCE_INPUTS[@]}")"
-STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${SOURCE_FINGERPRINT}"
+STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${SOURCE_REVISION}"$'\n'"${SOURCE_FINGERPRINT}"
 
 # 同じソース内容・ツールチェーン・ディレクトリで作られていればスキップ。
 # -newer だけでは、削除やバックアップから古い時刻で戻した変更を見逃す。
@@ -166,6 +171,10 @@ cat > "$FW/Versions/A/Resources/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+if [[ -n "$SOURCE_REVISION" ]]; then
+    plutil -replace WashiSourceRevision -string "$SOURCE_REVISION" \
+        "$FW/Versions/A/Resources/Info.plist"
+fi
 ln -s A "$FW/Versions/Current"
 ln -s Versions/Current/Washi "$FW/Washi"
 ln -s Versions/Current/Modules "$FW/Modules"

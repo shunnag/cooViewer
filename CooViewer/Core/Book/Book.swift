@@ -235,10 +235,10 @@ final class Book {
     func loadComicInfoState(useLayoutHints: Bool) async {
         let info = isPartial ? nil : await comicInfo()
         let count = pageCount
-        chapterMarks = (info?.chapters ?? []).compactMap { chapter in
+        chapterMarks = Array((info?.chapters ?? []).compactMap { chapter -> (page: Int, name: String)? in
             guard chapter.image >= 0, chapter.image < count else { return nil }
             return (page: chapter.image, name: chapter.name)
-        }
+        }.prefix(5000))
         let metadataIndices: Set<Int>
         if useLayoutHints, let pages = info?.pages {
             metadataIndices = Set(pages.compactMap { page in
