@@ -435,11 +435,12 @@ enum ArchiveEngineDiagnostics {
 }
 
 extension PasswordCheck {
-    /// プローブ展開の失敗を分類する(cooViewer-3tfd)。環境要因と断定できるものだけを
+    /// プローブ展開の失敗を分類する(cooViewer-3tfd)。正否を判定できない環境要因・読取上限だけを
     /// unreadable にし、残りは従来どおり誤パスワード(rejected)として扱う。
     /// - `KaitoError.io`: FileByteSource の open/pread の errno(NAS/SMB の切断・
     ///   スリープ)。暗号化形式の復号経路から io は投げられない。
     /// - `CancellationError`: オープン取消。正否は判定できていない。
+    /// - `KaitoError.limitExceeded`: 読取上限。パスワードの正否は判定できていない。
     ///
     /// KaitoKit の誤パスワード報告(各形式。rejected に落ちる根拠):
     /// - zip ZipCrypto: 検査値 1 byte の不一致は wrongPassword(ZipCrypto.swift)。誤通過時の
@@ -465,6 +466,8 @@ extension PasswordCheck {
     static func classifyProbeFailure(_ error: Error) -> PasswordCheck {
         if error is CancellationError { return .unreadable }
         if case .io? = error as? KaitoError { return .unreadable }
+        // 読取上限はパスワードの正否を示さないため、誤入力として再試行させない。
+        if case .limitExceeded? = error as? KaitoError { return .unreadable }
         return .rejected
     }
 }

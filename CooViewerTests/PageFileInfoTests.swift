@@ -43,6 +43,17 @@ final class PageFileInfoTests: XCTestCase {
         XCTAssertFalse(details.sections.contains { $0.title == "EXIF" })
     }
 
+    func testComicSummaryIsLimitedToTwoThousandCharacters() {
+        var info = ComicInfo()
+        info.summary = String(repeating: "長", count: 100_000)
+        let details = PageFileInfo.details(
+            entryName: "p.png", pathInBook: "p.png", containerURL: tempDir.appendingPathComponent("v.zip"),
+            pageNumber: 1, pageCount: 1, imageData: nil, fallbackPixelSize: nil, comicInfo: info)
+        let rows = details.sections.last?.rows ?? []
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.value.count, 2_000)
+    }
+
     func testComicSectionAppearsWithComicInfo() {
         var info = ComicInfo()
         info.series = "テスト漫画"; info.number = "3"; info.volume = 2

@@ -45,6 +45,43 @@ final class NestedUnlockerTests: XCTestCase {
         }
     }
 
+    func testAutomaticFailuresStopAfterEightChildren() async {
+        let unlocker = NestedUnlocker(knownPasswords: ["a", "b"])
+        var checks = 0
+        for index in 0..<100 {
+            let child = MockEncryptedSource(password: "secret")
+            let accepted = await unlocker.unlock(child, name: "\(index).zip")
+            XCTAssertFalse(accepted)
+            checks += await child.checkCount
+        }
+        XCTAssertEqual(checks, 8 * 2)
+    }
+
+    func testAutomaticSuccessResetsConsecutiveFailures() async {
+        let unlocker = NestedUnlocker(knownPasswords: ["pw"])
+        for index in 0..<100 {
+            let child = MockEncryptedSource(password: index % 8 == 7 ? "pw" : "other")
+            let accepted = await unlocker.unlock(child, name: "\(index).zip")
+            let checks = await child.checkCount
+            XCTAssertEqual(accepted, index % 8 == 7)
+            XCTAssertEqual(checks, 1)
+        }
+    }
+
+    func testPromptStillWorksAfterAutomaticBudgetIsExhausted() async {
+        let prompts = PromptCounter(answer: "pw")
+        let unlocker = NestedUnlocker(knownPasswords: ["wrong"])
+        for index in 0..<8 {
+            _ = await unlocker.unlock(MockEncryptedSource(password: "pw"), name: "\(index).zip")
+        }
+        await unlocker.setProvider { await prompts.provide($0, $1) }
+        let child = MockEncryptedSource(password: "pw")
+        let accepted = await unlocker.unlock(child, name: "prompt.zip")
+        let checks = await child.checkCount
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(checks, 1, "上限到達後は入力された値だけを試す")
+    }
+
     func testKnownPasswordUnlockRecordsUnlockedChild() async {
         let unlocker = NestedUnlocker(knownPasswords: ["pw"])
         let child = MockEncryptedSource(password: "pw")

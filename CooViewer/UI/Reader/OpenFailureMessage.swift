@@ -13,7 +13,7 @@ enum OpenFailureMessage {
                 let count = failures.count
                 lines.append(String(localized: "Could not read the following \(count) books:", bundle: bundle, locale: locale))
                 for child in failures.prefix(3) {
-                    let name = (child.relativePath as NSString).lastPathComponent
+                    let name = EntryNameFormatter.forDisplay((child.relativePath as NSString).lastPathComponent, limit: 120)
                     let reason = causeText(child.cause, bundle: bundle)
                     lines.append(String(localized: "• \(name) — \(reason)", bundle: bundle))
                 }

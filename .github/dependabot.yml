@@ -1,0 +1,11 @@
+# SHA pin した action の更新を月 1 回まとめて 1 PR で追う
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -34,6 +34,7 @@
 
 - **arm64 のみ**(ARCHS=arm64、x86_64 打ち切り)。MACOSX_DEPLOYMENT_TARGET=26.0。
 - **非サンドボックス継続**: 同フォルダ移動・任意パス履歴復元・ゴミ箱(§4)のUXはサンドボックスと相性が悪い。旧アプリ同様 Developer ID 直配布想定。署名はローカルでは ad-hoc。
+  信頼できないバイトは ImageIO/AppKit・自前 retro parser・WebKit の 3 系統へ in-process で届くため、decoder のメモリ安全性欠陥は home 全体に及び得る。
 - バンドル ID は **jp.coo.cooViewer を継続**し、既存ユーザーの defaults を初回起動時にスキーマ移行する(§13.5)。CFBundleShortVersionString を新設し **2.0.0** とする。
 
 ### 1.3 リポジトリ再編成
@@ -126,7 +127,7 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 | ドラッグジェスチャの方向 HUD | 旧実装には無い**新規**(既定オン、defaults `GestureHUDEnabled`)。ドラッグ 10pt 超で画面中央に方向矢印+割当アクション名(resolveDrag の switchAction 反転込み)を薄表示、30pt 超(本判定)で強調、未割当は灰色、1 秒超過はさらに薄く=長押しキャンセルの予告。ドラッグスクロール中とカール追従中は出さない。検証フラグ `--show-gesture-hud <left\|right\|up\|down>` |
 | マウスドラッグのカール追従 | 旧実装には無い**新規**: 水平ドラッグ方向の割当が次/前ページ(修飾キーなし)かつページカール有効時、30pt 超(本判定)からカールがカーソルに 1:1 追従(スワイプと同じ 350pt でめくり切り、離すと 60pt 超または進行度 0.35 超で確定・以下で巻き戻し)。追従開始後は 1 秒長押しキャンセルを適用しない(スワイプ同様の直接操作として扱う)。垂直ドラッグはカールの向きと合わないため従来動作 |
 | サイドボタンの既定割当 | 旧既定(§5.7.4)に無い**新規**: button 3=前の本(15)/button 4=次の本(14)。当初 2.0b の既定は前/次ページだったが、2026-09 のユーザー要望(同一フォルダ内の書庫移動。ページ送りはクリック・キー・スワイプで可能)により変更。switchAction なし=ブラウザの戻る/進むと同じ論理ナビゲーションとして綴じ方向非依存。保存済み MouseArray へは起動時のメモリ内注入(該当ボタンが未使用のときだけ)。**設定「マウスとジェスチャ」で MouseArray を編集・保存すると 2.0 専用フラグ `MouseArrayUserEdited`(legacy スキーマ外の新キー)が立ち、以後は注入せず保存内容だけを使う** — UI で削除したサイドボタン行は復活しない。保存時は表示中の配列(注入行を含む)をそのまま旧互換形式で書き戻す(編集後はそれがユーザーの明示した内容になるため) |
-| パスワードマネージャー | 旧実装には無い**新規**(既定オン、defaults `PasswordVaultEnabled`)。暗号化書庫/PDF のパスワードを保存し次回から自動解錠する。**保存方式**: Keychain にはランダムなマスターキー 1 つ(service `jp.coo.cooViewer.password-vault`、ThisDeviceOnly・iCloud 非同期)だけを置き、本体は Application Support/jp.coo.cooViewer/Passwords/vault.enc へ AES-GCM で暗号化保存(JSON→seal→tmp→rename、0600。per-item Keychain は ad-hoc 署名 Debug でプロンプト頻発のため不採用)。**キー**: CanonicalPath.normalize(BookStates と同一規則)した実ファイルパス — コレクションフォルダ内の zip は実パスのまま子ソース化されるため、単体で開いた同じ zip と同一キーになり保存が共有される。zip 内 zip は親キー+書庫内パスの JSON 配列(連結は非単射のため不使用)。ArchiveSource の persistenceKey は必須引数(一時展開パス由来のキー混入をコンパイル時に防ぐ)。**フロー**: 保存済みを無言で自動試行→失敗時のみ従来の 3 回ダイアログ(「このパスワードを保存」チェックボックス付き、既定オフ・前回状態を記憶)→成功+同意で保存(上書き=パスワード変更対応)。**読めないとき**(cooViewer-3tfd): 検証プローブが環境要因で読めない(`KaitoError.io`・取消し。`truncated` は AES / StuffIt X の検証値衝突で誤パスワードからも出るので含めない)ときは `PasswordCheck.unreadable` とし、保存パスワードは一度だけやり直してなお読めなければダイアログを出さず「書庫を読み込めませんでした」の空の状態で終える(保存は消さない)。ダイアログでは回数を消費せず理由を出し、ネストの子はその子だけ打ち切る(他の子への問い合わせは止めない)。同意済みパスワードはネスト子の解錠時に子キーへ展延。§4.17 の黙殺・キャンセル動作は不変。**プローブ強化**: checkAndSetPassword の検証対象を暗号化エントリ優先に(先頭が非暗号化の混在書庫で誤パスワードが無音確定するのを防ぐ)。**スプール暗号化**: 暗号化書庫の復号済みページのスプールはプロセス限定の使い捨て鍵で AES-GCM 暗号化(CWE-312。AES-GCM 実測 約 6GB/s で展開性能への影響なし)。**ネスト平文回避**(cooViewer-6ax): 暗号化祖先由来の zip 内 zip/PDF は復号済みバイトを disk に置かず**メモリから開く**(`KaitoKitEngine(data:)`/`PDFDocument(data:)`。展開/レンダラープールも共有 NSData/Data から再オープンして並列性を保つ。機微性は子孫へ伝播)。ただし RAM 常駐が重い 256MiB 超の子は従来の平文 temp にフォールバック(所有者限定 0700/0600・終了時削除+起動時掃除)。**残余リスク**(受容・文書化): 上記フォールバック分と、同一ユーザー権限の悪意プロセスはマスターキー経由で復号可能(非サンドボックス設計の受容範囲)。移動・改名した書庫は再入力(新パスで保存し直し)。テスト・スナップショット実行では Keychain に触れず、検証は `COOVIEWER_TEST_VAULT_KEY`(hex64)+`COOVIEWER_TEST_VAULT_DIR` の注入で行う。管理 UI は設定「本」ペイン(トグル・件数・すべて削除) |
+| パスワードマネージャー | 旧実装には無い**新規**(既定オン、defaults `PasswordVaultEnabled`)。暗号化書庫/PDF のパスワードを保存し次回から自動解錠する。**保存方式**: Keychain にはランダムなマスターキー 1 つ(service `jp.coo.cooViewer.password-vault`、ThisDeviceOnly・iCloud 非同期)だけを置き、本体は Application Support/jp.coo.cooViewer/Passwords/vault.enc へ AES-GCM で暗号化保存(JSON→seal→tmp→rename、0600。per-item Keychain は ad-hoc 署名 Debug でプロンプト頻発のため不採用)。**キー**: CanonicalPath.normalize(BookStates と同一規則)した実ファイルパス — コレクションフォルダ内の zip は実パスのまま子ソース化されるため、単体で開いた同じ zip と同一キーになり保存が共有される。zip 内 zip は親キー+書庫内パスの JSON 配列(連結は非単射のため不使用)。ArchiveSource の persistenceKey は必須引数(一時展開パス由来のキー混入をコンパイル時に防ぐ)。**フロー**: 保存済みを無言で自動試行→失敗時のみ従来の 3 回ダイアログ(「このパスワードを保存」チェックボックス付き、既定オフ・前回状態を記憶)→成功+同意で保存(上書き=パスワード変更対応)。**読めないとき**(cooViewer-3tfd): 検証プローブが環境要因で読めない(`KaitoError.io`・取消し。`truncated` は AES / StuffIt X の検証値衝突で誤パスワードからも出るので含めない)ときは `PasswordCheck.unreadable` とし、保存パスワードは一度だけやり直してなお読めなければダイアログを出さず「書庫を読み込めませんでした」の空の状態で終える(保存は消さない)。ダイアログでは回数を消費せず理由を出し、ネストの子はその子だけ打ち切る(他の子への問い合わせは止めない)。同意済みパスワードはネスト子の解錠時に子キーへ展延。§4.17 の黙殺・キャンセル動作は不変。**プローブ強化**: checkAndSetPassword の検証対象を暗号化エントリ優先に(先頭が非暗号化の混在書庫で誤パスワードが無音確定するのを防ぐ)。**スプール暗号化**: 暗号化書庫の復号済みページのスプールはプロセス限定の使い捨て鍵で AES-GCM 暗号化(CWE-312。AES-GCM 実測 約 6GB/s で展開性能への影響なし)。**ネスト平文回避**(cooViewer-6ax): 暗号化祖先由来の zip 内 zip/PDF は復号済みバイトを disk に置かず**メモリから開く**(`KaitoKitEngine(data:)`/`PDFDocument(data:)`。展開/レンダラープールも共有 NSData/Data から再オープンして並列性を保つ。機微性は子孫へ伝播)。ただし RAM 常駐が重い 256MiB 超の子は従来の平文 temp にフォールバック(所有者限定 0700/0600・source 解放時に削除+起動時掃除(アプリ終了では残り、次回起動の掃除で回収))。**残余リスク**(受容・文書化): 上記フォールバック分と、同一ユーザー権限の悪意プロセスはマスターキー経由で復号可能(非サンドボックス設計の受容範囲)。移動・改名した書庫は再入力(新パスで保存し直し)。テスト・スナップショット実行では Keychain に触れず、検証は `COOVIEWER_TEST_VAULT_KEY`(hex64)+`COOVIEWER_TEST_VAULT_DIR` の注入で行う。管理 UI は設定「本」ペイン(トグル・件数・すべて削除) |
 | ComicInfo.xml 対応(Phase 1–3) | 旧実装には無い**新規**(cooViewer-4fi / bt1 / oo6)。cbz ルート/フォルダ直下の `ComicInfo.xml`(ComicRack/Komga/Kavita 系標準)を **read-only** で消費。Foundation `XMLParser` で fail-soft(壊れ/非 ComicInfo/空 → nil、ObjC 例外を投げない=b19 の教訓)、16MiB 上限、暗号化書庫は解錠後に読む。`BookSource.metadata()`(extension 既定 nil)→ `Book.comicInfo()`(成功時キャッシュ・解錠前 nil を焼き付けない)。用途: ① **ウインドウタイトル**を `Series Vol.N – Title` 等に(無ければファイル名)、② **読み方向**を Manga=YesAndRightToLeft/No から推定(設定「ComicInfo.xml の読み方向に従う」既定オフ。適用は **saved(ユーザー)> ComicInfo > 全体既定**、`ReadMode.withDirection` で方向のみ差替)、③ **ファイル情報窓**に「コミック」セクション(存在フィールドのみ)、④ **章/目次**(Pages[Bookmark])を「移動 → 章へ移動」サブメニューに(メニューのみ・`ChapterListMenuDelegate`。image は 0 始まりページとして実ページへ写像・範囲外は捨てる)、⑤ **見開き補助**(Phase 2。`Pages[DoublePage]`/`[Type=FrontCover]` を「そのページは見開きにしない」ヒントとして `PageLayout.isSmall` へ渡す。設定「ComicInfo.xml の見開き指定に従う」既定オフ。優先度 = **marks(ユーザー)> ComicInfo > coverSingle 設定 > 縦横比**)。⑥ **PDF 属性マップ**(Phase 3・cooViewer-oo6)。PDF 自身のメタデータを ComicInfo へ合成: 文書 Title→`documentTitle`(**窓には出さずファイル情報窓のみ**=ユーザー決定。displayTitle は無視)、Author→writer、Subject→summary、アウトライン(PDFOutline)を平坦化→`pages[bookmark]`(章メニュー。上限 5000・空ラベル/宛先なし除外・`index(for:)` でページ写像)。Producer/Creator は生成ソフト名(≠出版社)・Keywords は NSArray の自由記述タグ(≠ジャンル)のため**写さない**(誤ラベル回避)。`NestedFolderSource` はフォルダ ComicInfo.xml を `FolderSource` へ委譲。常にヒントで永続スキーマ・ユーザー設定を上書きしない。編集/蔵書DBは持たない |
 | アクティビティ窓 | 旧実装には無い**新規**。ウインドウメニュー「アクティビティ」(⌥⌘A)で開く。読み込み(デコード・先読み)/リサンプル(補間)/リサンプルキャッシュ/先読み予算/書庫の一時展開/ML モデル/メモリ(実効上限)に加え、本を開いていなくても**資源上限**(メモリ圧迫の段階と、以後開く書庫ごとの復号予算。§5)の**計画(📐 予算・予定)と実態(● 進行中・完了・使用量)**を live 表示。開いている間だけ ~0.7s 間隔で更新し、閉じたら停止(NSWindowDelegate.windowWillClose で ActivityMonitor.stop → actor への query を止める)。値はすべて実在の内部状態から取得(ImageResampler.stats/Book のアクセサ/spoolStats/MLModelInstallStatus/MemoryFootprint の task_info など)で、取れないもの(ヒット率・ML タイル進捗・トリム回数)は載せない(捏造しない)。ActivityMonitor(ObservableObject)+ ActivitySnapshot(Sendable/Equatable 値型・差分時のみ再描画)+ ActivityView(SwiftUI)。検証フラグ `--show-activity`(ImageRenderer で撮る) |
 | 連続ピンチズーム | 旧実装(ピンチ=表示モードの段階切替 enlarge/reduceViewMode)から**変更**: ピンチジェスチャは常に連続ズーム。ReaderView に `zoomScale`(下限 1.0=現在の表示モードの見え方、上限 8x)を導入し、fitMode は昇格させず relayout の scaled にだけ乗じる純乗数(predictedResampleSizes/先読み予算は 1.0 基準を保つ)。magnify を .ended 単発の仮想ボタン送出からライブ処理へ: .changed で毎イベント追従(カーソル位置アンカー固定)、.ended で慣性・下限吸着(1.08 未満→1.0)を 120Hz Timer でスクラブ、確定時に表示ピクセルキャップを 1x/2x/4x バケットで段階引き上げ(ZoomMath.capBucket)して高解像度再描画。ページめくり・表示モード変更・回転で 1.0 リセット。ズーム中は 2 本指スクロールをパンへ振り替え(ページ送り抑止)、カールは zoomScale==1 のみ。段階切替アクション(enlarge/reduce/cycleViewMode)はキー・他ボタン割当に温存。**ピンチはバインディング経路(仮想ボタン 5000/6000)を通さないため、既定割当 pinchOut=63/pinchIn=64 は外し、マウス割当編集 UI(MouseBindingsPane)のトリガ選択肢からもピンチを除外した**(§7.5: 設定 UI と実挙動を一致させる。表示モード拡大/縮小はキー 51/52 か他ボタン割当で)。状態遷移は ZoomMath(純関数)で XCTest。検証フラグ `--zoom <倍率>` |
@@ -390,6 +391,21 @@ cooViewer-9vha で解決): 主書庫 = clamp(物理メモリ / 64, 64 MiB, 256 M
 開いている reader は open 時の値を保つ(電力方針と同じ)。アクティビティ窓は「いま開くと
 この値」を資源上限(開いた書庫ごとの復号予算)として、メモリ圧迫の段階とともに本を開いて
 いなくても表示する。
+
+**鍵導出・ネスト入力の予算**(KaitoKit 0.17.0 候補): 鍵導出予算は reader と password の
+組ごとで、別の password を設定すると戻り、`reopen()` / `open()` は満額で始まる。
+1 password あたり 16 導出(cyclesPower 24) / 512 導出(19)で有限だが、1 冊には primary 1 +
+展開係最大 6 + spool 再開 + decoded-state 解放ごとの reopen + nested child ごとの reader がある。
+`ArchiveDecodedStateCache` の追い出しとページ送りで何度でも満額に戻るため、KaitoKit 側では
+1 冊あたりの総鍵導出量は縛れない。cooViewer の `NestedUnlocker` は自動試行が 8 子連続で全敗したら
+以後の自動試行を止める(成功でリセット)。ネスト候補は source ごとに 1,024 件までとし、超過分は
+欠落冊数へ加算する。閉窓ではオープンと専有する書庫の構築も取り消す。
+
+サイズを宣言しない entry は 2 GiB の事前 guard を迂回し、最終的な上限は KaitoKit の
+`maxInMemorySize`(既定 1 GiB)になる。ネストの平文 temp は世代ごとに累計 4 GiB まで、
+空きの 1/10 以下かつ書込後も 256 MiB を残す。不足時は子を黙ってスキップし、open 失敗時は
+ファイルを削除する。機微な親の下ではメモリ経路の全ネスト子の展開済みバイトが本の寿命まで
+常駐し、その常駐総量には上限が無い(temp 予算が抑えるのはディスク経路だけ)。
 
 **serial スプールの復号器分離**(cooViewer-r1t2): 表示とスプールが同じ復号器を使うと、
 表示が先に進むたびにスプールが後退し、solid ブロックを毎回先頭から展開し直す。
@@ -724,3 +740,20 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
 - 「何をしているか」より「なぜそうなのか(仕様・回避したバグ・性能理由)」を
   書く。周辺コードとの関係(誰が呼ぶか・何と競合するか)が自明でない場合は
   それも書く。
+
+### 入力表示と外部参照の残余
+
+書庫由来の案内用の名前は `EntryNameFormatter` で改行・行区切り(U+2028/U+2029)と長さを
+制限するが、bidi 制御文字(U+202A–202E / U+2066–2069)は加工していない。entry を実行・起動する
+経路は無いため実害は表示の偽装に限られる。`EPUBTitleFormatter` が EPUB 題名だけに isolate を
+足す非対称は残る。ComicInfo の情報欄は値ごとに 2,000 文字・40 行、章メニューは 5,000 件までとし、
+見開きヒントには全 Pages を使う。
+
+Washi 側の画面外 webview(census / サムネイル / FXL rasterizer)には外部ネットワークを遮断する
+`WKContentRuleList` が無く、画面上のリーダーにも rule list の追加が初回 load より後になる競合窓が
+ある。cooViewer 側では変更せず、Washi の `EPUBOffscreenWebViewConfiguration.make` に同じ rule list を
+追加し、rule list を待ってから load するのが修正案となる。
+
+Sparkle の feed 署名(`SURequireSignedFeed` と `SUVerifyUpdateBeforeExtraction`)は release notes の
+参照先と metadata の改変を防ぐ。任意コードの配布と downgrade は既に enclosure 署名と installer の
+降版検査で防いでいる。feed 署名は鍵の漏洩とリポジトリへの書き込み権限そのものを守らない。

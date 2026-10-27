@@ -85,6 +85,7 @@ enum RetroImageDecoding {
 
     /// フルデコード。対応外の変種や壊れたデータは nil
     static func decode(_ data: Data) -> CGImage? {
+        guard data.count <= 64 << 20 else { return nil }
         let bytes = [UInt8](data)
         if bytes.prefix(8).elementsEqual(magMagic) {
             guard RetroFormatToggle.isEnabled(RetroFormatToggle.magKey) else {
@@ -1050,6 +1051,7 @@ enum RetroImageDecoding {
         // 出力バッファは malloc 領域へ直接書き、CGImage に所有権ごと渡す
         // (配列 → Data のコピーを省く。大きい画像で最大数百 MB のコピー削減)
         let byteCount = rowBytes * outHeight
+        guard byteCount <= 256 * 1024 * 1024 else { return nil }
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
         buffer.initializeMemory(as: UInt8.self, repeating: 0xFF, count: byteCount)
         let rgba = buffer.assumingMemoryBound(to: UInt8.self)

@@ -1,9 +1,9 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- cooViewer の自動更新フィード(Sparkle)。
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><!-- cooViewer の自動更新フィード(Sparkle)。
      リリースごとに Scripts/make-appcast.sh が <item> を挿入する。
      この URL は Info.plist の SUFeedURL から参照される:
-     https://raw.githubusercontent.com/shunnag/cooViewer/master/appcast.xml -->
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+     https://raw.githubusercontent.com/shunnag/cooViewer/master/appcast.xml --><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>cooViewer</title>
         <description>cooViewer updates</description>
@@ -17,7 +17,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b49</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b49</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b49/cooViewer-2.0b49.zip" sparkle:edSignature="AKNvwv1RJI35/yRo7cv2sD3cIAXqFukxfIihYtBqhzXKVrDyrvrWDVWUOn2q+Ik3At2XjHDOubnadPJQ00kvCw==" length="9032973" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b49/cooViewer-2.0b49.zip" sparkle:edSignature="AKNvwv1RJI35/yRo7cv2sD3cIAXqFukxfIihYtBqhzXKVrDyrvrWDVWUOn2q+Ik3At2XjHDOubnadPJQ00kvCw==" length="9032973" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b48</title>
@@ -27,7 +27,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b48</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b48</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b48/cooViewer-2.0b48.zip" sparkle:edSignature="LZs3H3LUv3qGMuDRdYBM7VgaFbczeiUZAkVQF6PurC22VjE5pVYny3YALCg3GUZfbrzT8L213hG8Qb1Pg7ZZDA==" length="8881438" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b48/cooViewer-2.0b48.zip" sparkle:edSignature="LZs3H3LUv3qGMuDRdYBM7VgaFbczeiUZAkVQF6PurC22VjE5pVYny3YALCg3GUZfbrzT8L213hG8Qb1Pg7ZZDA==" length="8881438" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b47</title>
@@ -37,7 +37,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b47</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b47</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b47/cooViewer-2.0b47.zip" sparkle:edSignature="+HMWp0V0M1al5VBHHguF+oCxHCez/HTc17CzylJ/dTk8Ys6rQJknUrUiX2DgOpPru8wh/WT8iayAxmK2Nd9EDQ==" length="8873297" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b47/cooViewer-2.0b47.zip" sparkle:edSignature="+HMWp0V0M1al5VBHHguF+oCxHCez/HTc17CzylJ/dTk8Ys6rQJknUrUiX2DgOpPru8wh/WT8iayAxmK2Nd9EDQ==" length="8873297" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b46</title>
@@ -47,7 +47,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b46</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b46</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b46/cooViewer-2.0b46.zip" sparkle:edSignature="8AJvPF17QkyHOePMGvIVNfGA2JwCyQ8uz75b0klaYv9miiokzgabADqHvIEi8du5uprJ6SBP2h200Eg+XdCeAw==" length="9279181" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b46/cooViewer-2.0b46.zip" sparkle:edSignature="8AJvPF17QkyHOePMGvIVNfGA2JwCyQ8uz75b0klaYv9miiokzgabADqHvIEi8du5uprJ6SBP2h200Eg+XdCeAw==" length="9279181" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b45</title>
@@ -57,7 +57,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b45</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b45</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b45/cooViewer-2.0b45.zip" sparkle:edSignature="HInxra3WuwgveoeKOvTL4Hs8/9k8qJ8IUACHSrkAr7MD/TmxBUbz46Zih2nN2WaqIWxBfS6w7WCBidM5MXZKBA==" length="9102674" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b45/cooViewer-2.0b45.zip" sparkle:edSignature="HInxra3WuwgveoeKOvTL4Hs8/9k8qJ8IUACHSrkAr7MD/TmxBUbz46Zih2nN2WaqIWxBfS6w7WCBidM5MXZKBA==" length="9102674" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b44</title>
@@ -67,7 +67,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b44</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b44</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b44/cooViewer-2.0b44.zip" sparkle:edSignature="PhGOhhD4joc+QBP0mDwedLq1N1uTls7l9FBF/tfLaprInvhpgbge3Q4ZF36JR0pQIjhn02pvyyaPhqD4PhP2AA==" length="8377626" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b44/cooViewer-2.0b44.zip" sparkle:edSignature="PhGOhhD4joc+QBP0mDwedLq1N1uTls7l9FBF/tfLaprInvhpgbge3Q4ZF36JR0pQIjhn02pvyyaPhqD4PhP2AA==" length="8377626" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b43</title>
@@ -77,7 +77,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b43</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b43</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b43/cooViewer-2.0b43.zip" sparkle:edSignature="U1Mi27PO4rfg8ZtqLvmOAhL9M+dURSebLPMLW9j5TsS7xZzyPl9oU67TAFJUy6/Y9k4J6sSOPNnjftBfPYrHDQ==" length="8940897" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b43/cooViewer-2.0b43.zip" sparkle:edSignature="U1Mi27PO4rfg8ZtqLvmOAhL9M+dURSebLPMLW9j5TsS7xZzyPl9oU67TAFJUy6/Y9k4J6sSOPNnjftBfPYrHDQ==" length="8940897" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b42</title>
@@ -87,7 +87,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b42</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b42</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b42/cooViewer-2.0b42.zip" sparkle:edSignature="0gmvnLxZZ+/sLtXJ9wip0+kQpiqexd8l4jpLw8y7N/z0CYMgKeL+tI4exy4bCP9dHw7omk47InPDThcZKbnZAA==" length="8667683" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b42/cooViewer-2.0b42.zip" sparkle:edSignature="0gmvnLxZZ+/sLtXJ9wip0+kQpiqexd8l4jpLw8y7N/z0CYMgKeL+tI4exy4bCP9dHw7omk47InPDThcZKbnZAA==" length="8667683" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b41</title>
@@ -97,7 +97,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b41</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b41</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b41/cooViewer-2.0b41.zip" sparkle:edSignature="VTxXeHognzGyOlu++OpRL3mKi0KDt48kErnKZTsLT6uE1OAYKe1uqYFBSna01OrMr143q4w6O3gLy1C6EOERDA==" length="8618197" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b41/cooViewer-2.0b41.zip" sparkle:edSignature="VTxXeHognzGyOlu++OpRL3mKi0KDt48kErnKZTsLT6uE1OAYKe1uqYFBSna01OrMr143q4w6O3gLy1C6EOERDA==" length="8618197" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b40</title>
@@ -107,7 +107,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b40</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b40</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b40/cooViewer-2.0b40.zip" sparkle:edSignature="T5qotxdg6CZIsz60Pt/ClUG8UIcCpX7n6ufa2pM15TNfKkRaw+3GyRqwqNNhvHS/+GoyLHouqsIqrd+60zmFBg==" length="8317907" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b40/cooViewer-2.0b40.zip" sparkle:edSignature="T5qotxdg6CZIsz60Pt/ClUG8UIcCpX7n6ufa2pM15TNfKkRaw+3GyRqwqNNhvHS/+GoyLHouqsIqrd+60zmFBg==" length="8317907" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b39</title>
@@ -117,7 +117,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b39</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b39</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b39/cooViewer-2.0b39.zip" sparkle:edSignature="t8WKXMT+WaaSDZLgP5V9BOUX5NyAwRrs2+lTNVUprQvbtll18COfAy9urdyHdbrOrIHYI0ggqWe2DlAfgRKbDg==" length="8338862" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b39/cooViewer-2.0b39.zip" sparkle:edSignature="t8WKXMT+WaaSDZLgP5V9BOUX5NyAwRrs2+lTNVUprQvbtll18COfAy9urdyHdbrOrIHYI0ggqWe2DlAfgRKbDg==" length="8338862" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b38</title>
@@ -127,7 +127,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b38</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b38</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b38/cooViewer-2.0b38.zip" sparkle:edSignature="zExVbEKFSJKuHb4DRbaADxyfpeLRwKmzyKVX2Kl/yzc4CILcTzsTMCJihKYtgY+uOqdolZHEenSgdp5SooQSAw==" length="8334981" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b38/cooViewer-2.0b38.zip" sparkle:edSignature="zExVbEKFSJKuHb4DRbaADxyfpeLRwKmzyKVX2Kl/yzc4CILcTzsTMCJihKYtgY+uOqdolZHEenSgdp5SooQSAw==" length="8334981" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b37</title>
@@ -137,7 +137,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b37</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b37</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b37/cooViewer-2.0b37.zip" sparkle:edSignature="G5zWWlLI2ipaZppA9JtWMt4jzDNfswHM1jKXwj4vIFV+Iz/qigk0WbcieBkUCicmYbLEY2dZ34032R5tXvsrDw==" length="8300445" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b37/cooViewer-2.0b37.zip" sparkle:edSignature="G5zWWlLI2ipaZppA9JtWMt4jzDNfswHM1jKXwj4vIFV+Iz/qigk0WbcieBkUCicmYbLEY2dZ34032R5tXvsrDw==" length="8300445" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b36</title>
@@ -147,7 +147,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b36</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b36</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b36/cooViewer-2.0b36.zip" sparkle:edSignature="JIHNqT31bf7QUPsqcqiqFSokUtn6iuHYSH73MGJVN9kLwRXmA37wfEKQKNxBLgfOyG7pxj2L3lSfjrlHMEaPCA==" length="9331518" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b36/cooViewer-2.0b36.zip" sparkle:edSignature="JIHNqT31bf7QUPsqcqiqFSokUtn6iuHYSH73MGJVN9kLwRXmA37wfEKQKNxBLgfOyG7pxj2L3lSfjrlHMEaPCA==" length="9331518" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b35</title>
@@ -157,7 +157,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b35</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b35</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b35/cooViewer-2.0b35.zip" sparkle:edSignature="wKfbRbZBJHmyjJTb/CQTT1gIoNmk4Zqd6cMofraSwsEdeSJpOoYaTcO+bSmtkBJcDy1tP8dETWC6YcnJCEuQBg==" length="8946040" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b35/cooViewer-2.0b35.zip" sparkle:edSignature="wKfbRbZBJHmyjJTb/CQTT1gIoNmk4Zqd6cMofraSwsEdeSJpOoYaTcO+bSmtkBJcDy1tP8dETWC6YcnJCEuQBg==" length="8946040" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b34</title>
@@ -167,7 +167,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b34</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b34</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b34/cooViewer-2.0b34.zip" sparkle:edSignature="ZPe62bJvWnSCURPe/OLr4TaLZ1VobLDlypZedWX0NYXt9FYYKeOshKnckbVXCuqYCpIq9J72az1DpgSJcR+MDg==" length="8939024" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b34/cooViewer-2.0b34.zip" sparkle:edSignature="ZPe62bJvWnSCURPe/OLr4TaLZ1VobLDlypZedWX0NYXt9FYYKeOshKnckbVXCuqYCpIq9J72az1DpgSJcR+MDg==" length="8939024" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b33</title>
@@ -177,7 +177,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b33</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b33</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b33/cooViewer-2.0b33.zip" sparkle:edSignature="0d+Pm5GcuBUHMCNSaf3kyPDjExRK/YotgjH9Nu4sWZRGCrKU3Or0pz2QXjKVWMDKrHhAJDYNSjyuiKXGrVLUAg==" length="7247302" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b33/cooViewer-2.0b33.zip" sparkle:edSignature="0d+Pm5GcuBUHMCNSaf3kyPDjExRK/YotgjH9Nu4sWZRGCrKU3Or0pz2QXjKVWMDKrHhAJDYNSjyuiKXGrVLUAg==" length="7247302" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b32</title>
@@ -187,7 +187,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b32</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b32</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b32/cooViewer-2.0b32.zip" sparkle:edSignature="ZT4eltUJBKFVvq+s1P0GhO4APRwgP320mma8cBVQaAXNE1f1Rb0IkwZUwERrWB49TwC5IAWyPizTwd+Cg4zhCA==" length="7243745" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b32/cooViewer-2.0b32.zip" sparkle:edSignature="ZT4eltUJBKFVvq+s1P0GhO4APRwgP320mma8cBVQaAXNE1f1Rb0IkwZUwERrWB49TwC5IAWyPizTwd+Cg4zhCA==" length="7243745" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b31</title>
@@ -197,7 +197,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b31</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b31</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b31/cooViewer-2.0b31.zip" sparkle:edSignature="NZzEiRv5ljaJnGrNUCEl5y+SQOnKgt6YZZX9GhMcbISscWm73JWJcJUJADDqBu1D4C1MPsVLNQv5WZwiqDVvAw==" length="6790014" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b31/cooViewer-2.0b31.zip" sparkle:edSignature="NZzEiRv5ljaJnGrNUCEl5y+SQOnKgt6YZZX9GhMcbISscWm73JWJcJUJADDqBu1D4C1MPsVLNQv5WZwiqDVvAw==" length="6790014" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b30</title>
@@ -207,7 +207,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b30</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b30</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b30/cooViewer-2.0b30.zip" sparkle:edSignature="a83fmsmmIM3thIjbF7qbCkvVbMOg1E6VIFyg6YfGDNLxHUlEcDNh9/oDmDx/jJ/rbC1XiSgqsm1Alw4lYvzdCQ==" length="6783739" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b30/cooViewer-2.0b30.zip" sparkle:edSignature="a83fmsmmIM3thIjbF7qbCkvVbMOg1E6VIFyg6YfGDNLxHUlEcDNh9/oDmDx/jJ/rbC1XiSgqsm1Alw4lYvzdCQ==" length="6783739" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b29</title>
@@ -217,7 +217,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b29</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b29</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b29/cooViewer-2.0b29.zip" sparkle:edSignature="ZHiejlZ0Gvs/upiUhb/Xzwi9yl//YkGiuKZQ7UsM0slb6MrVYzGxSVrvcEWdlQrfdxByDkTgE4Ozv8U89bndCA==" length="6773672" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b29/cooViewer-2.0b29.zip" sparkle:edSignature="ZHiejlZ0Gvs/upiUhb/Xzwi9yl//YkGiuKZQ7UsM0slb6MrVYzGxSVrvcEWdlQrfdxByDkTgE4Ozv8U89bndCA==" length="6773672" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b28</title>
@@ -227,7 +227,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b28</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b28</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b28/cooViewer-2.0b28.zip" sparkle:edSignature="NFTevnyzb2PfraqwqEs9rLQf6YchNVZVcEO+E/BzYFYudT91mXsmsgWeQ9E1/77Q3nJzuNohk1HOnYoRgHEgAg==" length="6750539" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b28/cooViewer-2.0b28.zip" sparkle:edSignature="NFTevnyzb2PfraqwqEs9rLQf6YchNVZVcEO+E/BzYFYudT91mXsmsgWeQ9E1/77Q3nJzuNohk1HOnYoRgHEgAg==" length="6750539" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b27</title>
@@ -237,7 +237,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b27</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b27</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b27/cooViewer-2.0b27.zip" sparkle:edSignature="GY7ibSzH2q9JErTUSfQAwDEh1t8+AnzbHCNf3KnW1xOjChRvtWU9cphMvys8CSLdYh7RzZILzX92h2CW48c0Bg==" length="6693466" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b27/cooViewer-2.0b27.zip" sparkle:edSignature="GY7ibSzH2q9JErTUSfQAwDEh1t8+AnzbHCNf3KnW1xOjChRvtWU9cphMvys8CSLdYh7RzZILzX92h2CW48c0Bg==" length="6693466" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b26</title>
@@ -247,7 +247,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b26</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b26</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b26/cooViewer-2.0b26.zip" sparkle:edSignature="fnypwe6PohglYSYxFIBnEVnE1FPbZQCp7Vs6H97o16X5WyaZ1DqijnoTRNVqGezETf06W3nBAOXZA369ij3iAA==" length="6686631" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b26/cooViewer-2.0b26.zip" sparkle:edSignature="fnypwe6PohglYSYxFIBnEVnE1FPbZQCp7Vs6H97o16X5WyaZ1DqijnoTRNVqGezETf06W3nBAOXZA369ij3iAA==" length="6686631" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b25</title>
@@ -257,7 +257,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b25</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b25</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b25/cooViewer-2.0b25.zip" sparkle:edSignature="7yQ+qP0k7fosUwzbvULC9Smrv+KUFRUiwcaf0o4FsuDpvfzffDB4ZKYGc8fqBYjCBOCMvy6XDVYbX8DItQqfBQ==" length="6679951" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b25/cooViewer-2.0b25.zip" sparkle:edSignature="7yQ+qP0k7fosUwzbvULC9Smrv+KUFRUiwcaf0o4FsuDpvfzffDB4ZKYGc8fqBYjCBOCMvy6XDVYbX8DItQqfBQ==" length="6679951" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b24</title>
@@ -267,7 +267,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b24</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b24</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b24/cooViewer-2.0b24.zip" sparkle:edSignature="w1trNmHd6WhnKwl+tVjKD3UonBQ4c+VMwQ7YEINm8j2v5wolkjz+tJXVtFR+a7XVKr9XEAVPXZCUYmKhQuu6Dg==" length="6247422" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b24/cooViewer-2.0b24.zip" sparkle:edSignature="w1trNmHd6WhnKwl+tVjKD3UonBQ4c+VMwQ7YEINm8j2v5wolkjz+tJXVtFR+a7XVKr9XEAVPXZCUYmKhQuu6Dg==" length="6247422" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b23</title>
@@ -277,7 +277,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b23</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b23</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b23/cooViewer-2.0b23.zip" sparkle:edSignature="wL5+8s3bTy94Wn+LodVE+2gODdn2nZsVCCWLokrFhdneYTpQxTVzk2NMwzAJM4hNsO4QXOPVXRuAVFLn4m73BA==" length="6206343" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b23/cooViewer-2.0b23.zip" sparkle:edSignature="wL5+8s3bTy94Wn+LodVE+2gODdn2nZsVCCWLokrFhdneYTpQxTVzk2NMwzAJM4hNsO4QXOPVXRuAVFLn4m73BA==" length="6206343" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b22</title>
@@ -287,7 +287,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b22</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b22</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b22/cooViewer-2.0b22.zip" sparkle:edSignature="MdJXHxrD95NAdb2N09a+wxRxZffhguCjkSDLq9kyp8EYou/F2R8eJJLlcNjk/oXuKEbP9ir3eod57/KigifKAg==" length="5723477" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b22/cooViewer-2.0b22.zip" sparkle:edSignature="MdJXHxrD95NAdb2N09a+wxRxZffhguCjkSDLq9kyp8EYou/F2R8eJJLlcNjk/oXuKEbP9ir3eod57/KigifKAg==" length="5723477" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b21</title>
@@ -297,7 +297,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b21</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b21</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b21/cooViewer-2.0b21.zip" sparkle:edSignature="xsUrTNnGiXH45f49iG1+29WdNcOOckAZdEvoF32JhMvSizuGHPuhcreyF7bXzEVM3ILYv3fVNgrZ3UrNLv48DQ==" length="5708537" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b21/cooViewer-2.0b21.zip" sparkle:edSignature="xsUrTNnGiXH45f49iG1+29WdNcOOckAZdEvoF32JhMvSizuGHPuhcreyF7bXzEVM3ILYv3fVNgrZ3UrNLv48DQ==" length="5708537" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b20</title>
@@ -307,7 +307,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b20</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b20</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b20/cooViewer-2.0b20.zip" sparkle:edSignature="b/jeBdz7AQT+rEGPJ0y33tdne43s30riCac5X0vYOPE7WX/W0VtizS3k3D4J76NT16x396NPnMpCZ+qqxzNiAw==" length="5886415" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b20/cooViewer-2.0b20.zip" sparkle:edSignature="b/jeBdz7AQT+rEGPJ0y33tdne43s30riCac5X0vYOPE7WX/W0VtizS3k3D4J76NT16x396NPnMpCZ+qqxzNiAw==" length="5886415" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b19</title>
@@ -317,7 +317,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b19</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b19</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b19/cooViewer-2.0b19.zip" sparkle:edSignature="Bos3+bKiYLYl4983ziYDQEdXj4WzDdQJb5Eu4AYAmBlKp69ZR+ykI+tismiDa2JxMsuW6cex2X8iW6749eTRCg==" length="5696417" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b19/cooViewer-2.0b19.zip" sparkle:edSignature="Bos3+bKiYLYl4983ziYDQEdXj4WzDdQJb5Eu4AYAmBlKp69ZR+ykI+tismiDa2JxMsuW6cex2X8iW6749eTRCg==" length="5696417" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b18</title>
@@ -327,7 +327,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b18</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b18</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b18/cooViewer-2.0b18.zip" sparkle:edSignature="fPD1Sr/bksmIDm90z8yP8zwQYsFhECbcguPm3PcaYtWvWVtK5IYb5mcrWgcHvX752W4DoX3xr7Xfa0uIA+MZDg==" length="5696832" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b18/cooViewer-2.0b18.zip" sparkle:edSignature="fPD1Sr/bksmIDm90z8yP8zwQYsFhECbcguPm3PcaYtWvWVtK5IYb5mcrWgcHvX752W4DoX3xr7Xfa0uIA+MZDg==" length="5696832" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b17</title>
@@ -337,7 +337,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b17</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b17</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b17/cooViewer-2.0b17.zip" sparkle:edSignature="whEutXBhNLDarEW3Lc90UVM+C6IH5kSytTp8ObKzEg1vYnX3PN8FOAZJRGhGXf128X3UgpormX3iB1i0Qd3SBQ==" length="5694883" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b17/cooViewer-2.0b17.zip" sparkle:edSignature="whEutXBhNLDarEW3Lc90UVM+C6IH5kSytTp8ObKzEg1vYnX3PN8FOAZJRGhGXf128X3UgpormX3iB1i0Qd3SBQ==" length="5694883" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b16</title>
@@ -347,7 +347,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b16</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b16</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b16/cooViewer-2.0b16.zip" sparkle:edSignature="HRwu8XIx61QYJRV8BkjqK8wQ1mbEKMfRWQL3ANiBoZr3Xft/HlG2BQNs2gPC6a56dMn78Hm8sS7HyPHIPt+DAQ==" length="5612561" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b16/cooViewer-2.0b16.zip" sparkle:edSignature="HRwu8XIx61QYJRV8BkjqK8wQ1mbEKMfRWQL3ANiBoZr3Xft/HlG2BQNs2gPC6a56dMn78Hm8sS7HyPHIPt+DAQ==" length="5612561" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b15</title>
@@ -357,7 +357,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b15</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b15</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b15/cooViewer-2.0b15.zip" sparkle:edSignature="igqM2hyOCyCxJoWx4M4MF148dfkkUgmNgYFnWkQMNxDzvZsoCM5IcksgzYGcpgxBZxs2ReLKDi6HXfAR8+X3BA==" length="5610800" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b15/cooViewer-2.0b15.zip" sparkle:edSignature="igqM2hyOCyCxJoWx4M4MF148dfkkUgmNgYFnWkQMNxDzvZsoCM5IcksgzYGcpgxBZxs2ReLKDi6HXfAR8+X3BA==" length="5610800" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b14</title>
@@ -367,7 +367,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b14</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b14</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b14/cooViewer-2.0b14.zip" sparkle:edSignature="404qdfQThPrceICkr27z0JiSHzQKGUeBp3vT93qRZAHcitI7Uc23iiWinLdLtrVN2qhGIQwmeZUFvsgHAm+eDA==" length="5519130" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b14/cooViewer-2.0b14.zip" sparkle:edSignature="404qdfQThPrceICkr27z0JiSHzQKGUeBp3vT93qRZAHcitI7Uc23iiWinLdLtrVN2qhGIQwmeZUFvsgHAm+eDA==" length="5519130" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b13</title>
@@ -377,7 +377,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b13</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b13</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b13/cooViewer-2.0b13.zip" sparkle:edSignature="jFkuLGZuFFiUHW78jhExwVGZ+Kd3+GCv6oCFMmphHpgZzgArNmCDsY6rAwTi7O2+oBFLs6BiM7RxW0BJGKOxDA==" length="5516493" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b13/cooViewer-2.0b13.zip" sparkle:edSignature="jFkuLGZuFFiUHW78jhExwVGZ+Kd3+GCv6oCFMmphHpgZzgArNmCDsY6rAwTi7O2+oBFLs6BiM7RxW0BJGKOxDA==" length="5516493" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b12</title>
@@ -387,7 +387,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b12</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b12</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b12/cooViewer-2.0b12.zip" sparkle:edSignature="sKqH45WB5ap1BmR+j+dY9/hYFfQz3yTs6DcrN4Yc8c/K97jxA1aBf2Dj9uRvNl4GujTvinPfQXAWV0Tg8+QSBQ==" length="5512485" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b12/cooViewer-2.0b12.zip" sparkle:edSignature="sKqH45WB5ap1BmR+j+dY9/hYFfQz3yTs6DcrN4Yc8c/K97jxA1aBf2Dj9uRvNl4GujTvinPfQXAWV0Tg8+QSBQ==" length="5512485" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b11</title>
@@ -397,7 +397,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b11</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b11</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b11/cooViewer-2.0b11.zip" sparkle:edSignature="SX5wfkPmkhGi09Zq9wSeVlXyqJ2ly/yV0R+fQObKzkT6wtFLjsiLeDZ+Ran3qM+2bbpXJ6VdUZ+84gAnVIv1Ag==" length="5510757" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b11/cooViewer-2.0b11.zip" sparkle:edSignature="SX5wfkPmkhGi09Zq9wSeVlXyqJ2ly/yV0R+fQObKzkT6wtFLjsiLeDZ+Ran3qM+2bbpXJ6VdUZ+84gAnVIv1Ag==" length="5510757" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b10</title>
@@ -407,7 +407,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b10</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b10</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b10/cooViewer-2.0b10.zip" sparkle:edSignature="jd0UWB1nKoFph4lN5tx7kljYQQd7nqGD+6aXs6yARr/5VeDg6n9dQHQ0W4CxSeKDevs6kVOpTI2PL4gzZNgdAw==" length="5502592" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b10/cooViewer-2.0b10.zip" sparkle:edSignature="jd0UWB1nKoFph4lN5tx7kljYQQd7nqGD+6aXs6yARr/5VeDg6n9dQHQ0W4CxSeKDevs6kVOpTI2PL4gzZNgdAw==" length="5502592" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b9</title>
@@ -417,7 +417,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b9</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b9</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b9/cooViewer-2.0b9.zip" sparkle:edSignature="IbmtvA/HhyAk214nHrQusbban+fQ+7ek0uuqHUhXGDN/AnFfgAJ7M98I0GHZIa4bEG3O5hxDeOyVMfd68TVQAg==" length="5484776" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b9/cooViewer-2.0b9.zip" sparkle:edSignature="IbmtvA/HhyAk214nHrQusbban+fQ+7ek0uuqHUhXGDN/AnFfgAJ7M98I0GHZIa4bEG3O5hxDeOyVMfd68TVQAg==" length="5484776" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b8</title>
@@ -427,7 +427,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b8</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b8</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b8/cooViewer-2.0b8.zip" sparkle:edSignature="/1h4/JIqf7k6S0ZUJzuIlNQ/hQKKFP10XhyK4ZkjT9pwKT0c0EyO82wQKG+0jU7qb8HlT1OHUF2xhZMdKm95Bg==" length="5470505" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b8/cooViewer-2.0b8.zip" sparkle:edSignature="/1h4/JIqf7k6S0ZUJzuIlNQ/hQKKFP10XhyK4ZkjT9pwKT0c0EyO82wQKG+0jU7qb8HlT1OHUF2xhZMdKm95Bg==" length="5470505" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b7</title>
@@ -437,7 +437,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b7</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b7</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b7/cooViewer-2.0b7.zip" sparkle:edSignature="8ISo96m7bAV3YXqQhCLRMp7Zmteqp7MTK8Z1iAzMeyhHe7HcmfgyFPdNB0sfQv1Fcs7JKWXkFu+GL87ZUlKCDQ==" length="5406805" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b7/cooViewer-2.0b7.zip" sparkle:edSignature="8ISo96m7bAV3YXqQhCLRMp7Zmteqp7MTK8Z1iAzMeyhHe7HcmfgyFPdNB0sfQv1Fcs7JKWXkFu+GL87ZUlKCDQ==" length="5406805" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b6</title>
@@ -447,7 +447,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b6</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b6</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b6/cooViewer-2.0b6.zip" sparkle:edSignature="7PUweJo+Ts3XxDyICjzT8Jr7VxB6vrlET8vnmFGnBGke3pLwDtaBLyE5ZSlj26s2Sk+/X2FaRNUFrmHuhi6kDw==" length="5405426" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b6/cooViewer-2.0b6.zip" sparkle:edSignature="7PUweJo+Ts3XxDyICjzT8Jr7VxB6vrlET8vnmFGnBGke3pLwDtaBLyE5ZSlj26s2Sk+/X2FaRNUFrmHuhi6kDw==" length="5405426" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b5</title>
@@ -457,7 +457,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b5</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b5</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b5/cooViewer-2.0b5.zip" sparkle:edSignature="RLtXVGOo/7CGSaJs/ITLEGnkB7bZ9PDgcqijtgDXX1vGoComh/XPsejli8WNBLJgx1n07lKslLE7dcfnU824Aw==" length="5266528" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b5/cooViewer-2.0b5.zip" sparkle:edSignature="RLtXVGOo/7CGSaJs/ITLEGnkB7bZ9PDgcqijtgDXX1vGoComh/XPsejli8WNBLJgx1n07lKslLE7dcfnU824Aw==" length="5266528" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b4</title>
@@ -467,7 +467,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b4</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b4</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b4/cooViewer-2.0b4.zip" sparkle:edSignature="IEHMLiyH1hhFHIaTBkeu4gGzyBmDxz6pm/+Cz0izG0EtiNJCeCgs3JoHG3mLHNlC/0UfYgFjc7e/ANcL1j69BA==" length="5231018" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b4/cooViewer-2.0b4.zip" sparkle:edSignature="IEHMLiyH1hhFHIaTBkeu4gGzyBmDxz6pm/+Cz0izG0EtiNJCeCgs3JoHG3mLHNlC/0UfYgFjc7e/ANcL1j69BA==" length="5231018" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b3</title>
@@ -477,7 +477,7 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b3</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b3</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b3/cooViewer-2.0b3.zip" sparkle:edSignature="OqvaS9NpxJIuQU4aCBZmDsQgXXESzoDQDVgZC15cgs5DjTOfTb6F+3OdCZwBDijbcJaNy6C1JCBoRwuSCWpVAg==" length="5200270" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b3/cooViewer-2.0b3.zip" sparkle:edSignature="OqvaS9NpxJIuQU4aCBZmDsQgXXESzoDQDVgZC15cgs5DjTOfTb6F+3OdCZwBDijbcJaNy6C1JCBoRwuSCWpVAg==" length="5200270" type="application/octet-stream"></enclosure>
         </item>
         <item>
             <title>cooViewer 2.0b2</title>
@@ -487,7 +487,10 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b2</link>
             <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b2</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b2/cooViewer-2.0b2.zip" sparkle:edSignature="W3NRJNK+4ghr7ptYyP407kbsDo1LhchH4bzNkjKuXlJ7i0p3yxvAmrTCSunRuxVFG8D4Zacvezb2A2HQLLSaAw==" length="4193436" type="application/octet-stream"/>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b2/cooViewer-2.0b2.zip" sparkle:edSignature="W3NRJNK+4ghr7ptYyP407kbsDo1LhchH4bzNkjKuXlJ7i0p3yxvAmrTCSunRuxVFG8D4Zacvezb2A2HQLLSaAw==" length="4193436" type="application/octet-stream"></enclosure>
         </item>
     </channel>
-</rss>
+</rss><!-- sparkle-signatures:
+edSignature: vegdGcy2aiathgCL0zUZiERqwqR6Kh98LqWzuSCdlmIPodIJqkBPXREnxFmxZbEozdfvPUOzSysN7KdKMAK+AA==
+length: 40952
+-->

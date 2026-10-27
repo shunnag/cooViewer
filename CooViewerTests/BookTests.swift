@@ -535,6 +535,18 @@ final class BookTests: XCTestCase {
         return book
     }
 
+    func testChapterMarksLimitKeepsAllLayoutHints() async throws {
+        let stub = StubSource(sizes: Array(repeating: portrait, count: 10_000))
+        var info = ComicInfo()
+        info.pages = (0..<10_000).map { .init(image: $0, doublePage: true, bookmark: "章\($0)") }
+        stub.comicInfoStub = info
+        let book = try await Book.open(source: stub)
+        await book.loadComicInfoState(useLayoutHints: true)
+        XCTAssertEqual(book.chapterMarks.count, 5_000)
+        XCTAssertEqual(book.chapterMarks.last?.page, 4_999)
+        XCTAssertEqual(book.comicSingleIndices.count, 10_000)
+    }
+
     func testChapterMarksMapClampAndSkip() async throws {
         // ComicInfo の章を実ページへ写像。空名は除外、範囲外(image>=pageCount)は捨てる(4fi.6)
         let stub = StubSource(sizes: Array(repeating: portrait, count: 4))
