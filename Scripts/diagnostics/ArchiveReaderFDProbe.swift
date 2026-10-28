@@ -18,12 +18,13 @@ func fdCount() -> Int {
         precondition(setrlimit(RLIMIT_NOFILE, &limit) == 0)
         defer { limit.rlim_cur = original; setrlimit(RLIMIT_NOFILE, &limit) }
         var readers: [ArchiveReader] = []
+        let options = ReaderOptions(appleDoublePolicy: .expose)
         print("before",fdCount())
         for i in 0..<500 {
             do {
                 let reader: ArchiveReader
-                if mode == "memory" { reader = try ArchiveReader.open(data: data) }
-                else { reader = try ArchiveReader.open(url: url) }
+                if mode == "memory" { reader = try ArchiveReader.open(data: data, options: options) }
+                else { reader = try ArchiveReader.open(url: url, options: options) }
                 readers.append(reader)
                 if (i+1)%50 == 0 { print("retained",i+1,"fds",fdCount()) }
             } catch {
