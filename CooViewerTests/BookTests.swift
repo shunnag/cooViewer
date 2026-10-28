@@ -21,6 +21,9 @@ final class StubSource: BookSource, @unchecked Sendable {
     /// サイズ索引(fast path)を通す(cooViewer-utz の検証用)
     var providesImageSize = false
 
+    /// 合流する要求が揃うまでデコードを止め、完了時の公開順を検証する。
+    var imageBlocker: (@Sendable (Int) async -> Void)?
+
     /// 実デコード(image(for:))が呼ばれたページ id の記録(並列経路もあるので
     /// ロックで保護)。同期の見開き決定が余分なデコードをしないか検証する用
     private let decodeLock = NSLock()
@@ -77,6 +80,7 @@ final class StubSource: BookSource, @unchecked Sendable {
     func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         let display = PageRequestIntent.isDisplay
         decodeLock.withLock { decodedLog.append(entry.id); intentLog.append(display) }
+        await imageBlocker?(entry.id)
         let size = sizes[entry.id]
         return try ImageDecoding.decode(
             TestFixtures.pngData(width: Int(size.width), height: Int(size.height)),
@@ -788,13 +792,17 @@ final class BookTests: XCTestCase {
     func testPredictedAdjacentSpreadsForward() async throws {
         let book = try await makeBook(
             [portrait, portrait, portrait, portrait, portrait, portrait])
+        // 未取得の予測は自動先読みと競合させず、下の明示デコードだけで索引を埋める。
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
         _ = await book.currentSpread()               // (0,1) 表示
         // サイズ未取得のうちは単ページと保守的に予測する
         var predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
         XCTAssertEqual(predicted, [[2], [3], [4], [5]])
         // デコードでサイズ索引が埋まればペアと予測する
         for index in 2...5 {
-            _ = await book.image(at: index)
+            let image = await book.image(at: index)
+            XCTAssertNotNil(image)
         }
         predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
         XCTAssertEqual(predicted, [[2, 3], [4, 5]])
@@ -806,6 +814,50 @@ final class BookTests: XCTestCase {
         _ = await book.currentSpread()
         predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
         XCTAssertEqual(predicted, [])
+    }
+
+    /// 先読みへ合流した側も、画像取得が戻った時点でキャッシュと寸法索引を参照できる。
+    func testJoinedImageLoadsPublishSizeBeforeReturning() async throws {
+        // 待機者の再開順は未規定なので、複数の合流要求を有限回繰り返す(設計書 §7.3)。
+        for iteration in 0..<32 {
+            let started = expectation(description: "復号開始 \(iteration)")
+            let joined = expectation(description: "表示要求の合流 \(iteration)")
+            joined.expectedFulfillmentCount = 8
+            let gate = AssemblyTestGate()
+            let source = StubSource(sizes: Array(repeating: portrait, count: 6))
+            source.imageBlocker = {
+                if $0 == 5 { started.fulfill(); await gate.wait() }
+            }
+            let book = try await Book.open(source: source)
+            book.prefetchAhead = 0
+            book.prefetchBehind = 0
+            _ = await book.currentSpread()
+            for index in 2...4 { _ = await book.image(at: index) }
+
+            let prefetch = Task {
+                await PageRequestIntent.$isPrefetch.withValue(true) { await book.image(at: 5) }
+            }
+            await fulfillment(of: [started], timeout: 3)
+            let displays = (0..<8).map { _ in
+                Task { @MainActor in
+                    // 同じ MainActor 上で直ちに image(at:) へ入り、復号の完了待ちへ合流する。
+                    joined.fulfill()
+                    let image = await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 5) }
+                    XCTAssertNotNil(image)
+                    // 次の await で最初の呼び出しへ実行権を渡す前に公開済みか確認する。
+                    XCTAssertEqual(book.pageCacheStats().count, 6, "画像取得の完了前にキャッシュへ公開する")
+                    XCTAssertEqual(book.inFlightLoadCount, 0)
+                    let predicted = await book.predictedAdjacentSpreads(forward: true, maxPages: 5)
+                    XCTAssertEqual(predicted, [[2, 3], [4, 5]])
+                }
+            }
+            await fulfillment(of: [joined], timeout: 3)
+            await gate.open()
+            for display in displays { await display.value }
+            let image = await prefetch.value
+            XCTAssertNotNil(image)
+            XCTAssertEqual(source.decodedIDs.sorted(), Array(0...5), "合流要求は重複デコードしない")
+        }
     }
 
     /// 前方向のスプレッド列予測: ペア判定は movePrevious と同じ規則、先頭では空
