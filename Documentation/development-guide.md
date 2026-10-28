@@ -269,6 +269,13 @@ stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-pro
 GitHub Actions はコミット SHA で固定し、Dependabot で月 1 回、更新を 1 つの PR にまとめて追跡します。
 `brew install` は従来どおりバージョンを固定しない方針です。
 
+CI の KaitoKit / Washi は `.github/workflows/ci.yml` のジョブ環境変数
+`KAITOKIT_REF` / `WASHI_REF` で出荷版に固定します(2.0b51 は `v0.17.0` / `1.25.0`)。
+タグ・ブランチ・完全なコミット SHA を指定でき、取得後のコミットをログに残します。
+未リリースの兄弟変更が必要な PR では該当 SHA を指定します。cooViewer が別の版を同梱する際は
+必ずこの参照も更新してください。ローカルの兄弟チェックアウトと CI で共有する版の単一の正は
+まだ無いため、リリース前に両者のコミットを照合します。
+
 - ロジック(ソート・見開き判定・バインディング・レイアウト・永続化・検索
   など)には必ず CooViewerTests のユニットテストを付ける(設計書 §7.6)。
 - テスト実行は XCTest ホストとしてアプリを起動するが、`AutomatedRun.isXCTest`
@@ -409,6 +416,9 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 ## 4. リリース手順(2.0b41 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
 
 1. pbxproj の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` を bump(各 4 箇所)。
+   同梱する KaitoKit / Washi の版を変更する場合は、CI の `KAITOKIT_REF` / `WASHI_REF` も
+   更新する(§3)。ローカルの兄弟チェックアウトと共有する版の単一の正はまだ無いため、
+   CI の取得コミットと出荷用チェックアウトのコミットが一致することを確認する。
 2. ブランチをコミット・push → `master` 向けの PR をマージ。
 3. `./Scripts/sign-sparkle-nested.sh`(Sparkle 内部の実行体を Developer ID +
    timestamp + hardened runtime で再署名。これを飛ばすと**公証が Invalid**)。

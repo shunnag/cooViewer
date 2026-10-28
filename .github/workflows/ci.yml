@@ -11,8 +11,8 @@ on:
   push:
     branches: [master]
   pull_request:
-  # KaitoKit と Washi は main を固定せずに取得するため、上流の変更による破損を
-  # cooViewer への push を待たずに検出できるよう、手動と定期でも実行する。
+  # 固定した依存版でもランナーやツールチェーンの更新による破損を検出するため、
+  # 手動と定期でも実行する。
   workflow_dispatch:
   schedule:
     - cron: '17 21 * * 1'
@@ -24,6 +24,9 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
+    env:
+      KAITOKIT_REF: v0.17.0
+      WASHI_REF: 1.25.0
     strategy:
       fail-fast: false
       matrix:
@@ -42,10 +45,18 @@ jobs:
             echo "::warning::appcast.xml is unsigned; sign it before releasing signed-feed clients."
           fi
 
-      - name: Clone KaitoKit and Washi
+      - name: Fetch pinned KaitoKit and Washi
         run: |
-          git clone --depth 1 --branch main https://github.com/shunnag/KaitoKit.git ../KaitoKit
-          git clone --depth 1 --branch main https://github.com/shunnag/Washi.git ../Washi
+          checkout_ref() {
+            local name="$1" ref="$2"
+            git init "../$name"
+            git -C "../$name" remote add origin "https://github.com/shunnag/$name.git"
+            git -C "../$name" fetch --depth 1 origin "$ref"
+            git -C "../$name" checkout --detach FETCH_HEAD
+            echo "$name ($ref): $(git -C "../$name" rev-parse HEAD)"
+          }
+          checkout_ref KaitoKit "$KAITOKIT_REF"
+          checkout_ref Washi "$WASHI_REF"
 
       - name: Log toolchain versions
         run: |
