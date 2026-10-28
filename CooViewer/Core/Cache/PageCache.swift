@@ -9,9 +9,14 @@ import Foundation
 /// 取得・失効・読み込み登録の間に await を挟まず、設定変更との競合を防ぐ(設計書 §7.3)。
 @MainActor
 final class PageCache {
-    private var storage: [Int: CGImage] = [:]
-    private var order: [Int] = []  // 末尾が最新(MRU)
-    private var costs: [Int: Int] = [:]
+    /// 表示先が異なる縮小復号結果を混ぜない。未指定は表示非依存の画像用(設計書 §5)。
+    private struct Key: Hashable {
+        let id: Int
+        let colorSpaceIdentity: String
+    }
+    private var storage: [Key: CGImage] = [:]
+    private var order: [Key] = []  // 末尾が最新(MRU)
+    private var costs: [Key: Int] = [:]
     private var totalCost = 0
     /// 設定上の上限(高度設定の明示値はここに入る)。圧迫中もこれは変えない
     private(set) var configuredByteLimit: Int
@@ -52,7 +57,8 @@ final class PageCache {
         if level != .normal { evictIfNeeded() }
     }
 
-    func image(for id: Int) -> CGImage? {
+    func image(for id: Int, colorSpaceIdentity: String = "source") -> CGImage? {
+        let id = Key(id: id, colorSpaceIdentity: colorSpaceIdentity)
         guard let image = storage[id] else { return nil }
         // ヒット時は MRU へ移動(仕様書 §4.5.1)
         if let index = order.firstIndex(of: id) {
@@ -62,7 +68,8 @@ final class PageCache {
         return image
     }
 
-    func insert(_ image: CGImage, for id: Int) {
+    func insert(_ image: CGImage, for id: Int, colorSpaceIdentity: String = "source") {
+        let id = Key(id: id, colorSpaceIdentity: colorSpaceIdentity)
         removeEntry(id)
         let cost = image.bytesPerRow * image.height
         storage[id] = image
@@ -82,7 +89,7 @@ final class PageCache {
     var count: Int { storage.count }
     var currentCost: Int { totalCost }
 
-    private func removeEntry(_ id: Int) {
+    private func removeEntry(_ id: Key) {
         guard storage[id] != nil else { return }
         storage.removeValue(forKey: id)
         totalCost -= costs.removeValue(forKey: id) ?? 0

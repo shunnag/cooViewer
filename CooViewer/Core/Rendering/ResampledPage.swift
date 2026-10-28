@@ -11,4 +11,5 @@ struct ResampledPage {
     let size: CGSize
     let image: CGImage
     let processing: ImageProcessingSettings
+    var colorTarget: DisplayColorTarget? = nil
 }
