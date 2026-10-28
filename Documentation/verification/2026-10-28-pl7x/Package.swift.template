@@ -1,0 +1,5 @@
+// swift-tools-version:6.0
+import PackageDescription
+let package = Package(name: "pl7x", platforms: [.macOS("26.0")],
+  dependencies: [.package(path: "<KaitoKit の worktree>")],
+  targets: [.executableTarget(name: "pl7x", dependencies: [.product(name: "KaitoKit", package: "kaitokit")])])
