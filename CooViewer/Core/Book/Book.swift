@@ -307,8 +307,10 @@ final class Book {
         // 巻き込まないように独立タスクで走らせる
         let source = source
         let cap = displayPixelCap
+        inFlightToken &+= 1
+        let token = inFlightToken
         let task = Task<ImageLoadResult, Never>.detached(priority: .userInitiated) {
-            await PageRequestIntent.$isDisplay.withValue(display) {
+            let result = await PageRequestIntent.$isDisplay.withValue(display) {
                 await PageRequestIntent.$isPrefetch.withValue(prefetch) {
                     do {
                         let image = try await source.image(for: entry, maxPixelSize: cap)
@@ -320,16 +322,19 @@ final class Book {
                     }
                 }
             }
+            // 合流側も同じ完了を待つため、画像と寸法を公開してから結果を返す(設計書 §7.3)。
+            return await self.completeImageLoad(result, for: key, token: token)
         }
-        inFlightToken &+= 1
-        let token = inFlightToken
         inFlightLoads[key] = (token, prefetch, task)
-        let image = await task.value.image
+        return await task.value.image
+    }
+
+    private func completeImageLoad(_ result: ImageLoadResult, for key: Int, token: Int) -> ImageLoadResult {
         // 上限の値が一周しても旧要求は復活させない。失効と登録を同じ
         // MainActor で完結させ、古い小画像が新しい大画像を上書きするのを防ぐ。
-        guard inFlightLoads[key]?.token == token else { return image }
+        guard inFlightLoads[key]?.token == token else { return result }
         inFlightLoads[key] = nil
-        if let image {
+        if let image = result.image {
             // 上限を下げただけなら大画像を活かす。上げた場合は上の世代照合で除外される。
             cache.insert(image, for: key)
             if pageSizeCache[key] == nil {
@@ -337,7 +342,7 @@ final class Book {
                 pageSizeCache[key] = CGSize(width: image.width, height: image.height)
             }
         }
-        return image
+        return result
     }
 
     /// 原寸表示・書き出し用: キャッシュと表示上限を介さずフル解像度でデコードする。
