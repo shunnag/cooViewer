@@ -40,7 +40,8 @@ enum ImageDecoding {
 
     /// data をデコードする。maxPixelSize を指定すると長辺がその値以下になるよう
     /// 縮小した画像を返す(EXIF の回転は適用済み)。
-    static func decode(_ data: Data, maxPixelSize: Int? = nil) throws -> CGImage {
+    static func decode(_ data: Data, maxPixelSize: Int? = nil,
+                       displayTarget: DisplayColorTarget? = nil) throws -> CGImage {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             return try decodeWithAppKit(data, maxPixelSize: maxPixelSize)
         }
@@ -79,6 +80,44 @@ enum ImageDecoding {
                 return hdr
             }
         }
+        // 設計書 §5: キャップ近傍では全体デコード、大幅縮小 JPEG は縮小復号を使う。
+        if let cap = maxPixelSize {
+            guard cap > 0 else { throw BookSourceError.pageLoadFailed("invalid pixel cap") }
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+            let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+            let orientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+            let depth = (properties?[kCGImagePropertyDepth] as? NSNumber)?.intValue ?? 8
+            let path = cappedPath(width: width, height: height, cap: cap,
+                                  isJPEG: CGImageSourceGetType(source) == "public.jpeg" as CFString,
+                                  bitsPerComponent: depth)
+            if path != .thumbnail {
+                var options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
+                if case .subsampled(let factor) = path {
+                    options[kCGImageSourceSubsampleFactor] = factor
+                }
+                if let image = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) {
+                    let swapped = (5...8).contains(orientation)
+                    let w = swapped ? image.height : image.width
+                    let h = swapped ? image.width : image.height
+                    if let size = cappedDimensions(width: w, height: h, cap: cap) {
+                        if size.width == w, size.height == h, orientation == 1 {
+                            if let displayTarget { return displayTarget.converted(image) ?? image }
+                            return image
+                        }
+                        // 設計書 §5: 表示先なしの灰色＋透明度も RGBA で保ち、サムネイルを黒くしない。
+                        let sourceSpace = image.colorSpace
+                        let fallbackSpace = (sourceSpace?.model == .rgb || DisplayColorTarget.isOpaqueGray(image))
+                            ? sourceSpace : nil
+                        let space = displayTarget?.space(for: image) ?? fallbackSpace
+                            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+                        if let result = DisplayColorTarget.draw(image,
+                            width: size.width, height: size.height, space: space,
+                            orientation: orientation) { return result }
+                    }
+                }
+            }
+        }
         if let maxPixelSize {
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -89,7 +128,7 @@ enum ImageDecoding {
             guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
                 return try decodeWithAppKit(data, maxPixelSize: maxPixelSize)
             }
-            return image
+            return displayTarget?.converted(image) ?? image
         }
         let options: [CFString: Any] = [
             kCGImageSourceShouldCacheImmediately: true,
@@ -97,7 +136,40 @@ enum ImageDecoding {
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else {
             return try decodeWithAppKit(data, maxPixelSize: maxPixelSize)
         }
-        return image
+        return displayTarget?.converted(image) ?? image
+    }
+
+    /// 設計書 §5: 長辺は整数の cap に固定し、短辺だけを四捨五入して 1px 以上に保つ。
+    static func cappedDimensions(width: Int, height: Int, cap: Int) -> (width: Int, height: Int)? {
+        guard width > 0, height > 0, cap > 0 else { return nil }
+        let long = max(width, height)
+        guard long > cap else { return (width, height) }
+        let scaled = (Double(min(width, height)) / Double(long) * Double(cap)).rounded()
+        guard let short = Int(exactly: scaled) else { return nil }
+        return width >= height ? (cap, max(1, min(cap, short))) : (max(1, min(cap, short)), cap)
+    }
+
+    /// 出力は必ずキャップ内。全体復号の一時確保にも既存の安全上限を適用する(設計書 §5)。
+    enum CappedPath: Equatable {
+        case full
+        case subsampled(Int)
+        case thumbnail
+    }
+
+    static func cappedPath(width: Int, height: Int, cap: Int, isJPEG: Bool,
+                           bitsPerComponent: Int = 8) -> CappedPath {
+        // 設計書 §5: 高ビット深度の一時確保と HDR の選択は従来の経路を維持する。
+        guard width > 0, height > 0, cap > 0,
+              bitsPerComponent <= 8 else { return .thumbnail }
+        let ratio = Double(max(width, height)) / Double(cap)
+        if ratio <= 1.1, BitmapDimensions(width: width, height: height) != nil { return .full }
+        if isJPEG, ratio >= 2 {
+            let factor = ratio >= 8 ? 8 : (ratio >= 4 ? 4 : 2)
+            if BitmapDimensions(width: max(1, width / factor), height: max(1, height / factor)) != nil {
+                return .subsampled(factor)
+            }
+        }
+        return .thumbnail
     }
 
     /// ImageIO が扱えない形式(SVG 等のベクトル画像)を NSImage で

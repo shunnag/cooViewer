@@ -20,7 +20,8 @@ final class LanczosDownscaler {
     }
 
     /// image を target(ピクセル)へ縮小する。縮小でない場合や失敗時は nil。
-    func downscale(_ image: CGImage, to target: CGSize) -> CGImage? {
+    func downscale(_ image: CGImage, to target: CGSize, displayTarget: DisplayColorTarget? = nil,
+                   outputColorSpace: CGColorSpace? = nil) -> CGImage? {
         guard let size = BitmapDimensions(target) else { return nil }
         let outWidth = size.width
         let outHeight = size.height
@@ -28,9 +29,10 @@ final class LanczosDownscaler {
               outWidth < image.width || outHeight < image.height else { return nil }
         guard FileDescriptorHeadroom.isAvailable() else { return nil }
 
-        // 色空間は cgResample と同じ規則(RGB 以外は sRGB に変換)
+        // 設計書 §5: 表示先への変換は GPU の最終出力で行い、合成時の変換を避ける。
         let sourceSpace = image.colorSpace
-        let space = (sourceSpace?.model == .rgb ? sourceSpace : nil)
+        let space = outputColorSpace ?? displayTarget?.space(for: image)
+            ?? (sourceSpace?.model == .rgb ? sourceSpace : nil)
             ?? CGColorSpace(name: CGColorSpace.sRGB)!
 
         let filter = CIFilter.lanczosScaleTransform()

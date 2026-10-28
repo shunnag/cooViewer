@@ -18,7 +18,8 @@ import UniformTypeIdentifiers
 ///
 /// 処理が重いため結果は HEIC でディスクキャッシュし
 /// (Caches/jp.coo.cooViewer/SuperRes/)、サムネイルと同じ保持日数で
-/// 起動時にトリムする。未導入・失敗・元画像が大きすぎる場合は nil を
+/// 起動時にトリムし、書き込み時にも 2GiB の容量 LRU を適用する(設計書 §5)。
+/// 未導入・失敗・元画像が大きすぎる場合は nil を
 /// 返し、呼び出し側(ImageResampler)が「強」相当へフォールバックする。
 actor MLSuperResolver {
     static let shared = MLSuperResolver()
@@ -344,6 +345,7 @@ actor MLSuperResolver {
     /// nil なら従来どおり平文 HEIC を読む(非暗号化本)。
     private static func readDiskCache(for key: String,
                                      encryptionKey: SymmetricKey?) -> CGImage? {
+        guard prepareDiskCache(at: cacheDirectory) else { return nil }
         let url = cacheFileURL(for: key)
         // 未キャッシュは正常系: 先に存在確認しないと ImageIO が
         // 「can't open (fileExists == false)」をコンソールへ吐いて紛らわしい
@@ -375,8 +377,8 @@ actor MLSuperResolver {
     /// (平文 HEIC をディスクに一切残さない)。nil なら従来どおり平文で書く。
     private static func writeDiskCache(_ image: CGImage, for key: String,
                                       encryptionKey: SymmetricKey?) {
-        try? FileManager.default.createDirectory(
-            at: cacheDirectory, withIntermediateDirectories: true)
+        guard prepareDiskCache(at: cacheDirectory) else { return }
+        defer { trimDiskCache(at: cacheDirectory) }
         let url = cacheFileURL(for: key)
         let options = [kCGImageDestinationLossyCompressionQuality: 0.9]
             as CFDictionary
@@ -403,19 +405,68 @@ actor MLSuperResolver {
         }
     }
 
-    /// 古い超解像キャッシュの回収(起動時。サムネイルと同じ保持日数)
-    nonisolated static func trimDiskCache(olderThanDays days: Int) {
-        let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
-        guard let children = try? FileManager.default.contentsOfDirectory(
-            at: cacheDirectory,
-            includingPropertiesForKeys: [.contentModificationDateKey]
-        ) else { return }
-        for child in children {
-            let values = try? child.resourceValues(
-                forKeys: [.contentModificationDateKey])
-            if let date = values?.contentModificationDate, date < cutoff {
-                try? FileManager.default.removeItem(at: child)
+    /// 設計書 §5: 表示プロファイル別の複製にも共通の容量上限を掛ける。
+    nonisolated static let diskCacheByteLimit: Int64 = 2 << 30
+    private nonisolated static let maintenanceLock = NSLock()
+    private nonisolated static let profileVersionMarker = ".color-profile-key-v1"
+
+    /// 設計書 §5: ハッシュ名から旧キーは復元できないため、初回だけ既存 HEIC を回収する。
+    /// 暗号化済みも同じ拡張子である。移行印は年齢トリムの対象から除外する。
+    @discardableResult
+    nonisolated static func prepareDiskCache(at directory: URL) -> Bool {
+        maintenanceLock.withLock {
+            let manager = FileManager.default
+            let marker = directory.appendingPathComponent(profileVersionMarker)
+            if manager.fileExists(atPath: marker.path) { return true }
+            do {
+                try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+                let files = try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                for file in files where file.pathExtension == "heic" {
+                    try manager.removeItem(at: file)
+                }
+                try Data().write(to: marker, options: .atomic)
+                return true
+            } catch { return false }
+        }
+    }
+
+    /// 設計書 §5: 利用時に進めた更新日時を LRU として、期限切れと容量超過を回収する。
+    nonisolated static func trimDiskCache(at directory: URL, olderThanDays days: Int? = nil,
+                                         byteLimit: Int64 = diskCacheByteLimit, now: Date = Date()) {
+        guard prepareDiskCache(at: directory) else { return }
+        maintenanceLock.withLock {
+            let manager = FileManager.default
+            guard let children = try? manager.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return }
+            let cutoff = days.map { now.addingTimeInterval(-Double($0) * 86400) }
+            var retained: [(url: URL, date: Date, bytes: Int64)] = []
+            var total: Int64 = 0
+            for child in children where child.pathExtension == "heic" {
+                guard let values = try? child.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                else { continue }
+                let date = values.contentModificationDate ?? .distantPast
+                if let cutoff, date < cutoff {
+                    do {
+                        try manager.removeItem(at: child)
+                        continue
+                    } catch { }
+                }
+                let bytes = Int64(max(0, values.fileSize ?? 0))
+                retained.append((child, date, bytes))
+                let sum = total.addingReportingOverflow(bytes)
+                total = sum.overflow ? Int64.max : sum.partialValue
+            }
+            for entry in retained.sorted(by: { $0.date < $1.date }) where total > max(0, byteLimit) {
+                do {
+                    try manager.removeItem(at: entry.url)
+                    total -= entry.bytes
+                } catch { continue }
             }
         }
+    }
+
+    /// 起動時は保持日数と容量の両方を検査する。旧キーと複製も同じ上限内に収める(設計書 §5)。
+    nonisolated static func trimDiskCache(olderThanDays days: Int) {
+        trimDiskCache(at: cacheDirectory, olderThanDays: days)
     }
 }

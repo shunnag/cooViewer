@@ -29,19 +29,22 @@ struct BitmapDimensions {
     }
 }
 
-/// 成功が確認できた RGBA バッファだけを CGImage へ渡す。開始・完了の両方の失敗を検出する。
+/// 成功した一成分または RGBA バッファだけを、出力プロファイルつき CGImage へ渡す(設計書 §5)。
 enum BitmapRendering {
     static func render(_ image: CIImage, context: CIContext,
                        size: BitmapDimensions, colorSpace: CGColorSpace) -> CGImage? {
+        let gray = colorSpace.model == .monochrome
+        let rowBytes = gray ? size.width : size.bytesPerRow
+        let byteCount = rowBytes * size.height
         guard FileDescriptorHeadroom.isAvailable(),
-              let buffer = calloc(1, size.byteCount) else { return nil }
+              let buffer = calloc(1, byteCount) else { return nil }
         var transferred = false
         defer { if !transferred { free(buffer) } }
         let bounds = CGRect(x: 0, y: 0, width: size.width, height: size.height)
         let destination = CIRenderDestination(bitmapData: buffer, width: size.width,
-            height: size.height, bytesPerRow: size.bytesPerRow, format: .RGBA8)
+            height: size.height, bytesPerRow: rowBytes, format: gray ? .L8 : .RGBA8)
         destination.colorSpace = colorSpace
-        destination.alphaMode = .premultiplied
+        destination.alphaMode = gray ? .none : .premultiplied
         // toBitmap と同じくメモリ先頭を画像上端にする。
         destination.isFlipped = true
         defer { withExtendedLifetime((image, context, destination)) {} }
@@ -49,13 +52,14 @@ enum BitmapRendering {
             let task = try context.startTask(toRender: image, from: bounds, to: destination, at: .zero)
             _ = try task.waitUntilCompleted()
         } catch { return nil }
-        guard let provider = CGDataProvider(dataInfo: nil, data: buffer, size: size.byteCount,
+        guard let provider = CGDataProvider(dataInfo: nil, data: buffer, size: byteCount,
             releaseData: { _, data, _ in free(UnsafeMutableRawPointer(mutating: data)) }) else { return nil }
         transferred = true
+        // 設計書 §5: L8 も描画先と同じ灰色プロファイルを明示して合成時の変換を避ける。
         return CGImage(width: size.width, height: size.height,
-            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: size.bytesPerRow,
+            bitsPerComponent: 8, bitsPerPixel: gray ? 8 : 32, bytesPerRow: rowBytes,
             space: colorSpace,
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            bitmapInfo: CGBitmapInfo(rawValue: (gray ? CGImageAlphaInfo.none : .premultipliedLast).rawValue),
             provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 }

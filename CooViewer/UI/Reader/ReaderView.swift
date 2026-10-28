@@ -59,6 +59,71 @@ final class ReaderView: NSView {
 
     private(set) var images: [CGImage] = []
     private(set) var pageIDs: [Int] = []
+    /// 画面外スナップショットは sRGB、実ウインドウはその表示先を使う(設計書 §5)。
+    var displayColorTarget: DisplayColorTarget {
+        if let selectedColorTarget { return selectedColorTarget }
+        let target = resolveDisplayColorTarget()
+        selectedColorTarget = target
+        return target
+    }
+    private var selectedColorTarget: DisplayColorTarget?
+
+    private func resolveDisplayColorTarget() -> DisplayColorTarget {
+        window == nil ? DisplayColorTarget(rgb: CGColorSpace(name: CGColorSpace.sRGB)!)
+            : .current(window: window)
+    }
+    private var renderedColorTarget: DisplayColorTarget?
+    private var displayImages: [CGImage?] = []
+    private var displayConversionTask: Task<Void, Never>?
+    private var displayConversionGeneration = 0
+
+    /// 異なる画面へ移動したら表示画像だけを失効させ、元のデコード画像は再利用する(設計書 §5)。
+    @discardableResult
+    func invalidateDisplayColorSpace(to newTarget: DisplayColorTarget? = nil) -> Bool {
+        let target = newTarget ?? resolveDisplayColorTarget()
+        selectedColorTarget = target
+        guard target != renderedColorTarget else { return false }
+        renderedColorTarget = target
+        resampleTask?.cancel()
+        resampleGeneration += 1
+        // 設計書 §5: 新プロファイルの画像が届くまでは、現在の合成内容を色管理つきで表示し続ける。
+        displayImages = images.indices.map { index in
+            if target.matches(images[index]) { return images[index] }
+            // ページレイヤーの内容はこのビューが所有する CGImage だけである。
+            return (pageLayers[index].contents as! CGImage?) ?? displayImages[index] ?? images[index]
+        }
+        resampledPages = Array(repeating: nil, count: images.count)
+        prepareDisplayImages(target: target)
+        removeCurlOverlay()
+        needsLayout = true
+        return true
+    }
+
+    private func prepareDisplayImages(target: DisplayColorTarget) {
+        displayConversionTask?.cancel()
+        displayConversionGeneration += 1
+        let generation = displayConversionGeneration
+        let requests = images.enumerated().filter {
+            guard let shown = displayImages[$0.offset] else { return true }
+            return !target.matches(shown)
+        }
+        let prefix = resampleKeyPrefix
+        let ids = pageIDs
+        displayConversionTask = Task { [weak self] in
+            for (index, image) in requests {
+                guard let self, !Task.isCancelled,
+                      generation == self.displayConversionGeneration else { return }
+                let converted = await ImageResampler.shared.displayImage(
+                    image, cacheKey: "\(prefix)#\(ids[index])", target: target)
+                guard !Task.isCancelled, generation == self.displayConversionGeneration,
+                      target == self.displayColorTarget else { return }
+                if let converted {
+                    self.displayImages[index] = converted
+                    self.needsLayout = true
+                }
+            }
+        }
+    }
     /// リサンプルキャッシュの名前空間(本の cacheKey。本切替時の取り違え防止)
     var resampleKeyPrefix = ""
     /// 超解像(最高)のディスクキャッシュを暗号化して残すか。パスワード付き書庫では
@@ -207,6 +272,7 @@ final class ReaderView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        invalidateDisplayColorSpace()
         // ウインドウから外れた(閉じた)ら慣性タイマを止める。run loop に
         // 強参照で保持されるため放置すると [weak self] の空撃ちが永久に続く
         // (deinit は nonisolated で Timer に触れないためここで畳む)
@@ -240,6 +306,7 @@ final class ReaderView: NSView {
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
                   preResampled: [ResampledPage?] = [],
+                  preparedDisplayImages: [CGImage?] = [],
                   turn: PageTurn? = nil) {
         // スワイプ追従カールの予約(表示確定直前にコントローラが設定)。
         // 自動再生の turn より優先する
@@ -260,11 +327,21 @@ final class ReaderView: NSView {
         self.images = images
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
+        let target = displayColorTarget
+        renderedColorTarget = target
+        displayImages = images.indices.map { index in
+            if preparedDisplayImages.indices.contains(index),
+               let prepared = preparedDisplayImages[index], target.matches(prepared) { return prepared }
+            return target.matches(images[index]) ? images[index] : nil
+        }
+        prepareDisplayImages(target: target)
         // 事前引き当て分を最初から採用する(サイズが実レイアウトと一致した
         // ページだけが使われ、不一致・未命中は通常の非同期リサンプルが埋める)
         resampledPages = preResampled.count == images.count
             ? preResampled.map { page in
-                guard let page, page.processing == imageProcessingSettings else { return nil }
+                guard let page, page.processing == imageProcessingSettings,
+                      (page.colorTarget == target || (page.colorTarget == nil && target.matches(page.image)))
+                else { return nil }
                 return (page.size, page.image)
             } : Array(repeating: nil, count: images.count)
         loupeHighResImages.removeAll()
@@ -583,7 +660,7 @@ final class ReaderView: NSView {
                resampled.size == pixelSize {
                 layer.contents = resampled.image
             } else {
-                layer.contents = images[imageIndex]
+                layer.contents = displayImages.indices.contains(imageIndex) ? displayImages[imageIndex] : nil
             }
             // 垂直はコンテンツ高(2 枚の最大)に対しセンタリング(仕様書 §4.2.3)
             let y = pad.y - scrollOffset.y + (contentSize.height - size.height) / 2
@@ -617,6 +694,7 @@ final class ReaderView: NSView {
         // 1 ページ数秒)の洪水を避けて trilinear 拡大表示に委ねる。確定時
         // (isLiveZooming=false の最後の relayout)に 1 回だけ予約される
         guard !isLiveZooming else { setResampleActivity(false); return }
+        let colorTarget = displayColorTarget
         let requests: [(index: Int, image: CGImage, pixelSize: CGSize, key: String,
                         noiseReduction: NoiseReductionLevel)] =
             images.indices.compactMap { index in
@@ -624,7 +702,7 @@ final class ReaderView: NSView {
                 guard scaledSizes.indices.contains(index),
                       resampledPages.indices.contains(index),
                       pageIDs.indices.contains(index),
-                      images[index].bitsPerComponent <= 8 else { return nil }
+                      !DisplayColorTarget.preservesHDR(images[index]) else { return nil }
                 let pixelSize = CGSize(
                     width: (scaledSizes[index].width * backingScale).rounded(),
                     height: (scaledSizes[index].height * backingScale).rounded())
@@ -635,10 +713,11 @@ final class ReaderView: NSView {
                 // (ページ切替で resampledPages はリセットされるので stale にならない)。
                 let cap = images[index]
                 if noiseReductionLevel == .none,
+                   let displayImage = displayImages[index], colorTarget.matches(displayImage),
                    cap.width >= Int(pixelSize.width), cap.height >= Int(pixelSize.height),
                    Double(cap.width) <= pixelSize.width * Self.resampleSkipTolerance,
                    Double(cap.height) <= pixelSize.height * Self.resampleSkipTolerance {
-                    resampledPages[index] = (pixelSize, cap)
+                    resampledPages[index] = (pixelSize, displayImage)
                     return nil
                 }
                 return (index, images[index], pixelSize,
@@ -649,7 +728,7 @@ final class ReaderView: NSView {
         // 何度も最初からになる)
         let requestKeys = Set(requests.map {
             "\($0.key)|\(Int($0.pixelSize.width))x\(Int($0.pixelSize.height))"
-                + "|nr\($0.noiseReduction.rawValue)|mfx\(interpolation == .high)"
+                + "|nr\($0.noiseReduction.rawValue)|mfx\(interpolation == .high)|cs:\(colorTarget.identity)"
         })
         if softRestartRequested {
             // フィルタ切替: 進行中の 1 件は完走させて(結果はキャッシュへ
@@ -692,8 +771,9 @@ final class ReaderView: NSView {
                     request.image, to: request.pixelSize,
                     cacheKey: request.key, upscaleWithMetalFX: useMetalFX,
                     noiseReduction: request.noiseReduction,
-                    superResEncrypted: superResDiskCacheEncrypted) else { continue }
-                guard !Task.isCancelled else { return }
+                    superResEncrypted: superResDiskCacheEncrypted,
+                    displayTarget: colorTarget) else { continue }
+                guard !Task.isCancelled, colorTarget == self.displayColorTarget else { return }
                 self.applyResampled(resampled, size: request.pixelSize,
                                     at: request.index, generation: generation,
                                     key: request.key)

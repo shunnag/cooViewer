@@ -2172,7 +2172,22 @@ final class ReaderWindowController: NSWindowController {
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {
-        refreshDisplayIfCapRaised()  // 別解像度のディスプレイへ移動した場合
+        refreshDisplayColorTarget(notification)
+        refreshDisplayIfCapRaised()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        refreshDisplayColorTarget(notification)
+    }
+
+    /// 同じ倍率の画面間でもプロファイルは変わる。旧先読みと表示世代を失効させる(設計書 §5)。
+    private func refreshDisplayColorTarget(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window,
+              readerView.invalidateDisplayColorSpace() else { return }
+        invalidatePendingDisplay()
+        preresampleRun += 1
+        preresampleTask?.cancel()
+        Task { [weak self] in await self?.refreshDisplay() }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -2500,6 +2515,7 @@ final class ReaderWindowController: NSWindowController {
         }
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
         _ = book.updateDisplayPixelCap(currentDisplayPixelCap())
+        _ = book.updateDisplayColorTarget(readerView.displayColorTarget)
         displayGeneration += 1
         let generation = displayGeneration
         let position = book.navigationCheckpoint
@@ -2516,6 +2532,13 @@ final class ReaderWindowController: NSWindowController {
         // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
         // からフィルタ済みの絵を使える)
         var preResampled: [ResampledPage?] = []
+        let colorTarget = readerView.displayColorTarget
+        var preparedDisplayImages: [CGImage?] = []
+        for (position, image) in images.enumerated() {
+            let prepared = await ImageResampler.shared.displayImage(
+                image, cacheKey: "\(book.cacheKey)#\(ids[position])", target: colorTarget)
+            preparedDisplayImages.append(prepared)
+        }
         if let targets = readerView.predictedResampleSizes(
             for: images.map { CGSize(width: $0.width, height: $0.height) }) {
             let processing = readerView.imageProcessingSettings
@@ -2524,9 +2547,9 @@ final class ReaderWindowController: NSWindowController {
                     image, to: targets[position],
                     cacheKey: "\(book.cacheKey)#\(ids[position])",
                     upscaleWithMetalFX: processing.interpolation == .high,
-                    noiseReduction: processing.noiseReduction)
+                    noiseReduction: processing.noiseReduction, displayTarget: colorTarget)
                 preResampled.append(hit.map {
-                    ResampledPage(size: targets[position], image: $0, processing: processing)
+                    ResampledPage(size: targets[position], image: $0, processing: processing, colorTarget: colorTarget)
                 })
             }
         }
@@ -2534,6 +2557,7 @@ final class ReaderWindowController: NSWindowController {
         // 一回消費フラグやビューを更新し、古い pass の書き込みを一括で防ぐ。
         guard generation == displayGeneration, book === self.book, !Task.isCancelled,
               book.isAtNavigationCheckpoint(position) else { return }
+        guard colorTarget == readerView.displayColorTarget else { return }
         if let session, !ownsInteractiveCurlDestination(session) { return }
 
         // 一回消費フラグ(めくり向き・合本到達方向・先頭強制)は、連打・競合を
@@ -2626,6 +2650,7 @@ final class ReaderWindowController: NSWindowController {
         readerView.setPages(images, ids: ids,
                             readsFromLeft: book.readMode.readsFromLeft,
                             preResampled: preResampled,
+                            preparedDisplayImages: preparedDisplayImages,
                             turn: turn)
         // スマートズーム直後の再デコード(キャップ上昇)では setPages が
         // スクロールを先頭へ戻すため、同一スプレッドに限りアンカーを再適用する
@@ -2710,6 +2735,7 @@ final class ReaderWindowController: NSWindowController {
         lastPreresampleMode = mode
         guard mode != .paused else { return }
         let conserveEnergy = mode == .conserving
+        let colorTarget = readerView.displayColorTarget
         let usesML = settings.noiseReductionLevel.usesMachineLearning
         preresampleTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
@@ -2794,7 +2820,8 @@ final class ReaderWindowController: NSWindowController {
                         cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
                         upscaleWithMetalFX: useMetalFX,
                         noiseReduction: self.settings.noiseReductionLevel,
-                        superResEncrypted: self.currentBookIsEncrypted)
+                        superResEncrypted: self.currentBookIsEncrypted,
+                        displayTarget: colorTarget)
                     self.preresamplingEntryID = nil
                     resampledPages += 1
                     self.notePrefetchProgress(done: resampledPages)  // 残数表示に反映

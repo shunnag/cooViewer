@@ -101,17 +101,19 @@ actor ImageResampler {
     func resample(_ image: CGImage, to pixelSize: CGSize,
                   cacheKey: String, upscaleWithMetalFX: Bool,
                   noiseReduction: NoiseReductionLevel = .none,
-                  superResEncrypted: Bool = false) async -> CGImage? {
+                  superResEncrypted: Bool = false,
+                  displayTarget: DisplayColorTarget? = nil) async -> CGImage? {
         guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
         let width = size.width
         let height = size.height
+        if displayTarget != nil, DisplayColorTarget.preservesHDR(image) { return image }
         if width == image.width, height == image.height,
-           noiseReduction == .none { return image }
+           noiseReduction == .none, displayTarget?.matches(image) ?? true { return image }
 
         let key = Self.makeKey(cacheKey: cacheKey, image: image,
                                width: width, height: height,
                                upscaleWithMetalFX: upscaleWithMetalFX,
-                               noiseReduction: noiseReduction)
+                               noiseReduction: noiseReduction, displayTarget: displayTarget)
         if let hit = touch(key) { return hit }
         // 同一キーの計算が進行中なら合流する(ML/CI の二重実行を避ける。
         // preresample と表示要求が同じページを同時に要求する経路。cooViewer-pag)。
@@ -129,7 +131,8 @@ actor ImageResampler {
             return await self.computeResample(
                 image: image, width: width, height: height, key: key,
                 cacheKey: cacheKey, upscaleWithMetalFX: upscaleWithMetalFX,
-                noiseReduction: noiseReduction, superResEncrypted: superResEncrypted)
+                noiseReduction: noiseReduction, superResEncrypted: superResEncrypted,
+                displayTarget: displayTarget)
         }
         inFlight[key] = (task, id)
         // Task.value は Never 失敗タスクではキャンセル点にならず、待ち手が
@@ -140,6 +143,17 @@ actor ImageResampler {
         return Task.isCancelled ? nil : result
     }
 
+    /// 初回表示用にも同じ LRU とプロファイル同一性を使う。変換はこの actor 上で行う(設計書 §5)。
+    func displayImage(_ image: CGImage, cacheKey: String,
+                      target: DisplayColorTarget) -> CGImage? {
+        if target.matches(image) { return image }
+        let key = "\(cacheKey)|\(image.width)x\(image.height)|display|src-cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")|cs:\(target.identity)"
+        if let hit = touch(key) { return hit }
+        guard let result = target.converted(image) else { return nil }
+        insert(result, for: key)
+        return result
+    }
+
     /// リサンプル本体(ノイズ低減 + リサイズ + キャッシュ)。in-flight の共有
     /// タスクから同一キーにつき1回だけ呼ばれる。共有タスクは待ち手のキャンセルを
     /// 観測しないため結果は常に完走した本物で、旧来の「キャンセル結果を ML 用
@@ -147,7 +161,8 @@ actor ImageResampler {
     private func computeResample(
         image: CGImage, width: Int, height: Int, key: String,
         cacheKey: String, upscaleWithMetalFX: Bool,
-        noiseReduction: NoiseReductionLevel, superResEncrypted: Bool
+        noiseReduction: NoiseReductionLevel, superResEncrypted: Bool,
+        displayTarget: DisplayColorTarget?
     ) async -> CGImage? {
         computeCount += 1
         // .strong のノイズ低減(waifu2x)中間結果は元画像サイズ依存で target 非依存。
@@ -155,7 +170,7 @@ actor ImageResampler {
         // フル CNN を再実行していた(cooViewer-kli)。中間結果を元サイズキーで
         // キャッシュし、リサイズ間で再利用する(.maximum は SR ディスク層が担う)
         let nrKey: String? = noiseReduction == .strong
-            ? "\(cacheKey)|\(image.width)x\(image.height)|nr-strong" : nil
+            ? "\(cacheKey)|\(image.width)x\(image.height)|nr-strong|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")" : nil
         let source: CGImage
         let usedMLFallback: Bool
         let sourceCacheable: Bool
@@ -186,6 +201,8 @@ actor ImageResampler {
         // モデル推論の await 中に別経路が同じキーを入れていたら使い回す
         if let hit = cache[key] { return hit }
 
+        // 設計書 §5: 中間処理が RGB を返しても、元が不透明な灰色なら最終出力は一成分に保つ。
+        let outputSpace = displayTarget?.space(for: image)
         let isUpscale = width > source.width || height > source.height
         var result: CGImage?
         var resizeCacheable = true
@@ -203,10 +220,16 @@ actor ImageResampler {
         // 縮小は GPU の Lanczos を最優先(CPU の CG 高品質補間はフォールバック)
         if result == nil, !isUpscale {
             if lanczos == nil { lanczos = LanczosDownscaler() }
-            result = lanczos?.downscale(source, to: CGSize(width: width, height: height))
+            result = lanczos?.downscale(source, to: CGSize(width: width, height: height),
+                                        displayTarget: displayTarget, outputColorSpace: outputSpace)
         }
         if result == nil {
-            result = Self.cgResample(source, width: width, height: height)
+            result = Self.cgResample(source, width: width, height: height,
+                                     displayTarget: displayTarget, outputColorSpace: outputSpace)
+        }
+        // 設計書 §5: ML/MetalFX と同寸法の経路も、表示キャッシュへ入れる前に統一する。
+        if let displayTarget, let rendered = result {
+            result = displayTarget.converted(rendered, colorSpace: outputSpace)
         }
         if sourceCacheable, resizeCacheable, let result,
            await resolvedCacheable(usedMLFallback: usedMLFallback,
@@ -280,23 +303,27 @@ actor ImageResampler {
     /// resample と同じ引数から同じキーを組み立てる
     func cached(_ image: CGImage, to pixelSize: CGSize,
                 cacheKey: String, upscaleWithMetalFX: Bool,
-                noiseReduction: NoiseReductionLevel = .none) -> CGImage? {
+                noiseReduction: NoiseReductionLevel = .none,
+                displayTarget: DisplayColorTarget? = nil) -> CGImage? {
         guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
         let width = size.width
         let height = size.height
         return touch(Self.makeKey(cacheKey: cacheKey, image: image,
                                   width: width, height: height,
                                   upscaleWithMetalFX: upscaleWithMetalFX,
-                                  noiseReduction: noiseReduction))
+                                  noiseReduction: noiseReduction, displayTarget: displayTarget))
     }
 
     /// キャッシュキー(resample / cached で共通)
     private static func makeKey(cacheKey: String, image: CGImage,
                                 width: Int, height: Int,
                                 upscaleWithMetalFX: Bool,
-                                noiseReduction: NoiseReductionLevel) -> String {
+                                noiseReduction: NoiseReductionLevel,
+                                displayTarget: DisplayColorTarget?) -> String {
         "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)"
             + "|\(upscaleWithMetalFX)|nr\(noiseReduction.rawValue)"
+            + "|src-cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
+            + "|cs:\(displayTarget?.identity ?? "source")"
     }
 
     /// 命中エントリを MRU に上げて返す
@@ -332,8 +359,12 @@ actor ImageResampler {
         async -> (image: CGImage, usedMLFallback: Bool, cacheable: Bool) {
         guard level != .none else { return (image, false, true) }
         if level == .maximum {
-            // ディスクキャッシュのキーは元画像サイズまで含めて一意にする
-            let srKey = cacheKey.map { "\($0)|\(image.width)x\(image.height)|sr4" }
+            // 設計書 §5: Book の入力は表示先へ変換済みなので SR もプロファイル別に保持する。
+            // 原画を別保持する変更は復号・予算・暗号化の責務まで広がるため行わない。
+            // 旧キーは一度だけ回収し、複製は MLSuperResolver の容量 LRU と保持日数で制限する。
+            let srKey = cacheKey.map {
+                "\($0)|\(image.width)x\(image.height)|sr4|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
+            }
             if let upscaled = await MLSuperResolver.shared.upscale(
                 image, cacheKey: srKey, encrypted: encrypted) {
                 return (upscaled, false, true)
@@ -394,7 +425,12 @@ actor ImageResampler {
     }
 
     /// CG の高品質補間(Lanczos 相当)によるリサンプル
-    static func cgResample(_ image: CGImage, width: Int, height: Int) -> CGImage? {
+    static func cgResample(_ image: CGImage, width: Int, height: Int,
+                           displayTarget: DisplayColorTarget? = nil,
+                           outputColorSpace: CGColorSpace? = nil) -> CGImage? {
+        if let space = outputColorSpace ?? displayTarget?.space(for: image) {
+            return DisplayColorTarget.draw(image, width: width, height: height, space: space)
+        }
         guard BitmapDimensions(width: width, height: height) != nil else { return nil }
         // グレースケール/CMYK は RGBA コンテキストを作れないため sRGB へ変換する
         let sourceSpace = image.colorSpace

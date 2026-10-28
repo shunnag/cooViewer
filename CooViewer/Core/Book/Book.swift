@@ -281,6 +281,21 @@ final class Book {
 
     // MARK: - 画像ロード
 
+    /// ソースキャッシュも縮小復号時の出力先を含む名前空間で管理する(設計書 §5)。
+    private var decodeColorTarget: DisplayColorTarget?
+    private var decodeColorIdentity: String { decodeColorTarget?.identity ?? "source" }
+
+    @discardableResult
+    func updateDisplayColorTarget(_ target: DisplayColorTarget) -> Bool {
+        guard target != decodeColorTarget else { return false }
+        decodeColorTarget = target
+        stateRevision &+= 1
+        cache.removeAll()
+        declineQueuedPrefetchLoads()
+        inFlightLoads.removeAll()
+        return true
+    }
+
     /// 辞退だけを合流側で再試行できるよう、通常の復号失敗と区別する(CV5-2)。
     private struct ImageLoadResult: Sendable {
         let image: CGImage?
@@ -288,21 +303,22 @@ final class Book {
     }
     /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
     /// デコードに合流し、同じページを二重にデコードしないための単一飛行
-    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, task: Task<ImageLoadResult, Never>)] = [:]
+    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, promotion: DecodePromotion?, task: Task<ImageLoadResult, Never>)] = [:]
     private var inFlightToken = 0
 
     func image(at index: Int) async -> CGImage? {
         guard entries.indices.contains(index) else { return nil }
         let entry = entries[index]
         let key = entry.id
-        if let hit = cache.image(for: key) { return hit }
+        if let hit = cache.image(for: key, colorSpaceIdentity: decodeColorIdentity) { return hit }
         let display = PageRequestIntent.isDisplay
         let prefetch = PageRequestIntent.isPrefetch
         if let running = inFlightLoads[key] {
+            if !prefetch { running.promotion?.promote() }
             let result = await running.task.value
             // 表示と見開き判定は先読みの辞退だけを読み直し、復号失敗を再試行しない(CV5-2)。
             guard result.declined, !prefetch, running.prefetch else { return result.image }
-            if let hit = cache.image(for: key) { return hit }
+            if let hit = cache.image(for: key, colorSpaceIdentity: decodeColorIdentity) { return hit }
             // 別の合流要求が始めた再読込を共有する。先読みへは再合流せず循環を防ぐ。
             if let reissued = inFlightLoads[key], !reissued.prefetch {
                 return await reissued.task.value.image
@@ -312,14 +328,22 @@ final class Book {
         // 巻き込まないように独立タスクで走らせる
         let source = source
         let cap = displayPixelCap
+        let colorTarget = decodeColorTarget
+        let promotion = prefetch ? DecodePromotion() : nil
         inFlightToken &+= 1
         let token = inFlightToken
         let task = Task<ImageLoadResult, Never>.detached(priority: .userInitiated) {
             let result = await PageRequestIntent.$isDisplay.withValue(display) {
                 await PageRequestIntent.$isPrefetch.withValue(prefetch) {
                     do {
-                        let image = try await source.image(for: entry, maxPixelSize: cap)
+                        let image = try await PageRequestIntent.$displayColorTarget.withValue(colorTarget) {
+                            try await PageRequestIntent.$decodePromotion.withValue(promotion) {
+                                try await source.image(for: entry, maxPixelSize: cap)
+                            }
+                        }
                         return ImageLoadResult(image: image, declined: false)
+                    } catch is PrefetchDecodeGate.Declined {
+                        return ImageLoadResult(image: nil, declined: true)
                     } catch BookSourceError.temporarilyUnavailable {
                         return ImageLoadResult(image: nil, declined: true)
                     } catch {
@@ -330,7 +354,7 @@ final class Book {
             // 合流側も同じ完了を待つため、画像と寸法を公開してから結果を返す(設計書 §7.3)。
             return await self.completeImageLoad(result, for: key, token: token)
         }
-        inFlightLoads[key] = (token, prefetch, task)
+        inFlightLoads[key] = (token, prefetch, promotion, task)
         return await task.value.image
     }
 
@@ -341,7 +365,7 @@ final class Book {
         inFlightLoads[key] = nil
         if let image = result.image {
             // 上限を下げただけなら大画像を活かす。上げた場合は上の世代照合で除外される。
-            cache.insert(image, for: key)
+            cache.insert(image, for: key, colorSpaceIdentity: decodeColorIdentity)
             if pageSizeCache[key] == nil {
                 // キャップ付きデコードでも縦横比は保たれるため判定に使える
                 pageSizeCache[key] = CGSize(width: image.width, height: image.height)
@@ -365,7 +389,7 @@ final class Book {
         let entry = entries[index]
         let key = entry.id
         if let cached = pageSizeCache[key] { return cached }
-        if let hit = cache.image(for: key) {
+        if let hit = cache.image(for: key, colorSpaceIdentity: decodeColorIdentity) {
             let size = CGSize(width: hit.width, height: hit.height)
             pageSizeCache[key] = size
             return size
@@ -401,6 +425,7 @@ final class Book {
             cache.removeAll()
             // 旧キャップで進行中のデコードには合流させない(新規要求は
             // 新キャップで作り直す。旧タスクの結果は登録世代の照合で捨てられる)
+            declineQueuedPrefetchLoads()
             inFlightLoads.removeAll()
         }
         return raised
@@ -787,6 +812,13 @@ final class Book {
     func cancelPrefetch() {
         prefetchTask?.cancel()
         prefetchTask = nil
+        declineQueuedPrefetchLoads()
+    }
+
+    private func declineQueuedPrefetchLoads() {
+        for load in inFlightLoads.values where load.prefetch {
+            load.promotion?.declineQueuedPrefetch()
+        }
     }
 
     /// キャッシュの寿命を、実時間の待機なしで検証する(設計書 §7.4)。
@@ -894,7 +926,7 @@ final class Book {
     }
 
     private func schedulePrefetch() {
-        prefetchTask?.cancel()
+        cancelPrefetch()
         // 同じ名前の source を宣言より前のクロージャで参照すると Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、クロージャより先にローカルへ取る。
         let source = source
         let entries = entries
