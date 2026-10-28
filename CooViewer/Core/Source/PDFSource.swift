@@ -77,16 +77,37 @@ actor PDFSource: BookSource {
     /// 恒久停止してメイン文書の直列描画に戻す(改稿前と同じ挙動)
     private var renderers: [PDFPageRenderer] = []
     private var rendererBusyCounts: [Int] = []
+    private var rendererPages: [Int] = []
     private var poolGrowthDisabled = false
     private var storedPassword: String?
     private static let rendererPoolSize = 3
 
-    private func acquireRenderer() -> (index: Int, renderer: PDFPageRenderer)? {
+    // 同時に届いたサムネイルを一群とし、最後の要求が終われば文書を捨てる(設計書 §5)。
+    private var thumbnailRenderer: PDFPageRenderer?
+    private var thumbnailBusyCount = 0
+    private var thumbnailBatchCount = 0
+
+    private func makeRenderer() -> PDFPageRenderer? {
+        if let sourceData {
+            return PDFPageRenderer(data: sourceData, password: storedPassword,
+                                   expectedPageCount: document.pageCount)
+        }
+        return PDFPageRenderer(url: url, password: storedPassword,
+                               expectedPageCount: document.pageCount)
+    }
+
+    private func acquireRenderer(pageIndex: Int) -> (index: Int, renderer: PDFPageRenderer)? {
         // ロック中はレンダラーを作らない(解錠前の再試行でディスクを叩かない)
         guard !document.isLocked else { return nil }
+        // 直前に同じページを受け持った文書を優先し、ルーペの再復号を避ける(設計書 §5)。
+        if let warm = rendererPages.firstIndex(of: pageIndex) {
+            rendererBusyCounts[warm] += 1
+            return (warm, renderers[warm])
+        }
         if let idle = rendererBusyCounts.indices.first(
             where: { rendererBusyCounts[$0] == 0 }) {
             rendererBusyCounts[idle] += 1
+            rendererPages[idle] = pageIndex
             return (idle, renderers[idle])
         }
         if !poolGrowthDisabled, renderers.count < Self.rendererPoolSize {
@@ -94,17 +115,10 @@ actor PDFSource: BookSource {
             // 差し替えられた場合、entries()/見開き判定と食い違う描画を防ぐ)。
             // メモリ背景(暗号化親のネスト PDF)は共有 Data から再オープンし、
             // 平文を disk に置かずに並列レンダリングを保つ(cooViewer-6ax)
-            let grown: PDFPageRenderer?
-            if let sourceData {
-                grown = PDFPageRenderer(data: sourceData, password: storedPassword,
-                                        expectedPageCount: document.pageCount)
-            } else {
-                grown = PDFPageRenderer(url: url, password: storedPassword,
-                                        expectedPageCount: document.pageCount)
-            }
-            if let renderer = grown {
+            if let renderer = makeRenderer() {
                 renderers.append(renderer)
                 rendererBusyCounts.append(1)
+                rendererPages.append(pageIndex)
                 return (renderers.count - 1, renderer)
             }
             poolGrowthDisabled = true
@@ -115,6 +129,7 @@ actor PDFSource: BookSource {
         for i in rendererBusyCounts.indices
             where rendererBusyCounts[i] < rendererBusyCounts[index] { index = i }
         rendererBusyCounts[index] += 1
+        rendererPages[index] = pageIndex
         return (index, renderers[index])
     }
 
@@ -133,7 +148,10 @@ actor PDFSource: BookSource {
 
     nonisolated func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
         try Task.checkCancellation()  // 待ち手が消えた要求はここで脱落
-        guard let (index, renderer) = await acquireRenderer() else {
+        if PageRequestIntent.isThumbnail {
+            return try await thumbnailImage(for: entry, maxPixelSize: maxPixelSize)
+        }
+        guard let (index, renderer) = await acquireRenderer(pageIndex: entry.id) else {
             return try await renderWithMainDocument(
                 entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)
         }
@@ -153,7 +171,7 @@ actor PDFSource: BookSource {
     /// 通常表示の 2 倍キャップとは独立で、非使用時のコストに影響しない。
     nonisolated func loupeImage(for entry: PageEntry, pixelScale: CGFloat) async throws -> CGImage {
         let capped = min(pixelScale, 6.0)
-        guard let (index, renderer) = await acquireRenderer() else {
+        guard let (index, renderer) = await acquireRenderer(pageIndex: entry.id) else {
             return try await renderWithMainDocument(
                 entry: entry, maxPixelSize: nil, pixelScale: capped)
         }
@@ -169,65 +187,55 @@ actor PDFSource: BookSource {
         }
     }
 
+    private func acquireThumbnailRenderer() -> PDFPageRenderer? {
+        guard !document.isLocked else { return nil }
+        if thumbnailRenderer == nil {
+            thumbnailRenderer = makeRenderer()
+            if thumbnailRenderer != nil { thumbnailBatchCount += 1 }
+        }
+        guard let thumbnailRenderer else { return nil }
+        thumbnailBusyCount += 1
+        return thumbnailRenderer
+    }
+
+    private func releaseThumbnailRenderer() {
+        thumbnailBusyCount -= 1
+        if thumbnailBusyCount == 0 { thumbnailRenderer = nil }
+    }
+
+    private nonisolated func thumbnailImage(for entry: PageEntry,
+                                            maxPixelSize: Int?) async throws -> CGImage {
+        guard let renderer = await acquireThumbnailRenderer() else {
+            return try await renderWithMainDocument(
+                entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)
+        }
+        do {
+            let image = try await renderer.render(pageIndex: entry.id, name: entry.name,
+                                                  maxPixelSize: maxPixelSize, pixelScale: nil)
+            await releaseThumbnailRenderer()
+            return image
+        } catch {
+            await releaseThumbnailRenderer()
+            throw error
+        }
+    }
+
+    /// 検証用。用途別の寿命と、表示文書の再生成を観測する(設計書 §7.6)。
+    func debugRendererStatistics() async -> (display: [PDFPageRenderer.Statistics],
+                                            thumbnailBatches: Int, thumbnailActive: Bool) {
+        var display: [PDFPageRenderer.Statistics] = []
+        for renderer in renderers { display.append(await renderer.statistics()) }
+        return (display, thumbnailBatchCount, thumbnailRenderer != nil)
+    }
+
     /// プールが作れない場合の従来経路(メイン文書で直列レンダリング)
     private func renderWithMainDocument(entry: PageEntry, maxPixelSize: Int?,
                                         pixelScale: CGFloat?) throws -> CGImage {
         guard let page = document.page(at: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
-        return try Self.renderPage(page, name: entry.name,
-                                   maxPixelSize: maxPixelSize, pixelScale: pixelScale)
-    }
-
-    /// ページ 1 枚のラスタライズ(呼び出し元の隔離内で同期実行される)
-    nonisolated static func renderPage(_ page: PDFPage, name: String,
-                                       maxPixelSize: Int?,
-                                       pixelScale: CGFloat?) throws -> CGImage {
-        let bounds = page.bounds(for: .mediaBox)
-        let rotation = page.rotation
-        let rotated = rotation % 180 != 0
-        let pointSize = CGSize(
-            width: rotated ? bounds.height : bounds.width,
-            height: rotated ? bounds.width : bounds.height
-        )
-
-        // 表示用(maxPixelSize あり)はベクトルから 2 倍でラスタライズして
-        // Retina でのぼやけを防ぐ(旧「ポイント原寸」§4.14 からの仕様変更)。
-        // サムネイル等の小さい指定では従来どおり縮小になる。
-        // maxPixelSize なし(原寸表示)はポイント原寸を維持する。
-        var scale: CGFloat = pixelScale ?? 1.0
-        if let maxPixelSize {
-            let longSide = max(pointSize.width, pointSize.height)
-            if longSide > 0 { scale = min(2.0, CGFloat(maxPixelSize) / longSide) }
-        }
-        let pixelWidth = max(1, Int(pointSize.width * scale))
-        let pixelHeight = max(1, Int(pointSize.height * scale))
-
-        guard let context = CGContext(
-            data: nil,
-            width: pixelWidth,
-            height: pixelHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            throw BookSourceError.pageLoadFailed(name)
-        }
-
-        // 白背景(透過 PDF 対策。仕様書 §4.14)
-        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
-
-        context.saveGState()
-        context.scaleBy(x: scale, y: scale)
-        page.draw(with: .mediaBox, to: context)
-        context.restoreGState()
-
-        guard let image = context.makeImage() else {
-            throw BookSourceError.pageLoadFailed(name)
-        }
-        return image
+        return try PDFPageRenderer.renderPage(page, name: entry.name,
+                                               maxPixelSize: maxPixelSize, pixelScale: pixelScale)
     }
 
     func isEncrypted() async -> Bool {
@@ -248,46 +256,5 @@ actor PDFSource: BookSource {
             storedPassword = password  // プールのレンダラー作成時に引き継ぐ
         }
         return unlocked ? .accepted : .rejected
-    }
-}
-
-/// PDF ページのレンダラー(独立した PDFDocument を actor で直列化)。
-/// PDFSource がプールとして複数持ち、ページ間の並列レンダリングを実現する
-actor PDFPageRenderer {
-    private let document: PDFDocument
-
-    /// expectedPageCount: メイン文書のページ数。開いた後にファイルが差し替え
-    /// られていた場合に、旧文書のエントリ列と食い違う内容を描かないための検証
-    /// (ページ数が同じ差し替えまでは検出しない割り切り)
-    init?(url: URL, password: String?, expectedPageCount: Int) {
-        guard let document = PDFDocument(url: url) else { return nil }
-        if let password {
-            _ = document.unlock(withPassword: password)
-        }
-        guard !document.isLocked,
-              document.pageCount == expectedPageCount else { return nil }
-        self.document = document
-    }
-
-    /// メモリ背景版(暗号化親のネスト PDF。共有 Data から独立文書を開く。
-    /// 平文を disk に置かずに並列レンダリングする。cooViewer-6ax)
-    init?(data: Data, password: String?, expectedPageCount: Int) {
-        guard let document = PDFDocument(data: data) else { return nil }
-        if let password {
-            _ = document.unlock(withPassword: password)
-        }
-        guard !document.isLocked,
-              document.pageCount == expectedPageCount else { return nil }
-        self.document = document
-    }
-
-    func render(pageIndex: Int, name: String,
-                maxPixelSize: Int?, pixelScale: CGFloat?) throws -> CGImage {
-        guard let page = document.page(at: pageIndex) else {
-            throw BookSourceError.pageLoadFailed(name)
-        }
-        return try PDFSource.renderPage(page, name: name,
-                                        maxPixelSize: maxPixelSize,
-                                        pixelScale: pixelScale)
     }
 }

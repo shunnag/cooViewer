@@ -11,6 +11,8 @@ enum PageRequestIntent {
     @TaskLocal static var isPrefetch = false
     /// 設計書 §5: detached な先読みも、表示合流と未開始時の辞退を観測できるようにする。
     @TaskLocal static var decodePromotion: DecodePromotion?
+    /// 合本の子にも用途を伝え、PDF の表示文書を汚さない(設計書 §5)。
+    @TaskLocal static var isThumbnail = false
 }
 
 enum BookSourceError: Error {

@@ -403,7 +403,9 @@ actor ThumbnailCache {
         if Task.isCancelled {
             image = nil
         } else {
-            image = try? await source.image(for: entry, maxPixelSize: maxPixelSize)
+            image = try? await PageRequestIntent.$isThumbnail.withValue(true) {
+                try await source.image(for: entry, maxPixelSize: maxPixelSize)
+            }
         }
         await gate.release()
         guard let image else { return nil }
