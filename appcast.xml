@@ -10,6 +10,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <language>en</language>
         <!-- make-appcast.sh inserts new items below -->
         <item>
+            <title>cooViewer 2.0b51</title>
+            <pubDate>Tue, 27 Oct 2026 22:50:58 +0000</pubDate>
+            <sparkle:version>2051</sparkle:version>
+            <sparkle:shortVersionString>2.0b51</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b51</link>
+            <sparkle:releaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b51</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b51/cooViewer-2.0b51.zip" sparkle:edSignature="o+D9TtBVYjYxJKOi6UnujISOw2r3h2UdPqAXdm3UoescPAfD6mN1EmaFzu5sN5bioLelEJOGX9gMVwlnxkNTDA==" length="9813252" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>cooViewer 2.0b50</title>
             <pubDate>Tue, 27 Oct 2026 02:31:12 +0000</pubDate>
             <sparkle:version>2050</sparkle:version>
@@ -501,6 +511,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: UtPh6Bbyr7Qkacs0lupj3FiYGZPzSUM0ZMo2SAfj+LV4Kfm5o8Ro9w1P3o2eNMm3mYu3nOyo/34iN1bd/1IMCg==
-length: 41777
+edSignature: qYvIeLgk3NDOlS/6MCcAY1+1Y9iGeYDeqFH+g38flkzIGRvbH1BSg1e0cAGKyVGR0fSalGsiyXSQjKHgMnz/AA==
+length: 42602
 -->
