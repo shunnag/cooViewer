@@ -282,6 +282,25 @@ CI の KaitoKit / Washi は `.github/workflows/ci.yml` のジョブ環境変数
   ガードにより「前回の本を開く」等でユーザーの実データに触れない。
 - テスト出力に CGImageSource のエラーが混ざるのは壊れ画像の意図的テスト。
 
+### 3.1 PDF 文書再生成のメモリ計測
+
+設計書 §5 の文書寿命は、同じページの反復ではなく、異なる画像ページを描いて検証する。
+次のプローブは表示用の `PDFSource.image` を通し、画像を解放してから `phys_footprint` を測る。
+引数なしでは異なる JPEG を埋め込んだ 40 ページを生成し、PDF のパスを渡せば先頭 40 ページを使う。
+生成と変更前・変更後の描画はそれぞれ別プロセスで行い、実行ファイルと CSV は表示された一時フォルダに残す。
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  zsh Scripts/diagnostics/run-pdf-renderer-memory-probe.sh [40ページ以上のPDF]
+```
+
+変更前は `PDF_BASELINE_REF`(既定 `HEAD`)の `PDFSource.swift`、変更後は作業ツリーをビルドする。
+修正をコミットした後の比較では、`PDF_BASELINE_REF` に修正前のコミットを指定する。
+周辺の未使用メタデータ型だけをスタブ化し、描画本体・プール・再生成処理は本番ソースを使う。
+型の代用と表示専用フラグの固定は `PDFSourceProbeSupport.swift` に集約している。
+プロセス全体の値には OS の画像処理キャッシュ等も含まれるため、XCTest ではフットプリントを合否に使わず、
+各レンダラーの再生成回数と描画済みページ数、再描画・解錠・画素一致を検証する。
+
 ## 3.2 書庫コーパスと計測(Scripts/bench/)
 
 `Scripts/bench/` にはエンジンに依存しない画像・書庫・破損入力の生成器、CRC/inflate の
