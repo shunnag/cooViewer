@@ -242,9 +242,16 @@ final class FolderSourceTests: XCTestCase {
                                    expected: ["x.part2.rar", "x.part3.rar"])
     }
 
+    func testRARPartNumbersCanGrowBeyondFirstPartWidth() throws {
+        try assertRARContinuations(["x.part1.rar", "x.part2.rar", "x.part10.rar", "x.part12.rar"],
+                                   expected: ["x.part2.rar", "x.part10.rar", "x.part12.rar"])
+    }
+
     func testZeroPaddedPartSetRequiresSameWidth() throws {
-        try assertRARContinuations(["x.part01.rar", "x.part02.rar", "y.part1.rar", "y.part02.rar"],
-                                   expected: ["x.part02.rar"])
+        try assertRARContinuations([
+            "x.part01.rar", "x.part02.rar", "x.part2.rar", "x.part0003.rar", "x.part100.rar",
+            "y.part1.rar", "y.part02.rar", "z.part001.rar", "z.part02.rar", "z.part010.rar",
+        ], expected: ["x.part02.rar", "x.part100.rar", "z.part010.rar"])
     }
 
     func testLonePartContinuationIsNotFlagged() throws {
@@ -255,8 +262,45 @@ final class FolderSourceTests: XCTestCase {
         try assertRARContinuations(["one/x.part1.rar", "two/x.part2.rar"], expected: [])
     }
 
-    func testPartPrefixCaseMismatchIsNotFlagged() throws {
-        try assertRARContinuations(["X.part1.rar", "x.part2.rar"], expected: [])
+    func testPartPrefixCaseVariantsFollowVolumeLookup() throws {
+        let caseSensitive = (try? tempDir.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?.volumeSupportsCaseSensitiveNames ?? false
+        try assertRARContinuations(["X.part1.rar", "x.part2.rar"],
+                                   expected: caseSensitive ? [] : ["x.part2.rar"])
+    }
+
+    func testPartMarkerAndExtensionCaseVariantsFollowVolumeLookup() throws {
+        let caseSensitive = (try? tempDir.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?.volumeSupportsCaseSensitiveNames ?? false
+        try assertRARContinuations([
+            "marker.part1.rar", "marker.PART2.rar", "extension.part1.rar", "extension.part2.RAR",
+            "X.PART01.RAR", "X.PART02.RAR",
+        ], expected: caseSensitive ? ["X.PART02.RAR"] : ["marker.PART2.rar", "extension.part2.RAR", "X.PART02.RAR"])
+    }
+
+    func testCanonicalPartNamesAreFlagged() throws {
+        try assertRARContinuations(["caf\u{00E9}.part1.rar", "cafe\u{0301}.part2.rar"],
+                                   expected: ["cafe\u{0301}.part2.rar"])
+    }
+
+    func testLeadingCombiningMarkDoesNotMergeParents() throws {
+        try assertRARContinuations(["dir/\u{0301}x.part1.rar", "dir\u{0301}x.part2.rar"], expected: [])
+    }
+
+    func testUnrelatedPartNamesAreNotFlagged() throws {
+        try assertRARContinuations([
+            "x.part1.rar", "y.part2.rar", "x.part.rar", "x.partA.rar", "x.part0.rar",
+            "x.part2.backup.rar", "x.part２.rar", "x.part2.cbr", "x.part1.part2.rar",
+        ], expected: [])
+    }
+
+    func testPartNumbersAndPaddingAreNotLimitedByIntegerWidth() throws {
+        let first = "x.part" + String(repeating: "0", count: 30) + "1.rar"
+        let large = "18446744073709551616"
+        let continuation = "x.part" + String(repeating: "0", count: 11) + large + ".rar"
+        let unpadded = "y.part" + large + ".rar"
+        try assertRARContinuations([first, "x.part" + large + ".rar", continuation, "y.part1.rar", unpadded],
+                                   expected: [continuation, unpadded])
     }
 
     func testDateSortSupported() {

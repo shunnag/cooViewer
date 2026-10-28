@@ -61,9 +61,17 @@ if [[ -f "$SOURCE_DIR/Package.resolved" ]]; then
 fi
 # 親リポジトリの revision を誤記せず、配布物にはソースの版だけを残す。
 SOURCE_REVISION=""
+FRAMEWORK_VERSION="1.0.0"
 if [[ "$(git -C "$SOURCE_DIR" rev-parse --show-toplevel 2>/dev/null || true)" == "$SOURCE_DIR" ]]; then
     SOURCE_REVISION="$(git -C "$SOURCE_DIR" describe --tags --always --dirty)"
+    TAG_VERSION="$(git -C "$SOURCE_DIR" describe --tags --abbrev=0 2>/dev/null || true)"
+    TAG_VERSION="${TAG_VERSION#v}"
+    if [[ "$TAG_VERSION" =~ '^[0-9]+(\.[0-9]+){0,2}$' ]]; then
+        FRAMEWORK_VERSION="$TAG_VERSION"
+    fi
 fi
+# 版は SOURCE_REVISION と同じ最近傍タグから導出し、既存スタンプの revision で失効させる。
+# 内容 fingerprint とスタンプの最終行は変更しない。
 SOURCE_FINGERPRINT="$(/bin/zsh "$FINGERPRINT_SCRIPT" "${SOURCE_INPUTS[@]}")"
 STAMP_VALUE="${SWIFT_VERSION}"$'\n'"${SOURCE_DIR}"$'\n'"${SOURCE_REVISION}"$'\n'"${SOURCE_FINGERPRINT}"
 
@@ -171,6 +179,8 @@ cat > "$FW/Versions/A/Resources/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+plutil -replace CFBundleShortVersionString -string "$FRAMEWORK_VERSION" \
+    "$FW/Versions/A/Resources/Info.plist"
 if [[ -n "$SOURCE_REVISION" ]]; then
     plutil -replace WashiSourceRevision -string "$SOURCE_REVISION" \
         "$FW/Versions/A/Resources/Info.plist"
