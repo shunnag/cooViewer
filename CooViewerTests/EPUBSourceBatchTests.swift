@@ -31,6 +31,7 @@ final class EPUBSourceBatchTests: XCTestCase {
         named name: String,
         imageOnly: Bool,
         fixedLayout: Bool = false,
+        compressed: Bool = false,
         spreads: [String?] = [nil]
     ) throws -> URL {
         let manifest = spreads.indices.map { index in
@@ -89,6 +90,27 @@ final class EPUBSourceBatchTests: XCTestCase {
             }
         }
         let url = tempDir.appendingPathComponent(name).appendingPathExtension("epub")
+        if compressed {
+            // Washi の取消し確認は deflate 展開中に行われ、無圧縮 ZIP では再現しない(設計書 §3.1)。
+            let contents = tempDir.appendingPathComponent(name + "-contents", isDirectory: true)
+            for (path, data) in entries {
+                let file = contents.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                         withIntermediateDirectories: true)
+                try data.write(to: file)
+            }
+            for arguments in [["-q", "-0", url.path, "mimetype"],
+                              ["-q", "-9", "-r", url.path, "META-INF", "OEBPS"]] {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                process.currentDirectoryURL = contents
+                process.arguments = arguments
+                try process.run()
+                process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, 0)
+            }
+            return url
+        }
         let data = TestFixtures.storedZip(entries: entries.map {
             (Array($0.0.utf8), $0.1)
         })
@@ -214,5 +236,22 @@ final class EPUBSourceBatchTests: XCTestCase {
         XCTAssertEqual(first, [0])
         XCTAssertEqual(second, [0],
                        "二回目はキャッシュした結果を返す")
+    }
+
+    func testCancelledLayoutComputationDoesNotPoisonCache() async throws {
+        let url = try makeEPUB(
+            named: "cancelled-spread", imageOnly: true, fixedLayout: true,
+            compressed: true,
+            spreads: ["left", "right", "left"])
+        let source = try await EPUBSource(url: url)
+        let cancelled = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await source.layoutSinglePageIndices()
+        }.value
+        XCTAssertEqual(cancelled, [], "取消し中は XHTML のページ情報を取得できない")
+        let recovered = await source.layoutSinglePageIndices()
+        let cached = await source.layoutSinglePageIndices()
+        XCTAssertEqual(recovered, [0], "取り消されていない要求で正しい単ページ位置を再計算する")
+        XCTAssertEqual(cached, recovered)
     }
 }

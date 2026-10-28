@@ -42,10 +42,55 @@ final class OpenFailureMessageTests: XCTestCase {
         XCTAssertTrue(text.contains("巻 偽案内 .zip"))
     }
 
-    func testEntryNameFormatterClampsAndPreservesBidiPolicy() {
+    func testEntryNameFormatterRemovesBidiEmbeddingsOverridesAndIsolates() {
+        for scalar in Array(0x202A...0x202E) + Array(0x2066...0x2069) {
+            let control = String(UnicodeScalar(scalar)!)
+            XCTAssertEqual(EntryNameFormatter.forDisplay("巻" + control + ".zip", limit: 120), "巻.zip")
+        }
+    }
+
+    func testEntryNameFormatterClampsAndFoldsNewlinesAfterRemovingControls() {
         XCTAssertEqual(EntryNameFormatter.forDisplay("\u{202E}" + String(repeating: "名", count: 200), limit: 80).count, 80)
-        XCTAssertEqual(EntryNameFormatter.forDisplay("\u{202E}名", limit: 120), "\u{202E}名")
+        XCTAssertEqual(EntryNameFormatter.forDisplay("\u{202E}名", limit: 120), "名")
+        XCTAssertEqual(EntryNameFormatter.forDisplay("a\nb\r\nc\u{2028}d\u{2029}e", limit: 7), "a b  c ")
+        XCTAssertEqual(EntryNameFormatter.forDisplay("a\nb\u{2028}c\u{2029}d", limit: 120), "a b c d")
         XCTAssertEqual(EntryNameFormatter.forDisplay("名", limit: 0), "")
+        XCTAssertEqual(EntryNameFormatter.forDisplay("ספר", limit: -1), "")
+    }
+
+    func testEntryNameFormatterUsesEPUBAutomaticIsolationForRTL() {
+        let name = "\u{2069}\u{202E}كتاب 12.zip\u{2067}"
+        XCTAssertEqual(EntryNameFormatter.forDisplay(name, limit: 120), "\u{2068}كتاب 12.zip\u{2069}")
+        XCTAssertEqual(EntryNameFormatter.forDisplay(name, limit: 4), "\u{2068}كتاب\u{2069}")
+    }
+
+    func testEntryNameFormatterLeavesPlainASCIIAndJapaneseUnchanged() {
+        for name in ["Book 12.zip", "第2巻 漫画.zip", ""] {
+            XCTAssertEqual(EntryNameFormatter.forDisplay(name, limit: 120), name)
+        }
+    }
+
+    @MainActor
+    func testAllEntryNameDisplaySitesRemoveControlsAndIsolateRTL() throws {
+        let name = "\u{202E}ספר\u{2069}.zip"
+        let safeName = "\u{2068}ספר.zip\u{2069}"
+        let path = "dir/" + name
+        let child = ChildReadFailure(relativePath: path, url: url,
+                                     cause: .accessDenied, retryClass: .persistent)
+        let failure = AssemblyFailure(failures: [child], total: 1, unchecked: 0,
+                                      volumeUnavailable: false, sourceURL: url)
+        let marker = UnreadableVolumeMarker(relativePath: path, cause: .accessDenied)
+        let messages = [
+            OpenFailureMessage.text(for: failure, bookName: "本", bundle: try japaneseBundle()),
+            marker.message,
+            ReaderWindowController.nestedPasswordMessage(name: name),
+        ]
+        for message in messages {
+            XCTAssertTrue(message.contains(safeName))
+            XCTAssertFalse(message.contains("\u{202E}"))
+        }
+        XCTAssertEqual(marker.relativePath, path)
+        XCTAssertEqual(child.relativePath, path)
     }
 
     func testOneFailure() throws {
