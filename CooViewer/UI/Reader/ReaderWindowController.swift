@@ -2948,7 +2948,7 @@ final class ReaderWindowController: NSWindowController {
                     return await EPUBAtlasStore.shared.thumbnail(
                         for: url, spineIndex: spineIndex,
                         pageInItem: pageInItem, metrics: metrics,
-                        isDark: isDark, width: 296, preparsed: preparsed)
+                        isDark: isDark, maxPixelSize: 296, preparsed: preparsed)
                 }
             }
         } else {
@@ -3066,7 +3066,7 @@ final class ReaderWindowController: NSWindowController {
                     thumbnailRequest = { [weak epubView] in
                         await epubView?.screenThumbnail(
                             spineIndex: spineIndex, pageInItem: pageInItem,
-                            width: 296)
+                            maxPixelSize: 296)
                     }
                 } else {
                     let metrics = EPUBScreenMetrics(
@@ -3081,7 +3081,7 @@ final class ReaderWindowController: NSWindowController {
                         return await EPUBAtlasStore.shared.thumbnail(
                             for: url, spineIndex: spineIndex,
                             pageInItem: pageInItem, metrics: metrics,
-                            isDark: isDark, width: 296, preparsed: preparsed)
+                            isDark: isDark, maxPixelSize: 296, preparsed: preparsed)
                     }
                 }
             }
@@ -3107,7 +3107,7 @@ final class ReaderWindowController: NSWindowController {
             let targetPage = pageInItem
             thumbnailRequest = { [weak epubView] in
                 await epubView?.screenThumbnail(
-                    spineIndex: targetSpine, pageInItem: targetPage, width: 296)
+                    spineIndex: targetSpine, pageInItem: targetPage, maxPixelSize: 296)
             }
         } else {
             // census 未完了: 進行率だけ(バー表示と同じ近似基準)

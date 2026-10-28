@@ -26,7 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       KAITOKIT_REF: v0.17.0
-      WASHI_REF: 1.25.0
+      WASHI_REF: 32802d985be63eb4697c882db7e71ca17f8a9113 # 次の Washi リリースでタグ指定へ戻す。
     strategy:
       fail-fast: false
       matrix:

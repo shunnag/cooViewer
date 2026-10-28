@@ -63,7 +63,7 @@ struct EPUBScreenThumbnailSource: BookSource {
         let screen = screens[entry.id]
         guard let image = await view.screenThumbnail(
             spineIndex: screen.spineIndex, pageInItem: screen.pageInItem,
-            width: CGFloat(maxPixelSize ?? 320))
+            maxPixelSize: maxPixelSize ?? 320)
         else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }

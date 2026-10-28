@@ -27,6 +27,7 @@ final class EPUBAtlasStoreTests: XCTestCase {
     private final class AtlasStub: EPUBScreenAtlasing {
         let publication: EPUBPublication
         private(set) var invalidateCount = 0
+        private(set) var requestedPixelSizes: [Int] = []
         var offscreenEnergyPolicy: EPUBOffscreenEnergyPolicy = .followSystem
 
         init(publication: EPUBPublication) {
@@ -41,8 +42,9 @@ final class EPUBAtlasStoreTests: XCTestCase {
 
         func thumbnail(spineIndex: Int, pageInItem: Int,
                        metrics: EPUBScreenMetrics, isDark: Bool,
-                       width: CGFloat) async -> CGImage? {
-            nil
+                       maxPixelSize: Int) async -> CGImage? {
+            requestedPixelSizes.append(maxPixelSize)
+            return nil
         }
 
         func invalidate() {
@@ -117,11 +119,30 @@ final class EPUBAtlasStoreTests: XCTestCase {
 
         _ = await store.thumbnail(
             for: url, spineIndex: 0, pageInItem: 0,
-            metrics: metrics, isDark: false, width: 120,
+            metrics: metrics, isDark: false, maxPixelSize: 120,
             preparsed: publication)
 
         XCTAssertTrue(received === publication,
                       "設計書 §2.4: サムネイル経路でも再解析しない")
+    }
+
+    /// ピクセル予算は表示倍率で補正せず、そのまま Washi へ渡す。
+    func testThumbnailForwardsPixelSizeWithoutScaling() async throws {
+        let url = URL(fileURLWithPath: "/test/pixel-size.epub")
+        let publication = try EPUBPublication(
+            data: Self.epubData(identifier: "pixel-size", body: "本文"),
+            displayURL: url)
+        let atlas = AtlasStub(publication: publication)
+        let store = EPUBAtlasStore(makeAtlas: { _ in atlas })
+
+        for pixels in [256, 320, 512] {
+            _ = await store.thumbnail(
+                for: url, spineIndex: 0, pageInItem: 0,
+                metrics: metrics, isDark: false, maxPixelSize: pixels,
+                preparsed: publication)
+        }
+
+        XCTAssertEqual(atlas.requestedPixelSizes, [256, 320, 512])
     }
 
     func testMismatchedPreparsedPublicationIsNotReused() async throws {

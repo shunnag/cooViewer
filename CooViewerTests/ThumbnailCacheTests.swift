@@ -225,6 +225,47 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(loads, 1)
     }
 
+    /// 単体・合本の旧 EPUB 画像を使わず、未参照の旧フォルダは期限切れで回収する。
+    func testPixelSizedEPUBKeysIgnoreAndTrimLegacyDiskThumbnails() async throws {
+        let legacyVariant = "metrics:metrics-a#theme:l#readable:1"
+        let variant = EPUBThumbnailCacheKey.renderingVariant(
+            metricsKey: "metrics-a", isDark: false, forcesReadableColors: true)
+        let singleKey = EPUBThumbnailCacheKey.singleBook(
+            path: "book.epub", totalPages: 12, pagesPerScreen: 2,
+            fontScale: 1, pageMargins: 1, defaultFont: "",
+            metricsKey: "metrics-a", isDark: false, forcesReadableColors: true)
+        let keyPairs = [
+            ("epub:book.epub#12x2#1.0#1##" + legacyVariant, singleKey),
+            ("col:books#exp6#pps:0:2#" + legacyVariant,
+             "col:books#exp6#pps:0:2#" + variant),
+        ]
+        let cache = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
+        let source = CountingSource()
+        let entry = try await source.entries()[0]
+
+        for (legacyKey, currentKey) in keyPairs {
+            let oldFolder = diskRoot.appendingPathComponent(legacyKey)
+            try FileManager.default.createDirectory(
+                at: oldFolder, withIntermediateDirectories: true)
+            // 拡張子に依存しないデコーダなので、旧画像は PNG で置いて HEIC 符号化を避ける。
+            try TestFixtures.pngData(width: 512, height: 512)
+                .write(to: oldFolder.appendingPathComponent("0@256.heic"))
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date().addingTimeInterval(-40 * 86400)],
+                ofItemAtPath: oldFolder.path)
+
+            let image = await cache.thumbnail(
+                for: entry, in: source, bookKey: currentKey)
+            XCTAssertEqual(image?.width, 40, "旧 512 px 画像を再利用しない")
+            XCTAssertEqual(image?.height, 60)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: oldFolder.path))
+            await cache.trimDiskCache(olderThanDays: 30)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: oldFolder.path))
+        }
+        let loads = await source.loadCount
+        XCTAssertEqual(loads, 2, "単体と合本の両方で再生成する")
+    }
+
     /// ディスクヒットで本フォルダの mtime が現在へ更新され、保持日数を超えた
     /// 愛読書が trimDiskCache に消されない(cooViewer-1f0)
     func testDiskCacheFolderFreshenedOnReadSurvivesTrim() async throws {
