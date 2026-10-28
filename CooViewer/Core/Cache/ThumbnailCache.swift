@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 /// v2: PNG → HEIC(Apple Silicon のハードウェアエンコード)で 1 枚あたり
 /// 約 1/5 のサイズになり、ディスク I/O と使用量を抑える。旧 Thumbnails/ は
 /// 起動時に丸ごと削除して作り直す(キャッシュは使い捨て可能なため)。
-/// bookKey は本のパス+更新日時+サイズ由来のため、本が更新されればキーごと変わる
+/// 通常本の bookKey は本のパス・更新日時・サイズと版付きの ID・ページパス対応から導くため、
+/// 本の更新や書庫の番号体系変更でキーごと変わる(設計書 §5)。
 /// (旧キーのフォルダは起動時の trimDiskCache で回収する)。
 actor ThumbnailCache {
     static let shared = ThumbnailCache()

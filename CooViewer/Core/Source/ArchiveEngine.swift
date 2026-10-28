@@ -127,8 +127,10 @@ struct ArchiveDecodeBudget: Sendable, Equatable {
     }
 
     func readerOptions(lazyLocalHeaders: Bool) -> ReaderOptions {
+        // メタデータは名前で除外するため、開くたびの副ファイル検査を省く(設計書 §2.4、§5)。
         ReaderOptions(limits: ReadLimits(parallelDecodeMemory: parallelDecodeMemory),
                       lazyLocalHeaders: lazyLocalHeaders,
+                      appleDoublePolicy: .expose,
                       decodeThreads: decodeThreads, decodePowerPolicy: powerPolicy)
     }
 }

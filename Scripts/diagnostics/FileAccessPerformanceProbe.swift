@@ -8,7 +8,7 @@ import KaitoKit
         let mode = CommandLine.arguments[1]
         let url = URL(fileURLWithPath: CommandLine.arguments[2])
         if mode.hasPrefix("archive") {
-            var options = ReaderOptions()
+            var options = ReaderOptions(appleDoublePolicy: .expose)
             #if CURRENT
             if mode.hasSuffix("bounded") { options.fileAccessPolicy = .bounded }
             #endif

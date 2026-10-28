@@ -167,10 +167,12 @@ final class Book {
     /// 本の同一性キー。ファイル情報に加えて**エントリ一覧のダイジェスト**を
     /// 混ぜる: フォルダの本はサブフォルダ内だけの変更や同名上書きで親の
     /// 更新日時が変わらないため、ファイル情報だけでは古いサムネイルが残る。
-    /// エントリ側のダイジェストは順序非依存(ソート・シャッフルの影響なし)
+    /// エントリ側のダイジェストは順序非依存(ソート・シャッフルの影響なし)。
+    /// 第2版はパスと ID の対応も含め、書庫の副ファイル方針変更による番号の
+    /// 振り直しでサムネイル・超解像が別ページへ当たるのを防ぐ(設計書 §5)。
     nonisolated static func makeCacheKey(for url: URL, entries: [PageEntry],
                                          identity: BookFileIdentity) -> String {
-        let seed = "\(url.path)|\(identity.modified)|\(identity.size)"
+        let seed = "pages-v2|\(url.path)|\(identity.modified)|\(identity.size)"
         // 依存を増やさない簡易ハッシュ(djb2 の 64bit 版を 2 系統)で十分
         var hash1: UInt64 = 5381
         var hash2: UInt64 = 52711
@@ -181,13 +183,16 @@ final class Book {
         var sum1: UInt64 = 0
         var sum2: UInt64 = 0
         for entry in entries {
-            let entrySeed = "\(entry.pathInBook)|\(entry.modificationDate?.timeIntervalSince1970 ?? 0)"
+            let entrySeed = "\(entry.id)|\(entry.pathInBook)|\(entry.modificationDate?.timeIntervalSince1970 ?? 0)"
             var entryHash1: UInt64 = 5381
             var entryHash2: UInt64 = 52711
             for byte in entrySeed.utf8 {
                 entryHash1 = entryHash1 &* 33 &+ UInt64(byte)
                 entryHash2 = entryHash2 &* 37 &+ UInt64(byte)
             }
+            // 同じ長さのパス同士で ID を交換しても加算で相殺しないよう混ぜる(設計書 §5)。
+            entryHash1 = (entryHash1 ^ (entryHash1 >> 30)) &* 0xbf58_476d_1ce4_e5b9
+            entryHash2 = (entryHash2 ^ (entryHash2 >> 27)) &* 0x94d0_49bb_1331_11eb
             sum1 &+= entryHash1
             sum2 &+= entryHash2
         }

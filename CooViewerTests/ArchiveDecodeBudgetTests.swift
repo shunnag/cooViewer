@@ -77,6 +77,7 @@ final class ArchiveDecodeBudgetTests: XCTestCase {
             XCTAssertEqual(options.decodeThreads, budget.decodeThreads)
             XCTAssertEqual(options.decodePowerPolicy, .reduceInLowPowerModeOrThermalPressure)
             XCTAssertFalse(options.lazyLocalHeaders)
+            XCTAssertEqual(options.appleDoublePolicy, .expose)
             var defaults = ReadLimits()
             defaults.parallelDecodeMemory = budget.parallelDecodeMemory
             XCTAssertEqual(options.limits, defaults)
