@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ImageIO
 import PDFKit
 import XCTest
 @testable import cooViewer
@@ -87,6 +88,225 @@ final class PDFSourceTests: XCTestCase {
 }
 
 extension PDFSourceTests {
+    /// 異なる画像を埋め込み、文書内部の画像キャッシュをページごとに増やす(設計書 §5、§7.6)。
+    private func makeImagePDF(pageCount: Int) throws -> URL {
+        let url = tempDir.appendingPathComponent("images.pdf")
+        var box = CGRect(x: 0, y: 0, width: 80, height: 120)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        for index in 0..<pageCount {
+            let data = TestFixtures.pngData(width: 80, height: 120,
+                                            red: CGFloat(index + 1) / CGFloat(pageCount + 1),
+                                            green: 0.25, blue: 0.75)
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            context.beginPDFPage(nil)
+            context.draw(image, in: box)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return url
+    }
+
+    func testDistinctImagePagesRecycleWithinBudget() async throws {
+        let limit = PDFPageRenderer.distinctPageLimit
+        let count = limit * 3 + 2
+        let source = try PDFSource(url: makeImagePDF(pageCount: count))
+        let entries = try await source.entries()
+        for (index, entry) in entries.enumerated() {
+            _ = try await source.image(for: entry, maxPixelSize: nil)
+            let stats = await source.debugRendererStatistics()
+            XCTAssertEqual(stats.display.count, 1)
+            XCTAssertEqual(stats.display.first?.distinctPageCount, index % limit + 1)
+            XCTAssertEqual(stats.display.first?.recycleCount, index / limit)
+            XCTAssertEqual(stats.display.first?.recycleFailureCount, 0)
+        }
+    }
+
+    func testCurrentPageStaysWarmAtBudgetForLoupeAndRerender() async throws {
+        let limit = PDFPageRenderer.distinctPageLimit
+        let source = try PDFSource(url: makeImagePDF(pageCount: limit + 1))
+        let entries = try await source.entries()
+        for entry in entries.prefix(limit) {
+            _ = try await source.image(for: entry, maxPixelSize: nil)
+        }
+        let before = await source.debugRendererStatistics()
+        for _ in 0..<3 {
+            _ = try await source.loupeImage(for: entries[limit - 1], pixelScale: 3)
+            _ = try await source.image(for: entries[limit - 1], maxPixelSize: 256)
+        }
+        let after = await source.debugRendererStatistics()
+        XCTAssertEqual(after.display, before.display)
+        _ = try await source.image(for: entries[limit], maxPixelSize: nil)
+        let switched = await source.debugRendererStatistics()
+        XCTAssertEqual(switched.display.first?.recycleCount, 1)
+        XCTAssertEqual(switched.display.first?.distinctPageCount, 1)
+    }
+
+    func testParallelDistinctImagePagesStayWithinEachRendererBudget() async throws {
+        let limit = PDFPageRenderer.distinctPageLimit
+        let count = limit * 6
+        let source = try PDFSource(url: makeImagePDF(pageCount: count))
+        let entries = try await source.entries()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for entry in entries {
+                group.addTask { _ = try await source.image(for: entry, maxPixelSize: nil) }
+            }
+            try await group.waitForAll()
+        }
+        let stats = await source.debugRendererStatistics()
+        XCTAssertTrue((1...3).contains(stats.display.count))
+        XCTAssertTrue(stats.display.allSatisfy { (1...limit).contains($0.distinctPageCount) })
+        XCTAssertEqual(stats.display.reduce(0) { $0 + $1.distinctPageCount + $1.recycleCount * limit }, count)
+        XCTAssertEqual(stats.display.reduce(0) { $0 + $1.recycleFailureCount }, 0)
+    }
+
+    func testRepeatedPagesBelowBudgetDoNotRecycle() async throws {
+        let source = try PDFSource(url: makeImagePDF(pageCount: 2))
+        let entries = try await source.entries()
+        for _ in 0..<20 {
+            for entry in entries { _ = try await source.image(for: entry, maxPixelSize: nil) }
+        }
+        let stats = await source.debugRendererStatistics()
+        XCTAssertEqual(stats.display.first?.distinctPageCount, 2)
+        XCTAssertEqual(stats.display.first?.recycleCount, 0)
+    }
+
+    func testPixelsAreEqualAfterDocumentRecycle() async throws {
+        let limit = PDFPageRenderer.distinctPageLimit
+        let source = try PDFSource(url: makeImagePDF(pageCount: limit))
+        let entries = try await source.entries()
+        let before = try await source.image(for: entries[0], maxPixelSize: nil)
+        for entry in entries.dropFirst() {
+            _ = try await source.image(for: entry, maxPixelSize: nil)
+        }
+        let after = try await source.image(for: entries[0], maxPixelSize: nil)
+        XCTAssertEqual(after.width, before.width)
+        XCTAssertEqual(after.height, before.height)
+        XCTAssertEqual(try XCTUnwrap(pixelData(of: after)), try XCTUnwrap(pixelData(of: before)))
+        let stats = await source.debugRendererStatistics()
+        XCTAssertEqual(stats.display.first?.recycleCount, 1)
+    }
+
+    func testThumbnailCacheUsesAndReleasesSeparateRenderer() async throws {
+        let source = try PDFSource(url: makeImagePDF(pageCount: 12))
+        let entries = try await source.entries()
+        _ = try await source.image(for: entries[0], maxPixelSize: nil)
+        let before = await source.debugRendererStatistics()
+        let cache = ThumbnailCache(diskRoot: tempDir.appendingPathComponent("thumbnails"))
+        await withTaskGroup(of: Void.self) { group in
+            for entry in entries {
+                group.addTask {
+                    let image = await cache.thumbnail(for: entry, in: source, bookKey: "pdf")
+                    XCTAssertNotNil(image)
+                }
+            }
+        }
+        let after = await source.debugRendererStatistics()
+        XCTAssertEqual(after.display, before.display)
+        XCTAssertGreaterThan(after.thumbnailBatches, 0)
+        XCTAssertFalse(after.thumbnailActive)
+        // 新しい一群も専用文書を作り、表示の温存状態を使わない(設計書 §5)。
+        _ = try await PageRequestIntent.$isThumbnail.withValue(true) {
+            try await source.image(for: entries[1], maxPixelSize: 50)
+        }
+        let nextBatch = await source.debugRendererStatistics()
+        XCTAssertEqual(nextBatch.thumbnailBatches, after.thumbnailBatches + 1)
+        XCTAssertFalse(nextBatch.thumbnailActive)
+    }
+
+    func testEncryptedFileAndMemoryPDFRecycleWithoutAnotherUnlock() async throws {
+        let count = PDFPageRenderer.distinctPageLimit + 2
+        let document = try XCTUnwrap(PDFDocument(url: makeImagePDF(pageCount: count)))
+        let data = try XCTUnwrap(document.dataRepresentation(options: [
+            PDFDocumentWriteOption.userPasswordOption: "sesame",
+            PDFDocumentWriteOption.ownerPasswordOption: "sesame",
+        ]))
+        let url = tempDir.appendingPathComponent("recycle-locked.pdf")
+        try data.write(to: url)
+        for memoryBacked in [false, true] {
+            let source = try memoryBacked ? PDFSource(data: data) : PDFSource(url: url)
+            let locked = await source.isEncrypted()
+            XCTAssertTrue(locked)
+            let accepted = await source.checkAndSetPassword("sesame")
+            XCTAssertEqual(accepted, .accepted)
+            let entries = try await source.entries()
+            let before = try await source.image(for: entries[0], maxPixelSize: nil)
+            for entry in entries.dropFirst() {
+                _ = try await source.image(for: entry, maxPixelSize: nil)
+            }
+            let after = try await source.image(for: entries[0], maxPixelSize: nil)
+            XCTAssertEqual(try XCTUnwrap(pixelData(of: after)), try XCTUnwrap(pixelData(of: before)))
+            let stats = await source.debugRendererStatistics()
+            XCTAssertEqual(stats.display.first?.recycleCount, 1)
+            let protected = await source.containsProtectedContent()
+            XCTAssertTrue(protected)
+            let thumbnail = try await PageRequestIntent.$isThumbnail.withValue(true) {
+                try await source.image(for: entries[0], maxPixelSize: 50)
+            }
+            XCTAssertEqual(thumbnail.height, 50)
+        }
+    }
+
+    func testFailedThumbnailRenderReleasesBatch() async throws {
+        let source = try PDFSource(url: makePDF())
+        let invalid = PageEntry(id: -1, name: "invalid", pathInBook: "invalid",
+                                fileURL: nil, creationDate: nil, modificationDate: nil)
+        do {
+            _ = try await PageRequestIntent.$isThumbnail.withValue(true) {
+                try await source.image(for: invalid, maxPixelSize: 50)
+            }
+            XCTFail("無効なページは失敗する")
+        } catch BookSourceError.pageLoadFailed(let name) {
+            XCTAssertEqual(name, "invalid")
+        }
+        let stats = await source.debugRendererStatistics()
+        XCTAssertFalse(stats.thumbnailActive)
+        XCTAssertEqual(stats.thumbnailBatches, 1)
+        XCTAssertTrue(stats.display.isEmpty)
+    }
+
+    func testUnavailableThumbnailRendererDoesNotDisableDisplayPoolGrowth() async throws {
+        let url = try makePDF()
+        let data = try Data(contentsOf: url)
+        let source = try PDFSource(url: url)
+        let entry = try await source.entries()[0]
+        try FileManager.default.removeItem(at: url)
+        let thumbnail = try await PageRequestIntent.$isThumbnail.withValue(true) {
+            try await source.image(for: entry, maxPixelSize: 50)
+        }
+        XCTAssertEqual(thumbnail.width, 50)
+        try data.write(to: url, options: .atomic)
+        _ = try await source.image(for: entry, maxPixelSize: nil)
+        let stats = await source.debugRendererStatistics()
+        XCTAssertEqual(stats.display.count, 1)
+        XCTAssertEqual(stats.thumbnailBatches, 0)
+    }
+
+    func testRecycleFailureKeepsOldDocumentAndRetriesAfterRecovery() async throws {
+        let limit = PDFPageRenderer.distinctPageLimit
+        let url = try makeImagePDF(pageCount: limit + 2)
+        let original = try Data(contentsOf: url)
+        let source = try PDFSource(url: url)
+        let entries = try await source.entries()
+        for entry in entries.prefix(limit) {
+            _ = try await source.image(for: entry, maxPixelSize: nil)
+        }
+        // ページ数が違う差し替えは再生成で採用せず、旧文書の読み取りを継続する(設計書 §7.4)。
+        let replacement = try makePDF()
+        try Data(contentsOf: replacement).write(to: url, options: .atomic)
+        _ = try await source.image(for: entries[limit], maxPixelSize: nil)
+        let failed = await source.debugRendererStatistics()
+        XCTAssertEqual(failed.display.first?.recycleCount, 0)
+        XCTAssertEqual(failed.display.first?.recycleFailureCount, 1)
+        let parallel = await source.currentlySupportsParallelPageLoads()
+        XCTAssertTrue(parallel)
+        try original.write(to: url, options: .atomic)
+        _ = try await source.image(for: entries[limit + 1], maxPixelSize: nil)
+        let recovered = await source.debugRendererStatistics()
+        XCTAssertEqual(recovered.display.first?.recycleCount, 1)
+        XCTAssertEqual(recovered.display.first?.distinctPageCount, 1)
+    }
+
     /// ページ毎に赤矩形の位置が違う PDF(並列レンダリングの取り違え検出用)
     private func makeMarkedPDF(pageCount: Int) throws -> URL {
         let url = tempDir.appendingPathComponent("marked.pdf")
