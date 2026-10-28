@@ -161,3 +161,52 @@ release notes の参照先の操作で、**任意コードの配布と downgrade
   7z 経路（v0.16.0 に entry 予算が無い）は固まることが KaitoKit 側の実測で確定している。
 - `../Washi` の webview 設定（4.10）は読んだが修正していない。Washi 側の検査は本検査の範囲外。
 - xcodebuild の全 suite は orchestrator が実行した（結果は本記録の末尾に追記する）。
+
+## 8. 追記（2026-10-28、後続作業）
+
+### 8.1 監査時の全 suite の結果
+
+監査時の全 suite の結果は本記録に追記されていなかった。数字は eceac38 の commit message と、2.0b51 の 9ec1db2 に
+「1,241 tests / 2 skipped / 0 failures」として残っている（KaitoKit v0.17.0 / Washi 1.25.0）。
+本節はその再掲であり、監査時の実行を本記録で新たに証明するものではない。
+
+### 8.2 CV41-5 の実測（第 7 節の未実証を解消）
+
+M4 Max で、KaitoKit **v0.16.0**（2.0b49 が同梱した版。2.0b49 の release notes で確認）の一時 worktree に、
+0.17.0 の `StuffItXKDFWorkTests` と同じ形の書庫を作る試験を足し、release build（`-enable-testing`）で
+別 thread の処理を 120 s 待った。
+
+| 書庫 | 大きさ | 操作 | v0.16.0 |
+|---|---|---|---|
+| entry 鍵の変種（algorithm 64 段 × 1,024） | 215 byte | password 付きで open し、entry を read | 120 s で**戻らない** |
+| catalog 暗号の変種（鍵長 65,536） | 192 byte | password 付きで open | 120 s で**戻らない** |
+
+v0.16.0 には StuffIt X の鍵導出予算も、導出中の取消し検査も無いので、CPU を占有したまま戻らない。
+v0.17.0 では、同じ形が `limitExceeded("StuffIt X KDF work")` で導出前に拒否される
+（`testMaximumAcceptedKeyLengthIsRejectedBeforeDerivation` / `testMaximumEntryKeyListsWithoutDerivingAndFailsOnRead`）。
+2.0b49 で到達するには password が必要で、入れ子の既知 password・vault・利用者の入力のどれでも届く。
+結論として、**2.0b49 は stream 暗号の変種の `.sitx` で固まる**。2.0b50 以降（KaitoKit v0.17.0）では解消している。
+
+### 8.3 4.2-F3 の再評価
+
+サイズを宣言しない entry は 2 GiB の guard（`exceedsPerPageDecodeLimit`）を通る。ただしページの展開も入れ子の読み出しも
+`ArchiveEngine.readContents` → `readAll` を通り、`readAll` はサイズ不明でも累計が `maxInMemorySize`（既定 1 GiB）を
+超えた時点で `limitExceeded` を投げる（`ArchiveEngine.swift` の `readAll`）。2 GiB guard より厳しい上限が既にかかって
+いるので、変更は不要と判断した（cooViewer-hzvo）。
+
+### 8.4 文書化だけで終えた項目の後続
+
+| 項目 | 対応 | bead |
+|---|---|---|
+| §4-1 branch protection | 利用者が 5 repo に ruleset を設定した（cooViewer は削除と non-fast-forward の禁止、PR 必須、CI 2 job 必須） | cooViewer-8iq0 |
+| 4.4-F4 / F5 / F9 bidi | `EntryNameFormatter` が U+202A–202E / U+2066–2069 を除き、強い RTL を含む名前を FSI/PDI で囲む | cooViewer-sq2t |
+| SPK-7 | `make-appcast.sh` が zip の名前と、zip 内のアプリの版・build 番号を照合する | cooViewer-il5y |
+| 4.8-F7 の残り | 両 framework の `CFBundleShortVersionString` を最近傍タグから導出する | cooViewer-vz3k |
+| 版の pin（第 6 節） | CI が KaitoKit / Washi を `KAITOKIT_REF` / `WASHI_REF` の版で取得する。ローカルと共有する単一の正はまだ無い | cooViewer-cjr9 |
+| 4.10-D / E | Washi 側で、画面上と画面外の webview の初回 navigation より前に rule list を登録する修正を用意した（Washi-rmg、未取り込み） | Washi-rmg |
+| C46-6 | 受け入れたまま。KaitoKit の `reopen()` が導出済み鍵を引き継ぐ案を記録した | cooViewer-44e8 |
+
+### 8.5 後続修正の検証
+
+branch `fix/audit-followups-2026-10-28` で、Debug の xcodebuild の全 suite を orchestrator が実行した:
+**1,255 tests / 2 skipped / 0 failures**（KaitoKit v0.17.0 / Washi 1.25.0）。追加した試験 15 件はすべて実行され、成功した。
