@@ -262,15 +262,29 @@ final class FolderSourceTests: XCTestCase {
         try assertRARContinuations(["one/x.part1.rar", "two/x.part2.rar"], expected: [])
     }
 
-    func testPartPrefixCaseMismatchIsNotFlagged() throws {
-        try assertRARContinuations(["X.part1.rar", "x.part2.rar"], expected: [])
+    func testPartPrefixCaseVariantsFollowVolumeLookup() throws {
+        let caseSensitive = (try? tempDir.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?.volumeSupportsCaseSensitiveNames ?? false
+        try assertRARContinuations(["X.part1.rar", "x.part2.rar"],
+                                   expected: caseSensitive ? [] : ["x.part2.rar"])
     }
 
-    func testPartMarkerAndExtensionSpellingMustMatch() throws {
+    func testPartMarkerAndExtensionCaseVariantsFollowVolumeLookup() throws {
+        let caseSensitive = (try? tempDir.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?.volumeSupportsCaseSensitiveNames ?? false
         try assertRARContinuations([
             "marker.part1.rar", "marker.PART2.rar", "extension.part1.rar", "extension.part2.RAR",
             "X.PART01.RAR", "X.PART02.RAR",
-        ], expected: ["X.PART02.RAR"])
+        ], expected: caseSensitive ? ["X.PART02.RAR"] : ["marker.PART2.rar", "extension.part2.RAR", "X.PART02.RAR"])
+    }
+
+    func testCanonicalPartNamesAreFlagged() throws {
+        try assertRARContinuations(["caf\u{00E9}.part1.rar", "cafe\u{0301}.part2.rar"],
+                                   expected: ["cafe\u{0301}.part2.rar"])
+    }
+
+    func testLeadingCombiningMarkDoesNotMergeParents() throws {
+        try assertRARContinuations(["dir/\u{0301}x.part1.rar", "dir\u{0301}x.part2.rar"], expected: [])
     }
 
     func testUnrelatedPartNamesAreNotFlagged() throws {
