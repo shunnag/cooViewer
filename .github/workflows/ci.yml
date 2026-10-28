@@ -17,24 +17,28 @@ on:
   schedule:
     - cron: '17 21 * * 1'
 
-# この workflow は token を使わない。
+# PR では新しい push が古い run を取り消す。push・手動・定期の run は取り消さない。
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 jobs:
-  build-and-test:
-    runs-on: ${{ matrix.os }}
-    env:
-      KAITOKIT_REF: v0.17.0
-      WASHI_REF: 1.25.0
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-26, xcode-27]
+  # PR の merge checkout と同じ tree を検査済みの場合だけ、push の重複検査を省く。
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.decide.outputs.full }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      # 文書のみ・検査済み tree でも appcast の検査は毎回行う。
       - name: Check appcast signature comment
         run: |
           if grep -q 'sparkle-sign-warning' appcast.xml; then
@@ -44,8 +48,154 @@ jobs:
           else
             echo "::warning::appcast.xml is unsigned; sign it before releasing signed-feed clients."
           fi
+      # PR は merge-base から head、push は before から今回の commit までの全差分を見る。
+      # 取得失敗・空差分・新規ブランチでは文書のみと判定せず、全 CI に戻す。
+      - name: Classify changed paths
+        id: paths
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          docs_only=false
+          classify() {
+            local checked_sha diff_range path changed=false
+            case "$EVENT:$REF" in
+              pull_request:*) ;;
+              push:refs/heads/master) ;;
+              *) return ;;
+            esac
+            checked_sha="$(git rev-parse HEAD)" || return
+            [ "$checked_sha" = "$SHA" ] || return
+            if [ "$EVENT" = pull_request ]; then
+              [[ "$PR_BASE" =~ ^[0-9a-f]{40}$ && "$PR_HEAD" =~ ^[0-9a-f]{40}$ ]] || return
+              diff_range="$PR_BASE...$PR_HEAD"
+            else
+              [[ "$BEFORE" =~ ^[0-9a-f]{40}$ && "$BEFORE" != 0000000000000000000000000000000000000000 ]] || return
+              diff_range="$BEFORE..$SHA"
+            fi
+            # rename の旧パスも検査し、コードから文書への移動で検査を省かない。
+            git diff --no-renames --name-only -z "$diff_range" -- > "$RUNNER_TEMP/ci-changed-paths" || return
+            while IFS= read -r -d '' path; do
+              changed=true
+              case "$path" in
+                .github/*|appcast.xml) return ;;
+                Documentation/*|*.md|.beads/*|LICENSE*) ;;
+                *) return ;;
+              esac
+            done < "$RUNNER_TEMP/ci-changed-paths"
+            [ "$changed" = true ] || return
+            docs_only=true
+          }
+          classify || true
+          printf 'docs_only=%s\n' "$docs_only" >> "$GITHUB_OUTPUT"
+      - name: Look up a successful PR for the same tree
+        id: lookup
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          skip=false
+          reason="event=$EVENT: 全 CI"
+          lookup() {
+            if [ "$EVENT" != push ] || [ "$REF" != refs/heads/master ]; then
+              return
+            fi
+            reason="checkout の commit を確認できないため全 CI"
+            local checked_sha tree pulls pr head runs id url count
+            checked_sha="$(git rev-parse HEAD)" || return
+            [ "$checked_sha" = "$SHA" ] || return
+            tree="$(git rev-parse 'HEAD^{tree}')" || return
+            reason="PR の取得に失敗したため全 CI"
+            pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" --jq "[.[] | select(.merged_at != null and .merge_commit_sha == \"$SHA\") | {number, head: .head.sha}]")" || return
+            reason="PR が一意でないため全 CI"
+            pr="$(jq -er 'if length == 1 then .[0].number else empty end | select(type == "number" and . > 0 and . == floor)' <<< "$pulls")" || return
+            head="$(jq -er '.[0].head | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pulls")" || return
+            reason="PR run の取得に失敗したため全 CI"
+            runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head&status=success&per_page=100" --jq '.workflow_runs[] | "\(.id) \(.html_url)"')" || return
+            reason="同じ tree の検査済み記録がないため全 CI"
+            while read -r id url; do
+              [ -n "$id" ] || continue
+              if [[ ! "$id" =~ ^[0-9]+$ ]] || [[ ! "$url" =~ ^https://github\.com/ ]]; then
+                reason="PR run の応答が不正なため全 CI"
+                return
+              fi
+              reason="検査済み記録の取得に失敗したため全 CI"
+              count="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?name=tested-tree-$tree" --jq '[.artifacts[] | select(.expired | not)] | length')" || return
+              if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+                reason="検査済み記録の応答が不正なため全 CI"
+                return
+              fi
+              if [ "$count" -ge 1 ]; then
+                reason="tree $tree は PR #$pr の $url で全 CI 済み。heavy job を省略する。"
+                skip=true
+                return
+              fi
+              reason="同じ tree の検査済み記録がないため全 CI"
+            done <<< "$runs"
+          }
+          lookup || true
+          printf 'skip=%s\n' "$skip" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
+      # literal true と正常終了を確認してから省く。失敗・出力欠落では全 CI にする。
+      - name: Decide whether to run the full CI
+        id: decide
+        if: always()
+        env:
+          DOCS_ONLY: ${{ steps.paths.outputs.docs_only }}
+          PATHS_OUTCOME: ${{ steps.paths.outcome }}
+          SKIP: ${{ steps.lookup.outputs.skip }}
+          LOOKUP_OUTCOME: ${{ steps.lookup.outcome }}
+        run: |
+          set -uo pipefail
+          full=true
+          if [ "$PATHS_OUTCOME" = success ] && [ "$DOCS_ONLY" = true ]; then
+            full=false
+            printf '文書のみの変更のためビルド・テストを省略する。\n' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$LOOKUP_OUTCOME" = success ] && [ "$SKIP" = true ]; then
+            full=false
+          elif [ "$PATHS_OUTCOME" != success ] || [ "$LOOKUP_OUTCOME" != success ]; then
+            printf 'gate の確認に失敗したため全 CI\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf 'full=%s\n' "$full" >> "$GITHUB_OUTPUT"
+
+  # job の if は matrix 展開前なので、必須 check 名を保つため step で省略する。
+  # 省略時は Ubuntu で成功を報告し、macOS runner を確保しない。
+  build-and-test:
+    name: build-and-test (${{ matrix.os }})
+    needs: plan
+    runs-on: ${{ needs.plan.outputs.full == 'true' && matrix.os || 'ubuntu-latest' }}
+    # macos-26 の通常約 10 分に対し、hang は約 2 倍で打ち切る。
+    timeout-minutes: 20
+    env:
+      KAITOKIT_REF: v0.17.0
+      WASHI_REF: 1.25.0
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, xcode-27]
+    steps:
+      - name: Skip macOS work
+        if: needs.plan.outputs.full != 'true'
+        run: echo 'plan の判定により macOS のビルド・テストを省略する。'
+      - name: Checkout
+        if: needs.plan.outputs.full == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Fetch pinned KaitoKit and Washi
+        if: needs.plan.outputs.full == 'true'
         run: |
           checkout_ref() {
             local name="$1" ref="$2"
@@ -62,12 +212,39 @@ jobs:
           checkout_ref Washi "$WASHI_REF"
 
       - name: Log toolchain versions
+        if: needs.plan.outputs.full == 'true'
         run: |
           xcodebuild -version
           swift --version
 
       - name: Build
+        if: needs.plan.outputs.full == 'true'
         run: xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug build
 
       - name: Test
+        if: needs.plan.outputs.full == 'true'
         run: xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug test -destination 'platform=macOS'
+
+  # 文書のみで省いた PR には記録を作らず、実際に全対象が成功した merge tree だけを残す。
+  record-tested-tree:
+    needs: [plan, build-and-test]
+    if: github.event_name == 'pull_request' && needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          printf 'tree=%s\n' "$tree" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/tested-tree"
+          printf 'tree %s\ncommit %s\nrun %s\n' "$tree" "$GITHUB_SHA" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/tested-tree/tested-tree.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-tree-${{ steps.tree.outputs.tree }}
+          path: ${{ runner.temp }}/tested-tree/tested-tree.txt
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true

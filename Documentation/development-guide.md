@@ -269,6 +269,14 @@ stderr には開始時・20 書庫ごと・最後に進捗を出す(`--audit-pro
 GitHub Actions はコミット SHA で固定し、Dependabot で月 1 回、更新を 1 つの PR にまとめて追跡します。
 `brew install` は従来どおりバージョンを固定しない方針です。
 
+CI は PR の古い実行だけを取り消します。`Documentation/**`・`**/*.md`(ルートの Markdown も含む)・
+`.beads/**`・`LICENSE*` のみの差分では macOS 検査を省き、必須の
+`build-and-test (macos-26)` / `build-and-test (xcode-27)` は Ubuntu で成功を報告します。
+`.github/**` と `appcast.xml` は省略対象にせず、appcast の検査は全イベントで行います。
+PR の全検査が通った merge checkout の `HEAD^{tree}` を 7 日間記録し、master の push は
+同じ tree の記録がある場合だけ重複する macOS 検査を省きます。照会に失敗した場合、手動実行、
+毎週月曜 21:17 UTC の定期実行は全検査します。
+
 CI の KaitoKit / Washi は `.github/workflows/ci.yml` のジョブ環境変数
 `KAITOKIT_REF` / `WASHI_REF` で出荷版に固定します(2.0b51 は `v0.17.0` / `1.25.0`)。
 タグ・ブランチ・完全なコミット SHA を指定でき、取得後のコミットをログに残します。
