@@ -714,25 +714,53 @@ final class ArchiveExtensionTests: XCTestCase {
             (["x.part2.rar"], []),
             (["one/x.part1.rar", "two/x.part2.rar"], []),
         ]
-        for (paths, expected) in cases {
-            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths), expected, "\(paths)")
+        for caseSensitive in [false, true] {
+            for (paths, expected) in cases {
+                XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths, caseSensitive: caseSensitive),
+                               expected, "\(paths)")
+            }
         }
     }
 
-    func testRARPartContinuationsRequireByteExactSpelling() {
-        let cases: [([String], Set<Int>)] = [
-            (["Foo.part1.rar", "foo.part2.rar"], []),
-            (["x.part1.rar", "x.PART2.rar"], []),
-            (["x.part1.rar", "x.part2.RAR"], []),
-            (["X.PART01.RAR", "X.PART02.RAR"], [1]),
-            (["One/x.part1.rar", "one/x.part2.rar"], []),
-            (["caf\u{00E9}.part1.rar", "cafe\u{0301}.part2.rar"], []),
-            (["caf\u{00E9}/x.part1.rar", "cafe\u{0301}/x.part2.rar"], []),
-            (["x.part1.rar", "y.part2.rar", "x.part.rar", "x.partA.rar", "x.part0.rar",
-              "x.part2.backup.rar", "x.part２.rar", "x.part2.cbr", "x.part1.part2.rar"], []),
+    func testRARPartContinuationsFollowVolumeCaseSensitivity() {
+        for paths in [
+            ["Foo.part1.rar", "foo.part2.rar"],
+            ["x.part1.rar", "x.PART2.rar"],
+            ["x.part1.rar", "x.part2.RAR"],
+            ["One/x.part1.rar", "one/x.part2.rar"],
+        ] {
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths, caseSensitive: false), [1])
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths, caseSensitive: true), [])
+        }
+    }
+
+    func testRARPartContinuationsNormalizeUnicodeInBothModes() {
+        for caseSensitive in [false, true] {
+            for paths in [
+                ["caf\u{00E9}.part1.rar", "cafe\u{0301}.part2.rar"],
+                ["caf\u{00E9}/x.part1.rar", "cafe\u{0301}/x.part2.rar"],
+            ] {
+                XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths, caseSensitive: caseSensitive), [1])
+            }
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(
+                in: ["caf\u{00E9}.part1.rar", "cafe.part2.rar"], caseSensitive: caseSensitive), [])
+        }
+    }
+
+    func testRARPartContinuationsKeepParentsWithLeadingCombiningMarksSeparate() {
+        for caseSensitive in [false, true] {
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(
+                in: ["dir/\u{0301}x.part1.rar", "dir\u{0301}x.part2.rar"], caseSensitive: caseSensitive), [])
+        }
+    }
+
+    func testUnrelatedRARPartNamesAreNotContinuations() {
+        let paths = [
+            "x.part1.rar", "y.part2.rar", "x.part.rar", "x.partA.rar", "x.part0.rar",
+            "x.part2.backup.rar", "x.part２.rar", "x.part2.cbr", "x.part1.part2.rar",
         ]
-        for (paths, expected) in cases {
-            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths), expected, "\(paths)")
+        for caseSensitive in [false, true] {
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths, caseSensitive: caseSensitive), [])
         }
     }
 
@@ -741,12 +769,14 @@ final class ArchiveExtensionTests: XCTestCase {
         let large = "18446744073709551616"
         let sameWidth = "x.part" + String(repeating: "0", count: 11) + large + ".rar"
         let grown = "x.part" + String(repeating: "9", count: 32) + ".rar"
-        XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: [
-            first, "x.part" + large + ".rar", sameWidth, grown,
-        ]), [2, 3])
-        XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: [
-            "x.part1.rar", "x.part" + large + ".rar",
-        ]), [1])
+        for caseSensitive in [false, true] {
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: [
+                first, "x.part" + large + ".rar", sameWidth, grown,
+            ], caseSensitive: caseSensitive), [2, 3])
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: [
+                "x.part1.rar", "x.part" + large + ".rar",
+            ], caseSensitive: caseSensitive), [1])
+        }
     }
 
     func testComicBookSevenZipArchives() {

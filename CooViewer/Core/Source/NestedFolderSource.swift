@@ -180,6 +180,7 @@ actor NestedFolderSource: BookSource {
             skippedOrdinals.removeAll()
             preparedCandidateIdentity = identity
         }
+        // 親で一度だけ照会したボリュームの名前比較規則による結果を使い、子や再試行では照会し直さない。
         skippedOrdinals.formUnion(folder.splitContinuationCandidateIndices)
         let pendingCandidates = candidates.indices.filter {
             preparedChildren[$0] == nil && !excludedOrdinals.contains($0) && !skippedOrdinals.contains($0)

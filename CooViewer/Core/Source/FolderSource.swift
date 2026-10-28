@@ -67,6 +67,9 @@ final class FolderSource: BookSource {
     init(url: URL, readSubFolders: Bool) throws {
         self.url = url
         let fileManager = FileManager.default
+        // NAS への照会を子ごとに繰り返さず、親で一度だけ調べる。不明なら macOS の既定に合わせる。
+        let caseSensitive = (try? url.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?.volumeSupportsCaseSensitiveNames ?? false
         let keys: [URLResourceKey] = [
             .isDirectoryKey, .creationDateKey, .contentModificationDateKey,
         ]
@@ -126,11 +129,11 @@ final class FolderSource: BookSource {
         }
         self.pageEntries = entries
         self.nestedBookCandidates = candidates
-        // バイト一致の先頭巻が同じ親にある場合だけ省略する。KaitoKit が先頭巻の綴りと桁幅で続きを探すため。
+        // KaitoKit は先頭巻の綴りと桁幅で続きを開くため、ボリュームの名前比較規則に従って照合する。
         // 偶然この命名の別々の単独書庫も続き巻とみなす残余リスクがある。
         // 候補は残し、後続ページの id を保つ(設計書 §2.4)。
         self.splitContinuationCandidateIndices = SupportedTypes.rarPartContinuationIndices(
-            in: candidates.map(\.relativePath))
+            in: candidates.map(\.relativePath), caseSensitive: caseSensitive)
     }
 
     nonisolated static func fastPrefixes(for url: URL, standardizedBasePath: String) -> [String] {

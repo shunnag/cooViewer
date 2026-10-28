@@ -54,9 +54,10 @@ enum SupportedTypes {
         return (String(stem[..<marker.lowerBound]), String(stem[marker]), digits, String(name.suffix(4)))
     }
 
-    /// バイト一致の先頭巻が同じ親にあり、KaitoKit がその綴りと桁幅から生成する続き巻だけを省略する。
+    /// KaitoKit が先頭巻の綴りから生成する名前を、ファイルシステムの比較規則に合わせて照合する。
+    /// 正規化形の違いは常に吸収し、大小文字はボリュームが区別しない場合だけ同一視する。
     /// 巻番号が先頭巻の幅を超える場合だけ、ゼロ埋めなしの桁数増加を許す(設計書 §2.4、§7.4)。
-    static func rarPartContinuationIndices(in paths: [String]) -> Set<Int> {
+    static func rarPartContinuationIndices(in paths: [String], caseSensitive: Bool) -> Set<Int> {
         var firstParts: [[UInt8]: Set<Int>] = [:]
         var continuations: [(index: Int, key: [UInt8], width: Int, hasLeadingZero: Bool)] = []
         for (index, path) in paths.enumerated() {
@@ -65,8 +66,12 @@ enum SupportedTypes {
             // 数値型の上限に関係なく、任意のゼロ埋めと 2 以上の巻番号を扱う(設計書 §2.4)。
             let number = part.digits.drop(while: { $0 == "0" })
             guard !number.isEmpty else { continue }
-            let parent = String(path.dropLast(name.count))
-            let key = Array((parent + part.prefix + part.marker + part.ext).utf8)
+            // 名前の先頭が結合文字でも、直前の区切りを同じ書記素として削らない。
+            let parent = String(decoding: path.utf8.dropLast(name.utf8.count), as: UTF8.self)
+            let family = parent + part.prefix + part.marker + part.ext
+            let compared = caseSensitive ? family : family.folding(
+                options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            let key = Array(compared.precomposedStringWithCanonicalMapping.utf8)
             if number == "1" {
                 firstParts[key, default: []].insert(part.digits.count)
             } else {

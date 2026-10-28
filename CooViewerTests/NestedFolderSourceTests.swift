@@ -304,16 +304,27 @@ final class NestedFolderSourceTests: XCTestCase {
         XCTAssertEqual(entries.map(\.id), [5_000_000])
     }
 
-    func testUnreachableRARPartNamesRemainIndependentChildren() async throws {
+    func testRARCaseVariantsFollowVolumeLookupAndKeepChildIDs() async throws {
+        let caseSensitive = (try? tempDir.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?.volumeSupportsCaseSensitiveNames ?? false
         let source = try makeSplitRARCollection(names: [
             "Prefix.part1.rar", "prefix.part2.rar", "marker.part1.rar", "marker.PART2.rar",
             "extension.part1.rar", "extension.part2.RAR", "padding.part1.rar", "padding.part02.rar",
         ])
         let entries = try await source.entries()
         let excluded = await source.excludedChildCount()
-        XCTAssertEqual(excluded, 8)
+        XCTAssertEqual(excluded, caseSensitive ? 8 : 5)
         XCTAssertEqual(entries.map(\.pathInBook), ["z.zip/page.avifs"])
         XCTAssertEqual(entries.map(\.id), [9_000_000])
+    }
+
+    func testCanonicalRARPartNamesKeepLaterChildIDs() async throws {
+        let source = try makeSplitRARCollection(names: ["caf\u{00E9}.part1.rar", "cafe\u{0301}.part2.rar"])
+        let entries = try await source.entries()
+        let excluded = await source.excludedChildCount()
+        XCTAssertEqual(excluded, 1)
+        XCTAssertEqual(entries.map(\.pathInBook), ["z.zip/page.avifs"])
+        XCTAssertEqual(entries.map(\.id), [3_000_000])
     }
 
     /// パスワード入力をキャンセルした合本ソースを(EPUB 往復の復帰のように)

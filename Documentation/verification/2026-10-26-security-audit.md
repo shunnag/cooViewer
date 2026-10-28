@@ -209,4 +209,6 @@ v0.17.0 では、同じ形が `limitExceeded("StuffIt X KDF work")` で導出前
 ### 8.5 後続修正の検証
 
 branch `fix/audit-followups-2026-10-28` で、Debug の xcodebuild の全 suite を orchestrator が実行した:
-**1,255 tests / 2 skipped / 0 failures**（KaitoKit v0.17.0 / Washi 1.25.0）。追加した試験 15 件はすべて実行され、成功した。
+**1,261 tests / 2 skipped / 0 failures**（KaitoKit v0.17.0 / Washi 1.25.0）。追加・改名した試験 22 件はすべて実行され、成功した。
+独立レビューで見つかった 3 件（CI の shallow fetch にタグが無く版が既定値へ戻る、親パスを書記素数で切る、
+KaitoKit の `openat` が大小文字・正規化を区別しないボリュームで続き巻を開くのに照合がバイト一致だった）も直してから測った。

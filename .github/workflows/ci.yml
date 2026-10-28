@@ -51,7 +51,10 @@ jobs:
             local name="$1" ref="$2"
             git init "../$name"
             git -C "../$name" remote add origin "https://github.com/shunnag/$name.git"
-            git -C "../$name" fetch --depth 1 origin "$ref"
+            # タグの実体も残し、フレームワークの版とソース revision を導出できるようにする。
+            if ! git -C "../$name" fetch --depth 1 origin "+refs/tags/$ref:refs/tags/$ref"; then
+              git -C "../$name" fetch --depth 1 origin "$ref"
+            fi
             git -C "../$name" checkout --detach FETCH_HEAD
             echo "$name ($ref): $(git -C "../$name" rev-parse HEAD)"
           }
