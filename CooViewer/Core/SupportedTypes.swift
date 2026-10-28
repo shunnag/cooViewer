@@ -39,13 +39,47 @@ enum SupportedTypes {
     /// KaitoKit と同じ規則で .partN.rar を分解し、元の綴りを保つ(設計書 §2.4)。
     static func rarPartPattern(_ name: String)
         -> (prefix: String, marker: String, digits: String, number: UInt64, ext: String)? {
+        guard let part = rarPartComponents(name),
+              let number = UInt64(part.digits), number > 0 else { return nil }
+        return (part.prefix, part.marker, part.digits, number, part.ext)
+    }
+
+    private static func rarPartComponents(_ name: String)
+        -> (prefix: String, marker: String, digits: String, ext: String)? {
         guard name.lowercased().hasSuffix(".rar") else { return nil }
         let stem = String(name.dropLast(4))
         guard let marker = stem.range(of: ".part", options: [.backwards, .caseInsensitive]) else { return nil }
         let digits = String(stem[marker.upperBound...])
-        guard !digits.isEmpty, digits.utf8.allSatisfy({ (0x30...0x39).contains($0) }),
-              let number = UInt64(digits), number > 0 else { return nil }
-        return (String(stem[..<marker.lowerBound]), String(stem[marker]), digits, number, String(name.suffix(4)))
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+        return (String(stem[..<marker.lowerBound]), String(stem[marker]), digits, String(name.suffix(4)))
+    }
+
+    /// バイト一致の先頭巻が同じ親にあり、KaitoKit がその綴りと桁幅から生成する続き巻だけを省略する。
+    /// 巻番号が先頭巻の幅を超える場合だけ、ゼロ埋めなしの桁数増加を許す(設計書 §2.4、§7.4)。
+    static func rarPartContinuationIndices(in paths: [String]) -> Set<Int> {
+        var firstParts: [[UInt8]: Set<Int>] = [:]
+        var continuations: [(index: Int, key: [UInt8], width: Int, hasLeadingZero: Bool)] = []
+        for (index, path) in paths.enumerated() {
+            let name = (path as NSString).lastPathComponent
+            guard let part = rarPartComponents(name) else { continue }
+            // 数値型の上限に関係なく、任意のゼロ埋めと 2 以上の巻番号を扱う(設計書 §2.4)。
+            let number = part.digits.drop(while: { $0 == "0" })
+            guard !number.isEmpty else { continue }
+            let parent = String(path.dropLast(name.count))
+            let key = Array((parent + part.prefix + part.marker + part.ext).utf8)
+            if number == "1" {
+                firstParts[key, default: []].insert(part.digits.count)
+            } else {
+                continuations.append((index, key, part.digits.count, part.digits.first == "0"))
+            }
+        }
+        return Set(continuations.compactMap { continuation in
+            guard let widths = firstParts[continuation.key],
+                  widths.contains(continuation.width)
+                    || (!continuation.hasLeadingZero && widths.contains { $0 < continuation.width })
+            else { return nil }
+            return continuation.index
+        })
     }
 
     static func isPDF(_ url: URL) -> Bool {

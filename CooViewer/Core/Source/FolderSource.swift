@@ -126,18 +126,11 @@ final class FolderSource: BookSource {
         }
         self.pageEntries = entries
         self.nestedBookCandidates = candidates
-        // バイト一致の先頭巻が同じ親にある場合だけ省略する。偶然この命名の別々の単独書庫も
-        // 続き巻とみなす残余リスクがある。候補は残し、後続ページの id を保つ(設計書 §2.4)。
-        let paths = Set(candidates.map { Array($0.relativePath.utf8) })
-        self.splitContinuationCandidateIndices = Set(candidates.indices.filter { index in
-            let path = candidates[index].relativePath
-            let name = (path as NSString).lastPathComponent
-            guard let part = SupportedTypes.rarPartPattern(name), part.number >= 2 else { return false }
-            let parent = String(path.dropLast(name.count))
-            let first = parent + part.prefix + part.marker
-                + String(repeating: "0", count: part.digits.count - 1) + "1" + part.ext
-            return paths.contains(Array(first.utf8))
-        })
+        // バイト一致の先頭巻が同じ親にある場合だけ省略する。KaitoKit が先頭巻の綴りと桁幅で続きを探すため。
+        // 偶然この命名の別々の単独書庫も続き巻とみなす残余リスクがある。
+        // 候補は残し、後続ページの id を保つ(設計書 §2.4)。
+        self.splitContinuationCandidateIndices = SupportedTypes.rarPartContinuationIndices(
+            in: candidates.map(\.relativePath))
     }
 
     nonisolated static func fastPrefixes(for url: URL, standardizedBasePath: String) -> [String] {

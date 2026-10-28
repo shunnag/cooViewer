@@ -699,6 +699,56 @@ final class ArchiveExtensionTests: XCTestCase {
         }
     }
 
+    func testRARPartContinuationsFollowFirstVolumePadding() {
+        let cases: [([String], Set<Int>)] = [
+            (["x.part1.rar", "x.part2.rar", "x.part10.rar", "x.part12.rar"], [1, 2, 3]),
+            (["x.part01.rar", "x.part02.rar"], [1]),
+            (["x.part001.rar", "x.part010.rar"], [1]),
+            (["x.part01.rar", "x.part100.rar"], [1]),
+            (["x.part001.rar", "x.part1000.rar"], [1]),
+            (["x.part1.rar", "x.part02.rar"], []),
+            (["x.part01.rar", "x.part2.rar", "x.part0003.rar"], []),
+            (["x.part001.rar", "x.part02.rar"], []),
+            (["x.part1.rar", "x.part001.rar", "x.part02.rar", "x.part002.rar",
+              "x.part10.rar", "x.part010.rar", "x.part0002.rar"], [3, 4, 5]),
+            (["x.part2.rar"], []),
+            (["one/x.part1.rar", "two/x.part2.rar"], []),
+        ]
+        for (paths, expected) in cases {
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths), expected, "\(paths)")
+        }
+    }
+
+    func testRARPartContinuationsRequireByteExactSpelling() {
+        let cases: [([String], Set<Int>)] = [
+            (["Foo.part1.rar", "foo.part2.rar"], []),
+            (["x.part1.rar", "x.PART2.rar"], []),
+            (["x.part1.rar", "x.part2.RAR"], []),
+            (["X.PART01.RAR", "X.PART02.RAR"], [1]),
+            (["One/x.part1.rar", "one/x.part2.rar"], []),
+            (["caf\u{00E9}.part1.rar", "cafe\u{0301}.part2.rar"], []),
+            (["caf\u{00E9}/x.part1.rar", "cafe\u{0301}/x.part2.rar"], []),
+            (["x.part1.rar", "y.part2.rar", "x.part.rar", "x.partA.rar", "x.part0.rar",
+              "x.part2.backup.rar", "x.part２.rar", "x.part2.cbr", "x.part1.part2.rar"], []),
+        ]
+        for (paths, expected) in cases {
+            XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: paths), expected, "\(paths)")
+        }
+    }
+
+    func testRARPartContinuationsCompareDigitStringsBeyondUInt64() {
+        let first = "x.part" + String(repeating: "0", count: 30) + "1.rar"
+        let large = "18446744073709551616"
+        let sameWidth = "x.part" + String(repeating: "0", count: 11) + large + ".rar"
+        let grown = "x.part" + String(repeating: "9", count: 32) + ".rar"
+        XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: [
+            first, "x.part" + large + ".rar", sameWidth, grown,
+        ]), [2, 3])
+        XCTAssertEqual(SupportedTypes.rarPartContinuationIndices(in: [
+            "x.part1.rar", "x.part" + large + ".rar",
+        ]), [1])
+    }
+
     func testComicBookSevenZipArchives() {
         XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.cb7")))
         XCTAssertTrue(SupportedTypes.isArchive(URL(fileURLWithPath: "/a/b.CB7")))

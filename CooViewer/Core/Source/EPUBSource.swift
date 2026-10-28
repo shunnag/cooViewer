@@ -112,7 +112,10 @@ actor EPUBSource: BookSource {
         // 解決した実効方向へそろえる（設計書 §2.4）。
         let indices = EPUBSpreadHints.singleIndices(
             slots: slots, readingDirection: publication.effectiveReadingDirection)
-        layoutSingleIndicesCache = indices
+        // 取消し中は XHTML 読み取りが失敗し得るため、不完全な結果を次の要求へ残さない(設計書 §3.1)。
+        if !Task.isCancelled {
+            layoutSingleIndicesCache = indices
+        }
         return indices
     }
 
