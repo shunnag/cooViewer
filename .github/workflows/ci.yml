@@ -25,7 +25,8 @@ jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
     env:
-      KAITOKIT_REF: v0.17.0
+      # reopen(options:) は未リリースのためコミットを固定し、KaitoKit 0.18.0 公開時にタグへ戻す。
+      KAITOKIT_REF: 914d64a41e7eeb2e813723c587e200b59c1d44b5
       WASHI_REF: 1.25.0
     strategy:
       fail-fast: false

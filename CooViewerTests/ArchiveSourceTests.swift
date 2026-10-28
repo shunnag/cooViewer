@@ -112,7 +112,7 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertLessThanOrEqual(extractorCount, ArchiveSource.extractorPoolSize(conserveEnergy: false))
     }
 
-    func testFactoryReceivesPrimaryAndExtractorRolesForFileAndData() async throws {
+    func testExtractorsReusePrimaryOpenForFileAndData() async throws {
         let png = TestFixtures.pngData(width: 4, height: 6)
         let data = TestFixtures.storedZip(entries: [(Array("page.avifs".utf8), png)])
         let url = try writeZip(data, name: "roles.cbr")
@@ -140,15 +140,15 @@ final class ArchiveSourceTests: XCTestCase {
                                   persistenceKey: .file(path: url.path),
                                   engineFactory: factory, powerState: power)
             ]
-            let poolSize = ArchiveSource.extractorPoolSize(conserveEnergy: power.shouldConserveEnergy)
             for source in sources {
                 let entry = try await source.entries()[0]
                 let image = try await source.image(for: entry, maxPixelSize: nil)
                 XCTAssertEqual(image.width, 4)
                 XCTAssertEqual(image.height, 6)
+                let count = await source.extractorCount
+                XCTAssertEqual(count, 1)
             }
-            XCTAssertEqual(roles.withLock { $0 }, [.primary, .primary,
-                .extractor(poolSize: poolSize), .extractor(poolSize: poolSize)])
+            XCTAssertEqual(roles.withLock { $0 }, [.primary, .primary])
         }
     }
 
@@ -178,7 +178,8 @@ final class ArchiveSourceTests: XCTestCase {
             openFile: ArchiveEngineFactory.live.openFile,
             openData: { kind, data, role in
                 guard let engine = try ArchiveEngineFactory.live.openData(kind, data, role) else { return nil }
-                guard case .extractor = role else { return engine }
+                // 生成窓口で係の使用を計測し、電力変更時の貸し出しを検証する(設計書 §5)。
+                guard case .extractor = role else { return PoolTestArchiveEngine(engine: engine) }
                 let id = opens.withLock { $0 += 1; return $0 }
                 return PoolTestArchiveEngine(engine: engine, pauseOnce: false) {
                     let (low, firstUse) = state.withLock {
@@ -285,7 +286,8 @@ final class ArchiveSourceTests: XCTestCase {
             openData: { kind, data, role in
                 let ordinal = opens.withLock { $0 += 1; return $0 }
                 guard ordinal == 1 else { return nil }
-                return try ArchiveEngineFactory.live.openData(kind, data, role)
+                guard let engine = try ArchiveEngineFactory.live.openData(kind, data, role) else { return nil }
+                return PoolTestArchiveEngine(engine: engine)
             })
         let source = try ArchiveSource(url: url, engineFactory: factory)
         for (offset, entry) in try await source.entries().enumerated() {
@@ -329,7 +331,8 @@ final class ArchiveSourceTests: XCTestCase {
             openData: { kind, data, role in
                 let ordinal = opens.withLock { $0 += 1; return $0 }
                 if ordinal == 2 { throw KaitoError.io(EMFILE) }
-                return try ArchiveEngineFactory.live.openData(kind, data, role)
+                guard let engine = try ArchiveEngineFactory.live.openData(kind, data, role) else { return nil }
+                return PoolTestArchiveEngine(engine: engine)
             })
         let source = try ArchiveSource(url: url, engineFactory: factory)
         let pages = try await source.entries()

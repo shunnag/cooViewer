@@ -412,6 +412,12 @@ final class ArchiveEngineTests: XCTestCase {
         }
     }
 
+    private func supportsExtractorReopen(_ kind: ArchiveEngineKind) -> Bool {
+        switch kind {
+        case .kaitokit: true
+        }
+    }
+
     private func assertMappedOpenRetriesFile(throwsOnData: Bool) async throws {
         // 入口の再試行を単独で検証するため、型データベース不要の画像拡張子を使う。
         // 内容は PNG のままで、デコーダはマジックから形式を判別する。
@@ -419,12 +425,15 @@ final class ArchiveEngineTests: XCTestCase {
         try XCTSkipUnless(ArchiveSource.shouldMemoryMap(url: fixture), "mmap 対象のローカルボリュームが必要")
         for kind in ArchiveEngineKind.allCases {
             ArchiveEngineDiagnostics.resetForTesting()
+            let supportsReopen = supportsExtractorReopen(kind)
+            let reopenProbe = ReopenProbe()
             let routes = OSAllocatedUnfairLock(initialState: [String]())
             let factory = ArchiveEngineFactory(
                 openFile: { actualKind, path, role in
                     XCTAssertEqual(actualKind, kind)
                     routes.withLock { $0.append("file") }
-                    return try ArchiveEngineFactory.live.openFile(actualKind, path, role)
+                    guard let engine = try ArchiveEngineFactory.live.openFile(actualKind, path, role) else { return nil }
+                    return ReopenRecordingEngine(engine: engine, probe: reopenProbe, role: role)
                 },
                 openData: { actualKind, _, role in
                     XCTAssertEqual(actualKind, kind)
@@ -444,10 +453,18 @@ final class ArchiveEngineTests: XCTestCase {
             XCTAssertEqual(diagnostics.mmapRetryCount, 1)
             XCTAssertTrue(diagnostics.lastError?.contains(kind.displayName) == true)
 
-            // 再試行後の展開係も file 入口を使い、失敗した data 入口へ戻らない。
+            // 再試行後は file 背景の主書庫から複製し、複製非対応なら file 入口で開く。
+            // どちらも失敗した data 入口へ戻らない(設計書 §2.4、§5)。
             let image = try await source.image(for: XCTUnwrap(entries.first), maxPixelSize: nil)
             XCTAssertEqual(image.width, 3)
-            XCTAssertEqual(routes.withLock { $0 }, ["data", "file", "file"])
+            let expectedRoutes = supportsReopen ? ["data", "file"] : ["data", "file", "file"]
+            XCTAssertEqual(routes.withLock { $0 }, expectedRoutes)
+            let extractorCount = await source.extractorCount
+            XCTAssertEqual(extractorCount, 1)
+            if supportsReopen {
+                XCTAssertEqual(reopenProbe.state.withLock { $0.reopenedRoles },
+                               [.extractor(poolSize: ArchiveSource.extractorPoolSize(conserveEnergy: false))])
+            }
         }
     }
 
