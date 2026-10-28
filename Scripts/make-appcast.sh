@@ -4,8 +4,6 @@
 #   例:   Scripts/make-appcast.sh build/Release/cooViewer-2.0b3.zip 2.0b3 2003
 # 前提: リリース手順(CLAUDE.md)で公証・ステープル済みの zip を渡すこと。
 # 秘密鍵はログインキーチェーン(generate_keys が作成)。
-# EN: Signs a release zip with the Sparkle EdDSA key and inserts an <item>
-# EN: into appcast.xml. Pass the notarized & stapled zip.
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then
@@ -18,6 +16,27 @@ VERSION="$2"
 BUILD="$3"
 
 cd "$(dirname "$0")/.."
+
+# 署名や feed の更新より前に、配布 URL・引数・実物の版の取り違えを止める。
+if [[ "$(basename "$ZIP")" != "cooViewer-$VERSION.zip" ]]; then
+    echo "error: zip basename must be cooViewer-$VERSION.zip ($ZIP)" >&2
+    exit 1
+fi
+if ! ZIP_VERSION="$(unzip -p "$ZIP" cooViewer.app/Contents/Info.plist \
+    | plutil -extract CFBundleShortVersionString raw -)"; then
+    echo "error: cannot read CFBundleShortVersionString from cooViewer.app/Contents/Info.plist in $ZIP" >&2
+    exit 1
+fi
+if ! ZIP_BUILD="$(unzip -p "$ZIP" cooViewer.app/Contents/Info.plist \
+    | plutil -extract CFBundleVersion raw -)"; then
+    echo "error: cannot read CFBundleVersion from cooViewer.app/Contents/Info.plist in $ZIP" >&2
+    exit 1
+fi
+if [[ "$ZIP_VERSION" != "$VERSION" || "$ZIP_BUILD" != "$BUILD" ]]; then
+    echo "error: zip app version/build is $ZIP_VERSION/$ZIP_BUILD; expected $VERSION/$BUILD" >&2
+    exit 1
+fi
+
 SIGN_UPDATE="Frameworks/Sparkle-dist/bin/sign_update"
 if [[ ! -x "$SIGN_UPDATE" ]]; then
     echo "error: $SIGN_UPDATE not found. Build once (or run Scripts/fetch-sparkle.sh)." >&2
