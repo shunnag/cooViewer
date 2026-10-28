@@ -28,4 +28,10 @@ enum BookSourceError: Error {
 // 表示経路だけを測定する。用途フラグの配線は XCTest で別途検証する(設計書 §7.6)。
 enum PageRequestIntent {
     static let isThumbnail = false
+    static let displayColorTarget: DisplayColorTarget? = nil
+}
+
+// メモリ測定では従来の sRGB を固定し、表示先の取得を持ち込まない(設計書 §7.6)。
+struct DisplayColorTarget: Sendable {
+    let rgb: CGColorSpace
 }
