@@ -82,6 +82,8 @@ struct ThumbnailOverlayView: View {
 
     private func grid(_ layout: ThumbnailGridLayout) -> some View {
         let groups = layout.groups(onScreen: layout.clamped(screen: model.screen))
+        let requestablePages = model.initialPrefetchPending
+            ? Set(model.measuredAspects.keys) : nil
         // ピンチ中は指に追従する固定サイズ、静止時は余白を均等吸収して
         // ビューポートを埋める(Photos 風: ジェスチャ中だけ生のサイズで滑らかに
         // 動き、離すと整列へ沈む)。行列はセルサイズ基準の自動算出なので原則
@@ -113,6 +115,8 @@ struct ThumbnailOverlayView: View {
                                     pageIndices: groups[position],
                                     snapshot: model.snapshot,
                                     targetPixelSize: model.thumbnailTargetPixelSize,
+                                    thumbnailCache: model.thumbnailCache,
+                                    requestablePages: requestablePages,
                                     onSelect: { model.onJump?(groups[position][0]) })
                                     .frame(width: cellWidth, height: cellHeight)
                             } else {
@@ -181,6 +185,8 @@ private struct ThumbnailCell: View {
     let pageIndices: [Int]  // 読み順
     let snapshot: ThumbnailOverlayModel.Snapshot
     let targetPixelSize: Int  // セル追従の目標解像度(cooViewer-vbv)
+    let thumbnailCache: ThumbnailCache
+    let requestablePages: Set<Int>?
     let onSelect: @MainActor () -> Void
 
     private var isCurrent: Bool {
@@ -220,6 +226,8 @@ private struct ThumbnailCell: View {
                             source: snapshot.source,
                             bookKey: snapshot.bookKey,
                             targetPixelSize: targetPixelSize,
+                            thumbnailCache: thumbnailCache,
+                            generationAllowed: requestablePages?.contains(index) ?? true,
                             isBookmarked: snapshot.bookmarkedPages.contains(index),
                             presentationEpoch: snapshot.presentationEpoch)
                     }
@@ -254,6 +262,8 @@ private struct ThumbnailPageImage: View {
     let source: (any BookSource)?
     let bookKey: String
     let targetPixelSize: Int  // セル追従の目標解像度(cooViewer-vbv)
+    let thumbnailCache: ThumbnailCache
+    let generationAllowed: Bool
     let isBookmarked: Bool
     let presentationEpoch: Int
 
@@ -277,7 +287,8 @@ private struct ThumbnailPageImage: View {
     /// 取得成功の瞬間は id が「#世代付き → 素の pageKey」へ一度だけ変わるため
     /// .task も一度だけ再実行される(メモリヒットで即返り、以後は不変)
     private var loadTaskID: String {
-        loaded?.key == pageKey ? pageKey : pageKey + "#\(presentationEpoch)"
+        if loaded?.key == pageKey { return pageKey }
+        return pageKey + "#\(presentationEpoch)#\(generationAllowed)"
     }
 
     var body: some View {
@@ -300,7 +311,9 @@ private struct ThumbnailPageImage: View {
         }
         .help(entry.displayTitle(relativePath: showRelativePaths))
         .task(id: loadTaskID) {
-            guard let source else { return }
+            // 設計書 §5: 初回は順序付きの先読みが公開した画像から段階的に受け取る。
+            // 可視セルの逆順 task が、表紙より先に遠いセルを生成するのを防ぐ。
+            guard generationAllowed, let source else { return }
             // 常に読み直す(キャッシュ命中は即時)。キーを添えて保存するため、
             // 旧タスクの遅延代入が現エントリの表示を汚すことはない。
             // 失敗(nil)は一度だけ間を置いて再挑戦する: 多数の PDF を同時に
@@ -309,7 +322,7 @@ private struct ThumbnailPageImage: View {
             let key = pageKey
             for attempt in 0..<2 {
                 guard !Task.isCancelled else { return }
-                if let image = await ThumbnailCache.shared.thumbnail(
+                if let image = await thumbnailCache.thumbnail(
                     for: entry, in: source, bookKey: bookKey,
                     targetPixelSize: targetPixelSize, urgent: true) {
                     loaded = (key, image)

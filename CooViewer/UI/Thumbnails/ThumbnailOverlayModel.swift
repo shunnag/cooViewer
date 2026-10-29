@@ -54,6 +54,11 @@ final class ThumbnailOverlayModel: ObservableObject {
     /// ペア判定に使い、レイアウトが漸進的に旧仕様へ収束する。marks は
     /// ここに混ぜず表示時に適用する(マーク変更に即追従するため)
     @Published private(set) var measuredAspects: [Int: CGFloat] = [:]
+    /// 設計書 §5・§7.3: 初回の可視セルを SwiftUI の task 起動順に生成させない。
+    /// モデルの近い順の生成で完成したセルから表示し、その波が終われば通常要求へ戻す。
+    @Published private(set) var initialPrefetchPending = true
+    private let thumbnailCacheOverride: ThumbnailCache?
+    var thumbnailCache: ThumbnailCache { thumbnailCacheOverride ?? .shared }
 
     /// 見開きモードでペアにしないページ(計測済みの横長+強制単ページ。
     /// 強制ペア指定は縦横比に優先する。旧 isSmallImage 規則 §4.2.1)
@@ -102,13 +107,15 @@ final class ThumbnailOverlayModel: ObservableObject {
 
     private let defaults: UserDefaults
     private var prefetchTask: Task<Void, Never>?
+    private var prefetchRun = 0
     /// pausePrefetch〜present の間 true(一覧が閉じている間の先読み再開防止)
     private var prefetchPaused = false
     /// 提示世代の通し番号(Snapshot.presentationEpoch の供給元)
     private var presentationCounter = 0
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, thumbnailCache: ThumbnailCache? = nil) {
         self.defaults = defaults
+        thumbnailCacheOverride = thumbnailCache
         onlyBookmarks = defaults.bool(forKey: "ThumbnailOnlyBookmark")
         comicMode = defaults.bool(forKey: "ThumbnailComicMode")
         cellSize = ThumbnailZoomSetting.read(from: defaults)
@@ -202,6 +209,13 @@ final class ThumbnailOverlayModel: ObservableObject {
 
     // MARK: - 操作
 
+    /// 設計書 §7.3: 再表示前のレイアウトが旧一覧のセルを追加しても生成を再開させない。
+    func prepareForPresentation() {
+        pausePrefetch()
+        initialPrefetchPending = true
+        measuredAspects = [:]
+    }
+
     /// book の内容でオーバーレイを組み(直す)。本の切替時にも使う
     func present(book: Book, displayedIndices: [Int] = []) {
         present(snapshot: Snapshot(
@@ -222,6 +236,7 @@ final class ThumbnailOverlayModel: ObservableObject {
     /// スナップショット直渡しの組み直し(EPUB リフローの画面単位一覧など、
     /// Book を持たない供給元用。設計書 §2.4 EPUB 対応)
     func present(snapshot newSnapshot: Snapshot) {
+        initialPrefetchPending = true
         presentationCounter &+= 1
         snapshot = newSnapshot
         snapshot.presentationEpoch = presentationCounter
@@ -314,6 +329,7 @@ final class ThumbnailOverlayModel: ObservableObject {
         onJump = nil
         onClose = nil
         measuredAspects = [:]
+        initialPrefetchPending = true
         screen = 0
         anchorGroup = 0
         return pending
@@ -345,6 +361,8 @@ final class ThumbnailOverlayModel: ObservableObject {
     /// 前回の先読みは打ち切られる(未着手分はキャッシュ側で脱落する)
     private func prefetchAroundScreen() {
         prefetchTask?.cancel()
+        prefetchRun &+= 1
+        let run = prefetchRun
         // ジオメトリ未到着の間は先読みしない: フォールバック 3×4 の画面割りで
         // 組んだ対象は実寸グリッド確定で即キャンセルされ、生成のやり直しと
         // チラつきの churn を生むだけのため(到着時に updateViewport が起動する)
@@ -372,16 +390,23 @@ final class ThumbnailOverlayModel: ObservableObject {
         let concurrency = max(1, snapshot.prefetchConcurrency)
         // セル追従の目標解像度。先読みとセル表示で同一値=同一バケットにする(vbv)
         let targetPixel = thumbnailTargetPixelSize
+        // 設計書 §5: 初回の可視セルはモデルが順番に依頼しても対話レーンを維持する。
+        let initialVisible = initialPrefetchPending
+            ? Set(layout.groups(onScreen: screen).flatMap { $0 }) : []
+        let thumbnailCache = thumbnailCache
         prefetchTask = Task {
+            guard !Task.isCancelled, run == self.prefetchRun else { return }
             // 常時 prefetchConcurrency 本を維持しつつ 1 件ずつ流し込む。
             // 生成結果の寸法は見開きモードのペア判定へ反映する(旧 isSmallImage)
             await withTaskGroup(of: Void.self) { group in
                 var iterator = targets.makeIterator()
                 let fetchOne: @Sendable ((index: Int, entry: PageEntry)) async -> Void = {
                     target in
-                    guard let image = await ThumbnailCache.shared.thumbnail(
+                    guard !Task.isCancelled else { return }
+                    guard let image = await thumbnailCache.thumbnail(
                         for: target.entry, in: source, bookKey: bookKey,
-                        targetPixelSize: targetPixel) else { return }
+                        targetPixelSize: targetPixel,
+                        urgent: initialVisible.contains(target.index)) else { return }
                     await self.noteThumbnailSize(
                         bookKey: bookKey, index: target.index, entryID: target.entry.id,
                         size: CGSize(width: image.width, height: image.height))
@@ -395,6 +420,9 @@ final class ThumbnailOverlayModel: ObservableObject {
                     group.addTask { await fetchOne(target) }
                 }
             }
+            // 設計書 §7.3: リサイズ・再提示で取り消した古い波は、新しい提示を解放しない。
+            guard !Task.isCancelled, run == self.prefetchRun else { return }
+            self.initialPrefetchPending = false
         }
     }
 

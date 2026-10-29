@@ -155,7 +155,9 @@ final class BookConcurrencyTests: XCTestCase {
         defer { book.close() }
         let display = Task(priority: .userInitiated) { await book.currentSpread() }
         await fulfillment(of: [started], timeout: 3)
-        guard await source.requestCount == 2 else { return }
+        let requestedCount = await source.requestCount
+        XCTAssertEqual(requestedCount, 2)
+        guard requestedCount == 2 else { return }
         let requests = [await source.nextRequest(), await source.nextRequest()]
         let first = try XCTUnwrap(requests.first { $0.entryID == 0 })
         let second = try XCTUnwrap(requests.first { $0.entryID == 1 })
@@ -184,22 +186,115 @@ final class BookConcurrencyTests: XCTestCase {
         defer { book.close() }
         let display = Task { await book.currentSpread() }
         await fulfillment(of: [started], timeout: 3)
-        guard await source.requestCount == 2 else { return }
+        let requestedCount = await source.requestCount
+        XCTAssertEqual(requestedCount, 2)
+        guard requestedCount == 2 else { return }
         let requests = [await source.nextRequest(), await source.nextRequest()]
-        for request in requests where request.entryID == 1 { await source.finish(request) }
-        // 二枚目の公開まで待つが、表示優先度を継承させない(設計書 §5)。
+        let first = try XCTUnwrap(requests.first { $0.entryID == 0 })
+        let second = try XCTUnwrap(requests.first { $0.entryID == 1 })
+        XCTAssertTrue(first.display)
+        XCTAssertFalse(first.prefetch)
+        XCTAssertTrue(second.prefetch)
+        XCTAssertFalse(second.display)
+        XCTAssertEqual(second.priority, .utility)
+        // 設計書 §5・§7.3: ソースの待機解除だけでは復号もキャッシュ公開も終わらない。
+        // 未昇格のまま二枚目へ合流し、先頭の表示確定による再計画より先に公開を待つ。
         let prefetched = expectation(description: "先読み完了")
-        Task(priority: .utility) { await book.waitForPrefetch(); prefetched.fulfill() }
-        for request in requests where request.entryID == 0 { await source.finish(request) }
+        let prefetch = Task(priority: .utility) {
+            let image = await PageRequestIntent.$isPrefetch.withValue(true) {
+                await book.image(at: 1)
+            }
+            prefetched.fulfill()
+            return image
+        }
+        await source.finish(second)
         await fulfillment(of: [prefetched], timeout: 3)
+        let prefetchedImage = await prefetch.value
+        XCTAssertNotNil(prefetchedImage)
+        XCTAssertFalse(second.promotion?.isPromoted ?? true)
+        await source.finish(first)
         let spread = await display.value
         XCTAssertEqual(spread.indices, [0])
         let priority = await source.decodePriority(for: 1)
         XCTAssertEqual(priority, .utility)
         let cached = await book.image(at: 1)
-        XCTAssertNotNil(cached)
+        XCTAssertTrue(cached === prefetchedImage)
         let count = await source.requestCount
         XCTAssertEqual(count, 2)
+        let decoded = await source.decodedRequestIDs
+        XCTAssertEqual(decoded, [second.id, first.id])
+        await book.close().value
+    }
+
+    /// 設計書 §5: 予測が外れて未開始の復号を辞退した後は、表示が新規要求を出してよい。
+    func testUnpairedQueuedPredictionDeclinesBeforeDecodeAndIsRequestedAgainOnDisplay() async throws {
+        let gate = SourceReadGate(limit: 2)
+        let heldFirst = await gate.acquire(interactive: false)
+        let heldSecond = await gate.acquire(interactive: false)
+        XCTAssertTrue(heldFirst && heldSecond)
+        var released = false
+        defer {
+            if !released { Task { await gate.release(); await gate.release() } }
+        }
+        let source = ControlledPageSource(
+            pageSizes: [.init(width: 80, height: 40), .init(width: 40, height: 60)],
+            decodeGate: gate)
+        let book = try await Book.open(source: source)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        _ = book.updateDisplayPixelCap(60)
+        defer { book.close() }
+        let display = Task { await book.currentSpread() }
+        let initial = [await source.nextRequest(), await source.nextRequest()]
+        let first = try XCTUnwrap(initial.first { $0.entryID == 0 })
+        let second = try XCTUnwrap(initial.first { $0.entryID == 1 })
+        XCTAssertTrue(first.display)
+        XCTAssertFalse(first.prefetch)
+        XCTAssertTrue(second.prefetch)
+        XCTAssertFalse(second.display)
+        XCTAssertEqual(second.priority, .utility)
+        await source.finish(second)
+        await source.finish(first)
+        let spread = await display.value
+        XCTAssertEqual(spread.indices, [0])
+        await book.waitForPrefetch()
+
+        // 設計書 §5: 再計画が未昇格の待機票を外すため、二枚目はまだ一度も復号されない。
+        let declinedPriority = await source.decodePriority(for: 1)
+        XCTAssertNil(declinedPriority)
+        let beforeRetry = await source.requests
+        XCTAssertEqual(beforeRetry.map(\.id), [0, 1])
+        XCTAssertEqual(Set(beforeRetry.map(\.entryID)), [0, 1])
+        let decodedBeforeRetry = await source.decodedRequestIDs
+        XCTAssertEqual(decodedBeforeRetry, [first.id])
+        let waiting = await gate.debugCounts()
+        XCTAssertEqual(waiting.active, 2)
+        XCTAssertEqual(waiting.queued, 0)
+
+        let retry = Task {
+            await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: 1) }
+        }
+        let third = await source.nextRequest()
+        XCTAssertEqual(third.id, 2)
+        XCTAssertEqual(third.entryID, 1)
+        XCTAssertTrue(third.display)
+        XCTAssertFalse(third.prefetch)
+        XCTAssertEqual(third.priority, .userInitiated)
+        await source.finish(third)
+        let image = await retry.value
+        XCTAssertNotNil(image)
+        let recorded = await source.requests
+        XCTAssertEqual(recorded.map(\.id), [0, 1, 2])
+        XCTAssertEqual(recorded.map(\.entryID), initial.map(\.entryID) + [1])
+        let decoded = await source.decodedRequestIDs
+        XCTAssertEqual(decoded, [first.id, third.id])
+        await book.close().value
+        await gate.release()
+        await gate.release()
+        released = true
+        let final = await gate.debugCounts()
+        XCTAssertEqual(final.active, 0)
+        XCTAssertEqual(final.queued, 0)
     }
 
     /// 設計書 §5: 復号後の横長・壊れページは従来の単ページ判定を守る。
@@ -481,16 +576,22 @@ private actor ControlledPageSource: BookSource {
     private let pageSizes: [CGSize]
     private let started: XCTestExpectation?
     private let escalated: XCTestExpectation?
+    private let decodeGate: SourceReadGate
     private var priorities: [Int: TaskPriority] = [:]
+    private(set) var requests: [Request] = []
+    private(set) var decodedRequestIDs: [Int] = []
     var requestCount: Int { nextID }
 
     init(pageSizes: [CGSize] = [.init(width: 128, height: 256)],
          started: XCTestExpectation? = nil, escalated: XCTestExpectation? = nil,
-         parallel: Bool = true) {
+         parallel: Bool = true,
+         decodeGate: SourceReadGate = SourceReadGate(limit: PrefetchDecodeGate.concurrencyLimit)) {
         self.supportsParallelPageLoads = parallel
         self.pageSizes = pageSizes
         self.started = started
         self.escalated = escalated
+        // 設計書 §7.6: 他テストや本番の先読み枠を引き継がず、混雑は注入した枠で再現する。
+        self.decodeGate = decodeGate
     }
 
     func decodePriority(for id: Int) -> TaskPriority? { priorities[id] }
@@ -514,11 +615,19 @@ private actor ControlledPageSource: BookSource {
                               display: PageRequestIntent.isDisplay, promotion: PageRequestIntent.decodePromotion,
                               startedAtMilliseconds: elapsedMilliseconds)
         nextID += 1
+        requests.append(request)
         let escalated = escalated
         let image: CGImage = try await withTaskPriorityEscalationHandler {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CGImage, any Error>) in
                     guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                    // 設計書 §7.6: 予定外の要求は通常のテスト失敗として記録し、
+                    // fulfill の API 違反でランナー全体を落としたり継続を残したりしない。
+                    if let started, request.id >= started.expectedFulfillmentCount {
+                        XCTFail("予定外の画像要求: id=\(request.id), page=\(request.entryID), prefetch=\(request.prefetch), display=\(request.display)")
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     pending[request.id] = continuation
                     peakPendingRequests = max(peakPendingRequests, pending.count)
                     started?.fulfill()
@@ -529,8 +638,9 @@ private actor ControlledPageSource: BookSource {
                 Task { await self.fail(request) }
             }
         } onPriorityEscalated: { _, _ in escalated?.fulfill() }
-        let decoded = try await PrefetchDecodeGate.run { (image, Task.currentPriority) }
+        let decoded = try await PrefetchDecodeGate.run(gate: decodeGate) { (image, Task.currentPriority) }
         priorities[entry.id] = decoded.1
+        decodedRequestIDs.append(request.id)
         return decoded.0
     }
 

@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var suppressRelayedDocumentOpens = CommandLine.arguments.contains("--open")
     /// 検証用スナップショットの一時ウインドウ(設定ウインドウとは別管理)
     private var debugPreviewWindow: NSWindow?
+    private(set) var renderingPrewarmTask: Task<Void, Never>?
+    private(set) var webKitPrewarmTask: Task<Void, Never>?
+    private var webKitPrewarmer: EPUBWebKitPrewarmer?
 
     /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
     /// Info.plist(SUFeedURL / SUPublicEDKey)。初回は Sparkle 標準の
@@ -91,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         cleanUpCaches()
+        scheduleLaunchPrewarming(for: controller)
         if let pending = pendingLaunchOpenURL {
             // 起動前に届いていた文書オープンを確定する(§6.1)
             pendingLaunchOpenURL = nil
@@ -104,6 +108,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(3))
                 self.suppressRelayedDocumentOpens = false
+            }
+        }
+    }
+
+    /// 設計書 §5・§7.6: XCTest・監査では予熱のタスクや共有描画資源を作らない。
+    /// 通常の起動入口と検証が同じガードを通るよう、予約をここに集約する。
+    func scheduleLaunchPrewarming(for controller: ReaderWindowController) {
+        guard !AutomatedRun.isXCTest, !AutomatedRun.isArchiveAudit else { return }
+        // 設計書 §5: ML・MetalFX は起動せず、表示先に合わせた縮小経路だけを
+        // 背面で一度温める。XCTest・書庫監査には不要な GPU 処理を持ち込まない。
+        if !PowerStateMonitor.shared.shouldConserveEnergy {
+            let target = DisplayColorTarget.current(window: controller.window)
+            renderingPrewarmTask = Task.detached(priority: .utility) {
+                await ImageResampler.shared.prewarm(displayTarget: target)
+            }
+        }
+        if !AutomatedRun.isSnapshot {
+            // 設計書 §5・§7.3: 起動直後の本や利用者の操作と競合しない時だけ
+            // WebKit を予熱する。履歴の拡張子だけを見て NAS への照会は行わない。
+            webKitPrewarmTask = Task(priority: .userInitiated) { @MainActor [weak self, weak controller] in
+                guard (try? await Task.sleep(for: .seconds(3))) != nil,
+                      let self, let controller else { return }
+                let lastEvent = NSApp.currentEvent?.timestamp ?? 0
+                let idle = ProcessInfo.processInfo.systemUptime - lastEvent >= 2
+                    && !controller.isOpeningBook && !controller.isEPUBMode
+                    && controller.window?.attachedSheet == nil
+                let prewarmer = EPUBWebKitPrewarmer()
+                self.webKitPrewarmer = prewarmer
+                prewarmer.beginIfUseful(recentPaths: BookHistoryStore.shared.recentPaths(),
+                                        isIdle: idle)
             }
         }
     }
@@ -675,6 +709,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        renderingPrewarmTask?.cancel()
+        webKitPrewarmTask?.cancel()
+        webKitPrewarmer?.cancel()
         DeferredImageWriter.shared.cancelAll(stopping: true)
         readerWindowController?.saveStateBeforeTermination()
         // 開いたままの EPUB のステージングコピーは参照が残り deinit で消えないので、
