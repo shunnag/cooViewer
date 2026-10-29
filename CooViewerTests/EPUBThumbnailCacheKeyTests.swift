@@ -3,6 +3,23 @@ import XCTest
 @testable import cooViewer
 
 final class EPUBThumbnailCacheKeyTests: XCTestCase {
+    /// 旧ポイント指定で生成された画像は、ページ割りと配色が一致しても使わない。
+    func testRenderingVariantVersionsPixelSizedThumbnails() {
+        let legacyVariant = "metrics:metrics-a#theme:l#readable:1"
+        let variant = EPUBThumbnailCacheKey.renderingVariant(
+            metricsKey: "metrics-a", isDark: false, forcesReadableColors: true)
+
+        XCTAssertEqual(variant, legacyVariant + "#pixels:2")
+        let singleBook = EPUBThumbnailCacheKey.singleBook(
+            path: "/books/a.epub", totalPages: 12,
+            pagesPerScreen: 2, fontScale: 1, pageMargins: 1,
+            defaultFont: "", metricsKey: "metrics-a",
+            isDark: false, forcesReadableColors: true)
+        XCTAssertTrue(singleBook.hasSuffix("#" + variant))
+        XCTAssertNotEqual(singleBook,
+                          "epub:/books/a.epub#12x2#1.0#1##" + legacyVariant)
+    }
+
     func testEffectiveThemeUsesWindowOnlyForSystemSetting() {
         XCTAssertFalse(EPUBThumbnailCacheKey.effectiveIsDark(
             theme: 0, windowIsDark: false))

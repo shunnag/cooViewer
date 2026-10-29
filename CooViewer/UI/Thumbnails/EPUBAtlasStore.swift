@@ -11,7 +11,7 @@ protocol EPUBScreenAtlasing: AnyObject, Sendable {
     ) async -> (counts: [Int], pagesPerScreen: Int)?
     func thumbnail(spineIndex: Int, pageInItem: Int,
                    metrics: EPUBScreenMetrics, isDark: Bool,
-                   width: CGFloat) async -> CGImage?
+                   maxPixelSize: Int) async -> CGImage?
     func invalidate()
     /// 電力方針の変更を生きているアトラスへ渡すため(設計書 §5)
     var offscreenEnergyPolicy: EPUBOffscreenEnergyPolicy { get set }
@@ -87,14 +87,14 @@ final class EPUBAtlasStore {
     /// ため、非分離文脈に参照を渡して保持・解放させない)
     func thumbnail(for url: URL, spineIndex: Int, pageInItem: Int,
                    metrics: EPUBScreenMetrics, isDark: Bool,
-                   width: CGFloat,
+                   maxPixelSize: Int,
                    preparsed: EPUBPublication? = nil) async -> CGImage? {
         guard let (key, atlas) = await atlas(for: url, preparsed: preparsed)
         else { return nil }
         defer { release(key) }
         return await atlas.thumbnail(
             spineIndex: spineIndex, pageInItem: pageInItem,
-            metrics: metrics, isDark: isDark, width: width)
+            metrics: metrics, isDark: isDark, maxPixelSize: maxPixelSize)
     }
 
     /// リフロー EPUB のアトラス(解析失敗・FXL・DRM は nil)。同じ URL の並行
