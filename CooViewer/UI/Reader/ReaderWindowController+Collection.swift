@@ -307,20 +307,14 @@ extension ReaderWindowController {
                 }
             }
         }
+        let history = history
         request.task = Task { [weak self, weak request] in
             guard let request else { return }
             defer { self?.collectionPageMaps.abandon(request) }
-            var counts = seededCounts
-            for placeholder in placeholders where counts[placeholder.index] == nil {
-                guard !Task.isCancelled else { return }
-                let preparsed = await collectionSource
-                    .preparsedReflowPublication(for: placeholder.url)
-                if let plan = await EPUBAtlasStore.shared
-                    .screenPlan(for: placeholder.url, metrics: baseMetrics,
-                                preparsed: preparsed) {
-                    counts[placeholder.index] = plan.counts
-                }
-            }
+            let counts = await CollectionPageMapBuilder.counts(
+                placeholders: placeholders, metrics: baseMetrics,
+                seededCounts: seededCounts, collectionSource: collectionSource,
+                history: history)
             guard let self, !Task.isCancelled,
                   self.collectionPageMaps.owns(request) else { return }
             // 対象が変わっていたら捨てる(合本切替・退場・構築中のソート)
