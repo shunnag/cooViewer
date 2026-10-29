@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Washi
 
 /// サムネイルオーバーレイとリーダーの配線(仕様書 §4.8)。
@@ -19,13 +20,50 @@ extension ReaderWindowController {
     /// 実寸(onGeometryChange)が最初の可視フレームより先にモデルへ届くように
     /// する — 非表示中のウインドウリサイズ後などに古いビューポートのグリッドが
     /// 一瞬見えてから組み替わるチラつきを防ぐ
-    private func revealThumbnailOverlay() {
-        thumbnailHostingView?.layoutSubtreeIfNeeded()
+    private func prepareThumbnailOverlay() {
+        guard let contentView = window?.contentView else { return }
+        // 設計書 §2.4・§7.3: 非表示の SwiftUI グラフを起動時に作らず、
+        // 画像・単体 EPUB・合本の全入口が合流する初回表示でだけ生成する。
+        if thumbnailHostingView == nil {
+            let overlay = NSHostingView(
+                rootView: ThumbnailOverlayView(model: thumbnailOverlayModel))
+            overlay.frame = contentView.bounds
+            overlay.translatesAutoresizingMaskIntoConstraints = false
+            overlay.isHidden = true
+            contentView.addSubview(overlay)
+            NSLayoutConstraint.activate([
+                overlay.topAnchor.constraint(equalTo: contentView.topAnchor),
+                overlay.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+                overlay.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                overlay.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            ])
+            thumbnailHostingView = overlay
+        }
+        guard let overlay = thumbnailHostingView else { return }
+        // 設計書 §2.4: 後から追加された案内や EPUB 表示よりも一覧を手前に置く。
+        if contentView.subviews.last !== overlay {
+            contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        }
+        contentView.layoutSubtreeIfNeeded()
+        overlay.layoutSubtreeIfNeeded()
+    }
+
+    func revealThumbnailOverlay() {
+        prepareThumbnailOverlay()
         thumbnailHostingView?.isHidden = false
+    }
+
+    /// 設計書 §2.4・§7.3: 空のホストで実寸を確定してから EPUB・合本の一覧を渡す。
+    func presentThumbnailOverlay(snapshot: ThumbnailOverlayModel.Snapshot) {
+        thumbnailOverlayModel.prepareForPresentation()
+        prepareThumbnailOverlay()
+        thumbnailOverlayModel.present(snapshot: snapshot)
     }
 
     /// オーバーレイの内容を book で組み直す(表示中の本の切替時にも使う)
     func presentThumbnailOverlay(for book: Book) {
+        thumbnailOverlayModel.prepareForPresentation()
+        prepareThumbnailOverlay()
         thumbnailOverlayModel.onJump = { [weak self, weak book] index in
             // 本の入替の最中(オーバーレイがまだ旧 Book の内容のうち)は
             // クリックを無視する。入替完了時に openBookFlow 側が新しい本で
@@ -180,7 +218,7 @@ extension ReaderWindowController {
         // 計測済みセルはすべて「横長=単独」扱いになる
         snapshot.singleSetting = 0
         activeCollectionOverlay = nil  // 単体一覧は展開計画ではない
-        thumbnailOverlayModel.present(snapshot: snapshot)
+        presentThumbnailOverlay(snapshot: snapshot)
         revealThumbnailOverlay()
     }
 
@@ -335,7 +373,7 @@ extension ReaderWindowController {
         snapshot.bookmarkedPages = Set(bookmarkedBookPages.map {
             plan.overlayIndex(forBookPage: $0)
         })
-        thumbnailOverlayModel.present(snapshot: snapshot)
+        presentThumbnailOverlay(snapshot: snapshot)
         revealThumbnailOverlay()
     }
 
@@ -378,7 +416,7 @@ extension ReaderWindowController {
         initial.singleSetting = context.singleSetting
         initial.coverSingle = context.coverSingle
         initial.bookmarkedPages = context.bookmarkedPages
-        thumbnailOverlayModel.present(snapshot: initial)
+        presentThumbnailOverlay(snapshot: initial)
         revealThumbnailOverlay()
 
         // census が揃い次第、展開版へ差し替える

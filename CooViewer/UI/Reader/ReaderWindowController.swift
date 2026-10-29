@@ -278,7 +278,7 @@ final class ReaderWindowController: NSWindowController {
     var fileInfoDebugDetails: PageFileInfo.Details?
 
     /// サムネイルオーバーレイ(ウインドウ内表示。仕様書 §4.8)
-    let thumbnailOverlayModel = ThumbnailOverlayModel()
+    let thumbnailOverlayModel: ThumbnailOverlayModel
     var thumbnailHostingView: NSHostingView<ThumbnailOverlayView>?
 
     /// しおり編集シート(仕様書 §4.7.2)
@@ -448,13 +448,16 @@ final class ReaderWindowController: NSWindowController {
     /// ウインドウ移動による枠保存だけなら検索着地を維持する(cooViewer-oxr.83)。
     private var appliedEPUBSettingsFingerprint: EPUBSettingsFingerprint?
 
-    init(window: NSWindow?, history: BookHistoryStore = .shared) {
+    init(window: NSWindow?, history: BookHistoryStore = .shared,
+         thumbnailOverlayModel: ThumbnailOverlayModel = ThumbnailOverlayModel()) {
         self.history = history
+        self.thumbnailOverlayModel = thumbnailOverlayModel
         super.init(window: window)
     }
 
     required init?(coder: NSCoder) {
         history = .shared
+        thumbnailOverlayModel = ThumbnailOverlayModel()
         super.init(coder: coder)
     }
 
@@ -1221,20 +1224,6 @@ final class ReaderWindowController: NSWindowController {
         bubbleLabel.frame = NSRect(x: 0, y: 6, width: 148, height: 18)
         pageBarBubble.addSubview(bubbleLabel)
         contentView.addSubview(pageBarBubble)
-
-        // サムネイルオーバーレイ(最前面。非表示で開始)
-        let overlay = NSHostingView(
-            rootView: ThumbnailOverlayView(model: thumbnailOverlayModel))
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-        overlay.isHidden = true
-        contentView.addSubview(overlay)
-        NSLayoutConstraint.activate([
-            overlay.topAnchor.constraint(equalTo: contentView.topAnchor),
-            overlay.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            overlay.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            overlay.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-        ])
-        thumbnailHostingView = overlay
 
         pageBar.onHover = { [weak self] info in
             self?.handlePageBarHover(info)
