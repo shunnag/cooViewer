@@ -147,7 +147,7 @@ struct CollectionThumbnailSource: BookSource {
             guard let image = await EPUBAtlasStore.shared.thumbnail(
                 for: url, spineIndex: spineIndex, pageInItem: pageInItem,
                 metrics: plan.metrics, isDark: plan.isDark,
-                width: CGFloat(maxPixelSize ?? 320), preparsed: preparsed)
+                maxPixelSize: maxPixelSize ?? 320, preparsed: preparsed)
             else {
                 throw BookSourceError.pageLoadFailed(entry.name)
             }

@@ -188,7 +188,7 @@ jobs:
     env:
       # reopen(options:) は未リリースのためコミットを固定し、KaitoKit 0.18.0 公開時にタグへ戻す。
       KAITOKIT_REF: 914d64a41e7eeb2e813723c587e200b59c1d44b5
-      WASHI_REF: 1.25.0
+      WASHI_REF: 32802d985be63eb4697c882db7e71ca17f8a9113 # 次の Washi リリースでタグ指定へ戻す。
     strategy:
       fail-fast: false
       matrix:
