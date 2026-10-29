@@ -754,10 +754,10 @@ extension ReaderWindowController {
         guard threshold > 0, let book, book.pageCount > 0,
               book.currentIndex >= book.pageCount - threshold,
               let currentURL = currentBookFileURL else { return nil }
-        return Task {
-            let siblings = await siblingBooks(of: currentURL)
-            // 一覧を待つ間に本が替わっていたら旧フォルダの隣を準備しない
-            guard book === self.book else { return }
+        return Task { [weak self, weak book] in
+            // 兄弟走査は応答しない媒体で長引くため、現在の本を待機中に保持しない(設計書 §5、§7.3)。
+            let siblings = await self?.siblingBooks(of: currentURL)
+            guard let self, let book, let siblings, book === self.book, !Task.isCancelled else { return }
             prepareNextBook(for: book, siblings: siblings)
         }
     }
@@ -775,15 +775,14 @@ extension ReaderWindowController {
         if SupportedTypes.isEPUB(nextURL) {
             guard preparedNextEPUB?.path != nextPath else { return }
             preparingNextBookPath = nextPath
-            let preparingForBook = book
             // cooViewer-oxr.45: 次巻 EPUB は utility で publication だけを先に
             // 解析し、表示要求では同じインスタンスを再利用する（設計書 §2.4）。
-            Task(priority: .utility) {
-                defer { preparingNextBookPath = nil }
+            Task(priority: .utility) { [weak self, weak book] in
+                defer { self?.preparingNextBookPath = nil }
                 let publication = await Task.detached(priority: .utility) {
                     try? await EPUBStagingArea.shared.openPublication(at: nextURL)
                 }.value
-                guard let publication, self.book === preparingForBook else { return }
+                guard let publication, let self, let book, self.book === book else { return }
                 preparedNextEPUB = (nextPath, publication)
             }
             return
@@ -796,29 +795,28 @@ extension ReaderWindowController {
         // 準備対象は「今の本の次の兄弟」。準備中に別の本へ切り替わったら、古い
         // フォルダの隣接書庫をスロットに入れない(スプール済み一時データが居座る
         // リーク+古いスロットの再導入を防ぐ。監査 #11)
-        let preparingForBook = book
+        let readSubFolders = settings.readSubFolder
+        let spoolLimit = settings.archiveSpoolSizeLimit
         // 次の本の事前準備は best-effort の背面作業。明示的に utility へ落として
         // 現在の本のページ読み込みと同一ボリュームで競合させない(内側の
         // buildTask/spoolTask はこの優先度を継承する)。現在の本の準備
         // (openBookFlow 側の Task→beginBackgroundPreparation)は別ソース・別 Task で
         // 意図的に高優先のまま — この変更の影響を受けない
-        Task(priority: .utility) {
-            defer { preparingNextBookPath = nil }
+        Task(priority: .utility) { [weak self, weak book] in
+            defer { self?.preparingNextBookPath = nil }
             guard let source = try? await BookSourceFactory.make(
                 for: nextURL,
-                readSubFolders: settings.readSubFolder,
+                readSubFolders: readSubFolders,
                 archiveEngine: archiveEngine) else { return }
-            guard self.book === preparingForBook else { return }
+            guard book != nil, self?.book === book else { return }
             // パスワード書庫は解除 UI が必要なため展開はしない(開く時に通常フロー)
             if await !source.isEncrypted() {
                 // 実効プロファイル(自動判定+高度設定の明示上書き)を適用してから展開
-                let profile = await effectiveMediaProfile(
-                    for: nextURL)
+                guard let profile = await self?.effectiveMediaProfile(for: nextURL), book != nil else { return }
                 await source.applyMediaProfile(profile)
-                await source.beginBackgroundPreparation(
-                    spoolSizeLimit: settings.archiveSpoolSizeLimit)
+                await source.beginBackgroundPreparation(spoolSizeLimit: spoolLimit)
             }
-            guard self.book === preparingForBook else { return }
+            guard let self, let book, self.book === book else { return }
             preparedNextBook = (nextPath, source, archiveEngine)
         }
     }

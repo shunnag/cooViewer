@@ -206,8 +206,11 @@ actor SourceReadGate {
     private var active = 0
     private struct Waiter {
         let token: UUID
+        let order: UInt64
+        let promotion: DecodePromotion?
         let continuation: CheckedContinuation<Bool, Never>
     }
+    private var waiterSequence: UInt64 = 0
     private var interactiveWaiters: [Waiter] = []
     private var backgroundWaiters: [Waiter] = []
 
@@ -220,13 +223,13 @@ actor SourceReadGate {
         wakeWaitersIfPossible()
     }
 
-    func acquire() async -> Bool {
-        await acquire(interactive: Task.currentPriority >= .userInitiated)
+    func acquire(promotion: DecodePromotion? = PageRequestIntent.decodePromotion) async -> Bool {
+        await acquire(interactive: Task.currentPriority >= .userInitiated, promotion: promotion)
     }
 
     /// レーン明示版。優先度継承が呼び出し元の意図と一致しない場合
     /// (サムネイルの可視セル要求 vs 先読みの区別など)に使う
-    func acquire(interactive: Bool) async -> Bool {
+    func acquire(interactive: Bool, promotion: DecodePromotion? = PageRequestIntent.decodePromotion) async -> Bool {
         guard !Task.isCancelled else { return false }
         if active < limit {
             active += 1
@@ -237,8 +240,10 @@ actor SourceReadGate {
             await withCheckedContinuation { continuation in
                 // 登録前の取消しも拾い、取消し通知との前後関係による取り残しを防ぐ。
                 guard !Task.isCancelled else { continuation.resume(returning: false); return }
-                let waiter = Waiter(token: token, continuation: continuation)
-                if interactive {
+                waiterSequence &+= 1
+                let waiter = Waiter(token: token, order: waiterSequence, promotion: promotion,
+                                    continuation: continuation)
+                if interactive || promotion?.isPromoted == true {
                     interactiveWaiters.append(waiter)
                 } else {
                     backgroundWaiters.append(waiter)
@@ -275,9 +280,25 @@ actor SourceReadGate {
         return true
     }
 
+    /// 昇格通知用の独立タスクを作らず、許可直前に意図を読み直して元の到着順へ戻す(設計書 §5、§7.3)。
+    private func promoteBackgroundWaiters() {
+        var background: [Waiter] = []
+        var promoted: [Waiter] = []
+        for waiter in backgroundWaiters {
+            if waiter.promotion?.isPromoted == true { promoted.append(waiter) }
+            else { background.append(waiter) }
+        }
+        guard !promoted.isEmpty else { return }
+        backgroundWaiters = background
+        interactiveWaiters.append(contentsOf: promoted)
+        interactiveWaiters.sort { $0.order < $1.order }
+    }
+
     private func wakeWaitersIfPossible() {
         while active < limit,
               !interactiveWaiters.isEmpty || !backgroundWaiters.isEmpty {
+            // I/O と FXL の待機中に表示へ合流した要求も昇格させ、後着の対話要求に追い越させない(設計書 §5、§7.3)。
+            promoteBackgroundWaiters()
             active += 1
             if !interactiveWaiters.isEmpty {
                 interactiveWaiters.removeFirst().continuation.resume(returning: true)

@@ -201,10 +201,9 @@ actor ThumbnailCache {
             // utility に落とし、ソースの読み取りゲートで表示中ページの読み込み
             // (userInitiated)に道を譲る(低速媒体でのページ表示停滞の防止)。
             // 可視セル(urgent)は生成タスク自体を userInitiated で起動する:
-            // 内側 source.image() が通る 2 段目 = FolderSource.readGate は
-            // currentPriority を推論するため、タスクが utility のままだと
-            // urgent でも背面レーンに落ち Book 先読みの後ろで飢餓する。基底
-            // 優先度は床でエスカレーションは下げないので、対話レーンへ確定する
+            // 内側の読み取りゲートでも可視セルを対話列へ入れる。Book の未昇格の先読みは
+            // utility の背面列に入り、表示が合流したものだけが昇格ハンドルで対話列へ移る。
+            // 可視セルの基底優先度は床なので、優先度継承によって背面列へ落ちない(設計書 §5、§7.3)。
             let gate = generationGate
             let writer = diskWriter
             let write = diskWrite

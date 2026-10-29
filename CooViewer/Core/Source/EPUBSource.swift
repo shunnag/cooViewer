@@ -277,8 +277,8 @@ private enum FXLRasterizerPool {
             return entry
         }
         // レンダラをアイドルから使用中にする間だけ1枠。表示要求は先読みより
-        // 先に許可する(SourceReadGate と共通の2レーン)。
-        guard await gate.acquire() else { throw CancellationError() }
+        // 先に許可し、待機中の表示合流も同じ昇格ハンドルで追跡する(設計書 §5、§7.3)。
+        guard await gate.acquire(promotion: PageRequestIntent.decodePromotion) else { throw CancellationError() }
         if Task.isCancelled {
             await gate.release()
             throw CancellationError()

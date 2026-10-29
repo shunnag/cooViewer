@@ -12,11 +12,16 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         let url = URL(fileURLWithPath: "/stub/named-book")
         let names: [String]
         let sizes: [CGSize]?
+        let readGate: SourceReadGate?
+        let requested: XCTestExpectation?
         var supportsDateSort: Bool { false }
 
-        init(names: [String], sizes: [CGSize]? = nil) {
+        init(names: [String], sizes: [CGSize]? = nil,
+             readGate: SourceReadGate? = nil, requested: XCTestExpectation? = nil) {
             self.names = names
             self.sizes = sizes
+            self.readGate = readGate
+            self.requested = requested
         }
 
         func entries() async throws -> [PageEntry] {
@@ -27,6 +32,11 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         }
 
         func image(for entry: PageEntry, maxPixelSize: Int?) async throws -> CGImage {
+            requested?.fulfill()
+            if let readGate {
+                guard await readGate.acquire() else { throw CancellationError() }
+                await readGate.release()
+            }
             let size = sizes?[entry.id] ?? CGSize(width: 70, height: 100)
             return try ImageDecoding.decode(
                 TestFixtures.pngData(width: Int(size.width), height: Int(size.height)),
@@ -138,10 +148,46 @@ final class ThumbnailOverlayModelTests: XCTestCase {
         XCTAssertFalse(model.snapshot.entries.isEmpty)
         XCTAssertNotNil(model.snapshot.source)
 
-        model.clear()
+        // 展開一覧のジャンプ処理が捕まえた旧本も、一覧の破棄で解放する(設計書 §5、§7.3)。
+        var capturedBook: Book? = try await Book.open(source: NamedStubSource(names: ["captured.png"]))
+        weak var releasedBook = capturedBook
+        model.onJump = { [book = capturedBook!] _ in _ = book.pageCount }
+        capturedBook = nil
+        XCTAssertNotNil(releasedBook)
+        let drain = model.clear()
+        await drain?.value
+        XCTAssertNil(releasedBook)
+        XCTAssertNil(model.onJump)
+        XCTAssertNil(model.onClose)
         XCTAssertTrue(model.snapshot.entries.isEmpty)
         XCTAssertNil(model.snapshot.source)
         XCTAssertEqual(model.screen, 0)
+    }
+
+    /// 設計書 §5、§7.3: 一覧の破棄は生成の取消しまで待て、他冊の読み取り枠を必要としない。
+    func testClearDrainsQueuedThumbnailAndReleasesSource() async throws {
+        let gate = SourceReadGate(limit: 1)
+        let acquired = await gate.acquire(interactive: false)
+        XCTAssertTrue(acquired)
+        let requested = expectation(description: "サムネイルの I/O 待機")
+        var source: NamedStubSource? = NamedStubSource(names: ["blocked-\(UUID()).png"], readGate: gate, requested: requested)
+        var book: Book? = try await Book.open(source: try XCTUnwrap(source))
+        weak var previousSource = source
+        let model = makeModel()
+        model.onlyBookmarks = false
+        model.updateViewport(CGSize(width: 800, height: 600))
+        model.present(book: try XCTUnwrap(book))
+        await fulfillment(of: [requested], timeout: 3)
+        let drain = model.clear()
+        book?.close()
+        book = nil
+        source = nil
+        await drain?.value
+        XCTAssertNil(previousSource)
+        let counts = await gate.debugCounts()
+        XCTAssertEqual(counts.active, 1)
+        XCTAssertEqual(counts.queued, 0)
+        await gate.release()
     }
 
     /// 並びが変わっていなければ follow は強調表示の更新だけを行う

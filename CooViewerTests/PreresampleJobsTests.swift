@@ -183,4 +183,130 @@ final class PreresampleJobsTests: XCTestCase {
         let remaining = await jobs.activeCount
         XCTAssertEqual(remaining, 0)
     }
+
+    private actor CleanupGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var released = false
+        func wait() async {
+            guard !released else { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func release() {
+            released = true
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    private final class Owner: Sendable {}
+
+    /// 取消し済みのページと旧計画の後始末まで待ち、drain 後に所有者を残さない(設計書 §5、§7.3)。
+    func testDrainIncludesRetiredJobsAndPlanFinalization() async throws {
+        let jobs = await MainActor.run { PreresampleJobs() }
+        let gate = CleanupGate()
+        let started = expectation(description: "ページ処理開始")
+        let cancelled = expectation(description: "計画外のページを取消し")
+        let events = OSAllocatedUnfairLock(initialState: [String]())
+        var owner: Owner? = Owner()
+        weak var previousOwner = owner
+        await jobs.replacePlan(["x"])
+        let plan = await jobs.startPlan { [owner = try XCTUnwrap(owner)] in
+            defer {
+                withExtendedLifetime(owner) {}
+                events.withLock { $0.append("plan") }
+            }
+            await jobs.run(key: "x", entryID: 0, configuration: "maximum") {
+                await withTaskCancellationHandler {
+                    started.fulfill()
+                    await gate.wait()
+                    events.withLock { $0.append("page") }
+                } onCancel: { cancelled.fulfill() }
+            }
+        }
+        owner = nil
+        await fulfillment(of: [started], timeout: 3)
+        // 計画から外れても未完了の仕事は、後で始まるアンロードの待機対象になる(設計書 §5)。
+        await jobs.replacePlan([])
+        await fulfillment(of: [cancelled], timeout: 3)
+        let drain = await jobs.cancelAllAndDrain()
+        let waiting = expectation(description: "解放待ちの開始")
+        let waiter = Task {
+            waiting.fulfill()
+            await drain.value
+            events.withLock { $0.append("drain") }
+        }
+        await fulfillment(of: [waiting], timeout: 3)
+        XCTAssertNotNil(previousOwner)
+        await gate.release()
+        await waiter.value
+        XCTAssertEqual(events.withLock { $0 }, ["page", "plan", "drain"])
+        XCTAssertNil(previousOwner)
+        await plan.value
+    }
+
+    /// SR の待機票は表示ジョブを保持したままでも取り消せる(設計書 §5、§7.3)。
+    func testDrainCancelsInnerSRQueueWaitWithoutWaitingForDisplay() async throws {
+        let jobs = await MainActor.run { PreresampleJobs() }
+        let queue = SRJobQueue()
+        let display = SRJobRequest()
+        _ = await queue.nextTile(for: display)
+        defer { Task { await queue.finish(display) } }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let queued = expectation(description: "内側の SR 待機")
+        let resolver = MLSuperResolver(diskRoot: root, diskWriter: DeferredImageWriter(),
+            diskWrite: { _, _, _ in }, upscaleOverride: { image in
+                let job = SRJobRequest(priority: .prefetch)
+                queued.fulfill()
+                let acquired = await queue.nextTile(for: job)
+                await queue.finish(job)
+                return acquired ? image : nil
+            })
+        let resampler = ImageResampler(pressure: FixedMemoryPressure(), superResolver: resolver)
+        let source = try image()
+        await jobs.replacePlan(["x"])
+        let plan = await jobs.startPlan {
+            await jobs.run(key: "x", entryID: 0, configuration: "maximum") {
+                _ = await resampler.resample(source, to: CGSize(width: 16, height: 16),
+                    cacheKey: "x", upscaleWithMetalFX: false, noiseReduction: .maximum,
+                    priority: .prefetch)
+            }
+        }
+        await fulfillment(of: [queued], timeout: 3)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while await queue.queuedCount != 1 {
+            guard ContinuousClock.now < deadline else { throw CancellationError() }
+            await Task.yield()
+        }
+        let drain = await jobs.cancelAllAndDrain()
+        let done = expectation(description: "表示が終わる前に drain 完了")
+        let waiter = Task { await drain.value; done.fulfill() }
+        await fulfillment(of: [done], timeout: 3)
+        let count = await queue.queuedCount
+        XCTAssertEqual(count, 0)
+        await queue.finish(display)
+        await waiter.value
+        await plan.value
+    }
+
+    /// 計画とページ処理をどちらも utility で始め、表示合流時の昇格に任せる(設計書 §5)。
+    func testPlanAndPageStartAtUtilityPriority() async {
+        let jobs = await MainActor.run { PreresampleJobs() }
+        let priorities = OSAllocatedUnfairLock(initialState: [TaskPriority]())
+        let started = expectation(description: "utility の先読み開始")
+        let release = AsyncStream<Void>.makeStream()
+        await jobs.replacePlan(["x"])
+        let plan = await jobs.startPlan {
+            priorities.withLock { $0.append(Task.currentPriority) }
+            await jobs.run(key: "x", entryID: 0, configuration: "maximum") {
+                priorities.withLock { $0.append(Task.currentPriority) }
+                started.fulfill()
+                for await _ in release.stream { }
+            }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertEqual(priorities.withLock { $0 }, [.utility, .utility])
+        release.continuation.finish()
+        await plan.value
+    }
 }
