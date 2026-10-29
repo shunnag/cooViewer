@@ -62,6 +62,23 @@ actor MLSuperResolver {
         return cacheKeyValue
     }
 
+    private let diskRoot: URL
+    private let diskWriter: DeferredImageWriter
+    private let diskWrite: (@Sendable (CGImage, URL, SymmetricKey?) async throws -> Void)?
+    private let upscaleOverride: (@Sendable (CGImage) async -> CGImage?)?
+
+    init(diskRoot: URL? = nil, diskWriter: DeferredImageWriter = .shared,
+         cacheEncryptionKey: SymmetricKey? = nil,
+         diskWrite: (@Sendable (CGImage, URL, SymmetricKey?) async throws -> Void)? = nil,
+         upscaleOverride: (@Sendable (CGImage) async -> CGImage?)? = nil) {
+        cacheKeyLoaded = cacheEncryptionKey != nil
+        cacheKeyValue = cacheEncryptionKey
+        self.diskRoot = diskRoot ?? Self.cacheDirectory
+        self.diskWriter = diskWriter
+        self.diskWrite = diskWrite
+        self.upscaleOverride = upscaleOverride
+    }
+
     // MARK: - 導入
 
     /// モデルを使える状態にする(必要ならダウンロード→検証→コンパイル→ロード)
@@ -76,8 +93,10 @@ actor MLSuperResolver {
     /// キャッシュを使う(キーは呼び出し側が画像サイズまで含めて一意にする)。
     /// 大きすぎる画像・モデル未導入・失敗時は nil
     func upscale(_ image: CGImage, cacheKey: String?,
-                 encrypted: Bool = false) async -> CGImage? {
-        guard image.width > 0, image.height > 0,
+                 encrypted: Bool = false, displaySize: CGSize? = nil,
+                 writeGeneration: UUID? = nil) async -> CGImage? {
+        let writeGeneration = writeGeneration ?? diskWriter.generation
+        guard !Task.isCancelled, image.width > 0, image.height > 0,
               max(image.width, image.height) <= Self.maxSourceEdge else {
             return nil
         }
@@ -87,19 +106,31 @@ actor MLSuperResolver {
         // (平文で書き出すことは絶対にしない)。非暗号化本は従来どおり平文。
         let encryptionKey = encrypted ? diskEncryptionKey() : nil
         let diskKey = (encrypted && encryptionKey == nil) ? nil : cacheKey
-        if let diskKey, let cached = Self.readDiskCache(
-            for: diskKey, encryptionKey: encryptionKey) {
-            return cached
+        if let diskKey {
+            let url = Self.cacheFileURL(for: diskKey, at: diskRoot)
+            if let pending = diskWriter.image(at: url) { return pending }
+            if let cached = Self.readDiskCache(at: url, directory: diskRoot,
+                encryptionKey: encryptionKey, maxPixelSize: Self.decodeCap(for: displaySize)) {
+                return cached
+            }
         }
         if ProcessInfo.processInfo.environment["COO_TRACE"] != nil {
             NSLog("SR start %@ (%dx%d)", diskKey ?? "-", image.width, image.height)
         }
-        guard let loaded = await installer.ensureModel() else { return nil }
-        guard let result = await runTiled(model: loaded.model, image: image) else {
-            return nil
-        }
-        if let diskKey {
-            Self.writeDiskCache(result, for: diskKey, encryptionKey: encryptionKey)
+        let result: CGImage?
+        if let upscaleOverride { result = await upscaleOverride(image) }
+        else if let loaded = await installer.ensureModel() {
+            result = await runTiled(model: loaded.model, image: image)
+        } else { result = nil }
+        guard let result else { return nil }
+        if let diskKey, Self.prepareDiskCache(at: diskRoot) {
+            let directory = diskRoot
+            let write = diskWrite
+            diskWriter.enqueue(result, at: Self.cacheFileURL(for: diskKey, at: directory),
+                               generation: writeGeneration, write: { image, temporary in
+                if let write { try await write(image, temporary, encryptionKey) }
+                else { try Self.writeDiskCache(image, at: temporary, encryptionKey: encryptionKey) }
+            }, didWrite: { Self.trimDiskCache(at: directory) })
         }
         if ProcessInfo.processInfo.environment["COO_TRACE"] != nil {
             NSLog("SR done %@", diskKey ?? "-")
@@ -335,18 +366,18 @@ actor MLSuperResolver {
     }
 
     /// キャッシュファイルの場所(キーのハッシュをファイル名にする)
-    nonisolated static func cacheFileURL(for key: String) -> URL {
+    nonisolated static func cacheFileURL(for key: String, at directory: URL? = nil) -> URL {
         let digest = SHA256.hash(data: Data(key.utf8))
             .map { String(format: "%02x", $0) }.joined()
-        return cacheDirectory.appendingPathComponent(digest + ".heic")
+        return (directory ?? cacheDirectory).appendingPathComponent(digest + ".heic")
     }
 
     /// encryptionKey が非 nil なら暗号化エントリとして読み、復号してからデコードする。
     /// nil なら従来どおり平文 HEIC を読む(非暗号化本)。
-    private static func readDiskCache(for key: String,
-                                     encryptionKey: SymmetricKey?) -> CGImage? {
-        guard prepareDiskCache(at: cacheDirectory) else { return nil }
-        let url = cacheFileURL(for: key)
+    nonisolated static func readDiskCache(at url: URL, directory: URL,
+                                         encryptionKey: SymmetricKey?,
+                                         maxPixelSize: Int? = nil) -> CGImage? {
+        guard prepareDiskCache(at: directory) else { return nil }
         // 未キャッシュは正常系: 先に存在確認しないと ImageIO が
         // 「can't open (fileExists == false)」をコンソールへ吐いて紛らわしい
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -359,12 +390,12 @@ actor MLSuperResolver {
                   let source = CGImageSourceCreateWithData(heic as CFData, nil) else {
                 return nil
             }
-            image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            image = decodeCacheImage(source, maxPixelSize: maxPixelSize)
         } else {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
                 return nil
             }
-            image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            image = decodeCacheImage(source, maxPixelSize: maxPixelSize)
         }
         guard let image else { return nil }
         // 利用のたびに更新日時を進めて、起動時トリムの対象から外す
@@ -375,34 +406,49 @@ actor MLSuperResolver {
 
     /// encryptionKey が非 nil なら HEIC をメモリ上に作ってから暗号化して書き出す
     /// (平文 HEIC をディスクに一切残さない)。nil なら従来どおり平文で書く。
-    private static func writeDiskCache(_ image: CGImage, for key: String,
-                                      encryptionKey: SymmetricKey?) {
-        guard prepareDiskCache(at: cacheDirectory) else { return }
-        defer { trimDiskCache(at: cacheDirectory) }
-        let url = cacheFileURL(for: key)
-        let options = [kCGImageDestinationLossyCompressionQuality: 0.9]
-            as CFDictionary
+    nonisolated static func writeDiskCache(_ image: CGImage, at url: URL,
+                                          encryptionKey: SymmetricKey?) throws {
+        let options = [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary
         if let encryptionKey {
             let heic = NSMutableData()
             guard let destination = CGImageDestinationCreateWithData(
                 heic as CFMutableData, UTType.heic.identifier as CFString, 1, nil)
-            else { return }
+            else { throw CocoaError(.fileWriteUnknown) }
             CGImageDestinationAddImage(destination, image, options)
-            // 暗号化に失敗したら何も書かない(平文フォールバックは禁止)
+            // 設計書 §5: 平文 HEIC はメモリだけに置き、暗号化失敗時は保存しない。
             guard CGImageDestinationFinalize(destination),
-                  let sealed = SuperResCacheCrypto.seal(heic as Data,
-                                                        using: encryptionKey) else {
-                return
+                  let sealed = SuperResCacheCrypto.seal(heic as Data, using: encryptionKey) else {
+                throw CocoaError(.fileWriteUnknown)
             }
-            try? sealed.write(to: url, options: .atomic)
+            try Task.checkCancellation()
+            try sealed.write(to: url)
         } else {
             guard let destination = CGImageDestinationCreateWithURL(
                 url as CFURL, UTType.heic.identifier as CFString, 1, nil) else {
-                return
+                throw CocoaError(.fileWriteUnknown)
             }
             CGImageDestinationAddImage(destination, image, options)
-            CGImageDestinationFinalize(destination)
+            guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
         }
+    }
+
+    /// 保存キーは元画像と色空間のまま、復号だけを表示長辺の二倍に絞る(設計書 §5)。
+    nonisolated static func decodeCap(for displaySize: CGSize?) -> Int? {
+        guard let displaySize else { return nil }
+        let edge = max(displaySize.width, displaySize.height)
+        guard edge.isFinite, edge > 0 else { return nil }
+        return Int(min(CGFloat(Int32.max), ceil(edge * 2)))
+    }
+
+    private nonisolated static func decodeCacheImage(_ source: CGImageSource,
+                                                     maxPixelSize: Int?) -> CGImage? {
+        guard let maxPixelSize else { return CGImageSourceCreateImageAtIndex(source, 0, nil) }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary)
     }
 
     /// 設計書 §5: 表示プロファイル別の複製にも共通の容量上限を掛ける。

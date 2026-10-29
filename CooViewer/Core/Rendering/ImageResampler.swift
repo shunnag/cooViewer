@@ -126,13 +126,15 @@ actor ImageResampler {
             return Task.isCancelled ? nil : joined
         }
         let id = UUID()
+        // 共有タスクが actor を待つ間に本を閉じても、旧要求の保存を復活させない(設計書 §7.3)。
+        let writeGeneration = DeferredImageWriter.shared.generation
         let task = Task { [weak self] () -> CGImage? in
             guard let self else { return nil }
             return await self.computeResample(
                 image: image, width: width, height: height, key: key,
                 cacheKey: cacheKey, upscaleWithMetalFX: upscaleWithMetalFX,
                 noiseReduction: noiseReduction, superResEncrypted: superResEncrypted,
-                displayTarget: displayTarget)
+                displayTarget: displayTarget, writeGeneration: writeGeneration)
         }
         inFlight[key] = (task, id)
         // Task.value は Never 失敗タスクではキャンセル点にならず、待ち手が
@@ -162,7 +164,7 @@ actor ImageResampler {
         image: CGImage, width: Int, height: Int, key: String,
         cacheKey: String, upscaleWithMetalFX: Bool,
         noiseReduction: NoiseReductionLevel, superResEncrypted: Bool,
-        displayTarget: DisplayColorTarget?
+        displayTarget: DisplayColorTarget?, writeGeneration: UUID
     ) async -> CGImage? {
         computeCount += 1
         // .strong のノイズ低減(waifu2x)中間結果は元画像サイズ依存で target 非依存。
@@ -187,7 +189,8 @@ actor ImageResampler {
             // 弱/中(およびモデル未導入時のフォールバック)は CINoiseReduction
             (source, usedMLFallback, sourceCacheable) = await reducedSource(
                 of: image, level: noiseReduction, cacheKey: cacheKey,
-                encrypted: superResEncrypted)
+                encrypted: superResEncrypted, displaySize: CGSize(width: width, height: height),
+                writeGeneration: writeGeneration)
             // 中間結果のキャッシュ可否は最終結果と同じ 7n1.2 規則。恒久失敗機
             // (.failed/XCTest)は CI 中間も焼いてリサイズ再計算を防ぐ、一過性
             // フォールバック(未導入/DL 中)はモデル完成後の本物に譲るため焼かない
@@ -355,7 +358,8 @@ actor ImageResampler {
     private func reducedSource(of image: CGImage,
                                level: NoiseReductionLevel,
                                cacheKey: String?,
-                               encrypted: Bool = false)
+                               encrypted: Bool = false, displaySize: CGSize? = nil,
+                               writeGeneration: UUID? = nil)
         async -> (image: CGImage, usedMLFallback: Bool, cacheable: Bool) {
         guard level != .none else { return (image, false, true) }
         if level == .maximum {
@@ -366,7 +370,8 @@ actor ImageResampler {
                 "\($0)|\(image.width)x\(image.height)|sr4|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
             }
             if let upscaled = await MLSuperResolver.shared.upscale(
-                image, cacheKey: srKey, encrypted: encrypted) {
+                image, cacheKey: srKey, encrypted: encrypted, displaySize: displaySize,
+                writeGeneration: writeGeneration) {
                 return (upscaled, false, true)
             }
         }

@@ -26,7 +26,12 @@ private enum EPUBRouting {
 /// 旧 Controller の表示/ナビゲーション部分に相当する(仕様書 §4.1-4.3)。
 @MainActor
 final class ReaderWindowController: NSWindowController {
-    private(set) var book: Book?
+    private(set) var book: Book? {
+        didSet {
+            // 本の切替後に旧世代の保存を公開しない(設計書 §5、§7.3)。
+            if oldValue !== book { DeferredImageWriter.shared.cancelAll() }
+        }
+    }
     /// 同期保存で不完全な一覧を確定位置と誤認しないため、復元時の観測を保持する(設計書 §7.4)。
     var imageBookPersistence: ImageBookPersistence?
     /// 現在の本がパスワード付き書庫か(ロック解除前の isEncrypted で判定)。
@@ -2216,6 +2221,7 @@ final class ReaderWindowController: NSWindowController {
         // ため、止めないと画面が無いまま数分 GPU 推論/デコードを続ける(cooViewer-gdo)
         preresampleTask?.cancel()
         book?.cancelPrefetch()
+        DeferredImageWriter.shared.cancelAll()
         epubView?.stopMediaOverlay()  // ウインドウを閉じたら音声も止める
         epubView?.cancelPageCensus()
         saveCurrentBookState()

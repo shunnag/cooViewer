@@ -69,12 +69,18 @@ actor ThumbnailCache {
     /// ゲートを通らない。表示中ページの読み込みは本ゲートと無関係(不飢餓)
     private let generationGate = SourceReadGate(limit: 4)
 
+    private let diskWriter: DeferredImageWriter
+    private let diskWrite: DeferredImageWriter.Write
     private let diskRoot: URL
 
     init(diskRoot: URL? = nil, failureTTL: Duration = .seconds(300),
          byteLimit: Int = 96 << 20,
          pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared,
-         center: NotificationCenter = .default) {
+         center: NotificationCenter = .default,
+         diskWriter: DeferredImageWriter = .shared,
+         diskWrite: @escaping DeferredImageWriter.Write = ThumbnailCache.writeToDisk) {
+        self.diskWriter = diskWriter
+        self.diskWrite = diskWrite
         self.diskRoot = diskRoot ?? FileManager.default
             .userDomainDirectory(.cachesDirectory)
             .appendingPathComponent("jp.coo.cooViewer/Thumbnails-v2")
@@ -200,12 +206,16 @@ actor ThumbnailCache {
             // urgent でも背面レーンに落ち Book 先読みの後ろで飢餓する。基底
             // 優先度は床でエスカレーションは下げないので、対話レーンへ確定する
             let gate = generationGate
+            let writer = diskWriter
+            let write = diskWrite
+            let writeGeneration = writer.generation
             let generationID = UUID()
             let generation = Task.detached(
                 priority: urgent ? .userInitiated : .utility) {
                 let image = await Self.loadOrGenerate(
                     entry: entry, source: source, fileURL: fileURL, gate: gate,
-                    urgent: urgent, maxPixelSize: px)
+                    urgent: urgent, maxPixelSize: px, writer: writer,
+                    write: write, writeGeneration: writeGeneration)
                 // 失敗の記録は生成タスク自身が行う = 1 生成 1 カウント。
                 // 待ち手側で数えると、同じ失敗生成を待つ待ち手の数だけ
                 // 二重カウントされ、1 回の失敗で恒久記録へ昇格してしまう。
@@ -369,11 +379,13 @@ actor ThumbnailCache {
         if let index = order.firstIndex(of: key) { order.remove(at: index) }
     }
 
-    /// ディスク読取 → ソース生成 → ディスク保存(actor 状態に触れない)。
+    /// ディスク読取 → ソース生成 → 保存の予約(actor 状態に触れない。設計書 §5)。
     /// パスワード付き書庫はディスク層を素通りしメモリのみで扱う(下記)。
     private static func loadOrGenerate(entry: PageEntry, source: any BookSource,
                                        fileURL: URL, gate: SourceReadGate,
-                                       urgent: Bool, maxPixelSize: Int) async -> CGImage? {
+                                       urgent: Bool, maxPixelSize: Int, writer: DeferredImageWriter,
+                                       write: @escaping DeferredImageWriter.Write,
+                                       writeGeneration: UUID) async -> CGImage? {
         // 実行に入る前にキャンセル済みなら何もしない(遠いページの早期破棄)。
         // ソース呼び出しが始まった後は完走させてキャッシュに残す
         guard !Task.isCancelled else { return nil }
@@ -386,6 +398,7 @@ actor ThumbnailCache {
         // キャンセル判定の後に一度だけ await するので、キャンセル意味論も
         // ホットパスの await 回数も変えない。
         let protected = await source.containsProtectedContent()
+        if !protected, let pending = writer.image(at: fileURL) { return pending }
         if !protected,
            let data = try? Data(contentsOf: fileURL),
            let image = try? ImageDecoding.decode(data) {
@@ -410,37 +423,19 @@ actor ThumbnailCache {
         await gate.release()
         guard let image else { return nil }
         if !protected {
-            writeToDisk(image, at: fileURL)
+            writer.enqueue(image, at: fileURL, generation: writeGeneration, write: write)
         }
         return image
     }
 
-    private static func writeToDisk(_ image: CGImage, at fileURL: URL) {
-        let manager = FileManager.default
-        try? manager.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        // 一時ファイルへ書いて原子的に差し替える(中断・満杯で切り詰めた HEIC を
-        // 最終パスに残さない。他の永続化 3 箇所と同じ tmp+replace 方針)。UUID
-        // サフィックスで同一 fileURL への並行書込み衝突を避ける
-        let tmpURL = fileURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(UUID().uuidString).heic.tmp")
-        // HEIC(ハードウェアエンコード)。サムネイル画質は 0.75 で十分
+    /// 一時パスだけに符号化し、公開と取消は保存係が管理する(設計書 §5、§7.3)。
+    nonisolated static func writeToDisk(_ image: CGImage, at fileURL: URL) throws {
         guard let destination = CGImageDestinationCreateWithURL(
-            tmpURL as CFURL, UTType.heic.identifier as CFString, 1, nil) else { return }
+            fileURL as CFURL, UTType.heic.identifier as CFString, 1, nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
         let options = [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary
         CGImageDestinationAddImage(destination, image, options)
-        guard CGImageDestinationFinalize(destination) else {
-            try? manager.removeItem(at: tmpURL)  // 失敗は最終パスを触らない
-            return
-        }
-        do {
-            if manager.fileExists(atPath: fileURL.path) {
-                _ = try manager.replaceItemAt(fileURL, withItemAt: tmpURL)
-            } else {
-                try manager.moveItem(at: tmpURL, to: fileURL)
-            }
-        } catch {
-            try? manager.removeItem(at: tmpURL)
-        }
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
     }
 }
