@@ -60,11 +60,13 @@ final class SourceReadGateTests: XCTestCase {
         for _ in 0..<100 {
             let gate = SourceReadGate(limit: 1)
             guard await gate.acquire() else { return XCTFail("取得失敗") }
+            let promotion = DecodePromotion()
             let parked = Task {
-                let acquired = await gate.acquire(interactive: true)
+                let acquired = await gate.acquire(interactive: false, promotion: promotion)
                 if acquired { await gate.release() }
             }
             while await gate.debugCounts().queued == 0 { await Task.yield() }
+            promotion.promote()
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { parked.cancel() }
                 group.addTask { await gate.release() }
@@ -75,6 +77,49 @@ final class SourceReadGateTests: XCTestCase {
             XCTAssertEqual(counts.queued, 0)
             guard await gate.acquire() else { return XCTFail("後続の取得失敗") }
             await gate.release()
+        }
+    }
+
+    /// 設計書 §5、§7.3: I/O と FXL 共通のゲートは、登録済みの先読みを到着順の対話列へ昇格する。
+    func testQueuedPromotionPrecedesLaterInteractiveReadsWithoutBypassingCapacity() async {
+        for promoteBeforeInteractive in [false, true] {
+            let gate = SourceReadGate(limit: 1)
+            let occupied = await gate.acquire(interactive: false)
+            XCTAssertTrue(occupied)
+            let promotion = DecodePromotion()
+            let order = OrderRecorder()
+            let prefetch = Task(priority: .utility) {
+                await PageRequestIntent.$decodePromotion.withValue(promotion) {
+                    guard await gate.acquire() else { return }
+                    await order.note("promoted")
+                    await gate.release()
+                }
+            }
+            while await gate.debugCounts().queued < 1 { await Task.yield() }
+            let background = Task(priority: .utility) {
+                guard await gate.acquire() else { return }
+                await order.note("background")
+                await gate.release()
+            }
+            while await gate.debugCounts().queued < 2 { await Task.yield() }
+            if promoteBeforeInteractive { promotion.promote() }
+            let interactive = Task(priority: .userInitiated) {
+                guard await gate.acquire() else { return }
+                await order.note("interactive")
+                await gate.release()
+            }
+            while await gate.debugCounts().queued < 3 { await Task.yield() }
+            if !promoteBeforeInteractive { promotion.promote() }
+            let held = await gate.debugCounts()
+            XCTAssertEqual(held.active, 1)
+            XCTAssertEqual(held.queued, 3)
+            await gate.release()
+            _ = await (prefetch.value, background.value, interactive.value)
+            let values = await order.values
+            XCTAssertEqual(values, ["promoted", "interactive", "background"])
+            let finished = await gate.debugCounts()
+            XCTAssertEqual(finished.active, 0)
+            XCTAssertEqual(finished.queued, 0)
         }
     }
 
@@ -90,7 +135,7 @@ final class SourceReadGateTests: XCTestCase {
         }
         // sleep の運任せにせず、実際に並んだことを debugCounts で確認する
         while await gate.debugCounts().queued < 1 {
-            try? await Task.sleep(for: .milliseconds(5))
+            await Task.yield()
         }
         let interactive = Task {
             guard await gate.acquire(interactive: true) else { return }
@@ -98,7 +143,7 @@ final class SourceReadGateTests: XCTestCase {
             await gate.release()
         }
         while await gate.debugCounts().queued < 2 {
-            try? await Task.sleep(for: .milliseconds(5))
+            await Task.yield()
         }
 
         await gate.release()  // 占有解除 → 待ち行列が流れ始める
@@ -122,7 +167,7 @@ final class SourceReadGateTests: XCTestCase {
             await gate.release()
         }
         while await gate.debugCounts().queued < 1 {
-            try? await Task.sleep(for: .milliseconds(5))
+            await Task.yield()
         }
         let interactive = Task(priority: .userInitiated) {
             guard await gate.acquire() else { return }  // 推論 → userInitiated なので interactive レーン
@@ -130,7 +175,7 @@ final class SourceReadGateTests: XCTestCase {
             await gate.release()
         }
         while await gate.debugCounts().queued < 2 {
-            try? await Task.sleep(for: .milliseconds(5))
+            await Task.yield()
         }
 
         await gate.release()

@@ -312,6 +312,7 @@ final class ReaderWindowController: NSWindowController {
     /// レンダー FIFO にジョブを積み残さないよう、常に in-flight 1 本+最新 1 本
     /// にコアレスする。配達ガードだけでは「結果」しか捨てられない)
     private var bubbleThumbnailInFlight = false
+    private var bubbleThumbnailTask: (id: UUID, task: Task<Void, Never>)?
     private var bubbleThumbnailPending: (key: Int, request: () async -> CGImage?)?
 
     /// 壊れページ用の実行時生成プレースホルダ(多言語対応。旧 broken.png の置換)
@@ -428,6 +429,8 @@ final class ReaderWindowController: NSWindowController {
     /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
     /// キャンセルして ML 実行キューを明け渡す)
     private var preresampleTask: Task<Void, Never>?
+    private var animationTasks: [UUID: Task<Void, Never>] = [:]
+    private(set) var imageBookUnloadTask: Task<Void, Never>?
     /// 先読みがいま処理中のエントリ ID(処理中のページへジャンプした場合は
     /// キャンセルせず完走させて表示に使うための判定材料)
     private var preresamplingEntryID: Int?
@@ -2482,6 +2485,32 @@ final class ReaderWindowController: NSWindowController {
 
     func replaceBook(_ book: Book?, persistence: ImageBookPersistence? = nil,
                      preservingPartialRecovery: Bool = false) {
+        if self.book !== book, let previous = self.book {
+            // 画像本を降ろす入口を集約し、先読み以外の長寿命処理も取り消して解放完了を待てるようにする(設計書 §5、§7.3)。
+            let drain = previous.close()
+            // 次の表示が中断されても空で閉じられない一覧を残さず、旧本の参照は非表示にしてから解放する(設計書 §5、§7.3)。
+            let thumbnails = hideThumbnailOverlay()
+            thumbnailOverlayModel.clear()
+            let tasks = [backgroundPreparationTask, preresampleTask, spoolSettingsTask,
+                         loupeImageTask, collectionOverlayTask, bubbleThumbnailTask?.task,
+                         thumbnails].compactMap { $0 }
+                + Array(animationTasks.values)
+            for task in tasks { task.cancel() }
+            animationTasks.removeAll()
+            bubbleThumbnailTask = nil
+            bubbleThumbnailPending = nil
+            bubbleThumbnailInFlight = false
+            bubbleHoverIndex = -1
+            pageBarBubble.isHidden = true
+            preresampleTask = nil
+            spoolSettingsTask = nil
+            let pending = imageBookUnloadTask
+            imageBookUnloadTask = Task(priority: .utility) {
+                await pending?.value
+                await drain.value
+                for task in tasks { await task.value }
+            }
+        }
         if !preservingPartialRecovery { clearFailedOpen() }
         backgroundPreparationTask?.cancel()
         backgroundPreparationTask = nil
@@ -2743,7 +2772,7 @@ final class ReaderWindowController: NSWindowController {
         let conserveEnergy = mode == .conserving
         let colorTarget = readerView.displayColorTarget
         let usesML = settings.noiseReductionLevel.usesMachineLearning
-        preresampleTask = Task { [weak self] in
+        preresampleTask = Task(priority: .utility) { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             guard let self, let book = self.book,
@@ -2858,11 +2887,15 @@ final class ReaderWindowController: NSWindowController {
             // 実効キャップ(AnimatedImage 側の上限 2048 を反映)を記録し、
             // ウインドウ拡大時の再デコード要否判定(下記)に使う
             loadedAnimationFrameCaps[entry.id] = min(frameCap ?? 2048, 2048)
-            Task.detached(priority: .userInitiated) { [weak self, weak book] in
-                guard let data = await source.imageData(for: entry) else { return }
-                let animation = AnimatedImage.load(from: data, maxPixelSize: frameCap)
+            let taskID = UUID()
+            animationTasks[taskID] = Task.detached(priority: .userInitiated) { [weak self, weak book] in
+                let data = Task.isCancelled ? nil : await source.imageData(for: entry)
+                let animation = data.flatMap {
+                    Task.isCancelled ? nil : AnimatedImage.load(from: $0, maxPixelSize: frameCap)
+                }
                 await MainActor.run {
-                    guard let self, let book, book === self.book else { return }
+                    self?.animationTasks[taskID] = nil
+                    guard !Task.isCancelled, data != nil, let self, let book, book === self.book else { return }
                     guard let animation else {
                         book.probedStaticAnimationIDs.insert(entry.id)
                         return
@@ -2974,9 +3007,10 @@ final class ReaderWindowController: NSWindowController {
         bubbleHoverIndex = hoverKey
         bubbleImageView.image = nil
         guard showsThumbnail, let thumbnailRequest else { return }
-        requestBubbleThumbnail(hoverKey: hoverKey) { [weak self] in
+        requestBubbleThumbnail(hoverKey: hoverKey) { [weak self, weak book] in
             let image = await thumbnailRequest()
             // 本の切替を跨いだ配達を防ぐ(キーは本をまたいで重複し得る)
+            guard let book else { return nil }
             return self?.book === book ? image : nil
         }
     }
@@ -3006,7 +3040,7 @@ final class ReaderWindowController: NSWindowController {
     /// 完了時に待機分があれば 1 本だけ流す。EPUB の画面レンダラは FIFO 直列で
     /// キャンセル不能のため、要求側で本数を絞らないとスクラブで放棄ジョブが
     /// 積もり、最後のプレビューが全排出後まで届かない(レビュー指摘)
-    private func requestBubbleThumbnail(hoverKey: Int,
+    func requestBubbleThumbnail(hoverKey: Int,
                                         request: @escaping () async -> CGImage?) {
         bubbleThumbnailPending = (hoverKey, request)
         pumpBubbleThumbnail()
@@ -3017,9 +3051,12 @@ final class ReaderWindowController: NSWindowController {
               let pending = bubbleThumbnailPending else { return }
         bubbleThumbnailPending = nil
         bubbleThumbnailInFlight = true
-        Task { [weak self] in
+        let id = UUID()
+        let task = Task { [weak self] in
             let image = await pending.request()
-            guard let self else { return }
+            // 取消し済みの旧本が、新しい本のプレビュー待機を解除しないよう同一性を照合する(設計書 §7.3)。
+            guard let self, self.bubbleThumbnailTask?.id == id, !Task.isCancelled else { return }
+            self.bubbleThumbnailTask = nil
             self.bubbleThumbnailInFlight = false
             if self.bubbleHoverIndex == pending.key, let image {
                 self.bubbleImageView.image = NSImage(
@@ -3028,6 +3065,7 @@ final class ReaderWindowController: NSWindowController {
             }
             self.pumpBubbleThumbnail()
         }
+        bubbleThumbnailTask = (id, task)
     }
 
     /// EPUB モードのページバーホバー。合本マップがあれば全体基準
