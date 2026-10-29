@@ -86,6 +86,15 @@ final class PageCache {
         totalCost = 0
     }
 
+    /// 設計書 §5: 距離判定の走査では LRU を温めず、完成画像で代替できる入力だけを解放する。
+    func contains(_ id: Int, colorSpaceIdentity: String = "source") -> Bool {
+        storage[Key(id: id, colorSpaceIdentity: colorSpaceIdentity)] != nil
+    }
+
+    func remove(_ id: Int, colorSpaceIdentity: String = "source") {
+        removeEntry(Key(id: id, colorSpaceIdentity: colorSpaceIdentity))
+    }
+
     var count: Int { storage.count }
     var currentCost: Int { totalCost }
 

@@ -146,7 +146,12 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   apply); non-ML pre-resampling is capped at 8 pages / 4 spreads with existing byte budgets
   and LRU limits preserved (decode-ahead keeps its media floor–64 range); strong NR intermediates
   are retained only for the current and adjacent spreads (unknown pairs protect 2 pages), while
-  decoded PageCache retention remains unchanged because display still fetches originals first;
+  decoded originals beyond decodeBehind are released when an exact current-size/color/quality
+  resample is cached, protecting current/adjacent spreads, displayed pages and forward/in-flight
+  prefetch inputs. Normal backward display can use cached resamples with original layout dimensions
+  before fetching originals; resize, color/quality changes, rotation, zoom, original-size and loupe
+  load originals lazily through Book's single-flight. Decode/resample prefetch also avoids rebuilding
+  originals for these display-ready pages; first/forward display and byte limits are unchanged;
   ML render qualities pre-resample at most the next two
   spreads (≤ 4 pages, next spread only when conserving or the app is inactive), and pre-resampling
   pauses while the reader window is occluded/minimized/hidden;

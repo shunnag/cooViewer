@@ -428,6 +428,7 @@ final class ReaderWindowController: NSWindowController {
     var currentArchiveSource: ArchiveSource? { book?.source as? ArchiveSource }
     /// 再計画は止めても、新計画に残るページ処理は別の所有者で保つ(設計書 §5)。
     private var preresampleTask: Task<Void, Never>?
+    private var decodedRetentionTask: Task<Void, Never>?
     private var animationTasks: [UUID: Task<Void, Never>] = [:]
     private(set) var imageBookUnloadTask: Task<Void, Never>?
     let preresampleJobs = PreresampleJobs()
@@ -996,13 +997,18 @@ final class ReaderWindowController: NSWindowController {
             return
         }
         guard let first = images.first else { return }
-        let decodedBytes = first.bytesPerRow * first.height
+        let usesDisplayedSources = images.count == readerView.images.count
+            && zip(images, readerView.images).allSatisfy { $0 === $1 }
+        let decodedBytes = usesDisplayedSources
+            ? readerView.decodedPageCosts.first ?? first.bytesPerRow * first.height
+            : first.bytesPerRow * first.height
         // 表示リサンプルの実効ページ数(補間なし/低では事前リサンプル自体が
         // 無いので 0 = 媒体別下限と PageCache 予算だけで決まる)
         var resamplePages = 0
         let conserveEnergy = book.mediaProfile.shouldConserveEnergy
         if let targets = readerView.predictedResampleSizes(
-            for: images.map { CGSize(width: $0.width, height: $0.height) }),
+            for: usesDisplayedSources ? readerView.sourceImageSizes
+                : images.map { CGSize(width: $0.width, height: $0.height) }),
            let firstTarget = targets.first {
             // ML 品質ではリサンプル先読みが浅いので、デコード先読みも同じ枚数から導く
             resamplePages = PreresamplePolicy.pageBudget(
@@ -1230,6 +1236,10 @@ final class ReaderWindowController: NSWindowController {
         }
         readerView.onResampleActivityChanged = { [weak self] active in
             self?.setResampleIndicator(active)
+        }
+        readerView.onResampledDisplayContextChanged = { [weak self] in
+            guard let self, let book = self.book else { return }
+            self.updateResampledDisplayContext(book: book)
         }
         pageBar.onJump = { [weak self] fraction in
             guard let self else { return }
@@ -2128,6 +2138,7 @@ final class ReaderWindowController: NSWindowController {
 
     /// キャップが上がる変化(ウインドウ拡大・原寸表示切替)なら再デコード
     func refreshDisplayIfCapRaised() {
+        if let book { updateResampledDisplayContext(book: book) }
         Task { [weak self] in
             guard let self, let book = self.book else { return }
             if book.updateDisplayPixelCap(self.currentDisplayPixelCap()) {
@@ -2152,6 +2163,7 @@ final class ReaderWindowController: NSWindowController {
     func windowDidResize(_ notification: Notification) {
         // cooViewer-a5p: inLiveResize の判定対象と通知元を親窓に揃える。
         guard (notification.object as? NSWindow) === window else { return }
+        if let book { updateResampledDisplayContext(book: book) }
         // 矩形は旧版面の座標なので、ライブリサイズ中も最初の通知で破棄する。
         clearEPUBSearchHighlight()
         // ズーム等の非ライブリサイズ(ライブ中は終了時にまとめて処理)
@@ -2524,10 +2536,22 @@ final class ReaderWindowController: NSWindowController {
         // ウインドウ実寸に応じたデコード上限の自己修復(拡大時は再デコード)
         _ = book.updateDisplayPixelCap(currentDisplayPixelCap())
         _ = book.updateDisplayColorTarget(readerView.displayColorTarget)
+        updateResampledDisplayContext(book: book)
         displayGeneration += 1
         let generation = displayGeneration
         let position = book.navigationCheckpoint
-        let spread = await book.currentSpread()
+        var cachedSpread: Book.Spread?
+        if pendingZoom == nil, readerView.allowsResampledDisplay,
+           let candidate = book.resampledDisplayCandidate() {
+            let pages = await cachedDisplayPages(book: book, indices: candidate.indices, sources: candidate.sources)
+            guard generation == displayGeneration, book === self.book, !Task.isCancelled,
+                  book.isAtNavigationCheckpoint(position) else { return }
+            if let pages { cachedSpread = book.acceptResampledDisplay(candidate, pages: pages) }
+            else { book.clearResampledDisplayMiss(candidate) }
+        }
+        let spread: Book.Spread
+        if let cachedSpread { spread = cachedSpread }
+        else { spread = await book.currentSpread() }
         // 連打等でより新しい表示更新が始まっていたら、この結果は捨てる
         guard generation == displayGeneration, book === self.book, !Task.isCancelled,
               book.isAtNavigationCheckpoint(position) else { return }
@@ -2539,15 +2563,15 @@ final class ReaderWindowController: NSWindowController {
         // リサンプル済みキャッシュの事前引き当て(照会のみ。事前リサンプルが
         // 温めた完成画像があれば、最初のレイアウト=めくり効果のスナップショット
         // からフィルタ済みの絵を使える)
-        var preResampled: [ResampledPage?] = []
+        var preResampled: [ResampledPage?] = spread.resampledPages?.map { $0 } ?? []
         let colorTarget = readerView.displayColorTarget
         var preparedDisplayImages: [CGImage?] = []
-        for (position, image) in images.enumerated() {
+        for (position, image) in images.enumerated() where spread.resampledPages == nil {
             let prepared = await ImageResampler.shared.displayImage(
                 image, cacheKey: "\(book.cacheKey)#\(ids[position])", target: colorTarget)
             preparedDisplayImages.append(prepared)
         }
-        if let targets = readerView.predictedResampleSizes(
+        if spread.resampledPages == nil, let targets = readerView.predictedResampleSizes(
             for: images.map { CGSize(width: $0.width, height: $0.height) }) {
             let processing = readerView.imageProcessingSettings
             for (position, image) in images.enumerated() {
@@ -2566,6 +2590,8 @@ final class ReaderWindowController: NSWindowController {
         guard generation == displayGeneration, book === self.book, !Task.isCancelled,
               book.isAtNavigationCheckpoint(position) else { return }
         guard colorTarget == readerView.displayColorTarget else { return }
+        if let pages = spread.resampledPages, let sources = spread.decodedSources,
+           !readerView.canDisplayResampled(pages, sources: sources) { return }
         if let session, !ownsInteractiveCurlDestination(session) { return }
 
         // 一回消費フラグ(めくり向き・合本到達方向・先頭強制)は、連打・競合を
@@ -2638,7 +2664,7 @@ final class ReaderWindowController: NSWindowController {
         failureButtons.isHidden = true
         displayedEntryIDs = Set(ids)
         // デコード先読みの深さを実ページサイズ・メモリ条件へ追従させる
-        updatePrefetchDepth(book: book, images: images)
+        if spread.resampledPages == nil { updatePrefetchDepth(book: book, images: images) }
         // 表示対象外でも次の先読み計画に残るページは捨てない(設計書 §5)。
         // preresampleAdjacentSpread が新しい予測を確定してから計画外だけを停止する。
         // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
@@ -2657,7 +2683,15 @@ final class ReaderWindowController: NSWindowController {
                             readsFromLeft: book.readMode.readsFromLeft,
                             preResampled: preResampled,
                             preparedDisplayImages: preparedDisplayImages,
+                            decodedSources: spread.decodedSources,
+                            originalLoader: { [weak book] position in
+                                guard let book, spread.indices.indices.contains(position) else { return nil }
+                                let index = spread.indices[position]
+                                guard book.entries.indices.contains(index), book.entries[index].id == ids[position] else { return nil }
+                                return await PageRequestIntent.$isDisplay.withValue(true) { await book.image(at: index) }
+                            },
                             turn: turn)
+        if spread.resampledPages != nil { updatePrefetchDepth(book: book, images: readerView.images) }
         // スマートズーム直後の再デコード(キャップ上昇)では setPages が
         // スクロールを先頭へ戻すため、同一スプレッドに限りアンカーを再適用する
         if let pending = pendingScrollAnchor {
@@ -2707,11 +2741,62 @@ final class ReaderWindowController: NSWindowController {
             }
         }
         preresampleAdjacentSpread()
+        scheduleDecodedOriginalRetention()
+    }
+
+    /// 設計書 §5: サイズ・配置・色・品質が変わると、復号先読みの省略条件も一緒に失効させる。
+    private func updateResampledDisplayContext(book: Book) {
+        let context = readerView.allowsResampledDisplay
+            ? "\(readerView.bounds.size)|\(readerView.window?.backingScaleFactor ?? 2)|\(readerView.fitMode.rawValue)|\(readerView.singleSetting)|layout:\(book.spreadLayoutRevision)|\(readerView.imageProcessingSettings)|\(readerView.displayColorTarget.identity)"
+            : nil
+        book.updateResampledDisplayContext(context)
+    }
+
+    private func cachedDisplayPages(book: Book, indices: [Int], sources: [DecodedPageInfo]) async -> [ResampledPage]? {
+        guard readerView.allowsResampledDisplay, indices.count == sources.count,
+              let sizes = readerView.predictedResampleSizes(for: sources.map(\.size)) else { return nil }
+        let processing = readerView.imageProcessingSettings
+        let target = readerView.displayColorTarget
+        let ids = indices.map { book.entries[$0].id }
+        var pages: [ResampledPage] = []
+        for position in indices.indices {
+            guard !Task.isCancelled, let image = await ImageResampler.shared.cached(
+                source: sources[position], to: sizes[position], cacheKey: "\(book.cacheKey)#\(ids[position])",
+                upscaleWithMetalFX: processing.interpolation == .high,
+                noiseReduction: processing.noiseReduction, displayTarget: target) else { return nil }
+            pages.append(ResampledPage(size: sizes[position], image: image, processing: processing, colorTarget: target))
+        }
+        return readerView.canDisplayResampled(pages, sources: sources) ? pages : nil
+    }
+
+    /// 設計書 §5、§7.3: ページ確定を待たせずに照会し、await 後は最新の表示・先読み保護を使う。
+    private func scheduleDecodedOriginalRetention() {
+        decodedRetentionTask?.cancel()
+        guard let book, readerView.allowsResampledDisplay else { return }
+        updateResampledDisplayContext(book: book)
+        let generation = displayGeneration
+        let candidates = book.decodedRetentionCandidates()
+        guard !candidates.isEmpty else { return }
+        decodedRetentionTask = Task(priority: .utility) { [weak self, weak book] in
+            for candidate in candidates {
+                guard let self, let book, !Task.isCancelled, book === self.book,
+                      generation == self.displayGeneration else { return }
+                guard let pages = await self.cachedDisplayPages(
+                    book: book, indices: candidate.indices, sources: candidate.sources) else { continue }
+                guard !Task.isCancelled, book === self.book, generation == self.displayGeneration,
+                      self.readerView.canDisplayResampled(pages, sources: candidate.sources) else { return }
+                let shown = Set(self.displayedEntryIDs.map { "\(book.cacheKey)#\($0)" })
+                book.evictDecodedOriginals(Set(candidate.indices), candidate: candidate, pages: pages,
+                    protectedPageKeys: shown.union(self.preresampleJobs.protectedPageKeys))
+            }
+        }
     }
 
     /// 本・窓・表示先の失効では、計画と所有するページ処理の両方を止める(設計書 §5、§7.3)。
     @discardableResult
     private func cancelPreresampling() -> Task<Void, Never> {
+        decodedRetentionTask?.cancel()
+        decodedRetentionTask = nil
         preresampleRun += 1
         preresampleTask?.cancel()
         preresampleTask = nil
@@ -2770,10 +2855,12 @@ final class ReaderWindowController: NSWindowController {
             }
             // 待機前に計画外を停止し、残るページは同じ処理へ合流できるよう保持する(設計書 §5)。
             retainPlannedJobs(pageLimit: maxPages)
+            self.scheduleDecodedOriginalRetention()
             guard !spreads.isEmpty else { return }
             defer {
                 if run == self.preresampleRun {
                     self.preresampleJobs.replacePlan(Set(self.displayedEntryIDs.map { "\(book.cacheKey)#\($0)" }))
+                    self.scheduleDecodedOriginalRetention()
                 }
             }
             try? await Task.sleep(for: .milliseconds(250))
@@ -2796,6 +2883,16 @@ final class ReaderWindowController: NSWindowController {
                                    maxPages)
             self.notePrefetchPlan(planned: plannedPages)
             for indices in spreads {
+                // 設計書 §5: 戻り読みの先行リサンプルも完成画像を照会し、解放済み入力を埋め直さない。
+                if book.hasMissingOriginal(at: indices), let sources = book.decodedSources(at: indices),
+                   await self.cachedDisplayPages(book: book, indices: indices, sources: sources) != nil {
+                    guard !Task.isCancelled, generation == self.displayGeneration,
+                          run == self.preresampleRun, book === self.book else { return }
+                    book.noteResampleLayout(indices)
+                    resampledPages += indices.count
+                    self.notePrefetchProgress(done: resampledPages)
+                    continue
+                }
                 var images: [CGImage] = []
                 for index in indices {
                     // 先読み済みならキャッシュ命中、未了なら進行中のデコードに
@@ -2816,6 +2913,7 @@ final class ReaderWindowController: NSWindowController {
                 let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
                 guard let targets = self.readerViewForInput.predictedResampleSizes(
                     for: sizes) else { return }
+                book.noteResampleLayout(indices)
                 if !limitComputed, let first = targets.first {
                     let bytesPerPage = Int(first.width) * Int(first.height) * 4
                     pageLimit = PreresamplePolicy.pageBudget(

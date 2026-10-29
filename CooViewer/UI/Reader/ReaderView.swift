@@ -59,6 +59,36 @@ final class ReaderView: NSView {
 
     private(set) var images: [CGImage] = []
     private(set) var pageIDs: [Int] = []
+    /// 設計書 §5: 完成画像の寸法を元寸法と取り違えず、従来と同じ配置と先読み予算を保つ。
+    private(set) var sourceImageSizes: [CGSize] = []
+    private(set) var decodedPageCosts: [Int] = []
+    private var originalImages: [CGImage?] = []
+    private var originalLoader: (@MainActor (Int) async -> CGImage?)?
+    private var originalLoadTask: Task<Void, Never>?
+    private var originalLoadGeneration = 0
+    private var originalRetryAfter: [Int: ContinuousClock.Instant] = [:]
+    /// 設計書 §5: 再表示を伴わないリサイズ・設定変更でも、旧目標サイズによる先読み省略を失効させる。
+    var onResampledDisplayContextChanged: (() -> Void)?
+    /// 設計書 §7.6: 変換中の配置変更と NAS 失敗の再試行を、実時間の待機なしで検証する。
+    var originalImageRetryNow: () -> ContinuousClock.Instant = { .now }
+    var originalDisplayImagePreparer: @MainActor (CGImage, String, DisplayColorTarget) async -> CGImage? = {
+        await ImageResampler.shared.displayImage($0, cacheKey: $1, target: $2)
+    }
+
+    var allowsResampledDisplay: Bool {
+        ResampledDisplayPolicy.allows(fitMode: fitMode, rotation: rotation,
+            zoomed: isZoomed, loupe: isLoupeEnabled, interpolation: interpolation)
+    }
+
+    func canDisplayResampled(_ pages: [ResampledPage], sources: [DecodedPageInfo]) -> Bool {
+        guard allowsResampledDisplay, pages.count == sources.count,
+              let sizes = predictedResampleSizes(for: sources.map(\.size)), sizes.count == pages.count else { return false }
+        return pages.indices.allSatisfy { index in
+            !sources[index].preservesHDR && pages[index].size == sizes[index]
+                && pages[index].processing == imageProcessingSettings
+                && pages[index].colorTarget == displayColorTarget
+        }
+    }
     /// 画面外スナップショットは sRGB、実ウインドウはその表示先を使う(設計書 §5)。
     var displayColorTarget: DisplayColorTarget {
         if let selectedColorTarget { return selectedColorTarget }
@@ -84,6 +114,7 @@ final class ReaderView: NSView {
         selectedColorTarget = target
         guard target != renderedColorTarget else { return false }
         renderedColorTarget = target
+        onResampledDisplayContextChanged?()
         resampleTask?.cancel()
         resampleGeneration += 1
         // 設計書 §5: 新プロファイルの画像が届くまでは、現在の合成内容を色管理つきで表示し続ける。
@@ -104,6 +135,7 @@ final class ReaderView: NSView {
         displayConversionGeneration += 1
         let generation = displayConversionGeneration
         let requests = images.enumerated().filter {
+            guard originalImages[$0.offset] != nil else { return false }
             guard let shown = displayImages[$0.offset] else { return true }
             return !target.matches(shown)
         }
@@ -131,7 +163,9 @@ final class ReaderView: NSView {
     /// 残す(平文で残さない。CWE-312)。既定 false(通常本は従来どおり平文)
     var superResDiskCacheEncrypted = false
     /// 見開きしきい値(横長判定。fitWidthDivide 用。設定から注入される)
-    var singleSetting = PageLayout.defaultSingleSetting
+    var singleSetting = PageLayout.defaultSingleSetting {
+        didSet { if singleSetting != oldValue { onResampledDisplayContextChanged?() } }
+    }
     private(set) var readsFromLeft = false
 
     /// ページ毎の高品質リサンプル結果(対象ピクセルサイズ付き。設計書 §5 描画品質)
@@ -161,7 +195,10 @@ final class ReaderView: NSView {
     private var softRestartRequested = false
 
     var fitMode: ReaderFitMode = .fitToScreen {
-        didSet { scrollOffset = .zero; resetZoom(); needsLayout = true }
+        didSet {
+            scrollOffset = .zero; resetZoom(); needsLayout = true
+            if fitMode != oldValue { onResampledDisplayContextChanged?() }
+        }
     }
 
     /// 回転(仕様書 §4.15): 0=なし, 1=左90°, 2=180°, 3=右90°。永続化しない。
@@ -171,6 +208,7 @@ final class ReaderView: NSView {
             scrollOffset = .zero
             resetZoom()
             needsLayout = true
+            if rotation != oldValue { onResampledDisplayContextChanged?() }
         }
     }
 
@@ -181,6 +219,7 @@ final class ReaderView: NSView {
     private(set) var zoomScale: CGFloat = 1 {
         didSet {
             guard zoomScale != oldValue else { return }
+            onResampledDisplayContextChanged?()
             needsLayout = true  // スクロール位置は保持(拡縮のみ)
         }
     }
@@ -204,6 +243,7 @@ final class ReaderView: NSView {
                 layer.magnificationFilter = interpolation.layerFilter
             }
             if interpolation != oldValue {
+                onResampledDisplayContextChanged?()
                 resampledPages = Array(repeating: nil, count: images.count)
                 softRestartRequested = true
                 needsLayout = true
@@ -216,6 +256,7 @@ final class ReaderView: NSView {
     var noiseReductionLevel: NoiseReductionLevel = .none {
         didSet {
             if noiseReductionLevel != oldValue {
+                onResampledDisplayContextChanged?()
                 softRestartRequested = true
                 resampledPages = Array(repeating: nil, count: images.count)
                 needsLayout = true
@@ -285,6 +326,16 @@ final class ReaderView: NSView {
         }
     }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        onResampledDisplayContextChanged?()
+    }
+
+    override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        onResampledDisplayContextChanged?()
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -307,7 +358,14 @@ final class ReaderView: NSView {
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
                   preResampled: [ResampledPage?] = [],
                   preparedDisplayImages: [CGImage?] = [],
+                  decodedSources: [DecodedPageInfo]? = nil,
+                  originalLoader: (@MainActor (Int) async -> CGImage?)? = nil,
                   turn: PageTurn? = nil) {
+        if let decodedSources {
+            let pages = preResampled.compactMap { $0 }
+            guard decodedSources.count == images.count, pages.count == images.count,
+                  canDisplayResampled(pages, sources: decodedSources) else { return }
+        }
         // スワイプ追従カールの予約(表示確定直前にコントローラが設定)。
         // 自動再生の turn より優先する
         let interactive = pendingInteractiveCurl
@@ -325,6 +383,14 @@ final class ReaderView: NSView {
             addTurnTransitionIfNeeded(turn, newReadsFromLeft: readsFromLeft)
         }
         self.images = images
+        originalLoadTask?.cancel()
+        originalLoadTask = nil
+        originalLoadGeneration &+= 1
+        originalRetryAfter.removeAll()
+        self.originalLoader = originalLoader
+        originalImages = decodedSources == nil ? images.map { $0 } : Array(repeating: nil, count: images.count)
+        sourceImageSizes = decodedSources?.map(\.size) ?? images.map { CGSize(width: $0.width, height: $0.height) }
+        decodedPageCosts = decodedSources?.map(\.byteCost) ?? images.map { $0.bytesPerRow * $0.height }
         self.pageIDs = ids.count == images.count ? ids : Array(images.indices)
         self.readsFromLeft = readsFromLeft
         let target = displayColorTarget
@@ -625,7 +691,7 @@ final class ReaderView: NSView {
             return
         }
 
-        let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
+        let sizes = sourceImageSizes
         let scales = pageScales(for: sizes, available: available)
         // zoomScale は表示モードのスケールに掛かる純乗数。pageScales 側には
         // 混ぜない(predictedResampleSizes/先読み予算が 1.0 基準を保つため)
@@ -670,6 +736,13 @@ final class ReaderView: NSView {
         for index in images.count..<pageLayers.count {
             pageLayers[index].isHidden = true
         }
+        // 設計書 §5: リサイズ・回転・品質変更・ズームは元入力から作り直し、完成画像の再補間を避ける。
+        let completed = scaled.indices.allSatisfy { index in
+            let target = CGSize(width: (scaled[index].width * backingScale).rounded(),
+                                height: (scaled[index].height * backingScale).rounded())
+            return resampledPages[index]?.size == target
+        }
+        if !allowsResampledDisplay || !completed { requestOriginalImagesIfNeeded() }
         scheduleHighQualityResample(scaledSizes: scaled, backingScale: backingScale)
     }
 
@@ -702,7 +775,8 @@ final class ReaderView: NSView {
                 guard scaledSizes.indices.contains(index),
                       resampledPages.indices.contains(index),
                       pageIDs.indices.contains(index),
-                      !DisplayColorTarget.preservesHDR(images[index]) else { return nil }
+                      let original = originalImages[index],
+                      !DisplayColorTarget.preservesHDR(original) else { return nil }
                 let pixelSize = CGSize(
                     width: (scaledSizes[index].width * backingScale).rounded(),
                     height: (scaledSizes[index].height * backingScale).rounded())
@@ -711,7 +785,7 @@ final class ReaderView: NSView {
                 // なし)なら高品質リサンプルを省き、CALayer のトリリニア縮小に委ねる。
                 // 「そのキャップ画像で目標サイズを満たした」と記録して再要求を防ぐ
                 // (ページ切替で resampledPages はリセットされるので stale にならない)。
-                let cap = images[index]
+                let cap = original
                 if noiseReductionLevel == .none,
                    let displayImage = displayImages[index], colorTarget.matches(displayImage),
                    cap.width >= Int(pixelSize.width), cap.height >= Int(pixelSize.height),
@@ -720,7 +794,7 @@ final class ReaderView: NSView {
                     resampledPages[index] = (pixelSize, displayImage)
                     return nil
                 }
-                return (index, images[index], pixelSize,
+                return (index, original, pixelSize,
                         "\(resampleKeyPrefix)#\(pageIDs[index])", noiseReductionLevel)
             }
         // 新しい要求が進行中の要求の部分集合なら打ち切らず続行させる
@@ -952,10 +1026,13 @@ final class ReaderView: NSView {
         loupe.rate = rate
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
         loupe.enable(in: layer, at: point, content: loupeContent())
+        onResampledDisplayContextChanged?()
+        requestOriginalImagesIfNeeded()
     }
 
     func disableLoupe() {
         loupe.disable()
+        onResampledDisplayContextChanged?()
     }
 
     func setLoupeRate(_ rate: Double) {
@@ -1002,8 +1079,8 @@ final class ReaderView: NSView {
     func setLoupeHighResImage(_ image: CGImage, forPageAt index: Int, entryID: Int) {
         // ページめくり直後に届いた古いページの結果は捨てる(id 照合)
         guard pageIDs.indices.contains(index), pageIDs[index] == entryID else { return }
-        if images.indices.contains(index),
-           image.width * image.height < images[index].width * images[index].height {
+        if sourceImageSizes.indices.contains(index),
+           CGFloat(image.width) * CGFloat(image.height) < sourceImageSizes[index].width * sourceImageSizes[index].height {
             return
         }
         loupeHighResImages[index] = image
@@ -1019,9 +1096,58 @@ final class ReaderView: NSView {
             containerTransform: containerLayer.affineTransform(),
             pages: images.indices.map { index in
                 LoupeController.Page(frame: pageLayers[index].frame,
-                                     image: loupeHighResImages[index] ?? images[index])
+                                     image: loupeHighResImages[index] ?? originalImages[index] ?? images[index])
             },
             backgroundColor: layer?.backgroundColor)
+    }
+
+    /// 設計書 §5、§7.3: 必要になったページだけ単一飛行へ合流し、旧見開きの遅着で新画面を汚さない。
+    private func requestOriginalImagesIfNeeded() {
+        guard originalLoadTask == nil, let originalLoader else { return }
+        let now = originalImageRetryNow()
+        let missing = originalImages.indices.filter {
+            originalImages[$0] == nil && (originalRetryAfter[$0].map { $0 <= now } ?? true)
+        }
+        guard !missing.isEmpty else { return }
+        let generation = originalLoadGeneration
+        let prefix = resampleKeyPrefix
+        let ids = pageIDs
+        originalLoadTask = Task { [weak self] in
+            defer {
+                if let self, generation == self.originalLoadGeneration { self.originalLoadTask = nil }
+            }
+            for index in missing {
+                guard !Task.isCancelled else { return }
+                let loaded = await originalLoader(index)
+                guard let self, !Task.isCancelled, generation == self.originalLoadGeneration,
+                      prefix == self.resampleKeyPrefix, ids == self.pageIDs else { return }
+                guard let image = loaded else {
+                    self.originalRetryAfter[index] = self.originalImageRetryNow().advanced(by: .milliseconds(250))
+                    continue
+                }
+                let target = self.displayColorTarget
+                let converted = await self.originalDisplayImagePreparer(image, "\(prefix)#\(ids[index])", target)
+                guard !Task.isCancelled, generation == self.originalLoadGeneration,
+                      prefix == self.resampleKeyPrefix, ids == self.pageIDs else { return }
+                guard target == self.displayColorTarget, let converted else {
+                    self.originalRetryAfter[index] = self.originalImageRetryNow().advanced(by: .milliseconds(250))
+                    continue
+                }
+                // 設計書 §5、§7.3: 元画像と変換結果を一緒に採用し、旧完成画像を新寸法の入力と誤認させない。
+                self.originalImages[index] = image
+                self.images[index] = image
+                self.sourceImageSizes[index] = CGSize(width: image.width, height: image.height)
+                self.decodedPageCosts[index] = image.bytesPerRow * image.height
+                self.displayImages[index] = converted
+                self.originalRetryAfter[index] = nil
+                self.needsLayout = true
+            }
+        }
+    }
+
+    /// 設計書 §7.6: 遅延取得の反映完了を待ち、スナップショット検証を時刻に依存させない。
+    func waitForOriginalImages() async {
+        await originalLoadTask?.value
     }
 
     // MARK: - キー入力(バインディングシステムへ転送。仕様書 §5)
