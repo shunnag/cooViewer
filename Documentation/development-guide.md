@@ -278,7 +278,7 @@ PR の全検査が通った merge checkout の `HEAD^{tree}` を 7 日間記録�
 毎週月曜 21:17 UTC の定期実行は全検査します。
 
 CI の KaitoKit / Washi は `.github/workflows/ci.yml` のジョブ環境変数
-`KAITOKIT_REF` / `WASHI_REF` で出荷版に固定します(2.0b51 は `v0.17.0` / `1.25.0`)。
+`KAITOKIT_REF` / `WASHI_REF` で出荷版に固定します(2.0b52 は `v0.18.0` / `1.26.0`)。
 タグ・ブランチ・完全なコミット SHA を指定でき、取得後のコミットをログに残します。
 未リリースの兄弟変更が必要な PR では該当 SHA を指定します。cooViewer が別の版を同梱する際は
 必ずこの参照も更新してください。ローカルの兄弟チェックアウトと CI で共有する版の単一の正は
