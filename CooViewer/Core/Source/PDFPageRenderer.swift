@@ -66,7 +66,8 @@ actor PDFPageRenderer {
     }
 
     func render(pageIndex: Int, name: String,
-                maxPixelSize: Int?, pixelScale: CGFloat?) throws -> CGImage {
+                maxPixelSize: Int?, pixelScale: CGFloat?,
+                displayColorTarget: DisplayColorTarget? = nil) throws -> CGImage {
         try Task.checkCancellation()
         // 描画の途中では交換せず、直前のページはルーペ用に温存する(設計書 §5)。
         // 自動解放された PDFPage が旧文書を延命しないよう、描画単位で排出する。
@@ -89,14 +90,15 @@ actor PDFPageRenderer {
             renderedPages.insert(pageIndex)
             lastPageIndex = pageIndex
             return try Self.renderPage(page, name: name, maxPixelSize: maxPixelSize,
-                                       pixelScale: pixelScale)
+                                       pixelScale: pixelScale, displayColorTarget: displayColorTarget)
         }
     }
 
     /// 呼び出し元の隔離内で描画し、白背景と倍率の規則を共通にする(設計書 §5)。
     nonisolated static func renderPage(_ page: PDFPage, name: String,
                                        maxPixelSize: Int?,
-                                       pixelScale: CGFloat?) throws -> CGImage {
+                                       pixelScale: CGFloat?,
+                                       displayColorTarget: DisplayColorTarget? = nil) throws -> CGImage {
         let bounds = page.bounds(for: .mediaBox)
         let rotation = page.rotation
         let rotated = rotation % 180 != 0
@@ -123,7 +125,8 @@ actor PDFPageRenderer {
             height: pixelHeight,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            // PDF は灰色ページも RGB とし、サムネイルは従来の sRGB を保つ(設計書 §5)。
+            space: displayColorTarget?.rgb ?? CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
             throw BookSourceError.pageLoadFailed(name)

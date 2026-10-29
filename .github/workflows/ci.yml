@@ -186,7 +186,8 @@ jobs:
     # macos-26 の通常約 10 分に対し、hang は約 2 倍で打ち切る。
     timeout-minutes: 20
     env:
-      KAITOKIT_REF: v0.17.0
+      # reopen(options:) は未リリースのためコミットを固定し、KaitoKit 0.18.0 公開時にタグへ戻す。
+      KAITOKIT_REF: 914d64a41e7eeb2e813723c587e200b59c1d44b5
       WASHI_REF: 1.25.0
     strategy:
       fail-fast: false
