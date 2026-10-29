@@ -172,6 +172,8 @@ final class ArchiveAppleDoubleTests: XCTestCase {
         XCTAssertEqual(oldHit?.width, 5)
         let freshCache = ThumbnailCache(diskRoot: disk)
         let result = await freshCache.thumbnail(for: target, in: exposed, bookKey: newKey)
+        // 保存を終えてから一時ディレクトリを片付ける(設計書 §5、§7.6)。
+        await DeferredImageWriter.shared.waitForPendingWrites()
         let image = try XCTUnwrap(result)
         XCTAssertEqual(image.width, 4)
         XCTAssertEqual(image.height, 9)

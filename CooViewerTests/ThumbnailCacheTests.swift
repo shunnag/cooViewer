@@ -157,7 +157,8 @@ final class ThumbnailCacheTests: XCTestCase {
         diskRoot = try TestFixtures.makeTempDir()
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
+        await DeferredImageWriter.shared.waitForPendingWrites()
         try FileManager.default.removeItem(at: diskRoot)
     }
 
@@ -207,6 +208,7 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(loads, 1)
 
         // ディスクにも書かれている(既定 200→256 バケット。解像度別キー。vbv)
+        await DeferredImageWriter.shared.waitForPendingWrites()
         let file = diskRoot.appendingPathComponent("book1/0@256.heic")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
@@ -216,6 +218,8 @@ final class ThumbnailCacheTests: XCTestCase {
         let entry = try await source.entries()[0]
         _ = await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             .thumbnail(for: entry, in: source, bookKey: "book1")
+
+        await DeferredImageWriter.shared.waitForPendingWrites()
 
         // メモリを持たない新インスタンス=ディスクから復元(ソースは呼ばれない)
         let fresh = ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
@@ -232,6 +236,7 @@ final class ThumbnailCacheTests: XCTestCase {
         let entry = try await source.entries()[0]
         _ = await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             .thumbnail(for: entry, in: source, bookKey: "book1")  // ディスクへ
+        await DeferredImageWriter.shared.waitForPendingWrites()
         let folder = diskRoot.appendingPathComponent("book1")
         // 40 日前へ戻す(全ページキャッシュ済みで読み取りだけの状況を再現)
         try FileManager.default.setAttributes(
@@ -268,6 +273,7 @@ final class ThumbnailCacheTests: XCTestCase {
                                   targetPixelSize: 200)  // → 256
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "b",
                                   targetPixelSize: 500)  // → 512
+        await DeferredImageWriter.shared.waitForPendingWrites()
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: diskRoot.appendingPathComponent("b/0@256.heic").path))
         XCTAssertTrue(FileManager.default.fileExists(
@@ -407,6 +413,7 @@ final class ThumbnailCacheTests: XCTestCase {
         let entry = try await source.entries()[0]
         _ = await ThumbnailCache(diskRoot: diskRoot, pressure: FixedMemoryPressure())
             .thumbnail(for: entry, in: source, bookKey: "book2")
+        await DeferredImageWriter.shared.waitForPendingWrites()
         let folder = diskRoot.appendingPathComponent("book2")
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(-40 * 86400)],
@@ -550,6 +557,7 @@ final class ThumbnailCacheTests: XCTestCase {
         let entry = try await source.entries()[0]
         _ = await cache.thumbnail(for: entry, in: source, bookKey: "oldbook")
 
+        await DeferredImageWriter.shared.waitForPendingWrites()
         let bookDir = diskRoot.appendingPathComponent("oldbook")
         try FileManager.default.setAttributes(
             [.modificationDate: Date(timeIntervalSinceNow: -40 * 86400)],

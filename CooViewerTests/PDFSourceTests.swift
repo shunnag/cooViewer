@@ -12,7 +12,8 @@ final class PDFSourceTests: XCTestCase {
         tempDir = try TestFixtures.makeTempDir()
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
+        await DeferredImageWriter.shared.waitForPendingWrites()
         try FileManager.default.removeItem(at: tempDir)
     }
 
@@ -401,5 +402,56 @@ extension PDFSourceTests {
         context.endPDFPage()
         context.closePDF()
         return url
+    }
+}
+
+
+extension PDFSourceTests {
+    /// 表示先の切替を同じページと文書で反映し、灰色最適化は使わない(設計書 §5)。
+    func testDisplayTargetReachesPoolLoupeAndMainDocumentFallback() async throws {
+        let url = try makePDF()
+        let source = try PDFSource(url: url)
+        let entry = try await source.entries()[0]
+        for spaceName in [CGColorSpace.displayP3, CGColorSpace.sRGB] {
+            let space = try XCTUnwrap(CGColorSpace(name: spaceName))
+            let target = DisplayColorTarget(rgb: space)
+            let image = try await PageRequestIntent.$displayColorTarget.withValue(target) {
+                try await source.image(for: entry, maxPixelSize: 400)
+            }
+            let loupe = try await PageRequestIntent.$displayColorTarget.withValue(target) {
+                try await source.loupeImage(for: entry, pixelScale: 3)
+            }
+            XCTAssertEqual(image.colorSpace, space)
+            XCTAssertEqual(loupe.colorSpace, space)
+            XCTAssertEqual(image.bitsPerPixel, 32)
+            XCTAssertEqual(pixel(try XCTUnwrap(pixelData(of: image)), image, x: 2, y: 2), [255, 255, 255])
+        }
+        let fallback = try PDFSource(url: url)
+        let fallbackEntry = try await fallback.entries()[0]
+        try FileManager.default.removeItem(at: url)
+        let p3 = DisplayColorTarget(rgb: CGColorSpace(name: CGColorSpace.displayP3)!)
+        let image = try await PageRequestIntent.$displayColorTarget.withValue(p3) {
+            try await fallback.image(for: fallbackEntry, maxPixelSize: 400)
+        }
+        XCTAssertEqual(image.colorSpace, p3.rgb)
+        let thumbnail = try await PageRequestIntent.$displayColorTarget.withValue(p3) {
+            try await PageRequestIntent.$isThumbnail.withValue(true) {
+                try await fallback.image(for: fallbackEntry, maxPixelSize: 50)
+            }
+        }
+        XCTAssertEqual(thumbnail.colorSpace, CGColorSpace(name: CGColorSpace.sRGB))
+    }
+
+    func testThumbnailIgnoresDisplayTargetInDedicatedRenderer() async throws {
+        let source = try PDFSource(url: makePDF())
+        let entry = try await source.entries()[0]
+        let target = DisplayColorTarget(rgb: CGColorSpace(name: CGColorSpace.displayP3)!)
+        let thumbnail = try await PageRequestIntent.$displayColorTarget.withValue(target) {
+            try await PageRequestIntent.$isThumbnail.withValue(true) {
+                try await source.image(for: entry, maxPixelSize: 50)
+            }
+        }
+        XCTAssertEqual(thumbnail.colorSpace, CGColorSpace(name: CGColorSpace.sRGB))
+        XCTAssertEqual(thumbnail.width, 50)
     }
 }

@@ -568,6 +568,8 @@ final class NestedArchiveSourceTests: XCTestCase {
 
         let outerResult = await cache.thumbnail(for: entries[0], in: source, bookKey: "K")
         let nestedResult = await cache.thumbnail(for: entries[1], in: source, bookKey: "K")
+        // 保存は表示の返却と独立するため、ディスク検証前に完了を待つ(設計書 §5、§7.6)。
+        await DeferredImageWriter.shared.waitForPendingWrites()
         let outer = try XCTUnwrap(outerResult)
         let nested = try XCTUnwrap(nestedResult)
         XCTAssertEqual(outer.width, 40)
