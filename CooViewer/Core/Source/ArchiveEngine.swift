@@ -25,6 +25,8 @@ protocol ArchiveEngine: AnyObject {
     func solidGroup(ofEntry index: Int32) -> Int32
     /// 入力と解析済み一覧を共有し、独立した復号位置を持つエンジンを返す(設計書 §5)。
     func reopened() -> sending (any ArchiveEngine)?
+    /// 展開係の実行予算で複製する。呼出しは主書庫を所有する actor 内に限る(設計書 §5、§7.3)。
+    func reopened(role: ArchiveReaderRole) throws -> sending (any ArchiveEngine)?
     func discardDecodedState()
 
     static var defaultZipLazyLocalHeaders: Bool { get }
@@ -33,6 +35,7 @@ protocol ArchiveEngine: AnyObject {
 
 extension ArchiveEngine {
     func reopened() -> sending (any ArchiveEngine)? { nil }
+    func reopened(role: ArchiveReaderRole) throws -> sending (any ArchiveEngine)? { nil }
     func discardDecodedState() {}
     /// nil しか返せないエンジン(テストの偽エンジン)向けの既定。環境要因ではない
     /// エラーにして、プローブの分類では従来どおり誤パスワード側に落とす
@@ -351,6 +354,19 @@ final class KaitoKitEngine: ArchiveEngine {
         guard !quickOpenRecoveryAttempted || options.rar5QuickOpenPolicy == .never else { return nil }
         guard let reopened = try? reader.reopen() else { return nil }
         return KaitoKitEngine(reader: reopened, input: input, options: options)
+    }
+
+    func reopened(role: ArchiveReaderRole) throws -> sending (any ArchiveEngine)? {
+        // 不信任となった Quick Open の一覧を別の係へ広めず、通常の生成窓口で解析し直す(設計書 §2.4)。
+        if let identity = input.identityForLookup, ArchiveQuickOpenPolicy.isDistrusted(identity),
+           options.rar5QuickOpenPolicy != .never { return nil }
+        guard !quickOpenRecoveryAttempted || options.rar5QuickOpenPolicy == .never else { return nil }
+        let executionOptions = Self.options(role: role)
+        // 設計書 §5 の展開係予算と open 時点の電力・入力遅延方針を適用する。
+        // lazyLocalHeaders や rar5QuickOpenPolicy も設定変更で異なり得るが、reopen は変更を許さない。
+        // その場合は例外を呼出し側で受け、従来の openFile / openData へ戻す(設計書 §7.5)。
+        let reopened = try reader.reopen(options: executionOptions)
+        return KaitoKitEngine(reader: reopened, input: input, options: executionOptions)
     }
 
     /// 全画像のスプール後は、末尾の非画像 entry のため残った solid 状態も解放する。

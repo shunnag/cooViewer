@@ -1218,7 +1218,12 @@ actor ArchiveSource: BookSource {
             let expected = archive.numberOfEntries()
             do {
                 let grown: ArchiveEntryExtractor
-                if let sourceData {
+                // 主 reader の操作と reopen を同じ actor の同期区間に閉じ込める(設計書 §7.3)。
+                // 対応形式では一覧・文字コード判定を共有する。複製失敗時だけ元の入口で開く。
+                if let reopened = try? archive.reopened(role: .extractor(poolSize: poolSize)) {
+                    grown = try ArchiveEntryExtractor(archive: reopened, password: password,
+                        expectedEntryCount: expected)
+                } else if let sourceData {
                     grown = try ArchiveEntryExtractor(data: sourceData, password: password,
                         expectedEntryCount: expected, engineKind: archiveEngineKind,
                         factory: engineFactory, poolSize: poolSize)
@@ -1901,6 +1906,16 @@ actor ArchiveSource: BookSource {
 /// エントリ間の並列展開を実現する(PDFPageRenderer と同型)
 actor ArchiveEntryExtractor {
     private let archive: any ArchiveEngine
+
+    /// 複製した reader も件数を照合する。拒否されたプローブが主 reader のパスワードを変えても、
+    /// 展開係には受理済みの値を渡す従来の生成経路に揃える(設計書 §2.4、§5)。
+    init(archive: sending any ArchiveEngine, password: String?, expectedEntryCount: Int32) throws {
+        if let password { archive.setPassword(password) }
+        guard archive.numberOfEntries() == expectedEntryCount else {
+            throw KaitoError.malformed("extractor entry count changed")
+        }
+        self.archive = archive
+    }
 
     /// expectedEntryCount: メイン書庫のエントリ数。開いた後にファイルが
     /// 差し替えられていた場合に、一覧と食い違う内容を展開しないための検証
