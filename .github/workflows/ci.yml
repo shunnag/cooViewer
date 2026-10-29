@@ -187,7 +187,7 @@ jobs:
     timeout-minutes: 20
     env:
       # reopen(options:) は未リリースのためコミットを固定し、KaitoKit 0.18.0 公開時にタグへ戻す。
-      KAITOKIT_REF: 03d7c8ce62a7d5349fff3f8cb990caf3e07e4106
+      KAITOKIT_REF: bdd7faaa0da6c6b0a73cf5b817f1d029f4c29ee6
       WASHI_REF: d519da1b2c52a4aeab7b38277ef49b6d02ea0375 # 次の Washi リリースでタグ指定へ戻す。
     strategy:
       fail-fast: false
