@@ -356,17 +356,17 @@ final class ImageResamplerPressureTests: XCTestCase {
 
 final class PreresamplePolicyTests: XCTestCase {
     func testPageBudgetCapsAtMaxPages() {
-        // 30MB/ページ・16GB 機: 予算 2GB → 68 ページ相当だが上限 64
+        // 30MB/ページ・16GB 機: 予算 2GB → 68 ページ相当だが上限 8
         XCTAssertEqual(PreresamplePolicy.pageBudget(
             bytesPerPage: 30 << 20, physicalMemory: 16 << 30,
-            usesML: false, conserveEnergy: false, memoryPressure: .normal), 64)
+            usesML: false, conserveEnergy: false, memoryPressure: .normal), 8)
     }
 
     func testPageBudgetShrinksForLargePages() {
-        // 200MB/ページ(6K 級ウインドウ)→ 4GB / 200MB = 20 ページ
+        // 800MB/ページ → 4GB / 800MB = 5 ページ
         XCTAssertEqual(PreresamplePolicy.pageBudget(
-            bytesPerPage: 200 << 20, physicalMemory: 64 << 30,
-            usesML: false, conserveEnergy: false, memoryPressure: .normal), 20)
+            bytesPerPage: 800 << 20, physicalMemory: 64 << 30,
+            usesML: false, conserveEnergy: false, memoryPressure: .normal), 5)
     }
 
     func testPageBudgetFloorsAtOne() {
@@ -404,10 +404,10 @@ final class PreresamplePolicyTests: XCTestCase {
         XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: 64 << 30, usesML: true,
                                                     conserveEnergy: false, memoryPressure: .critical),
                        (4 << 30) / 16 / 4)
-        // 100MB/ページ・8GB 機: 通常 10 ページ → critical では 2 ページ
+        // 100MB/ページ・8GB 機: 通常 8 ページ → critical では 2 ページ
         XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 100 << 20, physicalMemory: 8 << 30,
                                                     usesML: false, conserveEnergy: false,
-                                                    memoryPressure: .normal), 10)
+                                                    memoryPressure: .normal), 8)
         XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 100 << 20, physicalMemory: 8 << 30,
                                                     usesML: false, conserveEnergy: false,
                                                     memoryPressure: .critical), 2)
@@ -437,20 +437,20 @@ final class PreresamplePolicyTests: XCTestCase {
         XCTAssertEqual(PreresamplePolicy.decodeAhead(
             resamplePages: 1, decodedPageBytes: 500 << 20,
             pageCacheByteLimit: 1 << 30, mediaFloor: 20), 20)
-        // 上限は maxPages
+        // デコードはリサンプルの 8 ページに制限しない
         XCTAssertEqual(PreresamplePolicy.decodeAhead(
             resamplePages: 64, decodedPageBytes: 1 << 20,
             pageCacheByteLimit: 16 << 30, mediaFloor: 12),
-            PreresamplePolicy.maxPages)
+            PreresamplePolicy.maxDecodePages)
     }
 
     func testPreresamplePageLimitsByQualityAndEnergy() {
         // (ML, 省エネ) → 枚数 / 見開き数(設計書 §5)
-        XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: false, conserveEnergy: false), 64)
+        XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: false, conserveEnergy: false), 8)
         XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: false, conserveEnergy: true), 4)
         XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: true, conserveEnergy: false), 4)
         XCTAssertEqual(PreresamplePolicy.pageLimit(usesML: true, conserveEnergy: true), 2)
-        XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: false, conserveEnergy: false), 64)
+        XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: false, conserveEnergy: false), 4)
         XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: false, conserveEnergy: true), 1)
         XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: true, conserveEnergy: false), 2)
         XCTAssertEqual(PreresamplePolicy.spreadLimit(usesML: true, conserveEnergy: true), 1)
@@ -465,7 +465,7 @@ final class PreresamplePolicyTests: XCTestCase {
                     XCTAssertEqual(PreresamplePolicy.byteBudget(physicalMemory: memory, usesML: usesML,
                                                                 conserveEnergy: conserve,
                                                                 memoryPressure: .normal),
-                                   normal / (PreresamplePolicy.maxPages / limit),
+                                   normal / (usesML ? (conserve ? 32 : 16) : (conserve ? 16 : 1)),
                                    "ML=\(usesML) conserve=\(conserve)")
                     // 小さなページでは枚数上限、巨大ページでは予算が効く
                     XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 1 << 20,
@@ -496,6 +496,20 @@ final class PreresamplePolicyTests: XCTestCase {
         XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1, 2, 3]], usesML: true, conserveEnergy: true), [])
         XCTAssertEqual(PreresamplePolicy.spreadsToProcess([[1, 2, 3, 4, 5]], usesML: false, conserveEnergy: true), [])
         XCTAssertEqual(PreresamplePolicy.spreadsToProcess([], usesML: true, conserveEnergy: true), [])
+    }
+
+    func testNonMLLeadStopsAtFourWholeSpreadsIncludingSinglePages() {
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(
+            [[1], [2], [3], [4], [5]], usesML: false, conserveEnergy: false),
+            [[1], [2], [3], [4]])
+        XCTAssertEqual(PreresamplePolicy.spreadsToProcess(
+            [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]], usesML: false, conserveEnergy: false),
+            [[1, 2], [3, 4], [5, 6], [7, 8]])
+        XCTAssertEqual(PreresamplePolicy.pageBudget(bytesPerPage: 1,
+            physicalMemory: 128 << 30, usesML: false, conserveEnergy: false,
+            memoryPressure: .normal), 8)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 8,
+            decodedPageBytes: 16 << 20, pageCacheByteLimit: 16 << 30, mediaFloor: 20), 64)
     }
 
     func testPreresampleModeGate() {

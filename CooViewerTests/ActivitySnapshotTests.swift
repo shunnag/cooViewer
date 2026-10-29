@@ -37,8 +37,7 @@ final class ActivitySnapshotTests: XCTestCase {
                        Int(small / 8))
     }
 
-    /// 計画は実際の先読みと同じ入力で出す: ML 通常 4 ページ、ML 省エネ 2、非 ML 通常 64。
-    /// バイト予算も枚数 / 64 に比例し、圧迫段階で縮む
+    /// 非 ML は 8 ページ、ML は通常 4・省エネ 2。バイト予算は従来値を保つ(設計書 §5)。
     func testPrefetchPlanMatchesRealPreresampleInputs() {
         let physical: UInt64 = 16 << 30  // 通常の予算 2GB
         let mlNormal = ActivitySnapshot.PrefetchPlan(physicalMemory: physical, usesML: true,
@@ -51,7 +50,7 @@ final class ActivitySnapshotTests: XCTestCase {
         XCTAssertEqual(mlConserving.byteBudget, (2 << 30) / 32)
         let plainNormal = ActivitySnapshot.PrefetchPlan(physicalMemory: physical, usesML: false,
                                                         conserveEnergy: false, memoryPressure: .normal)
-        XCTAssertEqual(plainNormal.pageBudget, 64)
+        XCTAssertEqual(plainNormal.pageBudget, 8)
         XCTAssertEqual(plainNormal.byteBudget, 2 << 30)
         let plainConserving = ActivitySnapshot.PrefetchPlan(physicalMemory: physical, usesML: false,
                                                             conserveEnergy: true, memoryPressure: .critical)

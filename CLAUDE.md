@@ -143,7 +143,11 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   (`PowerPolicy` key: default LPM-or-thermal, LPM-only, or always full speed —
   `PowerPolicy.conserves` is the single decision point, mapped to KaitoKit's `DecodePowerPolicy`
   at reader open and to Washi's `EPUBOffscreenEnergyPolicy`; memory-pressure limits still
-  apply); ML render qualities pre-resample at most the next two
+  apply); non-ML pre-resampling is capped at 8 pages / 4 spreads with existing byte budgets
+  and LRU limits preserved (decode-ahead keeps its media floor–64 range); strong NR intermediates
+  are retained only for the current and adjacent spreads (unknown pairs protect 2 pages), while
+  decoded PageCache retention remains unchanged because display still fetches originals first;
+  ML render qualities pre-resample at most the next two
   spreads (≤ 4 pages, next spread only when conserving or the app is inactive), and pre-resampling
   pauses while the reader window is occluded/minimized/hidden;
   filename encoding auto-detection uses KaitoKit's `EncodingPolicy.automatic`
