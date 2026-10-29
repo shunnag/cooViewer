@@ -82,6 +82,7 @@ actor ImageResampler {
     private let pressureObservation: MemoryPressureObservation
     private var metalFX: MetalFXUpscaler?
     private var lanczos: LanczosDownscaler?
+    private var didPrewarm = false
     private var noiseReducer: NoiseReducer?
     private let noiseReductionOverride: (@Sendable (CGImage, NoiseReductionLevel) -> CGImage?)?
     private let upscaleOverride: (@Sendable (CGImage, CGSize) -> CGImage?)?
@@ -132,6 +133,37 @@ actor ImageResampler {
     func applyMemoryPressure(_ level: MemoryPressureLevel) {
         byteLimit = MemoryBudgetPolicy.effectiveLimit(configured: configuredByteLimit, level: level)
         if level != .normal { evictIfNeeded() }
+    }
+
+    /// 設計書 §5・§7.3: 初回の表示要求より先に小さな RGB/L8 で通常経路を温める。
+    /// FD 保護は通常経路と共通にし、省エネ・メモリ圧迫・取消しでは未開始分を省く。
+    /// 同期 GPU 処理中の取消しは完了後に反映し、合成画像は LRU に残さない。
+    func prewarm(displayTarget: DisplayColorTarget,
+                 power: any PowerStateProviding = PowerStateMonitor.shared,
+                 pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared) async {
+        guard !didPrewarm, !Task.isCancelled, !power.shouldConserveEnergy,
+              pressure.memoryPressureLevel == .normal else { return }
+        didPrewarm = true
+        for gray in [false, true] {
+            guard !Task.isCancelled, !power.shouldConserveEnergy,
+                  pressure.memoryPressureLevel == .normal else { return }
+            let space = CGColorSpace(name: gray
+                ? CGColorSpace.genericGrayGamma2_2 : CGColorSpace.sRGB)!
+            let alpha = gray ? CGImageAlphaInfo.none : .premultipliedLast
+            guard let context = CGContext(data: nil, width: 96, height: 144,
+                bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                bitmapInfo: alpha.rawValue) else { continue }
+            context.setFillColor(gray: 0.5, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 96, height: 144))
+            guard let image = context.makeImage() else { continue }
+            let cacheKey = "launch-prewarm:\(gray)"
+            _ = await resample(image, to: CGSize(width: 64, height: 96),
+                               cacheKey: cacheKey, upscaleWithMetalFX: false,
+                               displayTarget: displayTarget, priority: .prefetch)
+            removeEntry(Self.makeKey(cacheKey: cacheKey, image: image,
+                width: 64, height: 96, upscaleWithMetalFX: false,
+                noiseReduction: .none, displayTarget: displayTarget))
+        }
     }
 
     /// image を pixelSize(デバイスピクセル)へリサンプルする。

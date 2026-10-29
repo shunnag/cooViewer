@@ -92,9 +92,7 @@ final class FolderSource: BookSource {
             )
         }
 
-        // 列挙順は FS 依存(特にネットワークボリューム)。id はディスクの
-        // サムネイルキャッシュのキーになるため、パス順に固定して安定させる
-        fileURLs.sort { $0.path < $1.path }
+        fileURLs = Self.sortedByPath(fileURLs)
 
         let basePath = url.standardizedFileURL.path
         let fastPrefixes = Self.fastPrefixes(for: url, standardizedBasePath: basePath)
@@ -169,6 +167,19 @@ final class FolderSource: BookSource {
             ? String(fullPath.dropFirst(basePath.count)) : fileURL.lastPathComponent
         if relativePath.hasPrefix("/") { relativePath.removeFirst() }
         return (relativePath, false)
+    }
+
+    /// 設計書 §5: サムネイルの ID を安定させるパス順は変えず、比較のたびに
+    /// NSURL のパス取得・文字列ブリッジを繰り返さない。正規等価な名前の
+    /// 相対順も従来の安定ソートに任せ、バイト順への置換はしない。
+    static func sortedByPath(_ urls: [URL]) -> [URL] {
+        var keyed = urls.map { url in
+            var path = url.path
+            path.makeContiguousUTF8()
+            return (path: path, url: url)
+        }
+        keyed.sort { $0.path < $1.path }
+        return keyed.map(\.url)
     }
 
     func entries() async throws -> [PageEntry] {
