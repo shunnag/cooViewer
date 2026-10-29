@@ -1,5 +1,15 @@
 import CoreGraphics
 import Foundation
+import os
+
+/// 設計書 §5: 別窓やメモリ圧迫による失効を、描画 actor を待たずに先読み側で確認する。
+final class ResampleCacheResidency: Sendable {
+    private let keys = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    func contains(_ key: String) -> Bool { keys.withLock { $0.contains(key) } }
+    fileprivate func insert(_ key: String) { keys.withLock { _ = $0.insert(key) } }
+    fileprivate func remove(_ key: String) { keys.withLock { _ = $0.remove(key) } }
+}
 
 /// 表示ピクセルサイズへの高品質リサンプル(設計書 §5 描画品質)。
 /// CALayer の trilinear 拡縮(モアレ・甘さが出る)の代わりに、
@@ -10,6 +20,7 @@ import Foundation
 /// 追い出し合わない量を確保しつつ、メモリ圧迫の段階で実効上限を下げる(設計書 §5)。
 actor ImageResampler {
     static let shared = ImageResampler()
+    nonisolated let cacheResidency = ResampleCacheResidency()
 
     private var cache: [String: CGImage] = [:]
     private var order: [String] = []  // 末尾が最新(MRU)
@@ -413,24 +424,52 @@ actor ImageResampler {
                 cacheKey: String, upscaleWithMetalFX: Bool,
                 noiseReduction: NoiseReductionLevel = .none,
                 displayTarget: DisplayColorTarget? = nil) -> CGImage? {
+        cached(source: DecodedPageInfo(image), to: pixelSize, cacheKey: cacheKey,
+               upscaleWithMetalFX: upscaleWithMetalFX, noiseReduction: noiseReduction,
+               displayTarget: displayTarget)
+    }
+
+    /// 設計書 §5: 元画像を復号し直さず、同じ入力寸法・プロファイルの完成画像だけを引き当てる。
+    func cached(source: DecodedPageInfo, to pixelSize: CGSize,
+                cacheKey: String, upscaleWithMetalFX: Bool,
+                noiseReduction: NoiseReductionLevel = .none,
+                displayTarget: DisplayColorTarget? = nil) -> CGImage? {
         guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
         let width = size.width
         let height = size.height
-        return touch(Self.makeKey(cacheKey: cacheKey, image: image,
+        return touch(Self.makeKey(cacheKey: cacheKey, source: source,
                                   width: width, height: height,
                                   upscaleWithMetalFX: upscaleWithMetalFX,
                                   noiseReduction: noiseReduction, displayTarget: displayTarget))
     }
 
-    /// キャッシュキー(resample / cached で共通)
-    private static func makeKey(cacheKey: String, image: CGImage,
+    /// 設計書 §5: 常駐索引の照合も resample / cached と同じキーで行い、旧サイズ・旧品質を混ぜない。
+    nonisolated static func cacheIdentity(source: DecodedPageInfo, to pixelSize: CGSize,
+                                         cacheKey: String, processing: ImageProcessingSettings,
+                                         displayTarget: DisplayColorTarget?) -> String? {
+        guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
+        return makeKey(cacheKey: cacheKey, source: source, width: size.width, height: size.height,
+            upscaleWithMetalFX: processing.interpolation == .high,
+            noiseReduction: processing.noiseReduction, displayTarget: displayTarget)
+    }
+
+    private nonisolated static func makeKey(cacheKey: String, image: CGImage,
                                 width: Int, height: Int,
                                 upscaleWithMetalFX: Bool,
                                 noiseReduction: NoiseReductionLevel,
                                 displayTarget: DisplayColorTarget?) -> String {
-        "\(cacheKey)|\(image.width)x\(image.height)|\(width)x\(height)"
+        makeKey(cacheKey: cacheKey, source: DecodedPageInfo(image), width: width, height: height,
+                upscaleWithMetalFX: upscaleWithMetalFX, noiseReduction: noiseReduction,
+                displayTarget: displayTarget)
+    }
+
+    private nonisolated static func makeKey(cacheKey: String, source: DecodedPageInfo,
+                                width: Int, height: Int, upscaleWithMetalFX: Bool,
+                                noiseReduction: NoiseReductionLevel,
+                                displayTarget: DisplayColorTarget?) -> String {
+        "\(cacheKey)|\(source.width)x\(source.height)|\(width)x\(height)"
             + "|\(upscaleWithMetalFX)|nr\(noiseReduction.rawValue)"
-            + "|src-cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
+            + "|src-cs:\(source.colorSpaceIdentity)"
             + "|cs:\(displayTarget?.identity ?? "source")"
     }
 
@@ -509,6 +548,7 @@ actor ImageResampler {
         totalCost += cost
         order.append(key)
         evictIfNeeded()
+        if cache[key] != nil { cacheResidency.insert(key) }
     }
 
     /// 上限超過分を古い順に破棄。1 枚だけで超過する場合はその 1 枚は保持
@@ -520,6 +560,7 @@ actor ImageResampler {
     }
 
     private func removeEntry(_ key: String) {
+        cacheResidency.remove(key)
         guard cache[key] != nil else { return }
         cache.removeValue(forKey: key)
         totalCost -= costs.removeValue(forKey: key) ?? 0

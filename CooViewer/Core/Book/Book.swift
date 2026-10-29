@@ -10,7 +10,11 @@ import Foundation
 final class Book {
     let source: any BookSource
     private(set) var entries: [PageEntry] {
-        didSet { entriesGeneration &+= 1 }
+        didSet {
+            entriesGeneration &+= 1
+            resampleLayouts.removeAll()
+            evictedResampleKeys.removeAll()
+        }
     }
     private(set) var entriesGeneration = 0
     private var placeholderGeneration = -1
@@ -45,18 +49,18 @@ final class Book {
     }
     private(set) var sortMode: SortMode
     var readMode: ReadMode = .rightToLeftSpread {
-        didSet { if readMode != oldValue { invalidatePendingNavigation() } }
+        didSet { if readMode != oldValue { invalidateSpreadLayout() } }
     }
     var marks = PageMarks() {
-        didSet { if marks != oldValue { invalidatePendingNavigation() } }
+        didSet { if marks != oldValue { invalidateSpreadLayout() } }
     }
     var singleSetting = PageLayout.defaultSingleSetting {
-        didSet { if singleSetting != oldValue { invalidatePendingNavigation() } }
+        didSet { if singleSetting != oldValue { invalidateSpreadLayout() } }
     }
     /// 見開きモードで先頭ページ(表紙)を単ページにする(新機能・既定オフ)。
     /// marks の強制ペア指定(§4.2.1)はこれより優先される
     var coverSingleFirst = false {
-        didSet { if coverSingleFirst != oldValue { invalidatePendingNavigation() } }
+        didSet { if coverSingleFirst != oldValue { invalidateSpreadLayout() } }
     }
     var bookmarks: [PageBookmark] = []
 
@@ -68,6 +72,7 @@ final class Book {
     let cacheKey: String
 
     private let cache: PageCache
+    private let resampler: ImageResampler
     private let sorter: any PageSorting
     private var prefetchTask: Task<Void, Never>?
     private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
@@ -105,7 +110,22 @@ final class Book {
     struct Spread {
         let indices: [Int]
         let images: [CGImage?]
+        /// 設計書 §5: 完成画像を元画像と区別し、ルーペや再補間へ流用しない。
+        var resampledPages: [ResampledPage]? = nil
+        var decodedSources: [DecodedPageInfo]? = nil
     }
+
+    struct DisplayCandidate {
+        let indices: [Int]
+        let sources: [DecodedPageInfo]
+        fileprivate let revision: Int
+    }
+
+    private var decodedPageInfo: [Int: DecodedPageInfo] = [:]
+    private var resampleLayouts: [Int: [Int]] = [:]
+    private var resampledDisplayContext: String?
+    private var evictedResampleKeys: [Int: String] = [:]
+    private(set) var spreadLayoutRevision = 0
 
     enum MoveResult {
         case moved
@@ -118,12 +138,13 @@ final class Book {
     /// 実際に開く経路は open(source:) を使う
     init(source: any BookSource, prepared: PreparedEntries,
          sortMode: SortMode = .name, cacheByteLimit: Int = 512 * 1024 * 1024,
-         sorter: any PageSorting = StandardPageSorter()) {
+         sorter: any PageSorting = StandardPageSorter(), resampler: ImageResampler = .shared) {
         self.source = source
         self.sortMode = sortMode
         self.entries = prepared.sortedEntries
         self.missingVolumeCount = prepared.sortedEntries.filter { $0.unreadableVolume != nil }.count
         self.cache = PageCache(byteLimit: cacheByteLimit)
+        self.resampler = resampler
         self.cacheKey = prepared.cacheKey
         self.sorter = sorter
     }
@@ -236,7 +257,7 @@ final class Book {
     /// ComicInfo は useLayoutHints オプトイン時だけ、EPUB page-spread は無条件で
     /// 構築する(cooViewer-bt1/oxr.40、仕様書 §4.2.1)。isSmall の判定に渡す
     private(set) var comicSingleIndices: Set<Int> = [] {
-        didSet { if comicSingleIndices != oldValue { invalidatePendingNavigation() } }
+        didSet { if comicSingleIndices != oldValue { invalidateSpreadLayout() } }
     }
 
     /// open 時に ComicInfo 由来の状態(章メニュー・見開き補助)をまとめて構築する。
@@ -296,6 +317,8 @@ final class Book {
         decodeColorTarget = target
         stateRevision &+= 1
         cache.removeAll()
+        decodedPageInfo.removeAll()
+        evictedResampleKeys.removeAll()
         declineQueuedPrefetchLoads()
         inFlightLoads.removeAll()
         return true
@@ -392,6 +415,8 @@ final class Book {
         if let image = result.image {
             // 上限を下げただけなら大画像を活かす。上げた場合は上の世代照合で除外される。
             cache.insert(image, for: key, colorSpaceIdentity: decodeColorIdentity)
+            evictedResampleKeys[key] = nil
+            decodedPageInfo[key] = DecodedPageInfo(image)
             if pageSizeCache[key] == nil {
                 // キャップ付きデコードでも縦横比は保たれるため判定に使える
                 pageSizeCache[key] = CGSize(width: image.width, height: image.height)
@@ -449,6 +474,8 @@ final class Book {
         if raised {
             stateRevision &+= 1
             cache.removeAll()
+            decodedPageInfo.removeAll()
+            evictedResampleKeys.removeAll()
             // 旧キャップで進行中のデコードには合流させない(新規要求は
             // 新キャップで作り直す。旧タスクの結果は登録世代の照合で捨てられる)
             declineQueuedPrefetchLoads()
@@ -483,12 +510,150 @@ final class Book {
             // 画像と番号の対応、次ページの送り幅を同じ状態で確定するため。
             // 取消し後の欠けた取得結果で、画面に残る見開きの送り幅を変えない(設計書 §5、§7.3)。
             guard revision == stateRevision, !Task.isCancelled else { continue }
-            lastDisplayCount = spread.indices.count
-            scheduleStrongIntermediateRetention()
-            schedulePrefetch()
+            finishCurrentSpread(spread.indices)
             return spread
         }
         return Spread(indices: [], images: [])
+    }
+
+    private func finishCurrentSpread(_ indices: [Int]) {
+        lastDisplayCount = indices.count
+        noteResampleLayout(indices)
+        scheduleStrongIntermediateRetention()
+        schedulePrefetch()
+    }
+
+    /// 設計書 §5: 未表示の先行リサンプルも、ジャンプ後には同じ距離解放の対象にする。
+    func noteResampleLayout(_ indices: [Int]) {
+        guard !isClosed, resampledDisplayContext != nil, let first = indices.first,
+              indices.allSatisfy({ entries.indices.contains($0) }) else { return }
+        resampleLayouts[first] = indices
+    }
+
+    /// 設計書 §5: 表示条件が変わったら先読みの省略情報も失効させ、旧サイズで復号を抑止しない。
+    func updateResampledDisplayContext(_ context: String?) {
+        guard context != resampledDisplayContext else { return }
+        resampledDisplayContext = context
+        evictedResampleKeys.removeAll()
+        stateRevision &+= 1
+    }
+
+    func decodedSources(at indices: [Int]) -> [DecodedPageInfo]? {
+        let sources = indices.compactMap { index -> DecodedPageInfo? in
+            guard entries.indices.contains(index),
+                  let info = decodedPageInfo[entries[index].id], !info.preservesHDR else { return nil }
+            return info
+        }
+        return !indices.isEmpty && sources.count == indices.count ? sources : nil
+    }
+
+    func hasMissingOriginal(at indices: [Int]) -> Bool {
+        indices.contains { entries.indices.contains($0)
+            && !cache.contains(entries[$0].id, colorSpaceIdentity: decodeColorIdentity) }
+    }
+
+    /// 設計書 §5: 既知の配置だけで照会し、初回・前方の通常表示にヘッダ I/O や actor 待ちを足さない。
+    func resampledDisplayCandidate() -> DisplayCandidate? {
+        guard !isClosed, resampledDisplayContext != nil, entries.indices.contains(currentIndex) else { return nil }
+        var indices = [currentIndex]
+        if readMode.isSpread, currentIndex + 1 < entries.count {
+            func small(_ index: Int) -> Bool? {
+                if entries[index].isStandalonePage { return false }
+                guard let size = pageSizeCache[entries[index].id] else { return nil }
+                return PageLayout.isSmall(size: size, index: index, marks: marks,
+                    singleSetting: singleSetting, coverSingle: coverSingleFirst,
+                    comicSingleIndices: comicSingleIndices)
+            }
+            let first = small(currentIndex)
+            if first != false {
+                let second = small(currentIndex + 1)
+                guard first != nil, second != nil else { return nil }
+                if first == true, second == true { indices.append(currentIndex + 1) }
+            }
+        }
+        guard indices.contains(where: hasCachedResampleForEvictedOriginal),
+              hasMissingOriginal(at: indices), let sources = decodedSources(at: indices) else { return nil }
+        return DisplayCandidate(indices: indices, sources: sources, revision: stateRevision)
+    }
+
+    /// 設計書 §7.3: 照会中の位置・配置・復号条件の変更を弾いてから送り幅と先読みを確定する。
+    func acceptResampledDisplay(_ candidate: DisplayCandidate, pages: [ResampledPage]) -> Spread? {
+        guard !isClosed, !Task.isCancelled, candidate.revision == stateRevision,
+              candidate.indices.first == currentIndex, pages.count == candidate.indices.count else { return nil }
+        noteReadingPositionIfNeeded()
+        finishCurrentSpread(candidate.indices)
+        return Spread(indices: candidate.indices, images: pages.map { $0.image },
+                      resampledPages: pages, decodedSources: candidate.sources)
+    }
+
+    /// 設計書 §5: 表示・先行計算の配置寸法を使い、片側だけの予測で誤った完成サイズを照会しない。
+    func decodedRetentionCandidates() -> [DisplayCandidate] {
+        guard !isClosed, resampledDisplayContext != nil else { return [] }
+        // 設計書 §5: 解放済みの配置を走査対象から外し、読了枚数に比例するメインアクターの仕事を残さない。
+        resampleLayouts = resampleLayouts.filter { _, indices in
+            indices.contains { cache.contains(entries[$0].id, colorSpaceIdentity: decodeColorIdentity) }
+        }
+        let adjacent = strongIntermediateRetentionIndices()
+        return resampleLayouts.values.compactMap { indices in
+            guard indices.contains(where: { index in
+                DecodedOriginalRetentionPolicy.canEvict(index: index, currentIndex: currentIndex,
+                    decodeBehind: prefetchBehind, adjacentIndices: adjacent, protected: false, displayReady: true)
+                    && cache.contains(entries[index].id, colorSpaceIdentity: decodeColorIdentity)
+            }), let sources = decodedSources(at: indices) else { return nil }
+            return DisplayCandidate(indices: indices, sources: sources, revision: stateRevision)
+        }
+    }
+
+    /// 設計書 §5、§7.3: actor 照会後に再検査し、表示中・隣接・実行中・先読み予定の入力を守る。
+    func evictDecodedOriginals(_ readyIndices: Set<Int>, candidate: DisplayCandidate,
+                               pages: [ResampledPage], protectedPageKeys: Set<String>) {
+        guard !isClosed, !Task.isCancelled, candidate.revision == stateRevision,
+              pages.count == candidate.indices.count else { return }
+        let adjacent = strongIntermediateRetentionIndices()
+        let targets = Set(Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
+            ahead: prefetchAhead, behind: prefetchBehind, forward: lastMoveForward, count: entries.count,
+            volumeKey: { source.prefetchVolumeKey(for: entries[$0]) }))
+        for index in readyIndices where entries.indices.contains(index) {
+            let id = entries[index].id
+            let protected = targets.contains(index) || inFlightLoads[id] != nil
+                || protectedPageKeys.contains("\(cacheKey)#\(id)")
+            if DecodedOriginalRetentionPolicy.canEvict(index: index, currentIndex: currentIndex,
+                decodeBehind: prefetchBehind, adjacentIndices: adjacent,
+                protected: protected, displayReady: true),
+               cache.contains(id, colorSpaceIdentity: decodeColorIdentity),
+               let position = candidate.indices.firstIndex(of: index),
+               let key = ImageResampler.cacheIdentity(source: candidate.sources[position], to: pages[position].size,
+                   cacheKey: "\(cacheKey)#\(id)", processing: pages[position].processing,
+                   displayTarget: pages[position].colorTarget), resampler.cacheResidency.contains(key) {
+                cache.remove(id, colorSpaceIdentity: decodeColorIdentity)
+                evictedResampleKeys[id] = key
+            }
+        }
+    }
+
+    /// 設計書 §5: 完成画像の失効後も先読みを止め続けず、その場で通常の復号へ戻す。
+    func hasCachedResampleForEvictedOriginal(at index: Int) -> Bool {
+        guard entries.indices.contains(index) else { return false }
+        let id = entries[index].id
+        guard let key = evictedResampleKeys[id] else { return false }
+        guard resampler.cacheResidency.contains(key) else {
+            evictedResampleKeys[id] = nil
+            return false
+        }
+        return true
+    }
+
+    func clearResampledDisplayMiss(_ candidate: DisplayCandidate) {
+        guard candidate.revision == stateRevision else { return }
+        for index in candidate.indices { evictedResampleKeys[entries[index].id] = nil }
+    }
+
+    /// 設計書 §5: ペアと目標サイズが変わる設定は、復号先読みの省略情報も同時に失効させる。
+    private func invalidateSpreadLayout() {
+        spreadLayoutRevision &+= 1
+        evictedResampleKeys.removeAll()
+        resampleLayouts.removeAll()
+        invalidatePendingNavigation()
     }
 
     /// 忙しい描画 actor をページ表示で待たず、close では全更新の排出後に条件を外す(設計書 §5、§7.3)。
@@ -1047,14 +1212,14 @@ final class Book {
                         var iterator = targets.makeIterator()
                         for _ in 0..<width {
                             if let target = iterator.next() {
-                                let load = self?.beginImageLoad(at: target)
+                                let load = self?.beginPrefetchImageLoad(at: target)
                                 group.addTask { _ = await load?.value }
                             }
                         }
                         while await group.next() != nil {
                             if Task.isCancelled { break }
                             if let target = iterator.next() {
-                                let load = self?.beginImageLoad(at: target)
+                                let load = self?.beginPrefetchImageLoad(at: target)
                                 group.addTask { _ = await load?.value }
                             }
                         }
@@ -1062,7 +1227,7 @@ final class Book {
                 } else {
                     for target in Self.serialOrder(captured, aheadCount: leadingCount) {
                         guard !Task.isCancelled else { return }
-                        let load = self?.beginImageLoad(at: target)
+                        let load = self?.beginPrefetchImageLoad(at: target)
                         _ = await load?.value
                     }
                 }
@@ -1071,5 +1236,11 @@ final class Book {
         }
         prefetchTask = task
         backgroundTasks[id] = task
+    }
+
+    /// 設計書 §5: 戻り読みの表示用完成画像を、復号先読みが元画像で埋め直すのを防ぐ。
+    private func beginPrefetchImageLoad(at index: Int) -> Task<ImageLoadResult, Never>? {
+        guard entries.indices.contains(index), !hasCachedResampleForEvictedOriginal(at: index) else { return nil }
+        return beginImageLoad(at: index)
     }
 }

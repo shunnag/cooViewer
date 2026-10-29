@@ -18,6 +18,8 @@ final class PreresampleJobs {
 
     var currentEntryID: Int? { selected.flatMap { jobs[$0]?.entryID } }
     var activeCount: Int { jobs.count }
+    /// 設計書 §5: 計画の I/O 待機中も入力を距離削除から保護する。
+    var protectedPageKeys: Set<String> { planned.union(jobs.keys) }
 
     /// 新計画を確定してから計画外だけを停止する。各キーにつき保持する計算は一つ(設計書 §5)。
     func replacePlan(_ keys: Set<String>) {
