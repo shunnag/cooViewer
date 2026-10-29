@@ -675,6 +675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DeferredImageWriter.shared.cancelAll(stopping: true)
         readerWindowController?.saveStateBeforeTermination()
         // 開いたままの EPUB のステージングコピーは参照が残り deinit で消えないので、
         // 次回起動の掃除を待たずここで消す(設計書 §5 後始末。書庫スプールは従来どおり)

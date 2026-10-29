@@ -153,12 +153,14 @@ actor PDFSource: BookSource {
         }
         guard let (index, renderer) = await acquireRenderer(pageIndex: entry.id) else {
             return try await renderWithMainDocument(
-                entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil)
+                entry: entry, maxPixelSize: maxPixelSize, pixelScale: nil,
+                displayColorTarget: PageRequestIntent.displayColorTarget)
         }
         do {
             let image = try await renderer.render(
                 pageIndex: entry.id, name: entry.name,
-                maxPixelSize: maxPixelSize, pixelScale: nil)
+                maxPixelSize: maxPixelSize, pixelScale: nil,
+                displayColorTarget: PageRequestIntent.displayColorTarget)
             await releaseRenderer(index)
             return image
         } catch {
@@ -173,12 +175,14 @@ actor PDFSource: BookSource {
         let capped = min(pixelScale, 6.0)
         guard let (index, renderer) = await acquireRenderer(pageIndex: entry.id) else {
             return try await renderWithMainDocument(
-                entry: entry, maxPixelSize: nil, pixelScale: capped)
+                entry: entry, maxPixelSize: nil, pixelScale: capped,
+                displayColorTarget: PageRequestIntent.displayColorTarget)
         }
         do {
             let image = try await renderer.render(
                 pageIndex: entry.id, name: entry.name,
-                maxPixelSize: nil, pixelScale: capped)
+                maxPixelSize: nil, pixelScale: capped,
+                displayColorTarget: PageRequestIntent.displayColorTarget)
             await releaseRenderer(index)
             return image
         } catch {
@@ -230,12 +234,14 @@ actor PDFSource: BookSource {
 
     /// プールが作れない場合の従来経路(メイン文書で直列レンダリング)
     private func renderWithMainDocument(entry: PageEntry, maxPixelSize: Int?,
-                                        pixelScale: CGFloat?) throws -> CGImage {
+                                        pixelScale: CGFloat?,
+                                        displayColorTarget: DisplayColorTarget? = nil) throws -> CGImage {
         guard let page = document.page(at: entry.id) else {
             throw BookSourceError.pageLoadFailed(entry.name)
         }
         return try PDFPageRenderer.renderPage(page, name: entry.name,
-                                               maxPixelSize: maxPixelSize, pixelScale: pixelScale)
+                                               maxPixelSize: maxPixelSize, pixelScale: pixelScale,
+                                               displayColorTarget: displayColorTarget)
     }
 
     func isEncrypted() async -> Bool {
