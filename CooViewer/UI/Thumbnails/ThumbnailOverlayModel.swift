@@ -291,23 +291,32 @@ final class ThumbnailOverlayModel: ObservableObject {
     /// 閉じた後もサムネイル読みがページ表示と帯域を奪い合うのを防ぐ。
     /// 次に開いたときは present が先読みを再開する。停止中は設定スライダの
     /// 同期・非表示中のリサイズ経由でも再開しない(prefetchPaused)
-    func pausePrefetch() {
+    @discardableResult
+    func pausePrefetch() -> Task<Void, Never>? {
+        let pending = prefetchTask
         prefetchPaused = true
         prefetchTask?.cancel()
         prefetchTask = nil
+        return pending
     }
 
     /// スナップショットを空にして本への参照を解く。オーバーレイ非表示のまま
     /// 本が切り替わったときに呼ぶ: 古い Snapshot.source(ArchiveSource)を
     /// 持ち続けると、その本のスプール/ネスト展開の一時ファイル(数 GB になり得る)が
     /// deinit で回収されないため。次回表示時は present が組み直す。
-    func clear() {
+    @discardableResult
+    func clear() -> Task<Void, Never>? {
+        // 閉じた本の生成処理まで待てるよう、取消し前の親タスクを呼び出し側へ返す(設計書 §5、§7.3)。
+        let pending = prefetchTask
         prefetchTask?.cancel()
         prefetchTask = nil
         snapshot = Snapshot()
+        onJump = nil
+        onClose = nil
         measuredAspects = [:]
         screen = 0
         anchorGroup = 0
+        return pending
     }
 
     /// サムネイル画面のページ送り(ページ送りキー・フッターの矢印)

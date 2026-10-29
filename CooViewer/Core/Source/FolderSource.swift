@@ -185,7 +185,7 @@ final class FolderSource: BookSource {
     func imageData(for entry: PageEntry) async -> Data? {
         guard let fileURL = entry.fileURL else { return nil }
         // アニメーション用の生データ読みも同じゲートを通す(全読者を制御)
-        guard await readGate.acquire() else { return nil }
+        guard await readGate.acquire(promotion: PageRequestIntent.decodePromotion) else { return nil }
         let data = try? Data(contentsOf: fileURL)
         await readGate.release()
         return data
@@ -198,7 +198,7 @@ final class FolderSource: BookSource {
         }
         // ゲートはディスク I/O のみを絞る。デコード(CPU)はゲート外で行い、
         // 多コアの並列デコードを活かす(HDD でもゲート保持時間が短くなる)
-        guard await readGate.acquire() else { throw CancellationError() }
+        guard await readGate.acquire(promotion: PageRequestIntent.decodePromotion) else { throw CancellationError() }
         let data: Data
         do {
             try Task.checkCancellation()

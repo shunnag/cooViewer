@@ -46,12 +46,14 @@ extension ReaderWindowController {
         scheduleCollectionOverlayExpansion(for: book)
     }
 
-    func hideThumbnailOverlay() {
+    @discardableResult
+    func hideThumbnailOverlay() -> Task<Void, Never>? {
         thumbnailHostingView?.isHidden = true
         // 閉じた後のサムネイル先読みはページ表示と帯域を奪い合うだけなので止める
-        thumbnailOverlayModel.pausePrefetch()
+        let pending = thumbnailOverlayModel.pausePrefetch()
         collectionOverlayTask?.cancel()
         activeCollectionOverlay = nil
+        return pending
     }
 
     var isThumbnailOverlayVisible: Bool {

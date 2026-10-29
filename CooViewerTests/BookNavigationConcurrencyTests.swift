@@ -5,6 +5,29 @@ import XCTest
 /// ヘッダ/画像取得を止め、その間のジャンプが旧処理で巻き戻らないことを確認する。
 @MainActor
 final class BookNavigationConcurrencyTests: XCTestCase {
+    /// 設計書 §5、§7.3: 取消したルーペ等の取得は、画面に残る二枚の送り幅と現在位置を変更しない。
+    func testCancelledSpreadCannotCommitSinglePageTurnWidth() async throws {
+        let source = PausingBookSource(pause: .size(2))
+        let book = try await Book.open(source: source)
+        book.prefetchAhead = 0
+        book.prefetchBehind = 0
+        let displayed = await book.currentSpread()
+        XCTAssertEqual(displayed.indices, [0, 1])
+        XCTAssertEqual(book.displayedPageCount, 2)
+        book.goTo(index: 2)
+        let cancelled = Task { await book.currentSpread() }
+        await fulfillment(of: [source.paused], timeout: 3)
+        cancelled.cancel()
+        await source.resume()
+        let result = await cancelled.value
+        XCTAssertTrue(result.indices.isEmpty)
+        XCTAssertEqual(book.displayedPageCount, 2)
+        XCTAssertEqual(book.currentIndex, 2)
+        XCTAssertEqual(book.moveNext(), .moved)
+        XCTAssertEqual(book.currentIndex, 4)
+        await book.close().value
+    }
+
     func testPreviousDoesNotUndoJumpToFirstWhileReadingHeader() async throws {
         let source = PausingBookSource(pause: .size(2))
         let book = try await Book.open(source: source)

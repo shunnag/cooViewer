@@ -204,6 +204,28 @@ final class SiblingBooksOffMainTests: XCTestCase {
         XCTAssertFalse(scanned.contains(root.appendingPathComponent(".hiddenFolder").path))
     }
 
+    /// 設計書 §5、§7.3: 次巻候補の走査が止まっていても、アンロードした現在の本を保持しない。
+    func testNextBookLookupDoesNotRetainUnloadedBookOrSource() async throws {
+        let probe = PausedProbe()
+        let controller = ReaderWindowController(window: nil, history: try makeHistory())
+        controller.fileSystemProbe = probe
+        var source: StubSource? = StubSource(sizes: [.init(width: 40, height: 60)])
+        var book: Book? = try await Book.open(source: try XCTUnwrap(source))
+        weak var previousBook = book
+        weak var previousSource = source
+        controller.replaceBook(book)
+        let lookup = try XCTUnwrap(controller.maybePrepareNextBook())
+        await fulfillment(of: [probe.started], timeout: 3)
+        book = nil
+        source = nil
+        controller.unloadImageBookForEPUB()
+        XCTAssertNil(previousBook)
+        XCTAssertNil(previousSource)
+        probe.resume()
+        await lookup.value
+        await controller.imageBookUnloadTask?.value
+    }
+
     func testSlowListingDoesNotBlockMainActorAndMatchesSynchronousScan() async throws {
         let items = [DirectoryItem(name: "b.zip", isDirectory: false),
                      DirectoryItem(name: "a", isDirectory: true),
