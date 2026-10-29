@@ -6,9 +6,10 @@ import Foundation
 /// (物理メモリの 1/5・最大 12GB)より一回り小さくして、表示中スプレッド
 /// やルーペ超解像を追い出さないようにする
 enum PreresamplePolicy {
-    /// 先行リサンプルするページ数の上限(メモリ予算が実質の上限で、
-    /// これは小さすぎるページでの暴走を抑える保険)
-    static let maxPages = 64
+    /// 設計書 §5: 起動・ジャンプ時の不要な GPU 計算を抑え、最大 4 見開きを先行する。
+    static let maxPages = 8
+    /// 遅い媒体の I/O 待ちを吸収するデコードの深さは、リサンプルの枚数と分ける。
+    static let maxDecodePages = 64
 
     /// 先行リサンプルの枚数上限(設計書 §5)。
     /// ML 品質(強/最高)は 1 ページ数秒の GPU / Neural Engine 計算のため、通常でも
@@ -22,10 +23,10 @@ enum PreresamplePolicy {
         }
     }
 
-    /// 処理する見開きの数。省エネ時は次の見開きだけ、ML は 2 見開き、それ以外は予測の全部。
+    /// 単ページの連続でも先行時間を制限するため、枚数に加えて見開き数も絞る(設計書 §5)。
     static func spreadLimit(usesML: Bool, conserveEnergy: Bool) -> Int {
         if conserveEnergy { return 1 }
-        return usesML ? 2 : maxPages
+        return usesML ? 2 : 4
     }
 
     /// 実行計画。見開き数と枚数の両方の上限を守る(設計書 §5)。
@@ -42,7 +43,8 @@ enum PreresamplePolicy {
     }
 
     /// メモリ予算(バイト)。物理メモリの 1/8、上限 4GB。
-    /// 枚数を絞るときは予算も枚数 / 64 に比例させ、表示中ページの予算は変えない(設計書 §5)。
+    /// 設計書 §5: 通常の非 ML は枚数だけを絞り、バイト予算と LRU は従来どおり保つ。
+    /// ML・省エネの予算も従来の 4/64・2/64 のままにする。
     /// メモリ圧迫中はリサンプル LRU の実効上限と同じ係数(1/2・1/4)で縮め、先読み結果が
     /// 下がった LRU に収まらず互いに追い出し合うのを防ぐ
     /// 既定値は持たない: 省略すると実際の先読み(ML・省エネで 4/2 ページ)と食い違う
@@ -50,7 +52,8 @@ enum PreresamplePolicy {
     static func byteBudget(physicalMemory: UInt64, usesML: Bool, conserveEnergy: Bool,
                            memoryPressure: MemoryPressureLevel) -> Int {
         let normal = min(4 << 30, Int(clamping: physicalMemory / 8))
-        let scaled = normal / (maxPages / pageLimit(usesML: usesML, conserveEnergy: conserveEnergy))
+        let divisor = usesML ? (conserveEnergy ? 32 : 16) : (conserveEnergy ? 16 : 1)
+        let scaled = normal / divisor
         return MemoryBudgetPolicy.effectiveLimit(configured: scaled, level: memoryPressure)
     }
 
@@ -90,14 +93,14 @@ enum PreresamplePolicy {
     /// 「リサンプル先読み+4」(事前リサンプルが常にデコード済みへ命中し、
     /// I/O と ML 計算が直列化しない深さ)と「PageCache 予算の 1/3 に収まる
     /// 深さ」(現スプレッド・戻り分・ルーペの余裕を残す)の大きい方を採り、
-    /// 媒体別下限(SSD 12/HDD 16/ネットワーク 20)〜maxPages に丸める
+    /// 媒体別下限(SSD 12/HDD 16/ネットワーク 20)〜maxDecodePages に丸める
     static func decodeAhead(resamplePages: Int, decodedPageBytes: Int,
                             pageCacheByteLimit: Int, mediaFloor: Int,
                             conserveEnergy: Bool = false) -> Int {
         let byBudget = decodedPageBytes > 0
             ? pageCacheByteLimit / 3 / decodedPageBytes : 0
         let wanted = max(resamplePages + 4, byBudget)
-        let normal = min(maxPages, max(mediaFloor, wanted))
+        let normal = min(maxDecodePages, max(mediaFloor, wanted))
         return conserveEnergy ? max(2, normal / 2) : normal
     }
 

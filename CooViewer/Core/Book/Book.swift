@@ -77,6 +77,8 @@ final class Book {
     private var lastReadingPosition: (volume: Int, forward: Bool, generation: Int)?
     // 復旧後の別 Book も同じソースを使うため、通知の連番はプロセス全体で共有する。
     private static var readingPositionSequence: UInt64 = 0
+    /// 別 Book の表示更新も含め、遅着した保持要求で現在見開きを追い出さない(設計書 §7.3)。
+    private static var strongRetentionSequence: UInt64 = 0
     /// 見開き取得は同じ位置・並び・配置条件で完了した結果だけを採用する。
     /// ナビゲーション世代は後発のジャンプ/設定変更で旧判定を失効させる一方、
     /// 後退どうしの競合では位置を取り直して全操作を反映する(設計書 §7.3)。
@@ -482,10 +484,49 @@ final class Book {
             // 取消し後の欠けた取得結果で、画面に残る見開きの送り幅を変えない(設計書 §5、§7.3)。
             guard revision == stateRevision, !Task.isCancelled else { continue }
             lastDisplayCount = spread.indices.count
+            scheduleStrongIntermediateRetention()
             schedulePrefetch()
             return spread
         }
         return Spread(indices: [], images: [])
+    }
+
+    /// 忙しい描画 actor をページ表示で待たず、close では全更新の排出後に条件を外す(設計書 §5、§7.3)。
+    private func scheduleStrongIntermediateRetention() {
+        let bookKey = cacheKey
+        let pageKeys = Set(strongIntermediateRetentionIndices().map { "\(bookKey)#\(entries[$0].id)" })
+        Self.strongRetentionSequence &+= 1
+        let revision = Self.strongRetentionSequence
+        let id = UUID()
+        let task = Task<Void, Never>.detached(priority: .utility) { [weak self] in
+            await ImageResampler.shared.retainStrongIntermediates(
+                bookKey: bookKey, pageKeys: pageKeys, revision: revision)
+            await MainActor.run { [weak self] in self?.backgroundTasks[id] = nil }
+        }
+        backgroundTasks[id] = task
+    }
+
+    /// ヘッダ I/O を増やさず、既知の配置だけで原寸中間画像の保持範囲を絞る(設計書 §5)。
+    private func strongIntermediateRetentionIndices() -> Range<Int> {
+        func small(_ index: Int) -> Bool? {
+            guard entries.indices.contains(index) else { return false }
+            if entries[index].isStandalonePage { return false }
+            guard let size = pageSizeCache[entries[index].id] else { return nil }
+            return PageLayout.isSmall(size: size, index: index, marks: marks,
+                singleSetting: singleSetting, coverSingle: coverSingleFirst,
+                comicSingleIndices: comicSingleIndices)
+        }
+        func pair(_ first: Int, _ second: Int) -> Bool? {
+            guard readMode.isSpread else { return false }
+            let a = small(first), b = small(second)
+            if a == false || b == false { return false }
+            return a == true && b == true ? true : nil
+        }
+        let next = currentIndex + lastDisplayCount
+        return StrongIntermediateRetentionPolicy.retainedIndices(
+            currentIndex: currentIndex, displayCount: lastDisplayCount, pageCount: entries.count,
+            previousIsPair: pair(currentIndex - 2, currentIndex - 1),
+            nextIsPair: pair(next, next + 1))
     }
 
     private func noteReadingPositionIfNeeded() {
@@ -863,9 +904,11 @@ final class Book {
         inFlightLoads.removeAll()
         let tasks = Array(backgroundTasks.values)
         let decodes = Array(decodeTasks.values)
+        let bookKey = cacheKey
         return Task(priority: .utility) {
             for task in tasks { await task.value }
             for task in decodes { _ = await task.value }
+            await ImageResampler.shared.removeStrongIntermediateRetention(bookKey: bookKey)
         }
     }
 

@@ -397,11 +397,11 @@ actor ThumbnailCache {
         // キャンセル判定の後に一度だけ await するので、キャンセル意味論も
         // ホットパスの await 回数も変えない。
         let protected = await source.containsProtectedContent()
-        if !protected, let pending = writer.image(at: fileURL) { return pending }
+        if !protected, let pending = writer.image(at: fileURL) { return alignedForDisplay(pending) }
         if !protected,
            let data = try? Data(contentsOf: fileURL),
            let image = try? ImageDecoding.decode(data) {
-            return image
+            return alignedForDisplay(image)
         }
         // 実生成(ソース展開・レンダリング)だけを全体ゲートで絞る。
         // 行列へ入る前と待機中の両方で取消しを受け付ける。
@@ -421,10 +421,19 @@ actor ThumbnailCache {
         }
         await gate.release()
         guard let image else { return nil }
+        let aligned = alignedForDisplay(image)
         if !protected {
-            writer.enqueue(image, at: fileURL, generation: writeGeneration, write: write)
+            writer.enqueue(aligned, at: fileURL, generation: writeGeneration, write: write)
         }
-        return image
+        return aligned
+    }
+
+    /// HEIC の復号行が 16 バイト境界でなければ、同じプロファイルで行だけを揃える。
+    /// 設計書 §5: ディスク命中時も主スレッドでの Core Animation コピーを避ける。
+    nonisolated static func alignedForDisplay(_ image: CGImage) -> CGImage {
+        guard image.bytesPerRow % 16 != 0, !DisplayColorTarget.preservesHDR(image) else { return image }
+        return DisplayColorTarget.draw(image, width: image.width, height: image.height,
+                                       space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!) ?? image
     }
 
     /// 一時パスだけに符号化し、公開と取消は保存係が管理する(設計書 §5、§7.3)。

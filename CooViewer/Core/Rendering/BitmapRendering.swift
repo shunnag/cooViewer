@@ -10,6 +10,15 @@ struct BitmapDimensions {
     let bytesPerRow: Int
     let byteCount: Int
 
+    /// 設計書 §5: 画素数を変えず行だけを揃え、Core Animation の表示時コピーを避ける。
+    static func alignedBytesPerRow(width: Int, bytesPerPixel: Int) -> Int? {
+        guard width > 0, bytesPerPixel > 0 else { return nil }
+        let row = width.multipliedReportingOverflow(by: bytesPerPixel)
+        let padded = row.partialValue.addingReportingOverflow(15)
+        guard !row.overflow, !padded.overflow else { return nil }
+        return padded.partialValue & ~15
+    }
+
     init?(_ target: CGSize, rounding: FloatingPointRoundingRule = .towardZero) {
         guard let width = Int(exactly: target.width.rounded(rounding)),
               let height = Int(exactly: target.height.rounded(rounding)) else { return nil }
@@ -18,13 +27,13 @@ struct BitmapDimensions {
 
     init?(width: Int, height: Int) {
         guard width > 0, height > 0 else { return nil }
-        let row = width.multipliedReportingOverflow(by: 4)
-        let bytes = row.partialValue.multipliedReportingOverflow(by: height)
+        guard let row = Self.alignedBytesPerRow(width: width, bytesPerPixel: 4) else { return nil }
+        let bytes = row.multipliedReportingOverflow(by: height)
         let limit = max(64 << 20, min(1 << 30, Int(clamping: ProcessInfo.processInfo.physicalMemory / 16)))
-        guard !row.overflow, !bytes.overflow, bytes.partialValue <= limit else { return nil }
+        guard !bytes.overflow, bytes.partialValue <= limit else { return nil }
         self.width = width
         self.height = height
-        bytesPerRow = row.partialValue
+        bytesPerRow = row
         byteCount = bytes.partialValue
     }
 }
@@ -34,7 +43,8 @@ enum BitmapRendering {
     static func render(_ image: CIImage, context: CIContext,
                        size: BitmapDimensions, colorSpace: CGColorSpace) -> CGImage? {
         let gray = colorSpace.model == .monochrome
-        let rowBytes = gray ? size.width : size.bytesPerRow
+        guard let rowBytes = BitmapDimensions.alignedBytesPerRow(
+            width: size.width, bytesPerPixel: gray ? 1 : 4) else { return nil }
         let byteCount = rowBytes * size.height
         guard FileDescriptorHeadroom.isAvailable(),
               let buffer = calloc(1, byteCount) else { return nil }

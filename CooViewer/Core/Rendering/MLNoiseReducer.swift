@@ -51,18 +51,20 @@ actor MLNoiseReducer {
     /// (呼び出し側は CI フォールバックで表示し、次回から本処理になる)
     func reduce(_ image: CGImage) async -> CGImage? {
         guard let loaded = await installer.ensureModel() else { return nil }
-        return Self.runTiled(model: loaded.model, image: image)
+        return Self.runTiled(image: image) { try loaded.model.predictions(from: $0, options: MLPredictionOptions()) }
     }
 
     /// タイル推論の本体(モデルへの入出力仕様は probe で実測確認済み:
     /// 入力 "input" 3×142×142、出力 "conv7" [1,1,3,128,128])
-    private static func runTiled(model: MLModel, image: CGImage) -> CGImage? {
+    static func runTiled(image: CGImage, batchSize: Int = 32,
+                         predict: (MLBatchProvider) throws -> MLBatchProvider) -> CGImage? {
         let width = image.width
         let height = image.height
-        guard width > 0, height > 0,
+        guard batchSize > 0, !Task.isCancelled,
+              let size = BitmapDimensions(width: width, height: height),
               let context = CGContext(
                 data: nil, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4,
+                bitsPerComponent: 8, bytesPerRow: 0,
                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
               let sourceData = { () -> UnsafeMutablePointer<UInt8>? in
@@ -76,61 +78,48 @@ actor MLNoiseReducer {
         // 関数終端まで生存を延ばす(全 return 経路で有効。cooViewer-0py)
         defer { withExtendedLifetime(context) {} }
 
-        let outBytesPerRow = width * 4
-        let outBuffer = UnsafeMutableRawPointer.allocate(
-            byteCount: outBytesPerRow * height, alignment: 16)
+        let sourceBytesPerRow = context.bytesPerRow
+        let outBytesPerRow = size.bytesPerRow
+        let outBuffer = UnsafeMutableRawPointer.allocate(byteCount: size.byteCount, alignment: 16)
+        // パディングも決定的にし、符号化・検証で未初期化領域を読ませない。
+        outBuffer.initializeMemory(as: UInt8.self, repeating: 0, count: size.byteCount)
+        var transferred = false
+        defer { if !transferred { outBuffer.deallocate() } }
         let out = outBuffer.assumingMemoryBound(to: UInt8.self)
-
-        let inputSide = blockSize + 2 * shrinkSize
-        guard let input = try? MLMultiArray(
-            shape: [3, NSNumber(value: inputSide), NSNumber(value: inputSide)],
-            dataType: .float32) else {
-            outBuffer.deallocate()
-            return nil
-        }
-        let inputPointer = input.dataPointer.assumingMemoryBound(to: Float.self)
-        let planeStride = inputSide * inputSide
-
-        for origin in tileOrigins(width: width, height: height) {
-            if Task.isCancelled {
-                outBuffer.deallocate()
-                return nil
-            }
-            // 入力: タイル(+マージン)を画像から集める。画像端は端画素を複製
-            for row in 0..<inputSide {
-                let sourceY = min(max(origin.y + row - shrinkSize, 0), height - 1)
-                for column in 0..<inputSide {
-                    let sourceX = min(max(origin.x + column - shrinkSize, 0),
-                                      width - 1)
-                    let pixel = sourceY * outBytesPerRow + sourceX * 4
-                    let position = row * inputSide + column
-                    inputPointer[position] =
-                        Float(sourceData[pixel]) / 255 + clipEta8
-                    inputPointer[planeStride + position] =
-                        Float(sourceData[pixel + 1]) / 255 + clipEta8
-                    inputPointer[planeStride * 2 + position] =
-                        Float(sourceData[pixel + 2]) / 255 + clipEta8
+        let origins = tileOrigins(width: width, height: height)
+        for range in tileBatchRanges(tileCount: origins.count, batchSize: batchSize) {
+            // 設計書 §5: 入出力の同時保持を 32 タイルに抑え、バッチ境界で取消しを受け付ける。
+            let completed: Bool = autoreleasepool {
+                guard !Task.isCancelled else { return false }
+                var providers: [MLFeatureProvider] = []
+                for index in range {
+                    guard !Task.isCancelled,
+                          let provider = makeInput(sourceData, bytesPerRow: sourceBytesPerRow,
+                              origin: origins[index], width: width, height: height) else { return false }
+                    providers.append(provider)
                 }
+                guard !Task.isCancelled,
+                      let results = try? predict(MLArrayBatchProvider(array: providers)),
+                      results.count == range.count, !Task.isCancelled else { return false }
+                for (offset, index) in range.enumerated() {
+                    guard let result = results.features(at: offset).featureValue(for: "conv7")?
+                        .multiArrayValue else { return false }
+                    writeTile(result, into: out, bytesPerRow: outBytesPerRow,
+                              origin: origins[index], width: width, height: height)
+                }
+                return true
             }
-            guard let provider = try? MLDictionaryFeatureProvider(
-                    dictionary: ["input": MLFeatureValue(multiArray: input)]),
-                  let prediction = try? model.prediction(from: provider),
-                  let result = prediction.featureValue(for: "conv7")?
-                      .multiArrayValue else {
-                outBuffer.deallocate()
-                return nil
-            }
-            writeTile(result, into: out, bytesPerRow: outBytesPerRow,
-                      origin: origin, width: width, height: height)
+            guard completed else { return nil }
         }
+        guard !Task.isCancelled else { return nil }
 
         guard let provider = CGDataProvider(
             dataInfo: nil, data: outBuffer,
             size: outBytesPerRow * height,
             releaseData: { _, data, _ in data.deallocate() }) else {
-            outBuffer.deallocate()
             return nil
         }
+        transferred = true
         return CGImage(
             width: width, height: height,
             bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: outBytesPerRow,
@@ -138,6 +127,36 @@ actor MLNoiseReducer {
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
             provider: provider, decode: nil, shouldInterpolate: true,
             intent: .defaultIntent)
+    }
+
+    /// タイルの順序を保った連続区間。端数を次バッチへ重複させない。
+    nonisolated static func tileBatchRanges(tileCount: Int, batchSize: Int = 32) -> [Range<Int>] {
+        guard tileCount > 0, batchSize > 0 else { return [] }
+        return stride(from: 0, to: tileCount, by: batchSize).map {
+            $0..<($0 + min(batchSize, tileCount - $0))
+        }
+    }
+
+    /// バッチ内では入力を共有せず、従来と同じ正規化・端画素複製を各タイルへ適用する。
+    private static func makeInput(_ source: UnsafeMutablePointer<UInt8>, bytesPerRow: Int,
+                                  origin: (x: Int, y: Int), width: Int, height: Int) -> MLFeatureProvider? {
+        let side = blockSize + 2 * shrinkSize
+        guard let input = try? MLMultiArray(
+            shape: [3, NSNumber(value: side), NSNumber(value: side)], dataType: .float32) else { return nil }
+        let pointer = input.dataPointer.assumingMemoryBound(to: Float.self)
+        let plane = side * side
+        for row in 0..<side {
+            let y = min(max(origin.y + row - shrinkSize, 0), height - 1)
+            for column in 0..<side {
+                let x = min(max(origin.x + column - shrinkSize, 0), width - 1)
+                let pixel = y * bytesPerRow + x * 4
+                let position = row * side + column
+                pointer[position] = Float(source[pixel]) / 255 + clipEta8
+                pointer[plane + position] = Float(source[pixel + 1]) / 255 + clipEta8
+                pointer[plane * 2 + position] = Float(source[pixel + 2]) / 255 + clipEta8
+            }
+        }
+        return try? MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
     }
 
     /// 出力タイル([1,1,3,128,128]。Float32/Double 両対応)を出力バッファへ書く

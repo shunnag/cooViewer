@@ -39,6 +39,36 @@ actor ImageResampler {
     /// モデルが .ready へ回復したら removeMLFallbackEntries で捨て、本物の ML で
     /// 作り直させる(cooViewer-emx)。追い出し時は removeEntry が同期して外す
     private var mlFallbackKeys: Set<String> = []
+    /// 別窓の本を巻き込まず、本ごとの現在・隣接見開きに原寸中間画像を残す(設計書 §5)。
+    private var strongRetainedPageKeys: [String: (revision: UInt64, pageKeys: Set<String>)] = [:]
+    private var strongIntermediatePageKeys: [String: String] = [:]
+
+    @discardableResult
+    func retainStrongIntermediates(bookKey: String, pageKeys: Set<String>, revision: UInt64) -> Bool {
+        guard revision > (strongRetainedPageKeys[bookKey]?.revision ?? 0) else { return false }
+        strongRetainedPageKeys[bookKey] = (revision, pageKeys)
+        for (key, pageKey) in strongIntermediatePageKeys
+            where Self.bookKey(for: pageKey) == bookKey && !pageKeys.contains(pageKey) {
+            removeEntry(key)
+        }
+        return true
+    }
+
+    /// close の取消し済み更新を排出してから呼び、閉じた本の保持条件を残さない(設計書 §7.3)。
+    func removeStrongIntermediateRetention(bookKey: String) {
+        strongRetainedPageKeys.removeValue(forKey: bookKey)
+    }
+
+    /// 表示・先読み共通の「本キー#エントリ ID」から所有する本だけを取り出す。
+    private static func bookKey(for pageKey: String) -> String? {
+        pageKey.lastIndex(of: "#").map { String(pageKey[..<$0]) }
+    }
+
+    private func retainsStrongIntermediate(pageKey: String) -> Bool {
+        guard let bookKey = Self.bookKey(for: pageKey),
+              let retained = strongRetainedPageKeys[bookKey] else { return true }
+        return retained.pageKeys.contains(pageKey)
+    }
     /// 設定上の合計バイト上限(既定: 物理メモリの 1/5、最大 12GB)。
     /// リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため、
     /// 行き来で作り直さずに済むよう広めに確保する(旧: 1/6・最大 4.5GB は
@@ -266,8 +296,12 @@ actor ImageResampler {
                await resolvedCacheable(usedMLFallback: usedMLFallback,
                                        image: image, level: noiseReduction) {
                 guard !Task.isCancelled else { return nil }
-                insert(source, for: nrKey)
-                if usedMLFallback { mlFallbackKeys.insert(nrKey) }  // 回復時に捨てる(emx)
+                // 推論待ちの間にめくられても、遠い中間画像を復活させない(設計書 §5)。
+                if retainsStrongIntermediate(pageKey: cacheKey) {
+                    insert(source, for: nrKey)
+                    if cache[nrKey] != nil { strongIntermediatePageKeys[nrKey] = cacheKey }
+                    if usedMLFallback { mlFallbackKeys.insert(nrKey) }  // 回復時に捨てる(emx)
+                }
             }
         }
         guard !Task.isCancelled else { return nil }
@@ -493,6 +527,7 @@ actor ImageResampler {
             order.remove(at: index)
         }
         mlFallbackKeys.remove(key)  // 追い出したキーは回復対象から外す(emx)
+        strongIntermediatePageKeys.removeValue(forKey: key)
     }
 
     /// MetalFX による拡大(2 倍超の段階適用は MetalFXUpscaler 内でテクスチャの
