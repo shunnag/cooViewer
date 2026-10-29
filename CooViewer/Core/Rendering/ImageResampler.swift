@@ -19,7 +19,15 @@ actor ImageResampler {
     /// 合流させ、ML/CI の二重実行を避ける(preresample と表示要求が同じページを
     /// 同時に要求する経路。cooViewer-pag)。id は完了時の自己退去照合用
     /// (ThumbnailCache.inFlight と同型)
-    private var inFlight: [String: (task: Task<CGImage?, Never>, id: UUID)] = [:]
+    private struct InFlight {
+        let task: Task<CGImage?, Never>
+        let id: UUID
+        let request: SRJobRequest
+        var waiters: [UUID: SRJobPriority]
+    }
+    private var inFlight: [String: InFlight] = [:]
+    /// 合流と取消しの到達を決定的に検証するための待ち手数(設計書 §7.6)。
+    var inFlightWaiterCount: Int { inFlight.values.reduce(0) { $0 + $1.waiters.count } }
     /// 検証用: 実計算(computeResample)に入った回数。合流が効けば同一キーの
     /// 並行要求で 1 回になる(stats().computeCount で参照)
     private var computeCount = 0
@@ -47,6 +55,7 @@ actor ImageResampler {
     private var noiseReducer: NoiseReducer?
     private let noiseReductionOverride: (@Sendable (CGImage, NoiseReductionLevel) -> CGImage?)?
     private let upscaleOverride: (@Sendable (CGImage, CGSize) -> CGImage?)?
+    private let superResolver: MLSuperResolver
 
     /// アクティビティ窓向けの読み取り専用スナップショット(O(1))
     struct Stats: Sendable, Equatable {
@@ -67,9 +76,11 @@ actor ImageResampler {
          pressure: any MemoryPressureProviding = MemoryPressureMonitor.shared,
          center: NotificationCenter = .default,
          noiseReductionOverride: (@Sendable (CGImage, NoiseReductionLevel) -> CGImage?)? = nil,
-         upscaleOverride: (@Sendable (CGImage, CGSize) -> CGImage?)? = nil) {
+         upscaleOverride: (@Sendable (CGImage, CGSize) -> CGImage?)? = nil,
+         superResolver: MLSuperResolver = .shared) {
         self.noiseReductionOverride = noiseReductionOverride
         self.upscaleOverride = upscaleOverride
+        self.superResolver = superResolver
         configuredByteLimit = max(1, byteLimit)
         self.byteLimit = MemoryBudgetPolicy.effectiveLimit(
             configured: configuredByteLimit, level: pressure.memoryPressureLevel)
@@ -102,7 +113,9 @@ actor ImageResampler {
                   cacheKey: String, upscaleWithMetalFX: Bool,
                   noiseReduction: NoiseReductionLevel = .none,
                   superResEncrypted: Bool = false,
-                  displayTarget: DisplayColorTarget? = nil) async -> CGImage? {
+                  displayTarget: DisplayColorTarget? = nil,
+                  priority: SRJobPriority = .display) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         guard let size = BitmapDimensions(pixelSize, rounding: .toNearestOrAwayFromZero) else { return nil }
         let width = size.width
         let height = size.height
@@ -119,13 +132,15 @@ actor ImageResampler {
         // preresample と表示要求が同じページを同時に要求する経路。cooViewer-pag)。
         // touch ミス・in-flight 照合・タスク生成・登録は最初の中断より前の同期
         // アクター操作なので、再入で重複タスクが割り込むことはない
-        if let running = inFlight[key] {
-            let joined = await running.task.value
-            // 合流待ち手のキャンセルは結果を捨てるだけ(insert は計算タスクの
-            // 責務)。共有タスクは待ち手のキャンセルを観測しないので結果は本物
-            return Task.isCancelled ? nil : joined
+        let waiter = UUID()
+        if var running = inFlight[key] {
+            running.waiters[waiter] = priority
+            if priority == .display { running.request.promote() }
+            inFlight[key] = running
+            return await waitForResample(running, key: key, waiter: waiter)
         }
         let id = UUID()
+        let request = SRJobRequest(priority: priority)
         // 共有タスクが actor を待つ間に本を閉じても、旧要求の保存を復活させない(設計書 §7.3)。
         let writeGeneration = DeferredImageWriter.shared.generation
         let task = Task { [weak self] () -> CGImage? in
@@ -134,15 +149,36 @@ actor ImageResampler {
                 image: image, width: width, height: height, key: key,
                 cacheKey: cacheKey, upscaleWithMetalFX: upscaleWithMetalFX,
                 noiseReduction: noiseReduction, superResEncrypted: superResEncrypted,
-                displayTarget: displayTarget, writeGeneration: writeGeneration)
+                displayTarget: displayTarget, writeGeneration: writeGeneration,
+                request: request)
         }
-        inFlight[key] = (task, id)
-        // Task.value は Never 失敗タスクではキャンセル点にならず、待ち手が
-        // キャンセルされても計算は完走してから戻る(結果は常に本物・キャッシュ可)。
-        // 完了後に自己退去(id 照合で新しい世代を潰さない)
-        let result = await task.value
-        if inFlight[key]?.id == id { inFlight[key] = nil }
+        let running = InFlight(task: task, id: id, request: request, waiters: [waiter: priority])
+        inFlight[key] = running
+        return await waitForResample(running, key: key, waiter: waiter)
+    }
+
+    /// 最後の待ち手が離れたら共有計算も取り消し、SR の次のタイル境界へ伝える(設計書 §5、§7.3)。
+    private func waitForResample(_ running: InFlight, key: String,
+                                 waiter: UUID) async -> CGImage? {
+        let result = await withTaskCancellationHandler {
+            await running.task.value
+        } onCancel: {
+            Task { await self.removeWaiter(waiter, key: key, id: running.id) }
+        }
+        if inFlight[key]?.id == running.id { inFlight[key] = nil }
         return Task.isCancelled ? nil : result
+    }
+
+    private func removeWaiter(_ waiter: UUID, key: String, id: UUID) {
+        guard var running = inFlight[key], running.id == id else { return }
+        running.waiters[waiter] = nil
+        if running.waiters.isEmpty {
+            inFlight[key] = nil
+            running.task.cancel()
+        } else {
+            running.request.setPriority(running.waiters.values.contains(.display) ? .display : .prefetch)
+            inFlight[key] = running
+        }
     }
 
     /// 初回表示用にも同じ LRU とプロファイル同一性を使う。変換はこの actor 上で行う(設計書 §5)。
@@ -156,16 +192,15 @@ actor ImageResampler {
         return result
     }
 
-    /// リサンプル本体(ノイズ低減 + リサイズ + キャッシュ)。in-flight の共有
-    /// タスクから同一キーにつき1回だけ呼ばれる。共有タスクは待ち手のキャンセルを
-    /// 観測しないため結果は常に完走した本物で、旧来の「キャンセル結果を ML 用
-    /// キーに焼かない」汚染ガードは合流により構造的に不要になった(cooViewer-pag)
+    /// 同一キーの共有計算。取消し後の代替画像を ML 完成キーへ保存しない(設計書 §5、§7.3)。
     private func computeResample(
         image: CGImage, width: Int, height: Int, key: String,
         cacheKey: String, upscaleWithMetalFX: Bool,
         noiseReduction: NoiseReductionLevel, superResEncrypted: Bool,
-        displayTarget: DisplayColorTarget?, writeGeneration: UUID
+        displayTarget: DisplayColorTarget?, writeGeneration: UUID,
+        request: SRJobRequest
     ) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         computeCount += 1
         // .strong のノイズ低減(waifu2x)中間結果は元画像サイズ依存で target 非依存。
         // 結果キャッシュは target 込みキーなので、ウインドウリサイズ(別 target)ごとに
@@ -190,17 +225,20 @@ actor ImageResampler {
             (source, usedMLFallback, sourceCacheable) = await reducedSource(
                 of: image, level: noiseReduction, cacheKey: cacheKey,
                 encrypted: superResEncrypted, displaySize: CGSize(width: width, height: height),
-                writeGeneration: writeGeneration)
+                writeGeneration: writeGeneration, request: request)
+            guard !Task.isCancelled else { return nil }
             // 中間結果のキャッシュ可否は最終結果と同じ 7n1.2 規則。恒久失敗機
             // (.failed/XCTest)は CI 中間も焼いてリサイズ再計算を防ぐ、一過性
             // フォールバック(未導入/DL 中)はモデル完成後の本物に譲るため焼かない
             if sourceCacheable, let nrKey,
                await resolvedCacheable(usedMLFallback: usedMLFallback,
                                        image: image, level: noiseReduction) {
+                guard !Task.isCancelled else { return nil }
                 insert(source, for: nrKey)
                 if usedMLFallback { mlFallbackKeys.insert(nrKey) }  // 回復時に捨てる(emx)
             }
         }
+        guard !Task.isCancelled else { return nil }
         // モデル推論の await 中に別経路が同じキーを入れていたら使い回す
         if let hit = cache[key] { return hit }
 
@@ -237,6 +275,7 @@ actor ImageResampler {
         if sourceCacheable, resizeCacheable, let result,
            await resolvedCacheable(usedMLFallback: usedMLFallback,
                                    image: image, level: noiseReduction) {
+            guard !Task.isCancelled else { return nil }
             insert(result, for: key)
             if usedMLFallback { mlFallbackKeys.insert(key) }  // 回復時に捨てる(emx)
         }
@@ -359,7 +398,8 @@ actor ImageResampler {
                                level: NoiseReductionLevel,
                                cacheKey: String?,
                                encrypted: Bool = false, displaySize: CGSize? = nil,
-                               writeGeneration: UUID? = nil)
+                               writeGeneration: UUID? = nil,
+                               request: SRJobRequest = SRJobRequest())
         async -> (image: CGImage, usedMLFallback: Bool, cacheable: Bool) {
         guard level != .none else { return (image, false, true) }
         if level == .maximum {
@@ -369,16 +409,18 @@ actor ImageResampler {
             let srKey = cacheKey.map {
                 "\($0)|\(image.width)x\(image.height)|sr4|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
             }
-            if let upscaled = await MLSuperResolver.shared.upscale(
+            if let upscaled = await superResolver.upscale(
                 image, cacheKey: srKey, encrypted: encrypted, displaySize: displaySize,
-                writeGeneration: writeGeneration) {
+                writeGeneration: writeGeneration, request: request) {
                 return (upscaled, false, true)
             }
         }
+        guard !Task.isCancelled else { return (image, false, false) }
         if level == .strong || level == .maximum,
            let reduced = await MLNoiseReducer.shared.reduce(image) {
             return (reduced, false, true)
         }
+        guard !Task.isCancelled else { return (image, false, false) }
         let requestedML = level == .strong || level == .maximum
         let reduced: CGImage?
         if let noiseReductionOverride { reduced = noiseReductionOverride(image, level) }

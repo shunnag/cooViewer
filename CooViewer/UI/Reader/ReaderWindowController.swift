@@ -426,16 +426,13 @@ final class ReaderWindowController: NSWindowController {
     /// アクティビティ窓向け: 開いている本の書庫ソース(スプール統計用。
     /// フォルダ/PDF/ネスト統合では nil)
     var currentArchiveSource: ArchiveSource? { book?.source as? ArchiveSource }
-    /// 進行中の先読みリサンプル(表示要求を最優先にするため、表示更新時に
-    /// キャンセルして ML 実行キューを明け渡す)
+    /// 再計画は止めても、新計画に残るページ処理は別の所有者で保つ(設計書 §5)。
     private var preresampleTask: Task<Void, Never>?
     private var animationTasks: [UUID: Task<Void, Never>] = [:]
     private(set) var imageBookUnloadTask: Task<Void, Never>?
-    /// 先読みがいま処理中のエントリ ID(処理中のページへジャンプした場合は
-    /// キャンセルせず完走させて表示に使うための判定材料)
-    private var preresamplingEntryID: Int?
-    /// 先読みの実行番号(ソフト停止用: 旧タスクは処理中の 1 件を完走した
-    /// 後、この番号のずれで自然停止する)
+    let preresampleJobs = PreresampleJobs()
+    private var preresamplingEntryID: Int? { preresampleJobs.currentEntryID }
+    /// 旧計画が後から新しいページを始めたり、新計画の保持対象を変えないための世代(設計書 §7.3)。
     private var preresampleRun = 0
     /// 直近の計画時の実行モード(可視性・前面性の通知が同じモードなら組み直さない)
     private var lastPreresampleMode: PreresamplePolicy.Mode?
@@ -536,13 +533,11 @@ final class ReaderWindowController: NSWindowController {
         }
     }
 
-    /// 可視性・前面性の変化は事前リサンプルだけを組み直す。進行中の 1 ページは
-    /// 完走させ(結果はキャッシュに残る)、次のページ境界で実行番号のずれにより止める。
-    /// 隠蔽通知は可視のまま(部分的な重なり等)でも届くため、モードが前回の計画から
-    /// 変わっていなければ組み直さない
+    /// 可視性・前面性の変化で再計画し、隠蔽時はページ処理も止める(設計書 §5)。
+    /// 可視のまま届く隠蔽通知では、モードが変わらなければ組み直さない。
     private func replanPreresampleForActivity() {
         guard book.map(currentPreresampleMode(for:)) != lastPreresampleMode else { return }
-        preresampleAdjacentSpread(sparingInFlight: true)
+        preresampleAdjacentSpread()
     }
 
     /// いまの可視性・前面性・省エネ条件から先読みの実行モードを決める(設計書 §5)
@@ -629,11 +624,9 @@ final class ReaderWindowController: NSWindowController {
             || readerView.noiseReductionLevel != settings.noiseReductionLevel
         readerView.interpolation = settings.interpolation
         readerView.noiseReductionLevel = settings.noiseReductionLevel
-        // フィルタ(描画品質)切替: 先読みキューも新条件で組み直す。
-        // 処理中の 1 件は完走させ(結果はキャッシュに残る)、残りは停止。
-        // 新キューは表示中スプレッドの補間完了を待ってから積まれる
+        // 描画品質が変われば新条件で再計画し、同じキーでも処理条件を照合する(設計書 §5)。
         if filterChanged {
-            preresampleAdjacentSpread(sparingInFlight: true)
+            preresampleAdjacentSpread()
         }
         readerView.backgroundColor = settings.viewBackgroundColor
         // サムネイルのセルサイズ(設定スライダ → 開いている一覧へ即時反映。
@@ -2193,8 +2186,7 @@ final class ReaderWindowController: NSWindowController {
         guard (notification.object as? NSWindow) === window,
               readerView.invalidateDisplayColorSpace() else { return }
         invalidatePendingDisplay()
-        preresampleRun += 1
-        preresampleTask?.cancel()
+        cancelPreresampling()
         Task { [weak self] in await self?.refreshDisplay() }
     }
 
@@ -2218,11 +2210,8 @@ final class ReaderWindowController: NSWindowController {
         stopSlideshow()
         collectionOverlayTask?.cancel()  // 全冊 census をウインドウ亡き後に残さない
         collectionPageMaps.cancel(resetAttempts: true)
-        // 隣接スプレッドの ML 先行リサンプルと本の先読みを止める。単一ウインドウ
-        // (isReleasedWhenClosed=false)ではプロセスは生き続け、preresampleTask の
-        // ガード(displayGeneration/preresampleRun/book 同一性)は閉窓では変わらない
-        // ため、止めないと画面が無いまま数分 GPU 推論/デコードを続ける(cooViewer-gdo)
-        preresampleTask?.cancel()
+        // 閉窓でも本は保持されるため、計画の世代を進め、所有するページ処理も止める(設計書 §5)。
+        cancelPreresampling()
         book?.cancelPrefetch()
         DeferredImageWriter.shared.cancelAll()
         epubView?.stopMediaOverlay()  // ウインドウを閉じたら音声も止める
@@ -2485,13 +2474,14 @@ final class ReaderWindowController: NSWindowController {
 
     func replaceBook(_ book: Book?, persistence: ImageBookPersistence? = nil,
                      preservingPartialRecovery: Bool = false) {
+        let preresampleDrain = cancelPreresampling()
         if self.book !== book, let previous = self.book {
             // 画像本を降ろす入口を集約し、先読み以外の長寿命処理も取り消して解放完了を待てるようにする(設計書 §5、§7.3)。
             let drain = previous.close()
             // 次の表示が中断されても空で閉じられない一覧を残さず、旧本の参照は非表示にしてから解放する(設計書 §5、§7.3)。
             let thumbnails = hideThumbnailOverlay()
             thumbnailOverlayModel.clear()
-            let tasks = [backgroundPreparationTask, preresampleTask, spoolSettingsTask,
+            let tasks = [backgroundPreparationTask, spoolSettingsTask,
                          loupeImageTask, collectionOverlayTask, bubbleThumbnailTask?.task,
                          thumbnails].compactMap { $0 }
                 + Array(animationTasks.values)
@@ -2502,12 +2492,12 @@ final class ReaderWindowController: NSWindowController {
             bubbleThumbnailInFlight = false
             bubbleHoverIndex = -1
             pageBarBubble.isHidden = true
-            preresampleTask = nil
             spoolSettingsTask = nil
             let pending = imageBookUnloadTask
             imageBookUnloadTask = Task(priority: .utility) {
                 await pending?.value
                 await drain.value
+                await preresampleDrain.value
                 for task in tasks { await task.value }
             }
         }
@@ -2533,16 +2523,10 @@ final class ReaderWindowController: NSWindowController {
     func refreshDisplay(interactiveCurl session: InteractiveCurlSession? = nil) async {
         guard let book, !Task.isCancelled else { return }
         if let session, !ownsInteractiveCurlDestination(session) { return }
-        // 表示中ページの処理を最優先にする: 実行中の先読み(ML 含む)を
-        // 即キャンセルして ML 実行キューを明け渡す(SR はタイル毎に
-        // キャンセルを見るため ~50ms で止まる)。先読みは表示確定後に
-        // preresampleAdjacentSpread が組み直す。
-        // ただしページを処理中の場合は、それが「これから表示するページ」かも
-        // しれない(処理中のページへのジャンプ)ため、表示対象が判明する
-        // まで判断を保留する(下の displayedEntryIDs 確定後に判定)
-        if preresamplingEntryID == nil {
-            preresampleTask?.cancel()
-        }
+        // 旧計画だけを止め、ページ処理の取消しは新しい予測との照合後に決める(設計書 §5)。
+        // 計画に残る SR は保持し、表示要求への譲歩はタイル境界の優先キューに任せる。
+        preresampleRun += 1
+        preresampleTask?.cancel()
         // 読み込み〜補間完成までの進行表示(表示予約。デコードとリサンプルが
         // 速ければ 250ms の猶予内に ReaderView 側の通知が消すので出ない)
         if book.pageCount > 0 {
@@ -2625,6 +2609,7 @@ final class ReaderWindowController: NSWindowController {
             // ループ再発)
             if !collectionNavigation.consumeTransientFailure(for: epubURL) {
                 setResampleIndicator(false)  // この表示は Web ビューが担う(消し忘れ防止)
+                cancelPreresampling()
                 enterCollectionReflowEPUB(url: epubURL, entryIndex: entryIndex,
                                           forward: collectionArrival ?? turnForward ?? true,
                                           atFirst: collectionArrivalAtFirst,
@@ -2634,6 +2619,7 @@ final class ReaderWindowController: NSWindowController {
         }
 
         if spread.indices.isEmpty {
+            preresampleJobs.cancelAll()
             // ページのない本: 理由をウインドウ中央に表示する
             // (旧 empty.png 方式 §4.17 を多言語メッセージに置換)
             readerView.setPages([], readsFromLeft: book.readMode.readsFromLeft)
@@ -2664,12 +2650,8 @@ final class ReaderWindowController: NSWindowController {
         displayedEntryIDs = Set(ids)
         // デコード先読みの深さを実ページサイズ・メモリ条件へ追従させる
         updatePrefetchDepth(book: book, images: images)
-        // 保留していた先読みキャンセルの確定: 処理中のページが表示対象なら
-        // 完走させて結果をそのまま表示に使う(途中まで進んだ推論を捨てて
-        // 最初からやり直すより速い。タスクは世代チェックで自然停止する)
-        if let current = preresamplingEntryID, !displayedEntryIDs.contains(current) {
-            preresampleTask?.cancel()
-        }
+        // 表示対象外でも次の先読み計画に残るページは捨てない(設計書 §5)。
+        // preresampleAdjacentSpread が新しい予測を確定してから計画外だけを停止する。
         // めくり効果: ページ送りで来た表示のみ。「視差効果を減らす」尊重
         let turn: ReaderView.PageTurn? = {
             guard let turnForward else { return nil }
@@ -2738,6 +2720,15 @@ final class ReaderWindowController: NSWindowController {
         preresampleAdjacentSpread()
     }
 
+    /// 本・窓・表示先の失効では、計画と所有するページ処理の両方を止める(設計書 §5、§7.3)。
+    @discardableResult
+    private func cancelPreresampling() -> Task<Void, Never> {
+        preresampleRun += 1
+        preresampleTask?.cancel()
+        preresampleTask = nil
+        return preresampleJobs.cancelAllAndDrain()
+    }
+
     /// 進行方向の隣のスプレッド列を表示ピクセルサイズへ事前リサンプルして
     /// ImageResampler の LRU に載せる(設計書 §5 描画品質)。めくった直後の
     /// 最初の描画から等倍のシャープな画像になる(従来は一瞬 CALayer の
@@ -2748,49 +2739,61 @@ final class ReaderWindowController: NSWindowController {
     /// 2 見開き、省エネ時・非前面時は次の見開きだけ、ウインドウが見えていなければ
     /// 行わない(設計書 §5)。近いスプレッドから順に行い、現スプレッドのリサンプル
     /// (scheduleHighQualityResample)と GPU を奪い合わないよう少し遅らせて
-    /// 始め、表示が先へ進んでいたら残りを捨てる
-    private func preresampleAdjacentSpread(sparingInFlight: Bool = false) {
+    /// 始め、表示が先へ進んでいたら計画を差し替える
+    private func preresampleAdjacentSpread() {
         guard let book, book.pageCount > 0 else { return }
         let forward = book.lastMoveForward
         let generation = displayGeneration
-        // 実行番号を進めて旧タスクを(ソフト)停止させる。
-        // sparingInFlight(フィルタ切替・可視性/前面性の変化)と「表示対象を
-        // 処理中」の場合は切らずに完走させ(結果はキャッシュへ)、現在のページの
-        // 後に実行番号チェックで自然停止させる。それ以外は即キャンセル
+        // 計画の差し替えはページ処理を取り消さない。新予測の確定後に不要分を外す(設計書 §5)。
         preresampleRun += 1
         let run = preresampleRun
-        let sparesInFlight = sparingInFlight
-            || preresamplingEntryID.map { displayedEntryIDs.contains($0) } == true
-        if !sparesInFlight {
-            preresampleTask?.cancel()
-        }
-        // 見えていないウインドウには始めない。旧タスクは実行番号のずれで次の
-        // ページ境界に止まり、可視に戻った通知が改めてここを呼ぶ
+        preresampleTask?.cancel()
         let mode = currentPreresampleMode(for: book)
         lastPreresampleMode = mode
-        guard mode != .paused else { return }
+        guard mode != .paused else {
+            preresampleJobs.cancelAll()
+            return
+        }
         let conserveEnergy = mode == .conserving
         let colorTarget = readerView.displayColorTarget
-        let usesML = settings.noiseReductionLevel.usesMachineLearning
-        preresampleTask = Task(priority: .utility) { [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            guard let self, let book = self.book,
-                  generation == self.displayGeneration else { return }
-            // 表示中スプレッドの補間(ML 含む)完了を待ってから積む:
-            // ML 実行は actor の FIFO のため、ここで先に並ぶと見開き
-            // 2 枚目の表示処理が先読み 1 ページ分待たされてしまう
-            while self.readerViewForInput.isResamplingDisplayedPages,
-                  !Task.isCancelled {
-                await self.readerViewForInput.waitForDisplayedResampleIdle()
-            }
-            guard !Task.isCancelled, generation == self.displayGeneration,
-                  run == self.preresampleRun, book === self.book else { return }
+        let reduction = settings.noiseReductionLevel
+        let usesML = reduction.usesMachineLearning
+        preresampleTask = preresampleJobs.startPlan { [weak self, weak book] in
+            guard let self, let book, !Task.isCancelled,
+                  generation == self.displayGeneration, run == self.preresampleRun,
+                  book === self.book else { return }
             let maxPages = PreresamplePolicy.pageLimit(usesML: usesML, conserveEnergy: conserveEnergy)
             let predicted = await book.predictedAdjacentSpreads(forward: forward, maxPages: maxPages)
             let spreads = PreresamplePolicy.spreadsToProcess(
                 predicted, usesML: usesML, conserveEnergy: conserveEnergy)
+            guard !Task.isCancelled, generation == self.displayGeneration,
+                  run == self.preresampleRun, book === self.book else { return }
+            @MainActor func retainPlannedJobs(pageLimit: Int) {
+                var remaining = pageLimit
+                let planned = spreads.prefix { spread in
+                    guard spread.count <= remaining else { return false }
+                    remaining -= spread.count
+                    return true
+                }
+                let entries = Set(planned.flatMap { $0 }.map { book.entries[$0].id })
+                    .union(self.displayedEntryIDs)
+                self.preresampleJobs.replacePlan(Set(entries.map { "\(book.cacheKey)#\($0)" }))
+            }
+            // 待機前に計画外を停止し、残るページは同じ処理へ合流できるよう保持する(設計書 §5)。
+            retainPlannedJobs(pageLimit: maxPages)
             guard !spreads.isEmpty else { return }
+            defer {
+                if run == self.preresampleRun {
+                    self.preresampleJobs.replacePlan(Set(self.displayedEntryIDs.map { "\(book.cacheKey)#\($0)" }))
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            // 表示優先は SRJobQueue が保証する。新しい先読みの開始だけを遅らせる(設計書 §5)。
+            while self.readerViewForInput.isResamplingDisplayedPages, !Task.isCancelled {
+                await self.readerViewForInput.waitForDisplayedResampleIdle()
+            }
+            guard !Task.isCancelled, generation == self.displayGeneration,
+                  run == self.preresampleRun, book === self.book else { return }
             // 先読み処理中の薄い進行表示(タスク終了時に必ず対で消す)
             self.setPrefetchIndicator(true)
             defer { self.setPrefetchIndicator(false) }
@@ -2819,8 +2822,8 @@ final class ReaderWindowController: NSWindowController {
                 }
                 // デコード待ちの間に表示が進んでいたら残りを破棄する
                 // (次の refreshDisplay が改めて予約する)
-                guard generation == self.displayGeneration,
-                      book === self.book else { return }
+                guard !Task.isCancelled, generation == self.displayGeneration,
+                      run == self.preresampleRun, book === self.book else { return }
                 let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
                 guard let targets = self.readerViewForInput.predictedResampleSizes(
                     for: sizes) else { return }
@@ -2832,32 +2835,32 @@ final class ReaderWindowController: NSWindowController {
                         usesML: usesML, conserveEnergy: conserveEnergy,
                         memoryPressure: MemoryPressureMonitor.shared.memoryPressureLevel)
                     limitComputed = true
+                    retainPlannedJobs(pageLimit: pageLimit)
                     // 予算確定で計画枚数を精緻化(残数表示に反映)
                     self.notePrefetchPlan(
                         planned: min(spreads.reduce(0) { $0 + $1.count }, pageLimit))
                 }
+                guard resampledPages + indices.count <= pageLimit else { return }
                 for (position, image) in images.enumerated() {
-                    // 表示要求を優先(キャンセル)。ソフト停止で残した
-                    // 旧タスク(表示対象の完走・フィルタ切替)は世代または
-                    // 実行番号のずれでここで止まる
+                    // 旧計画は新たなページを始めず、進行中の仕事だけ次の計画へ渡す(設計書 §5)。
                     guard !Task.isCancelled,
                           generation == self.displayGeneration,
                           run == self.preresampleRun else { return }
                     let index = indices[position]
                     guard book.entries.indices.contains(index) else { continue }
-                    // キーは ReaderView の実表示時と同一(ML 高画質化の段階も
-                    // 含めて同一条件で先行計算し、そこでキャッシュ命中する)。
-                    // 処理中エントリを公開して「そのページへのジャンプ時は
-                    // キャンセルせず完走」判定に使わせる
-                    self.preresamplingEntryID = book.entries[index].id
-                    _ = await ImageResampler.shared.resample(
-                        image, to: targets[position],
-                        cacheKey: "\(book.cacheKey)#\(book.entries[index].id)",
-                        upscaleWithMetalFX: useMetalFX,
-                        noiseReduction: self.settings.noiseReductionLevel,
-                        superResEncrypted: self.currentBookIsEncrypted,
-                        displayTarget: colorTarget)
-                    self.preresamplingEntryID = nil
+                    // ページの所有者を計画から分離し、再計画の取消しで SR を失わない(設計書 §5)。
+                    let entryID = book.entries[index].id
+                    let key = "\(book.cacheKey)#\(entryID)"
+                    let target = targets[position]
+                    let encrypted = self.currentBookIsEncrypted
+                    let configuration = "\(image.width)x\(image.height)|\(target.width)x\(target.height)|\(useMetalFX)|\(reduction.rawValue)|\(encrypted)|\(colorTarget.identity)"
+                    await self.preresampleJobs.run(key: key, entryID: entryID, configuration: configuration) {
+                        _ = await ImageResampler.shared.resample(
+                            image, to: target, cacheKey: key, upscaleWithMetalFX: useMetalFX,
+                            noiseReduction: reduction, superResEncrypted: encrypted,
+                            displayTarget: colorTarget, priority: .prefetch)
+                    }
+                    guard !Task.isCancelled, run == self.preresampleRun else { return }
                     resampledPages += 1
                     self.notePrefetchProgress(done: resampledPages)  // 残数表示に反映
                 }

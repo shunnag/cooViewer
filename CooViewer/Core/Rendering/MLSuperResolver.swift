@@ -1,3 +1,4 @@
+import Accelerate
 import CoreGraphics
 import CoreML
 import CryptoKit
@@ -66,6 +67,7 @@ actor MLSuperResolver {
     private let diskWriter: DeferredImageWriter
     private let diskWrite: (@Sendable (CGImage, URL, SymmetricKey?) async throws -> Void)?
     private let upscaleOverride: (@Sendable (CGImage) async -> CGImage?)?
+    private let jobs = SRJobQueue()
 
     init(diskRoot: URL? = nil, diskWriter: DeferredImageWriter = .shared,
          cacheEncryptionKey: SymmetricKey? = nil,
@@ -94,7 +96,8 @@ actor MLSuperResolver {
     /// 大きすぎる画像・モデル未導入・失敗時は nil
     func upscale(_ image: CGImage, cacheKey: String?,
                  encrypted: Bool = false, displaySize: CGSize? = nil,
-                 writeGeneration: UUID? = nil) async -> CGImage? {
+                 writeGeneration: UUID? = nil,
+                 request: SRJobRequest = SRJobRequest()) async -> CGImage? {
         let writeGeneration = writeGeneration ?? diskWriter.generation
         guard !Task.isCancelled, image.width > 0, image.height > 0,
               max(image.width, image.height) <= Self.maxSourceEdge else {
@@ -120,9 +123,13 @@ actor MLSuperResolver {
         let result: CGImage?
         if let upscaleOverride { result = await upscaleOverride(image) }
         else if let loaded = await installer.ensureModel() {
-            result = await runTiled(model: loaded.model, image: image)
+            // 完成画像の返却を次の先読みタイルで遅らせないよう、解放は返却後に行う(設計書 §5)。
+            defer { Task { await jobs.finish(request) } }
+            if await jobs.nextTile(for: request), !Task.isCancelled {
+                result = await runTiled(model: loaded.model, image: image, request: request)
+            } else { result = nil }
         } else { result = nil }
-        guard let result else { return nil }
+        guard !Task.isCancelled, let result else { return nil }
         if let diskKey, Self.prepareDiskCache(at: diskRoot) {
             let directory = diskRoot
             let write = diskWrite
@@ -142,7 +149,8 @@ actor MLSuperResolver {
     /// 入力 "input" [1,3,256,256] の 0-1、出力 "output" [1,3,1024,1024])。
     /// 各タイルは周囲 margin px の文脈を含めて推論し、中心の contentSide
     /// 相当だけを出力へ確定する。画像端は端画素の複製で埋める
-    private func runTiled(model: MLModel, image: CGImage) async -> CGImage? {
+    private func runTiled(model: MLModel, image: CGImage,
+                          request: SRJobRequest) async -> CGImage? {
         let width = image.width
         let height = image.height
         guard let context = CGContext(
@@ -155,12 +163,7 @@ actor MLSuperResolver {
                                                  width: width, height: height))
                   return context.data?.assumingMemoryBound(to: UInt8.self)
               }() else { return nil }
-        // sourceData は context 所有ビットマップへの生ポインタ。以降 context を
-        // 参照しないため、最適化ビルドでは最後の使用(上の draw)直後に ARC が
-        // context を解放し、ループの読取が use-after-free になりうる。特にこの
-        // ループは await Task.yield()/predict で中断するので、生きた局所を跨いで
-        // 保持しない最適化が働きやすい。defer で関数終端まで生存を延ばす(全 return
-        // 経路で有効。cooViewer-0py)
+        // 中断中も生ポインタの所有者を保持し、再開時の解放済み参照を防ぐ(設計書 §7.3)。
         defer { withExtendedLifetime(context) {} }
         let sourceBytesPerRow = width * 4
 
@@ -182,9 +185,8 @@ actor MLSuperResolver {
         let planeStride = Self.inputSide * Self.inputSide
 
         for origin in Self.tileOrigins(width: width, height: height) {
-            // 1 タイル約 46ms かかるため、タイル毎に譲歩してキャンセルも見る
-            await Task.yield()
-            if Task.isCancelled {
+            // 表示があればここで実行権を渡す。部分出力と入力は再開まで保持する(設計書 §5)。
+            guard await jobs.nextTile(for: request), !Task.isCancelled else {
                 outBuffer.deallocate()
                 return nil
             }
@@ -214,6 +216,11 @@ actor MLSuperResolver {
             }
             Self.writeTile(result, into: out, bytesPerRow: outBytesPerRow,
                            origin: origin, width: width, height: height)
+        }
+
+        guard !Task.isCancelled else {
+            outBuffer.deallocate()
+            return nil
         }
 
         guard let provider = CGDataProvider(
@@ -246,10 +253,10 @@ actor MLSuperResolver {
     /// そこで各タイルは内容領域に加えて右・下へ margin 分を余計に書き、
     /// 次のタイルが左・上の同じ幅を前のタイルと**線形フェザーで合成**して
     /// 継ぎ目を消す(処理順は行優先なので左・上は常に書き込み済み)
-    private static func writeTile(_ result: MLMultiArray,
-                                  into out: UnsafeMutablePointer<UInt8>,
-                                  bytesPerRow: Int, origin: (x: Int, y: Int),
-                                  width: Int, height: Int) {
+    static func writeTile(_ result: MLMultiArray,
+                          into out: UnsafeMutablePointer<UInt8>,
+                          bytesPerRow: Int, origin: (x: Int, y: Int),
+                          width: Int, height: Int) {
         let contentWidth = min(contentSide, width - origin.x)
         let contentHeight = min(contentSide, height - origin.y)
         // 右・下への延長幅(ソース px)。画像端では残りに合わせて切り詰める
@@ -267,48 +274,75 @@ actor MLSuperResolver {
             let threshold = (Float(bayer8[(y & 7) * 8 + (x & 7)]) + 0.5) / 64
             return UInt8(min(255, max(0, (value * 255 + threshold).rounded(.down))))
         }
-        func write(sample: (Int) -> Float) {
-            for row in 0..<((contentHeight + extendBottom) * scale) {
-                let outY = origin.y * scale + row
-                let outRow = outY * bytesPerRow
-                let tileRow = (outMargin + row) * outSide
-                // 上端のフェザー重み(最初のタイル行では合成相手がないので 1)
-                let rowWeight = (origin.y > 0 && row < blend)
-                    ? Float(row + 1) / Float(blend + 1) : 1
-                for column in 0..<((contentWidth + extendRight) * scale) {
-                    let columnWeight = (origin.x > 0 && column < blend)
-                        ? Float(column + 1) / Float(blend + 1) : 1
-                    let weight = rowWeight * columnWeight
-                    let outX = origin.x * scale + column
-                    let position = tileRow + outMargin + column
-                    let pixel = outRow + outX * 4
-                    if weight >= 1 {
-                        out[pixel] = component(sample(position), outX, outY)
-                        out[pixel + 1] = component(
-                            sample(planeStride + position), outX, outY)
-                        out[pixel + 2] = component(
-                            sample(planeStride * 2 + position), outX, outY)
-                    } else {
-                        // 既存(左・上のタイルの延長)と新しい値を線形合成
-                        let inverse = 1 - weight
-                        out[pixel] = component(
-                            sample(position) * weight
-                            + Float(out[pixel]) / 255 * inverse, outX, outY)
-                        out[pixel + 1] = component(
-                            sample(planeStride + position) * weight
-                            + Float(out[pixel + 1]) / 255 * inverse, outX, outY)
-                        out[pixel + 2] = component(
-                            sample(planeStride * 2 + position) * weight
-                            + Float(out[pixel + 2]) / 255 * inverse, outX, outY)
+        func write(floatPointer: UnsafePointer<Float>? = nil, sample: (Int) -> Float) {
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: outSide) { scratch in
+                for row in 0..<((contentHeight + extendBottom) * scale) {
+                    let outY = origin.y * scale + row
+                    let outRow = outY * bytesPerRow
+                    let tileRow = (outMargin + row) * outSide
+                    // 上端のフェザー重み(最初のタイル行では合成相手がないので 1)
+                    let rowWeight = (origin.y > 0 && row < blend)
+                        ? Float(row + 1) / Float(blend + 1) : 1
+                    let columns = (contentWidth + extendRight) * scale
+                    // フェザー帯だけは既存の演算順で合成し、他は連続した平面のまま変換する(設計書 §5)。
+                    let scalarColumns = floatPointer == nil || rowWeight < 1
+                        ? columns : min(origin.x > 0 ? blend : 0, columns)
+                    for column in 0..<scalarColumns {
+                        let columnWeight = (origin.x > 0 && column < blend)
+                            ? Float(column + 1) / Float(blend + 1) : 1
+                        let weight = rowWeight * columnWeight
+                        let outX = origin.x * scale + column
+                        let position = tileRow + outMargin + column
+                        let pixel = outRow + outX * 4
+                        if weight >= 1 {
+                            out[pixel] = component(sample(position), outX, outY)
+                            out[pixel + 1] = component(
+                                sample(planeStride + position), outX, outY)
+                            out[pixel + 2] = component(
+                                sample(planeStride * 2 + position), outX, outY)
+                        } else {
+                            // 既存(左・上のタイルの延長)と新しい値を線形合成
+                            let inverse = 1 - weight
+                            out[pixel] = component(
+                                sample(position) * weight
+                                + Float(out[pixel]) / 255 * inverse, outX, outY)
+                            out[pixel + 1] = component(
+                                sample(planeStride + position) * weight
+                                + Float(out[pixel + 1]) / 255 * inverse, outX, outY)
+                            out[pixel + 2] = component(
+                                sample(planeStride * 2 + position) * weight
+                                + Float(out[pixel + 2]) / 255 * inverse, outX, outY)
+                        }
+                        out[pixel + 3] = 255
                     }
-                    out[pixel + 3] = 255
+                    if let floatPointer, scalarColumns < columns {
+                        let count = vDSP_Length(columns - scalarColumns)
+                        let position = tileRow + outMargin + scalarColumns
+                        let pixel = outRow + (origin.x * scale + scalarColumns) * 4
+                        let phase = (origin.x * scale + scalarColumns) & 7
+                        bayerThresholdRows[outY & 7].withUnsafeBufferPointer { thresholds in
+                            var multiplier: Float = 255, low: Float = 0, high: Float = 255
+                            for channel in 0..<3 {
+                                vDSP_vsma(floatPointer + channel * planeStride + position, 1,
+                                          &multiplier, thresholds.baseAddress! + phase, 1,
+                                          scratch.baseAddress!, 1, count)
+                                vDSP_vclip(scratch.baseAddress!, 1, &low, &high,
+                                           scratch.baseAddress!, 1, count)
+                                // 切り捨て前に負値を飽和させれば従来の床関数と一致する(設計書 §5)。
+                                vDSP_vfixu8(scratch.baseAddress!, 1, out + pixel + channel, 4, count)
+                            }
+                        }
+                        for column in scalarColumns..<columns {
+                            out[outRow + (origin.x * scale + column) * 4 + 3] = 255
+                        }
+                    }
                 }
             }
         }
         switch result.dataType {
         case .float32:
             let pointer = result.dataPointer.assumingMemoryBound(to: Float.self)
-            write { pointer[$0] }
+            write(floatPointer: pointer) { pointer[$0] }
         case .double:
             let pointer = result.dataPointer.assumingMemoryBound(to: Double.self)
             write { Float(pointer[$0]) }
@@ -328,6 +362,13 @@ actor MLSuperResolver {
         15, 47,  7, 39, 13, 45,  5, 37,
         63, 31, 55, 23, 61, 29, 53, 21,
     ]
+
+    /// 行単位の変換で全位相を参照できる長さを一度だけ用意する(設計書 §5、§7.7)。
+    private static let bayerThresholdRows: [[Float]] = (0..<8).map { y in
+        (0..<(inputSide * scale + 7)).map { x in
+            (Float(bayer8[y * 8 + (x & 7)]) + 0.5) / 64
+        }
+    }
 
     /// タイルの左上座標列(内容領域単位。純関数・テスト対象)
     nonisolated static func tileOrigins(width: Int, height: Int)

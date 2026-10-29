@@ -181,14 +181,8 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertTrue(reduced === reducedAgain)  // キャッシュ命中
     }
 
-    func testCancelledWaiterReturnsNilButComputeCompletes() async {
-        // 合流設計(cooViewer-pag): 計算タスクは待ち手のキャンセルを観測せず
-        // 完走する。キャンセルされた待ち手は結果を捨てて nil を返すが、完走した
-        // 本物の結果は将来要求のためキャッシュされる(先読みの作業を無駄にしない)。
-        // 汚染防止(未完了の CI フォールバックを ML キーに残さない)は、計算が
-        // 常に完走することで構造的に不要になり、代わりに usedMLFallback/
-        // retryPossible の規則(別テストで担保)が一過性フォールバックを弾く。
-        // .strong は XCTest で ML 恒久失敗相当のため 7n1.2 の規則でキャッシュされる
+    func testAlreadyCancelledWaiterDoesNotStartCompute() async {
+        // 不要な要求は内側の計算を始めず、代替結果もキャッシュしない(設計書 §5、§7.3)。
         let resampler = ImageResampler(byteLimit: 8 << 20, pressure: FixedMemoryPressure())
         let source = blockyImage()
         let size = CGSize(width: 32, height: 32)
@@ -204,7 +198,9 @@ final class NoiseReductionTests: XCTestCase {
         let cached = await resampler.cached(
             source, to: size, cacheKey: "cancel-t",
             upscaleWithMetalFX: false, noiseReduction: .strong)
-        XCTAssertNotNil(cached, "完走した本物の結果はキャッシュされる(作業を捨てない)")
+        XCTAssertNil(cached, "取消し済み要求はキャッシュを生成しない")
+        let stats = await resampler.stats()
+        XCTAssertEqual(stats.computeCount, 0)
     }
 
     /// モデル回復時に呼ぶ removeMLFallbackEntries は、ML 恒久失敗中に焼いた CI
