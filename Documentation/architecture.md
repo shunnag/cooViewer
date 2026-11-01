@@ -4,7 +4,7 @@
 |---|---|
 | 作成日 | 2026-08-07 |
 | 前提文書 | [legacy-app-analysis.md](legacy-app-analysis.md)(以下「仕様書」。§n は仕様書の章番号) |
-| ブランチ | `modernize/macos26` |
+| ブランチ | `master` |
 | 対象環境 | macOS 26 (Tahoe) 以降 / Apple Silicon (arm64) のみ |
 | 実装優先度 | 1. 正しく動作 2. コードが読みやすい 3. コードが効率的 4. 実際の動作の快適さ(実装の速さは優先しない) |
 
