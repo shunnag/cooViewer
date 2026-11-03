@@ -266,6 +266,231 @@ final class BindingTests: XCTestCase {
 }
 
 extension BindingTests {
+    private var shiftBookBindings: [KeyBinding] {
+        [
+            KeyBinding(legacyActionNumber: 8, key: "C", modifiers: LegacyModifier.shift,
+                       value: nil, switchAction: false),
+            KeyBinding(legacyActionNumber: 8, key: Character(UnicodeScalar(NSDownArrowFunctionKey)!),
+                       modifiers: LegacyModifier.shift, value: nil, switchAction: false),
+            KeyBinding(legacyActionNumber: 9, key: "D", modifiers: LegacyModifier.shift,
+                       value: nil, switchAction: false),
+            KeyBinding(legacyActionNumber: 9, key: Character(UnicodeScalar(NSUpArrowFunctionKey)!),
+                       modifiers: LegacyModifier.shift, value: nil, switchAction: false),
+        ]
+    }
+
+    private var subFolderBindings: [KeyBinding] {
+        [
+            KeyBinding(legacyActionNumber: 35, key: "C",
+                       modifiers: LegacyModifier.shift + LegacyModifier.control,
+                       value: nil, switchAction: false),
+            KeyBinding(legacyActionNumber: 35, key: Character(UnicodeScalar(NSDownArrowFunctionKey)!),
+                       modifiers: LegacyModifier.option + LegacyModifier.shift,
+                       value: nil, switchAction: false),
+            KeyBinding(legacyActionNumber: 36, key: "D",
+                       modifiers: LegacyModifier.shift + LegacyModifier.control,
+                       value: nil, switchAction: false),
+            KeyBinding(legacyActionNumber: 36, key: Character(UnicodeScalar(NSUpArrowFunctionKey)!),
+                       modifiers: LegacyModifier.option + LegacyModifier.shift,
+                       value: nil, switchAction: false),
+        ]
+    }
+
+    private var legacyBookKeyArray: [[String: Any]] {
+        [
+            ["action": 8, "key": "c", "modifier": LegacyModifier.control],
+            ["action": 8, "key": String(UnicodeScalar(NSDownArrowFunctionKey)!),
+             "modifier": LegacyModifier.control],
+            ["action": 9, "key": "d", "modifier": LegacyModifier.control],
+            ["action": 9, "key": String(UnicodeScalar(NSUpArrowFunctionKey)!),
+             "modifier": LegacyModifier.control],
+            ["action": 35, "key": "C", "modifier": LegacyModifier.shift + LegacyModifier.control],
+            ["action": 35, "key": String(UnicodeScalar(NSDownArrowFunctionKey)!),
+             "modifier": LegacyModifier.shift + LegacyModifier.control],
+            ["action": 36, "key": "D", "modifier": LegacyModifier.shift + LegacyModifier.control],
+            ["action": 36, "key": String(UnicodeScalar(NSUpArrowFunctionKey)!),
+             "modifier": LegacyModifier.shift + LegacyModifier.control],
+        ]
+    }
+
+    private func withLegacyBookDefaults(_ body: (UserDefaults) -> Void) {
+        let suiteName = "test.cooViewer.bookKeys.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        suite.set(legacyBookKeyArray, forKey: "KeyArray")
+        body(suite)
+    }
+
+    /// Mission Control と衝突しない新既定を固定する(仕様書 §5.7.1 → 設計書 §2.4)。
+    func testBookNavigationDefaultsUseShift() {
+        XCTAssertEqual(bindings.keyNormal.filter {
+            $0.legacyActionNumber == 8 || $0.legacyActionNumber == 9
+        }, shiftBookBindings)
+        for readsFromLeft in [false, true] {
+            for expected in shiftBookBindings {
+                XCTAssertEqual(bindings.resolveKey(
+                    character: expected.key, modifiers: expected.modifiers,
+                    fitMode: 0, readsFromLeft: readsFromLeft), expected)
+            }
+        }
+    }
+
+    /// 低速の Mission Control を避け、文字キーの既定を維持する(設計書 §2.4)。
+    func testSubFolderDefaultsUseOptionShiftArrowsAndKeepControlShiftLetters() {
+        XCTAssertEqual(bindings.keyNormal.filter {
+            $0.legacyActionNumber == 35 || $0.legacyActionNumber == 36
+        }, subFolderBindings)
+        for readsFromLeft in [false, true] {
+            for expected in subFolderBindings {
+                XCTAssertEqual(bindings.resolveKey(
+                    character: expected.key, modifiers: expected.modifiers,
+                    fitMode: 0, readsFromLeft: readsFromLeft), expected)
+            }
+        }
+    }
+
+    /// Option+Shift でも矢印文字は変わらず、numericPad は符号から除く(仕様書 §5.2)。
+    /// OS へ送信しない CGEvent から、実入力と同じ NSEvent 表現を確認する(設計書 §2.4)。
+    func testOptionShiftArrowEventEncodingMatchesSubFolderDefaults() throws {
+        for (keyCode, functionKey, action) in [
+            (CGKeyCode(125), NSDownArrowFunctionKey, ReaderAction.nextSubFolder),
+            (CGKeyCode(126), NSUpArrowFunctionKey, ReaderAction.previousSubFolder),
+        ] {
+            for extraFlags in [CGEventFlags(), [.maskNumericPad, .maskSecondaryFn]] {
+                let cgEvent = try XCTUnwrap(CGEvent(
+                    keyboardEventSource: nil, virtualKey: keyCode, keyDown: true))
+                cgEvent.flags = CGEventFlags([.maskAlternate, .maskShift]).union(extraFlags)
+                let event = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+                let arrow = Character(UnicodeScalar(functionKey)!)
+                XCTAssertEqual(event.charactersIgnoringModifiers, String(arrow))
+                let modifiers = LegacyModifier.encode(keyEvent: event)
+                XCTAssertEqual(modifiers, LegacyModifier.option + LegacyModifier.shift)
+                let character = try XCTUnwrap(event.charactersIgnoringModifiers?.first)
+                for fitMode in [0, 1, 2, 3] {
+                    for readsFromLeft in [false, true] {
+                        XCTAssertEqual(bindings.resolveKey(
+                            character: character, modifiers: modifiers,
+                            fitMode: fitMode, readsFromLeft: readsFromLeft)?.action, action)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 1.x との共有領域を変えずに旧 Control 行と新既定を両立する(設計書 §2.4)。
+    func testStoredLegacyBookKeysGainShiftBindingsOnlyInMemory() {
+        withLegacyBookDefaults { suite in
+            XCTAssertNil(suite.object(forKey: "KeyArrayUserEdited"))
+            let saved = suite.dictionaryRepresentation() as NSDictionary
+            let oldBindings = BindingConfiguration.keyBindings(fromLegacyArray: legacyBookKeyArray)
+            let loaded = BindingConfiguration.load(from: suite)
+
+            XCTAssertEqual(Array(loaded.keyNormal.prefix(oldBindings.count)), oldBindings)
+            for expected in shiftBookBindings + subFolderBindings {
+                XCTAssertEqual(loaded.keyNormal.filter { $0 == expected }.count, 1)
+            }
+            XCTAssertEqual(BindingConfiguration.load(from: suite).keyNormal, loaded.keyNormal)
+            XCTAssertEqual(suite.dictionaryRepresentation() as NSDictionary, saved)
+        }
+    }
+
+    func testEditedLegacyBookKeysDoNotGainShiftBindings() {
+        withLegacyBookDefaults { suite in
+            suite.set(true, forKey: "KeyArrayUserEdited")
+            XCTAssertEqual(BindingConfiguration.load(from: suite).keyNormal,
+                           BindingConfiguration.keyBindings(fromLegacyArray: legacyBookKeyArray))
+        }
+    }
+
+    func testBookKeyMigrationPreservesOccupiedShiftDownAndAddsOtherCombinations() {
+        withLegacyBookDefaults { suite in
+            let down = Character(UnicodeScalar(NSDownArrowFunctionKey)!)
+            let custom = KeyBinding(legacyActionNumber: 0, key: down,
+                                    modifiers: LegacyModifier.shift, value: nil, switchAction: false)
+            suite.set(legacyBookKeyArray + BindingConfiguration.legacyArray(from: [custom]),
+                      forKey: "KeyArray")
+            let loaded = BindingConfiguration.load(from: suite)
+
+            XCTAssertEqual(loaded.keyNormal.filter {
+                $0.key == down && $0.modifiers == LegacyModifier.shift
+            }, [custom])
+            for expected in shiftBookBindings {
+                XCTAssertEqual(loaded.keyNormal.contains(expected), expected.key != down)
+            }
+            XCTAssertEqual(loaded.resolveKey(character: down, modifiers: LegacyModifier.shift,
+                                            fitMode: 0, readsFromLeft: false)?.action, .nextPage)
+        }
+    }
+
+    func testSubFolderKeyMigrationPreservesEachOccupiedOptionShiftArrow() {
+        let optionShift = LegacyModifier.option + LegacyModifier.shift
+        let arrows = subFolderBindings.filter { $0.modifiers == optionShift }
+        for occupied in arrows {
+            withLegacyBookDefaults { suite in
+                let custom = KeyBinding(legacyActionNumber: 0, key: occupied.key,
+                                        modifiers: optionShift, value: nil, switchAction: false)
+                suite.set(legacyBookKeyArray + BindingConfiguration.legacyArray(from: [custom]),
+                          forKey: "KeyArray")
+                let loaded = BindingConfiguration.load(from: suite)
+
+                XCTAssertEqual(loaded.keyNormal.filter {
+                    $0.key == occupied.key && $0.modifiers == optionShift
+                }, [custom])
+                for expected in arrows {
+                    XCTAssertEqual(loaded.keyNormal.contains(expected), expected.key != occupied.key)
+                }
+                for fitMode in [0, 1, 2, 3] {
+                    XCTAssertEqual(loaded.resolveKey(
+                        character: occupied.key, modifiers: optionShift,
+                        fitMode: fitMode, readsFromLeft: false)?.action, .nextPage)
+                }
+            }
+        }
+    }
+
+    func testBookKeyMigrationDoesNotInjectIntoModeArrays() {
+        withLegacyBookDefaults { suite in
+            suite.set(legacyBookKeyArray, forKey: "KeyArrayMode2")
+            suite.set(legacyBookKeyArray, forKey: "KeyArrayMode3")
+            let loaded = BindingConfiguration.load(from: suite)
+            let oldBindings = BindingConfiguration.keyBindings(fromLegacyArray: legacyBookKeyArray)
+            XCTAssertEqual(loaded.keyMode2, oldBindings)
+            XCTAssertEqual(loaded.keyMode3, oldBindings)
+        }
+    }
+
+    /// 素の矢印のスクロールと Shift の本移動は修飾の完全一致で両立する(設計書 §2.4)。
+    func testShiftBookArrowsFallBackPastScrollingInMode2AndMode3() {
+        withLegacyBookDefaults { suite in
+            for configuration in [bindings, BindingConfiguration.load(from: suite)] {
+                for fitMode in [1, 2, 3] {
+                    for readsFromLeft in [false, true] {
+                        for (code, bookAction, scrollAction, subFolderAction) in [
+                            (NSUpArrowFunctionKey, ReaderAction.previousBook,
+                             ReaderAction.scrollUp, ReaderAction.previousSubFolder),
+                            (NSDownArrowFunctionKey, ReaderAction.nextBook,
+                             ReaderAction.scrollDown, ReaderAction.nextSubFolder),
+                        ] {
+                            let arrow = Character(UnicodeScalar(code)!)
+                            XCTAssertEqual(configuration.resolveKey(
+                                character: arrow, modifiers: LegacyModifier.shift,
+                                fitMode: fitMode, readsFromLeft: readsFromLeft)?.action, bookAction)
+                            let scroll = configuration.resolveKey(
+                                character: arrow, modifiers: 0,
+                                fitMode: fitMode, readsFromLeft: readsFromLeft)
+                            XCTAssertEqual(scroll?.action, scrollAction)
+                            XCTAssertEqual(scroll?.value, 20)
+                            XCTAssertEqual(configuration.resolveKey(
+                                character: arrow,
+                                modifiers: LegacyModifier.option + LegacyModifier.shift,
+                                fitMode: fitMode, readsFromLeft: readsFromLeft)?.action, subFolderAction)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func testStoredKeyArrayGainsInterpolationToggleMigration() {
         let suite = UserDefaults(suiteName: "test.cooViewer.bindings")!
         suite.removePersistentDomain(forName: "test.cooViewer.bindings")
