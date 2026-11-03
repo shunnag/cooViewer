@@ -220,7 +220,7 @@ struct BindingConfiguration: Sendable {
     static func saveKeyBindings(_ bindings: [KeyBinding], arrayName: String,
                                 to defaults: UserDefaults = .standard) {
         defaults.set(legacyArray(from: bindings), forKey: arrayName)
-        // 2.0 の UI で KeyArray を編集したら以後 f(補間切替)の自動注入を
+        // 2.0 の UI で KeyArray を編集したら以後 f(補間切替)と本移動の自動注入を
         // やめる(削除が定着するように。MouseArrayUserEdited と同型)
         if arrayName == "KeyArray" {
             defaults.set(true, forKey: "KeyArrayUserEdited")
@@ -276,6 +276,20 @@ struct BindingConfiguration: Sendable {
                !bindings.contains(where: { $0.legacyActionNumber == 53 }) {
                 bindings.append(KeyBinding(legacyActionNumber: 53, key: "f",
                                            modifiers: 0, value: nil, switchAction: false))
+            }
+            // Control+↑/↓ とその Shift 付きは通常/低速の Mission Control に取られるため、
+            // 本/サブフォルダ移動の新既定を未編集の KeyArray にキー+修飾の組ごとに補う
+            // (仕様書 §5.7.1 → 設計書 §2.4)。
+            // 旧 Control 行は残し、1.x と共有する defaults には書き戻さない。
+            if name == "KeyArray", !defaults.bool(forKey: "KeyArrayUserEdited") {
+                for binding in fallback
+                where [8, 9, 35, 36].contains(binding.legacyActionNumber) {
+                    if !bindings.contains(where: {
+                        $0.key == binding.key && $0.modifiers == binding.modifiers
+                    }) {
+                        bindings.append(binding)
+                    }
+                }
             }
             return bindings
         }
@@ -370,16 +384,19 @@ struct BindingConfiguration: Sendable {
             key(5, right, LegacyModifier.option, sw: true),
             key(6, "c"), key(6, down),
             key(7, "d"), key(7, up),
-            key(8, "c", LegacyModifier.control), key(8, down, LegacyModifier.control),
-            key(9, "d", LegacyModifier.control), key(9, up, LegacyModifier.control),
+            // Mission Control の Control+↑/↓ を避ける(仕様書 §5.7.1 → 設計書 §2.4)。
+            key(8, "C", LegacyModifier.shift), key(8, down, LegacyModifier.shift),
+            key(9, "D", LegacyModifier.shift), key(9, up, LegacyModifier.shift),
             key(10, "a"), key(11, "s"), key(12, "p"),
             key(13, tab, value: 10), key(14, backTab, LegacyModifier.shift, value: 10),
             key(15, "w"), key(16, "q"), key(17, "g"), key(18, "t"), key(19, "r"),
             key(20, "o"), key(34, "l"), key(53, "f"),
+            // 低速の Mission Control に取られる Control+Shift+↑/↓ は Option+Shift へ
+            // 移し、文字キーの既定は保つ(仕様書 §5.7.1 → 設計書 §2.4)。
             key(35, "C", LegacyModifier.shift + LegacyModifier.control),
-            key(35, down, LegacyModifier.shift + LegacyModifier.control),
+            key(35, down, LegacyModifier.option + LegacyModifier.shift),
             key(36, "D", LegacyModifier.shift + LegacyModifier.control),
-            key(36, up, LegacyModifier.shift + LegacyModifier.control),
+            key(36, up, LegacyModifier.option + LegacyModifier.shift),
             key(21, enterKey, LegacyModifier.numericPad), key(21, returnKey),
         ]
         for digit in 0...9 {
