@@ -48,6 +48,16 @@ jobs:
           else
             echo "::warning::appcast.xml is unsigned; sign it before releasing signed-feed clients."
           fi
+          # 署名必須のクライアントは、署名の無いリンク先のノートを拒否する。
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          sparkle = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
+          root = ET.parse('appcast.xml').getroot()
+          for notes in root.iter(sparkle + 'releaseNotesLink'):
+              if not notes.get(sparkle + 'edSignature', '').strip():
+                  sys.exit('::error::Unsigned sparkle:releaseNotesLink is rejected by signed-feed clients; use inline description and fullReleaseNotesLink.')
+          PY
       # PR は merge-base から head、push は before から今回の commit までの全差分を見る。
       # 取得失敗・空差分・新規ブランチでは文書のみと判定せず、全 CI に戻す。
       - name: Classify changed paths
