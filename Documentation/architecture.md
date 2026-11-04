@@ -857,6 +857,9 @@ Washi 側の画面外 webview(census / サムネイル / FXL rasterizer)には�
 ある。cooViewer 側では変更せず、Washi の `EPUBOffscreenWebViewConfiguration.make` に同じ rule list を
 追加し、rule list を待ってから load するのが修正案となる。
 
-Sparkle の feed 署名(`SURequireSignedFeed` と `SUVerifyUpdateBeforeExtraction`)は release notes の
-参照先と metadata の改変を防ぐ。任意コードの配布と downgrade は既に enclosure 署名と installer の
+Sparkle の feed 署名(`SURequireSignedFeed`)はインラインの `<description>` に埋め込む
+release notes の HTML 本文と metadata の改変を防ぐ。2.0b50 以降では未署名のリンク先ノートも
+拒否されるため、動的な GitHub ページの `releaseNotesLink` は使わず、ブラウザ用の
+`fullReleaseNotesLink` に置き換える。`SUVerifyUpdateBeforeExtraction` は展開前の更新検証を要求する。
+任意コードの配布と downgrade は既に enclosure 署名と installer の
 降版検査で防いでいる。feed 署名は鍵の漏洩とリポジトリへの書き込み権限そのものを守らない。

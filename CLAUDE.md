@@ -77,19 +77,25 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
   `xcrun stapler staple cooViewer.app` → re-zip the STAPLED app for distribution →
   verify `spctl -a -vv cooViewer.app` says "Notarized Developer ID". Tag `vX.YbN`
   on master and publish via `gh release create` (beta = `--prerelease`).
-- Auto-update (Sparkle 2, since 2.0b3): BEFORE the Release build, run
-  `Scripts/sign-sparkle-nested.sh` — it re-signs Sparkle's nested executables
-  (Updater.app/Autoupdate/XPC services) with Developer ID + timestamp + hardened
-  runtime; without this notarization returns Invalid (Xcode's CodeSignOnCopy only
-  re-signs the framework itself). Re-run it whenever `Frameworks/` is recreated.
-  After publishing the GitHub release, run
-  `Scripts/make-appcast.sh <stapled-zip> <version> <build>` (signs the zip with the
-  EdDSA key in the login keychain and inserts an `<item>` into `appcast.xml`), then
-  commit & push `appcast.xml` to master — the feed URL is the raw master file.
-  The Sparkle framework + `sign_update` tooling are fetched by
-  `Scripts/fetch-sparkle.sh` (version + SHA-256 pinned; bump both to upgrade).
-  `SUFeedURL`/`SUPublicEDKey` live in `CooViewer/Info.plist`. The asset file name
-  must be `cooViewer-<version>.zip` because the appcast URL is derived from it.
+- Auto-update (Sparkle 2、2.0b3 以降): Release ビルドの前に
+  `Scripts/sign-sparkle-nested.sh` を実行する。Sparkle 内部の実行体
+  (Updater.app/Autoupdate/XPC services)を Developer ID + timestamp + hardened
+  runtime で再署名する。省略すると公証が Invalid になる(Xcode の CodeSignOnCopy は
+  framework 自体だけを再署名する)。`Frameworks/` を再生成したら再実行する。
+  **GitHub リリースを公開してから**
+  `Scripts/make-appcast.sh <stapled-zip> <version> <build>` を実行する。
+  GitHub のリリース本文を GFM から HTML に変換し、`appcast.xml` の `<item>` に
+  インラインの `<description>` として埋め込むため、本文も feed 全体の署名で保護される。
+  ブラウザで開くリンクは `fullReleaseNotesLink` と `<link>` に残す。
+  `SURequireSignedFeed` が有効な 2.0b50 以降は未署名のリンク先ノートを拒否するため、
+  `releaseNotesLink` は使わない。macOS 26 で表が欠落する Markdown 表示も使わない。
+  本文だけを確認する場合は `Scripts/make-appcast.sh --notes-html <version> [notes.md]`、
+  本文をファイルで差し替える場合は通常実行の第 4 引数に `notes.md` を渡す。
+  zip の署名後に item 挿入、XML 検査、feed 署名・検証を行う。署名には login keychain の EdDSA 鍵を使う。
+  完成した `appcast.xml` はブランチと PR を経由して master へ反映する(feed URL は raw master)。
+  Sparkle 本体と `sign_update` は `Scripts/fetch-sparkle.sh` が版と SHA-256 を固定して取得する。
+  `SUFeedURL`/`SUPublicEDKey` は `CooViewer/Info.plist` に置く。配布 URL は資産名から決まるため、
+  zip 名は `cooViewer-<version>.zip` に固定する。
 - Visual verification without screen-recording permission: build Debug, then run
   `cooViewer.app/Contents/MacOS/cooViewer --open <book> --snapshot <out.png>` and Read
   the PNG. The full flag catalog (thumbnails, bookmark editor, settings window with

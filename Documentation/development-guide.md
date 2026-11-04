@@ -472,17 +472,28 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 6. `spctl -a -vv cooViewer.app` が "Notarized Developer ID" であることを確認。
 7. `vX.YbN` タグを master に打って push、`gh release create`(ベータは
    `--prerelease`)。リリースノートには 1.x へ戻す場合のデータ消去手順
-   (日英併記)を必ず含める。
+   (日英併記)を必ず含める。本文を設定した GitHub リリースを公開してから次へ進む。
 8. `Scripts/make-appcast.sh <stapled-zip> <version> <build>` で appcast.xml に
-   `<item>` を追加し、feed 全体を署名・検証(EdDSA 署名は login keychain の鍵)→ master へ
-   コミット・push → フィードの `length=` が実ファイルサイズと一致するか確認。
+   `<item>` を追加し、feed 全体を署名・検証(EdDSA 署名は login keychain の鍵)→
+   ブランチ・PR 経由で master へ反映 → フィードの `length=` が実ファイルサイズと一致するか確認。
+   順序は **GitHub リリース公開 → make-appcast.sh**。公開済みリリースの本文を取得し、
+   GFM から HTML に変換してインラインの `<description><![CDATA[...]]></description>` に
+   埋め込む。本文も feed 全体の署名で保護し、ブラウザ用には `fullReleaseNotesLink` と
+   `<link>` を使う。`SURequireSignedFeed` が有効な 2.0b50 以降は未署名のリンク先ノートを
+   拒否するため、動的な GitHub ページを `releaseNotesLink` に指定しない。
+   macOS 26 の Markdown 表示は GFM の表を落とすため HTML を使い、表・コード・ダークモードの
+   スタイルを外部リソースに依存せず埋め込む(署名必須の feed では外部読み込みが遮断される)。
+   `Scripts/make-appcast.sh --notes-html <version> [notes.md]` で署名せず HTML を確認できる。
+   通常実行の第 4 引数に `notes.md` を渡せば本文取得を省略できるが、HTML 変換には GitHub API が必要。
    鍵は 1 台の login keychain にしか無いので、運用開始前に Sparkle の
    `generate_keys -x <file>` で秘密鍵をバックアップし、安全に保管する。
-   `make-appcast.sh` の順序は item 挿入 → feed 署名 → 検証。appcast.xml を手で編集した場合も
+   `make-appcast.sh` の順序は item 挿入 → XML 検査 → feed 署名 → 検証。appcast.xml を手で編集した場合も
    必ず `Frameworks/Sparkle-dist/bin/sign_update appcast.xml` で再署名し、`--verify appcast.xml` で確認する。
    鍵を失うと `SURequireSignedFeed` を有効にした版の利用者には 20 日間更新が出ない
-   (失効猶予は Sparkle の既定値)。CI は鍵を使わず署名コメントの存在だけを検査し、
-   未署名の移行期間中は警告で通す。署名警告コメントがあるのに署名コメントが無い場合は失敗する。
+   (失効猶予は Sparkle の既定値)。CI は鍵を使わず署名コメントと `releaseNotesLink` の
+   `sparkle:edSignature` の有無を検査する。未署名 feed の移行期間中は警告で通すが、
+   署名警告コメントがあるのに署名コメントが無い場合、および未署名の `releaseNotesLink` が
+   ある場合は失敗する。
 9. マージ済みの `release/X.YbN` ブランチをローカル・リモートとも削除する。
 
 **開発機での禁止事項**: `defaults delete jp.coo.cooViewer BookStateStoreVersion`
