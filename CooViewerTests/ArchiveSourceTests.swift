@@ -786,11 +786,14 @@ final class ArchiveSourceTests: XCTestCase {
     }
 
     private static func waitForWaiters(_ count: Int, source: ArchiveSource) async {
-        for _ in 0..<10_000 {
+        // 遅い CI では固定回数の yield が低優先度タスクの実行開始前に尽きるため、期限まで短く休止する。
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
             if await source.spoolWaiterCount == count { return }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
-        XCTFail("待ち手が登録されない")
+        let observedCount = await source.spoolWaiterCount
+        XCTFail("待ち手が登録されない（期待: \(count)、実際: \(observedCount)）")
     }
 
     func testSerialSpoolAdoptsPrimaryThenBackfillsPrefix() async throws {
@@ -909,9 +912,10 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertGreaterThan(held, 0)
         let started = await source.beginSpooling(sizeLimit: 1 << 30, interactive: false)
         XCTAssertTrue(started)
-        for _ in 0..<10_000 {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
             if await gate.debugCounts().queued > 0 { break }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         let queued = await gate.debugCounts().queued
         XCTAssertGreaterThan(queued, 0, "背景走査をゲート待ちに留める")

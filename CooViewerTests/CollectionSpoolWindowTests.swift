@@ -187,9 +187,10 @@ final class CollectionSpoolWindowTests: XCTestCase {
         }
         await fulfillment(of: [landing], timeout: 3)
         let child = await c.source.archiveChild(for: c.page(2))!
-        for _ in 0..<10_000 {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
             if await child.spoolWaiterCount == 1 { break }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         XCTAssertEqual(c.probes[2].state.withLock { $0.primaryReads }, [])
         spoolRelease.signal()

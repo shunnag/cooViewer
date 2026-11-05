@@ -406,9 +406,10 @@ final class BookTests: XCTestCase {
         _ = await book.currentSpread()
         _ = book.moveHalfPrevious()
         _ = await book.currentSpread()
-        for _ in 0..<10_000 {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
             if stub.notedPositions.count == 3 { break }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         let notes = stub.notedPositions.sorted { $0.sequence < $1.sequence }
         let start = try XCTUnwrap(notes.first?.sequence)
@@ -426,9 +427,10 @@ final class BookTests: XCTestCase {
             book.prefetchAhead = 0
             book.prefetchBehind = 0
             _ = await book.currentSpread()
-            for _ in 0..<10_000 {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while ContinuousClock.now < deadline {
                 if stub.notedPositions.count == expectedCount { break }
-                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(1))
             }
             XCTAssertEqual(stub.notedPositions.count, expectedCount)
         }

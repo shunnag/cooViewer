@@ -471,9 +471,10 @@ final class BookConcurrencyTests: XCTestCase {
     }
 
     private func waitForQueuedDecode(_ gate: SourceReadGate) async -> Bool {
-        for _ in 0..<200 {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
             if await gate.debugCounts().queued > 0 { return true }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         return false
     }
