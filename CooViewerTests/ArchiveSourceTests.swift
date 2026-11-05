@@ -1819,6 +1819,64 @@ final class ArchiveSourceTests: XCTestCase {
         XCTAssertEqual(finalDirectory, directory)
     }
 
+    func testWaitForSpoolCompletionWaitsForGateReleaseAfterFinishedState() async throws {
+        for iteration in 0..<16 {
+            let reading = expectation(description: "スプール開始 \(iteration)")
+            let gateHeld = expectation(description: "ゲートの解放を保留 \(iteration)")
+            let waitStarted = expectation(description: "完了待ちを開始 \(iteration)")
+            let returnedEarly = expectation(description: "枠の解放前に完了待ちが戻った \(iteration)")
+            returnedEarly.isInverted = true
+            let releaseRead = DispatchSemaphore(value: 0)
+            let releaseGate = DispatchSemaphore(value: 0)
+            defer { releaseRead.signal(); releaseGate.signal() }
+            let mayComplete = OSAllocatedUnfairLock(initialState: false)
+            let probe = SpoolEngineProbe(beforeSpoolRead: { id in
+                if id == 0 {
+                    reading.fulfill()
+                    _ = releaseRead.wait(timeout: .now() + 10)
+                }
+            })
+            let source = try ArchiveSourceTests.spoolSource(groups: [0, 0], probe: probe)
+            let gate = SourceReadGate(limit: 1)
+            let started = await ArchiveSource.$testingInteractiveSpoolGate.withValue(gate) {
+                await source.beginSpooling(sizeLimit: 1 << 30)
+            }
+            XCTAssertTrue(started)
+            await fulfillment(of: [reading], timeout: 3)
+            let heldCounts = await gate.debugCounts()
+            XCTAssertEqual(heldCounts.active, 1)
+            let holder = Task { await gate.holdForSpoolCompletionTest(entered: gateHeld, release: releaseGate) }
+            await fulfillment(of: [gateHeld], timeout: 3)
+            releaseRead.signal()
+
+            // 状態は枠を解放する前に .running を離れる。その隙間をゲート側で固定する。
+            let deadline = ContinuousClock.now + .seconds(3)
+            var stats = await source.spoolStats()
+            while stats.active, ContinuousClock.now < deadline {
+                await Task.yield()
+                stats = await source.spoolStats()
+            }
+            XCTAssertFalse(stats.active)
+            XCTAssertFalse(stats.paused)
+            XCTAssertEqual(stats.spooled, 2)
+            let waiter = Task {
+                waitStarted.fulfill()
+                await source.waitForSpoolCompletion()
+                if !mayComplete.withLock({ $0 }) { returnedEarly.fulfill() }
+            }
+            await fulfillment(of: [waitStarted], timeout: 3)
+            await fulfillment(of: [returnedEarly], timeout: 0.1)
+            mayComplete.withLock { $0 = true }
+            releaseGate.signal()
+            await waiter.value
+            let released = await holder.value
+            XCTAssertTrue(released)
+            let counts = await gate.debugCounts()
+            XCTAssertEqual(counts.active, 0)
+            XCTAssertEqual(counts.queued, 0)
+        }
+    }
+
     func testTwoBooksContendingForOneInteractiveSlotUsePrimaryForLoser() async throws {
         let gate = SourceReadGate(limit: 1)
         try await ArchiveSource.$testingInteractiveSpoolGate.withValue(gate) {
@@ -2370,6 +2428,14 @@ private extension ArchiveSource {
     func startSpoolingAndReadStats() -> SpoolStats {
         beginSpooling(sizeLimit: 1 << 30)
         return spoolStats()
+    }
+}
+
+private extension SourceReadGate {
+    // actor の実行だけを止め、.finished への遷移後も枠の解放が残る状況を再現する。
+    func holdForSpoolCompletionTest(entered: XCTestExpectation, release: DispatchSemaphore) -> Bool {
+        entered.fulfill()
+        return release.wait(timeout: .now() + 10) == .success
     }
 }
 
