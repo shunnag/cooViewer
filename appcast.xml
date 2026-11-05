@@ -10,6 +10,98 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <language>en</language>
         <!-- make-appcast.sh inserts new items below -->
         <item>
+            <title>cooViewer 2.0b55</title>
+            <pubDate>Thu, 05 Nov 2026 08:33:53 +0000</pubDate>
+            <sparkle:version>2055</sparkle:version>
+            <sparkle:shortVersionString>2.0b55</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b55</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b55</sparkle:fullReleaseNotesLink>
+            <description><![CDATA[<style>
+:root { color-scheme: light dark; }
+body { font: 14px -apple-system, sans-serif; line-height: 1.6; color: #24292f; background: #fff; }
+a { color: #0969da; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+th, td { border: 1px solid #d0d7de; padding: 6px 10px; text-align: left; }
+th { background: #f6f8fa; }
+code, pre { font-family: ui-monospace, monospace; font-size: 0.9em; background: #f6f8fa; }
+code { padding: 0.15em 0.3em; border-radius: 3px; overflow-wrap: anywhere; }
+pre { padding: 12px; border-radius: 6px; overflow-x: auto; }
+pre code { padding: 0; overflow-wrap: normal; }
+@media (prefers-color-scheme: dark) {
+  body { color: #e6edf3; background: #0d1117; }
+  a { color: #79c0ff; }
+  th, td { border-color: #484f58; }
+  th, code, pre { background: #161b22; }
+}
+</style>
+<p dir="auto">同梱の <a href="https://github.com/shunnag/KaitoKit/releases/tag/v0.22.1">KaitoKit 0.22.1</a> により、書庫の展開を高速化しました。あわせて、前回 2.0b54 の既定キーの変更と 793 さんへのお返事も、ここに残しておきます。</p>
+<h2 dir="auto">展開が速くなったこと</h2>
+<p dir="auto">以下は KaitoKit の測定で、0.21.0 との比較です。全ての書庫が一律にこの倍率で速くなるわけではありません。</p>
+<ul dir="auto">
+<li><strong>LZ4</strong>: 独立ブロックの検証を並列にしました。64 MiB の測定で 2.2〜2.6 倍です。</li>
+<li><strong>LArc</strong>: LZS の画像が約 1.8 倍、lz5 の画像は約 7% 短縮しました。</li>
+<li><strong>PPMd</strong>: 文書の PPMd I が約 16% 短縮しました。</li>
+<li><strong>RAR</strong>: RAR20 の biglz が約 1.7 倍、RAR15 の文書・音声は約 15〜28% 短縮しました。</li>
+<li><strong>CAB LZX</strong>: 実際の product.cab で約 6.4% 短縮しました。</li>
+</ul>
+<p dir="auto">測定条件は KaitoKit の <a href="https://github.com/shunnag/KaitoKit/blob/v0.22.1/Documentation/verification/2026-11-05-codec-performance.md">性能・安定性検証</a>に記録しています。</p>
+<h2 dir="auto">793 さんへ</h2>
+<p dir="auto">5ちゃんねるのスレッドでのご指摘、ありがとうございます。こちらからは書き込みができないため、ここでお返事します。</p>
+<p dir="auto">おっしゃるとおり、2.0 の既定キーのうち Control+↓ / Control+↑ は、いまの macOS では Mission Control(アプリケーションウインドウ / Mission Control)に先に取られてしまい、cooViewer まで届いていませんでした。2.0b54 で、ご提案いただいた割り当てをそのまま採用しました。</p>
+<h2 dir="auto">2.0b54 で変更した既定キー</h2>
+<table role="table">
+<thead>
+<tr>
+<th>操作</th>
+<th>これまで</th>
+<th>2.0b54 から</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>次の本</td>
+<td>Control+C / Control+↓</td>
+<td><strong>Shift+C / Shift+↓</strong></td>
+</tr>
+<tr>
+<td>前の本</td>
+<td>Control+D / Control+↑</td>
+<td><strong>Shift+D / Shift+↑</strong></td>
+</tr>
+<tr>
+<td>次のサブフォルダ</td>
+<td>Control+Shift+C / Control+Shift+↓</td>
+<td>Control+Shift+C / <strong>Option+Shift+↓</strong></td>
+</tr>
+<tr>
+<td>前のサブフォルダ</td>
+<td>Control+Shift+D / Control+Shift+↑</td>
+<td>Control+Shift+D / <strong>Option+Shift+↑</strong></td>
+</tr>
+</tbody>
+</table>
+<p dir="auto">サブフォルダ移動の Control+Shift+↓ / ↑ も、同じく macOS に取られていたため、あわせて変更しました。</p>
+<ul dir="auto">
+<li><strong>1.x から設定を引き継いでいる場合</strong>: 起動時に新しいキーを自動で追加します(そのキーが別の操作に割り当て済みなら追加しません)。これまでのキーも残ります。保存済みの設定は書き換えないので、1.x はそのまま使えます。</li>
+<li><strong>2.0 の設定画面でキー割り当てを編集・保存したことがある場合</strong>: 編集内容を優先するため、自動では追加しません。設定 › キー割り当てで追加するか、「基本設定をデフォルトに戻す…」で既定に戻してください。</li>
+</ul>
+<h2 dir="auto">更新画面のリリースノート</h2>
+<p dir="auto">2.0b50〜2.0b54 の更新画面で、リリースノート欄が「The release notes is improperly signed」と表示されていた問題を直しました(アップデートの配信情報の修正のため、2.0b54 以前からの更新でも正しく表示されます)。</p>
+<h2 dir="auto">同梱</h2>
+<p dir="auto">KaitoKit 0.22.1 / Washi 1.26.0 / Sparkle 2.10.1</p>
+<h2 dir="auto">1.x に戻す場合 / Reverting to 1.x</h2>
+<p dir="auto">2.0 は初回起動時に 1.x の設定・履歴・しおりを取り込み、旧データはその時点の内容で残します。1.x はそのまま起動できますが、2.0 で進めた読書位置や追加したしおりは 1.x には反映されません。</p>
+<p dir="auto">データを完全に消して初期状態へ戻したい場合だけ、アプリを終了してから次を実行してください。<strong>1.x のデータも消えます。</strong></p>
+<p dir="auto">2.0 imports 1.x data once and leaves the legacy data unchanged. You can still run 1.x, but reading positions and bookmarks added in 2.0 do not carry back. Only if you want to reset everything, quit the app and run the following commands. <strong>This also erases 1.x data.</strong></p>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">defaults delete jp.coo.cooViewer
+rm -rf <span class="pl-k">~</span>/Library/Application<span class="pl-cce">\ </span>Support/jp.coo.cooViewer
+rm -rf <span class="pl-k">~</span>/Library/Caches/jp.coo.cooViewer</pre></div>
+<p><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b55">GitHub のリリースページ</a></p>
+]]></description>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b55/cooViewer-2.0b55.zip" sparkle:edSignature="SDcG1Iy0DGHMk0ucnYdOl3oTJmPyPIuozp/Y9isJIRJ/f9RkqWSHBfLIGTmMYf//bFwS/RosWq63rLYV18z8Aw==" length="9429388" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>cooViewer 2.0b54</title>
             <pubDate>Tue, 03 Nov 2026 23:26:48 +0000</pubDate>
             <sparkle:version>2054</sparkle:version>
@@ -611,6 +703,6 @@ rm -rf <span class="pl-k">~</span>/Library/Caches/jp.coo.cooViewer</pre></div>
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: Cm0wHPXPMMayV+ZUnTI+cQ7IDXtlqtq7zcGlj1niTngX/+E6YFqcA5B/8hegiu+TvIg6SWyPGJHG2ESpKNI6AQ==
-length: 49982
+edSignature: z62TN9fywydaI/dPjAaekE3XjaeOhv2TqvO61sUSCR+xHIl5lvp87C/pHyrEU9PnQunka4IemMz3lSph/zUjBw==
+length: 56792
 -->
