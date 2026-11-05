@@ -93,6 +93,8 @@ actor ArchiveSource: BookSource {
         case finished
     }
     private var spoolState: SpoolState = .idle
+    /// 枠を解放する前に状態が .running を離れるため、最後に開始したタスクの終了も追跡する。
+    private var latestSpoolTask: Task<Void, Never>?
     /// 全書庫を同時に復号すると、FD 以外に solid 辞書・先行復号も冊数分常駐する。
     /// 表示の準備は対話枠を待たずに取得できた場合だけ開始する。
     static let interactiveSpoolGate = SourceReadGate(limit: 2)
@@ -1577,6 +1579,7 @@ actor ArchiveSource: BookSource {
             await gate.release()
         }
         spoolState = .running(task)
+        latestSpoolTask = task
         spoolReservation.withLock {
             $0.task = task
             if $0.cancelled { task.cancel() }
@@ -1869,7 +1872,8 @@ actor ArchiveSource: BookSource {
     /// スプール完了を待つ(テスト・診断用)。一時停止時も取消し中の復号器の終了まで待つ。
     func waitForSpoolCompletion() async {
         if case .running(let task) = spoolState { await task.value }
-        else { await retiredSpoolTask?.value }
+        else { await latestSpoolTask?.value }
+        await retiredSpoolTask?.value
     }
 
     var spooledEntryCount: Int { spooledIDs.count }
