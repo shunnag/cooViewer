@@ -278,7 +278,7 @@ PR の全検査が通った merge checkout の `HEAD^{tree}` を 7 日間記録�
 毎週月曜 21:17 UTC の定期実行は全検査します。
 
 CI の KaitoKit / Washi は `.github/workflows/ci.yml` のジョブ環境変数
-`KAITOKIT_REF` / `WASHI_REF` で出荷版に固定します(2.0b53 は `v0.21.0` / `1.26.0`)。
+`KAITOKIT_REF` / `WASHI_REF` で出荷版に固定します(2.0b55 は `v0.22.1` / `1.26.0`)。
 タグ・ブランチ・完全なコミット SHA を指定でき、取得後のコミットをログに残します。
 未リリースの兄弟変更が必要な PR では該当 SHA を指定します。cooViewer が別の版を同梱する際は
 必ずこの参照も更新してください。ローカルの兄弟チェックアウトと CI で共有する版の単一の正は
@@ -440,7 +440,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 サイズ未宣言 entry の最終上限、機微なネスト子の無上限のメモリ常駐、Washi の外部参照と bidi 表示の
 残余は [architecture.md](architecture.md) の予算・残余の節を参照する。
 
-## 4. リリース手順(2.0b53 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
+## 4. リリース手順(2.0b55 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
 
 1. pbxproj の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` を bump(各 4 箇所)。
    同梱する KaitoKit / Washi の版を変更する場合は、CI の `KAITOKIT_REF` / `WASHI_REF` も
