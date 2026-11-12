@@ -10,6 +10,68 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <language>en</language>
         <!-- make-appcast.sh inserts new items below -->
         <item>
+            <title>cooViewer 2.0b56</title>
+            <pubDate>Thu, 12 Nov 2026 00:35:37 +0000</pubDate>
+            <sparkle:version>2056</sparkle:version>
+            <sparkle:shortVersionString>2.0b56</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b56</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b56</sparkle:fullReleaseNotesLink>
+            <description><![CDATA[<style>
+:root { color-scheme: light dark; }
+body { font: 14px -apple-system, sans-serif; line-height: 1.6; color: #24292f; background: #fff; }
+a { color: #0969da; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+th, td { border: 1px solid #d0d7de; padding: 6px 10px; text-align: left; }
+th { background: #f6f8fa; }
+code, pre { font-family: ui-monospace, monospace; font-size: 0.9em; background: #f6f8fa; }
+code { padding: 0.15em 0.3em; border-radius: 3px; overflow-wrap: anywhere; }
+pre { padding: 12px; border-radius: 6px; overflow-x: auto; }
+pre code { padding: 0; overflow-wrap: normal; }
+@media (prefers-color-scheme: dark) {
+  body { color: #e6edf3; background: #0d1117; }
+  a { color: #79c0ff; }
+  th, td { border-color: #484f58; }
+  th, code, pre { background: #161b22; }
+}
+</style>
+<p dir="auto">同梱の EPUB ツールキット <a href="https://github.com/shunnag/Washi">Washi</a> を 1.26.0 から <a href="https://github.com/shunnag/Washi/releases/tag/1.27.2">1.27.2</a> に上げ、壊れた EPUB や細工された EPUB への守りを固めました。あわせて、同梱ライブラリのライセンス表記を補いました。</p>
+<h2 dir="auto">EPUB(Washi 1.27.2)</h2>
+<ul dir="auto">
+<li><code class="notranslate">..</code> や制御文字を含む名前など、正しく読めない名前のファイルを本の中身として扱わないようにしました。</li>
+<li>読み込み・検索・表紙・朗読音声に使うメモリなどに上限を設けました。普通の本には影響しませんが、極端に大きい本では次のようになります。
+<ul dir="auto">
+<li>本文の区切り(spine)が 8,192 を超える本は、全体のページ数を数えません。</li>
+<li>合本に入れたリフロー EPUB の表紙が 8,192 × 8,192 画素を超える場合は、表紙の代わりに題名を表示します。</li>
+<li>1 章の本文が 100 万文字を超える章は、検索の対象外になります。</li>
+<li>512 MiB を超える朗読音声は再生しません。</li>
+</ul>
+</li>
+</ul>
+<h2 dir="auto">ライセンス表記</h2>
+<ul dir="auto">
+<li>書庫のファイル名の文字コード判定に使う Unicode CLDR 由来のデータについて、Unicode License v3 の表記(KaitoKit-NOTICE.txt)をアプリに同梱し、「cooViewer について」にも記載しました。</li>
+<li>Sparkle のライセンス全文(Sparkle-LICENSE.txt)をアプリに同梱しました。</li>
+</ul>
+<h2 dir="auto">前回までの主な変更</h2>
+<ul dir="auto">
+<li><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b55">2.0b55</a>: KaitoKit 0.22.1 で書庫の展開を高速化しました。</li>
+<li><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b54">2.0b54</a>: 次の本/前の本などの既定キーを、macOS の Mission Control と重ならないように変えました(5ちゃんねるの 793 さんへのお返事もこちらに載せています)。</li>
+</ul>
+<h2 dir="auto">同梱</h2>
+<p dir="auto">KaitoKit 0.22.1 / Washi 1.27.2 / Sparkle 2.10.1</p>
+<h2 dir="auto">1.x に戻す場合 / Reverting to 1.x</h2>
+<p dir="auto">2.0 は初回起動時に 1.x の設定・履歴・しおりを取り込み、旧データはその時点の内容で残します。1.x はそのまま起動できますが、2.0 で進めた読書位置や追加したしおりは 1.x には反映されません。</p>
+<p dir="auto">データを完全に消して初期状態へ戻したい場合だけ、アプリを終了してから次を実行してください。<strong>1.x のデータも消えます。</strong></p>
+<p dir="auto">2.0 imports 1.x data once and leaves the legacy data unchanged. You can still run 1.x, but reading positions and bookmarks added in 2.0 do not carry back. Only if you want to reset everything, quit the app and run the following commands. <strong>This also erases 1.x data.</strong></p>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">defaults delete jp.coo.cooViewer
+rm -rf <span class="pl-k">~</span>/Library/Application<span class="pl-cce">\ </span>Support/jp.coo.cooViewer
+rm -rf <span class="pl-k">~</span>/Library/Caches/jp.coo.cooViewer</pre></div>
+<p><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b56">GitHub のリリースページ</a></p>
+]]></description>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b56/cooViewer-2.0b56.zip" sparkle:edSignature="+B4BN3y4uo0V1g8KBmha0/1mt3l0QA5o7GLlv+dR4o8+ldRRePynpqMtwu3WXNHJQrpYRiip6liCIec1lU4pCw==" length="9455856" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>cooViewer 2.0b55</title>
             <pubDate>Thu, 05 Nov 2026 08:33:53 +0000</pubDate>
             <sparkle:version>2055</sparkle:version>
@@ -703,6 +765,6 @@ rm -rf <span class="pl-k">~</span>/Library/Caches/jp.coo.cooViewer</pre></div>
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: z62TN9fywydaI/dPjAaekE3XjaeOhv2TqvO61sUSCR+xHIl5lvp87C/pHyrEU9PnQunka4IemMz3lSph/zUjBw==
-length: 56792
+edSignature: D876SEf1tL/WfkEvx6u3zx7bf+T/hjYNkchpIB7SH7RujWoGnl2WmbV4Co7locLYypbIWBndGxBEzP+c0WORCg==
+length: 62022
 -->
