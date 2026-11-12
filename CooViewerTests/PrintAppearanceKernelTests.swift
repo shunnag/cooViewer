@@ -342,6 +342,38 @@ final class PrintAppearanceKernelTests: XCTestCase {
         XCTAssertEqual(mismatched, 0)
     }
 
+    // MARK: - GPU の能力の確認
+
+    /// カーネルの前提: 実行幅 32 と、ディスパッチするスレッドグループの大きさ(512 / 416 / 256 / 32)
+    func testKernelCapabilityRequirements() {
+        for kernel in Kernel.allCases {
+            XCTAssertTrue(kernel.isSupported(threadExecutionWidth: 32, maxTotalThreadsPerThreadgroup: 1024), "\(kernel)")
+            XCTAssertFalse(kernel.isSupported(threadExecutionWidth: 64, maxTotalThreadsPerThreadgroup: 1024), "\(kernel)")
+            XCTAssertFalse(kernel.isSupported(threadExecutionWidth: 16, maxTotalThreadsPerThreadgroup: 1024), "\(kernel)")
+            XCTAssertTrue(kernel.isSupported(threadExecutionWidth: 32,
+                                             maxTotalThreadsPerThreadgroup: kernel.threadgroupSize), "\(kernel)")
+            XCTAssertFalse(kernel.isSupported(threadExecutionWidth: 32,
+                                              maxTotalThreadsPerThreadgroup: kernel.threadgroupSize - 1), "\(kernel)")
+        }
+        XCTAssertEqual(Kernel.colFwd.threadgroupSize, 512)
+        XCTAssertEqual(Kernel.colInvScatter.threadgroupSize, 512)
+        XCTAssertEqual(Kernel.rowNotch.threadgroupSize, 416)
+        XCTAssertEqual(Kernel.prefilterStencil.threadgroupSize, 256)
+        XCTAssertEqual(Kernel.blur.threadgroupSize, 256)
+    }
+
+    /// この GPU で作ったパイプラインはどれもカーネルの前提を満たす(満たさなければ GPUContext が作れない)
+    func testCompiledPipelinesMeetKernelAssumptions() throws {
+        let g = try Self.gpuContext()
+        for kernel in Kernel.allCases {
+            let pipe = g.pipe(kernel)
+            print("PrintAppearanceKernelTests: \(kernel.rawValue) 実行幅 \(pipe.threadExecutionWidth)"
+                  + " 最大スレッド数 \(pipe.maxTotalThreadsPerThreadgroup)")
+            XCTAssertTrue(kernel.isSupported(threadExecutionWidth: pipe.threadExecutionWidth,
+                                             maxTotalThreadsPerThreadgroup: pipe.maxTotalThreadsPerThreadgroup))
+        }
+    }
+
     // MARK: - 補助
 
     /// encodeThresholds[1...255] のうち x 以下のものの数(GPU の再符号化と同じ数え方)
@@ -359,7 +391,11 @@ final class PrintAppearanceKernelTests: XCTestCase {
 
     private static func gpuContext() throws -> GPUContext {
         guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal が使えない環境") }
-        return try GPUContext()
+        do {
+            return try GPUContext()
+        } catch PrintAppearanceError.gpuUnavailable(let message) {
+            throw XCTSkip("GPU の経路を用意できない環境: \(message)")
+        }
     }
 
     private static func buffer<T>(_ g: GPUContext, _ values: [T]) throws -> MTLBuffer {

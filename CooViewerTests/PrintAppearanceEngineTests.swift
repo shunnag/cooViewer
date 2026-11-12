@@ -1,10 +1,9 @@
-import Metal
 import XCTest
 @testable import PrintAppearanceKit
 
 /// 網点処理エンジンの性質の検査(設計書 §5)。合成ページだけを使い、期待バイト列は持たない
 /// (出力は OS の vDSP・libm・GPU に依存するため、性質と「CPU 経路から 1 階調以内」を確かめる)。
-/// GPU を使う検査は Metal が無い環境では飛ばす
+/// GPU を使う検査は、エンジンが GPU の経路を用意できない環境(Metal が無い・カーネルの前提を満たさない)では飛ばす
 final class PrintAppearanceEngineTests: XCTestCase {
 
     // MARK: - 速度
@@ -12,7 +11,7 @@ final class PrintAppearanceEngineTests: XCTestCase {
     /// エンジンは Debug のアプリからでも最適化済み(-O)のフレームワークとして呼ばれる。最適化なしでは
     /// 1362x2046 の 1 ページに数秒かかるので、温まった後の 1 ページが 0.3 秒未満であることで確かめる
     func testOptimizedEngineProcessesFullPageQuickly() throws {
-        try Self.requireMetal()
+        try Self.requireGPUPath()
         let W = 1362, H = 2046
         let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: W, height: H), width: W, height: H)
         let engine = PrintAppearanceEngine(mode: .automatic)
@@ -109,7 +108,7 @@ final class PrintAppearanceEngineTests: XCTestCase {
 
     /// 既定の経路(GPU)は CPU だけの厳密な経路から 1 階調より離れない
     func testDefaultPathStaysWithinOneLevelOfCPUPath() throws {
-        try Self.requireMetal()
+        try Self.requireGPUPath()
         let W = 512, H = 2048
         let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: W, height: H), width: W, height: H)
         let gpu = PrintAppearanceEngine(mode: .automatic), cpu = PrintAppearanceEngine(mode: .cpuOnly)
@@ -213,15 +212,224 @@ final class PrintAppearanceEngineTests: XCTestCase {
         XCTAssertEqual(PrintAppearanceLevel.strong.distanceMM, 400)
     }
 
-    // MARK: - 補助
-
-    private static func requireMetal() throws {
-        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal が使えない環境") }
+    /// process は高さ 799 px のページの 強め を 標準 として処理し、800 px では 強め のまま処理する
+    func testProcessAppliesTheLevelCapAt800px() throws {
+        let engine = PrintAppearanceEngine(mode: .cpuOnly)
+        for height in [799, 800] {
+            let page = try PrintAppearancePage(
+                luma: PrintAppearanceTestPages.screen(width: 512, height: height, period: 3, angle: 45),
+                width: 512, height: height)
+            let standard = Self.bytes(try engine.process(page, level: .standard, threads: 4))
+            let strong = Self.bytes(try engine.process(page, level: .strong, threads: 4))
+            if height < 800 {
+                XCTAssertEqual(strong, standard)
+            } else {
+                XCTAssertNotEqual(strong, standard)
+            }
+        }
     }
 
-    /// CPU の経路は常に、GPU の経路は Metal があるときだけ調べる
+    // MARK: - 止める位置
+
+    /// 合成ページの通常の処理は 6 つの停止位置をすべて通る(パス 1 は 3 チャンク、位相揃いは複数の回)。
+    /// どの位置で止めても stopped を投げ、同じエンジンで処理し直すと止めなかったときと同じバイトになる
+    func testStopsAtEveryPointAndRecovers() throws {
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 384, height: 1024, seed: 11),
+                                           width: 384, height: 1024)
+        for mode in Self.modes() {
+            let engine = PrintAppearanceEngine(mode: mode)
+            var seen: [PrintAppearanceStopPoint] = []
+            let reference = Self.bytes(try engine.process(page, level: .standard, threads: 4) { point in
+                seen.append(point)
+                return false
+            })
+            XCTAssertEqual(Set(seen), Set(PrintAppearanceStopPoint.allCases), "\(mode)")
+            XCTAssertEqual(seen.first, .beforeRun, "\(mode)")
+            XCTAssertEqual(seen.last, .beforeOutput, "\(mode)")
+            XCTAssertGreaterThanOrEqual(seen.filter { $0 == .betweenPass1Chunks }.count, 2, "\(mode)")
+            XCTAssertGreaterThanOrEqual(seen.filter { $0 == .betweenFillRounds }.count, 2, "\(mode)")
+            for point in PrintAppearanceStopPoint.allCases {
+                // 同じ位置を何度も通るものは、最初と最後の両方で止めてみる
+                let visits = seen.filter { $0 == point }.count
+                for stopAt in Set([1, visits]) {
+                    var reached = 0
+                    XCTAssertThrowsError(try engine.process(page, level: .standard, threads: 4) { p in
+                        if p == point { reached += 1 }
+                        return p == point && reached == stopAt
+                    }) { error in
+                        XCTAssertEqual(error as? PrintAppearanceError, .stopped(point), "\(mode) \(point)")
+                    }
+                    let again = Self.bytes(try engine.process(page, level: .standard, threads: 4))
+                    XCTAssertEqual(again, reference, "\(mode) \(point) #\(stopAt)")
+                }
+            }
+            XCTAssertEqual(engine.status.gpuFallbackPages, 0, "止めたページは GPU の失敗に数えない")
+        }
+    }
+
+    /// パス 1 の途中で止めた直後に別のページを処理しても、どちらのページも新しいエンジンと同じバイトになる
+    /// (止める前に積んだ GPU の仕事を待ってから戻るので、共有の記憶域へ遅れて書かれない)
+    func testStopInPass1ThenOtherPageGivesFreshBytes() throws {
+        let first = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 512, height: 2048, seed: 21),
+                                            width: 512, height: 2048)
+        let second = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 384, height: 1024, seed: 22),
+                                             width: 384, height: 1024)
+        for mode in Self.modes() {
+            let expectedFirst = Self.bytes(try PrintAppearanceEngine(mode: mode).process(first, level: .low, threads: 4))
+            let expectedSecond = Self.bytes(try PrintAppearanceEngine(mode: mode).process(second, level: .low, threads: 4))
+            let engine = PrintAppearanceEngine(mode: mode)
+            XCTAssertThrowsError(try engine.process(first, level: .low, threads: 4) { $0 == .betweenPass1Chunks })
+            XCTAssertEqual(Self.bytes(try engine.process(second, level: .low, threads: 4)), expectedSecond, "\(mode)")
+            XCTAssertEqual(Self.bytes(try engine.process(first, level: .low, threads: 4)), expectedFirst, "\(mode)")
+        }
+    }
+
+    // MARK: - GPU の失敗からの回復
+
+    /// GPU の経路が失敗したページは CPU の厳密な経路で処理し直し、その結果を返す(生の画素は返さない)。
+    /// 1 回だけなら GPU の経路に戻り、2 ページ続けて失敗すると以後は CPU だけで動く
+    func testGPUFailureFallsBackToCPUThenCPUOnlyAfterTwo() throws {
+        try Self.requireGPUPath()
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 512, height: 2048),
+                                           width: 512, height: 2048)
+        let cpuBytes = Self.bytes(try PrintAppearanceEngine(mode: .cpuOnly).process(page, level: .standard, threads: 4))
+        let gpuBytes = Self.bytes(try PrintAppearanceEngine(mode: .automatic).process(page, level: .standard,
+                                                                                     threads: 4))
+        let engine = PrintAppearanceEngine(mode: .automatic)
+        let fail: (PrintAppearanceStopPoint) -> PrintAppearanceError? = {
+            $0 == .betweenPass1Chunks ? .gpuFailed("試験用の失敗") : nil
+        }
+        // 1 回目の失敗: CPU の結果を返し、GPU の経路は保つ
+        engine.gpuFaultForTesting = fail
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .standard, threads: 4)), cpuBytes)
+        XCTAssertEqual(engine.status.path, .gpu)
+        XCTAssertEqual(engine.status.gpuFallbackPages, 1)
+        // 成功すれば連続の数え直し
+        engine.gpuFaultForTesting = nil
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .standard, threads: 4)), gpuBytes)
+        engine.gpuFaultForTesting = fail
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .standard, threads: 4)), cpuBytes)
+        XCTAssertEqual(engine.status.path, .gpu, "成功を挟んだ失敗は 1 回目として数える")
+        // 2 ページ続けて失敗すると CPU だけになる
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .standard, threads: 4)), cpuBytes)
+        XCTAssertEqual(engine.status.path, .cpuOnly(.repeatedGPUFailures))
+        XCTAssertEqual(engine.status.gpuFallbackPages, 3)
+        engine.gpuFaultForTesting = nil
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .standard, threads: 4)), cpuBytes)
+        XCTAssertEqual(engine.status.path, .cpuOnly(.repeatedGPUFailures))
+    }
+
+    /// GPU の集約に収まらないページ(GPU だけの制約)は CPU の経路で処理し直す。GPU の失敗には数えない
+    func testGPUOnlyRefusalIsRerunOnCPUWithoutCountingAsFailure() throws {
+        try Self.requireGPUPath()
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 384, height: 1024, seed: 11),
+                                           width: 384, height: 1024)
+        let cpuBytes = Self.bytes(try PrintAppearanceEngine(mode: .cpuOnly).process(page, level: .strong, threads: 4))
+        let engine = PrintAppearanceEngine(mode: .automatic)
+        engine.gpuFaultForTesting = { $0 == .beforeOutput ? .unsupportedPage("試験用の制約") : nil }
+        for _ in 0..<3 {
+            XCTAssertEqual(Self.bytes(try engine.process(page, level: .strong, threads: 4)), cpuBytes)
+        }
+        XCTAssertEqual(engine.status.path, .gpu)
+        XCTAssertEqual(engine.status.gpuFallbackPages, 0)
+    }
+
+    /// 止める求めは GPU の失敗の回復より優先し、CPU でやり直さずに投げる
+    func testStopIsNotTreatedAsGPUFailure() throws {
+        try Self.requireGPUPath()
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 384, height: 1024, seed: 11),
+                                           width: 384, height: 1024)
+        let engine = PrintAppearanceEngine(mode: .automatic)
+        var points: [PrintAppearanceStopPoint] = []
+        XCTAssertThrowsError(try engine.process(page, level: .standard, threads: 4) { point in
+            points.append(point)
+            return point == .afterPass1
+        }) { error in
+            XCTAssertEqual(error as? PrintAppearanceError, .stopped(.afterPass1))
+        }
+        XCTAssertEqual(points.filter { $0 == .beforeRun }.count, 1, "CPU の経路で処理し直していない")
+        XCTAssertEqual(engine.status.gpuFallbackPages, 0)
+    }
+
+    /// GPU を今は作れない(ファイル記述子の余裕が無いなど)ときはそのページを CPU で処理し、後のページで作る
+    func testGPUCreationDeferredWhileNotAllowed() throws {
+        try Self.requireGPUPath()
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 512, height: 2048),
+                                           width: 512, height: 2048)
+        let cpuBytes = Self.bytes(try PrintAppearanceEngine(mode: .cpuOnly).process(page, level: .low, threads: 4))
+        let gpuBytes = Self.bytes(try PrintAppearanceEngine(mode: .automatic).process(page, level: .low, threads: 4))
+        let allowed = Flag()
+        let engine = PrintAppearanceEngine(mode: .automatic, canCreateGPU: { allowed.value })
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .low, threads: 4)), cpuBytes)
+        XCTAssertEqual(engine.status.path, .idle)
+        allowed.value = true
+        XCTAssertEqual(Self.bytes(try engine.process(page, level: .low, threads: 4)), gpuBytes)
+        XCTAssertEqual(engine.status.path, .gpu)
+    }
+
+    // MARK: - 準備・解放・状態
+
+    func testCPUOnlyModeReportsRequestedReason() throws {
+        let engine = PrintAppearanceEngine(mode: .cpuOnly)
+        try engine.warmUp(runDummyPage: false)
+        XCTAssertEqual(engine.status.path, .cpuOnly(.requested))
+        XCTAssertEqual(engine.status.workingBytes, 0)
+        XCTAssertNil(engine.status.compileMilliseconds)
+    }
+
+    /// warmUp はパイプラインを作り、合成ページで作業域を用意する。解放すると作業域は 0 に戻り、
+    /// パイプラインを残すかどうかで状態が変わる。どの段階の後でも出力は同じ
+    func testWarmUpReleaseAndStatus() throws {
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 384, height: 1024, seed: 11),
+                                           width: 384, height: 1024)
+        for mode in Self.modes() {
+            let expected = Self.bytes(try PrintAppearanceEngine(mode: mode).process(page, level: .low, threads: 4))
+            let engine = PrintAppearanceEngine(mode: mode)
+            let gpuPath: PrintAppearanceEngineStatus.Path = mode == .automatic ? .gpu : .cpuOnly(.requested)
+            XCTAssertEqual(engine.status.path, mode == .automatic ? .idle : .cpuOnly(.requested))
+            try engine.warmUp(runDummyPage: false)
+            XCTAssertEqual(engine.status.path, gpuPath)
+            XCTAssertEqual(engine.status.workingBytes, 0)
+            if mode == .automatic { XCTAssertNotNil(engine.status.compileMilliseconds) }
+            try engine.warmUp(runDummyPage: true)
+            XCTAssertGreaterThan(engine.status.workingBytes, 0)
+            XCTAssertEqual(Self.bytes(try engine.process(page, level: .low, threads: 4)), expected, "\(mode)")
+            let working = engine.status.workingBytes
+            XCTAssertGreaterThan(working, 0)
+            engine.releaseWorkingMemory(keepPipelines: true)
+            XCTAssertEqual(engine.status.workingBytes, 0)
+            XCTAssertEqual(engine.status.path, gpuPath)
+            XCTAssertEqual(Self.bytes(try engine.process(page, level: .low, threads: 4)), expected, "\(mode)")
+            XCTAssertGreaterThan(engine.status.workingBytes, 0)
+            engine.releaseWorkingMemory(keepPipelines: false)
+            XCTAssertEqual(engine.status.workingBytes, 0)
+            XCTAssertEqual(engine.status.path, mode == .automatic ? .idle : .cpuOnly(.requested))
+            XCTAssertEqual(Self.bytes(try engine.process(page, level: .low, threads: 4)), expected, "\(mode)")
+            XCTAssertEqual(engine.status.path, gpuPath)
+        }
+    }
+
+    // MARK: - 補助
+
+    /// エンジンが GPU の経路を用意できるか(Metal があり、パイプラインがカーネルの前提を満たす)
+    private static let gpuPathAvailable: Bool = {
+        let engine = PrintAppearanceEngine(mode: .automatic)
+        guard (try? engine.warmUp(runDummyPage: false)) != nil else { return false }
+        return engine.status.path == .gpu
+    }()
+
+    private static func requireGPUPath() throws {
+        guard gpuPathAvailable else { throw XCTSkip("GPU の経路を用意できない環境") }
+    }
+
+    /// CPU の経路は常に、GPU の経路は用意できるときだけ調べる
     private static func modes() -> [PrintAppearanceEngine.Mode] {
-        MTLCreateSystemDefaultDevice() != nil ? [.cpuOnly, .automatic] : [.cpuOnly]
+        gpuPathAvailable ? [.cpuOnly, .automatic] : [.cpuOnly]
+    }
+
+    /// canCreateGPU に渡す切り替え(テストの中で同じスレッドからだけ触る)
+    private final class Flag {
+        var value = false
     }
 
     /// 行の詰め物を除いた W * H バイト

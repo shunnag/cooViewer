@@ -9,6 +9,24 @@ import Metal
 enum Kernel: String, CaseIterable {
     case tileMeans, colFwd, prefilterStencil, rowNotch, colInvScatter, fillZero, normalise, blur, highpassSq,
          q3Window, gateEncodeQ3
+
+    /// 1 スレッドグループに置くスレッドの最大数(Descreener のディスパッチと一致させる)。
+    /// colFwd と colInvScatter は 512、rowNotch は 416、prefilterStencil と grid2D の 3 種は 256。
+    /// grid1D の 4 種はパイプラインの上限に合わせて 256 以下に縮めるので、SIMD グループ 1 つ分あればよい
+    var threadgroupSize: Int {
+        switch self {
+        case .colFwd, .colInvScatter: return 512
+        case .rowNotch: return 416
+        case .prefilterStencil, .normalise, .blur, .q3Window: return 256
+        case .tileMeans, .fillZero, .highpassSq, .gateEncodeQ3: return 32
+        }
+    }
+
+    /// カーネルが前提にする実行幅(simd_shuffle_xor・simd_ballot が 32 レーンを仮定する)と
+    /// スレッドグループの大きさをパイプラインが満たすか(設計書 §5)
+    func isSupported(threadExecutionWidth: Int, maxTotalThreadsPerThreadgroup: Int) -> Bool {
+        threadExecutionWidth == 32 && maxTotalThreadsPerThreadgroup >= threadgroupSize
+    }
 }
 
 /// デバイス・キュー・パイプライン・定数表。ページ間で使い回す。作成後は変更しない
@@ -46,11 +64,20 @@ final class GPUContext {
             guard let f = lib.makeFunction(name: kernel.rawValue) else {
                 throw PrintAppearanceError.gpuUnavailable("カーネル \(kernel.rawValue) が無い")
             }
+            let pipeline: MTLComputePipelineState
             do {
-                made[kernel] = try dev.makeComputePipelineState(function: f)
+                pipeline = try dev.makeComputePipelineState(function: f)
             } catch {
                 throw PrintAppearanceError.gpuUnavailable("パイプライン \(kernel.rawValue) を作れない: \(error)")
             }
+            // カーネルの前提を満たさない GPU では使わない(エンジンは CPU だけの経路になる)
+            guard kernel.isSupported(threadExecutionWidth: pipeline.threadExecutionWidth,
+                                     maxTotalThreadsPerThreadgroup: pipeline.maxTotalThreadsPerThreadgroup) else {
+                throw PrintAppearanceError.gpuUnavailable(
+                    "パイプライン \(kernel.rawValue) の実行幅 \(pipeline.threadExecutionWidth)・"
+                        + "最大スレッド数 \(pipeline.maxTotalThreadsPerThreadgroup) がカーネルの前提に合わない")
+            }
+            made[kernel] = pipeline
         }
         pipes = made
         compileMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000

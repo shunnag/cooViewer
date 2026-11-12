@@ -7,6 +7,8 @@ import Metal
 // 既定の経路はパス 1 のスペクトルを CPU(vDSP)で、候補の絞り込み・パス 2・後段を GPU で行い、
 // CPU のみの経路との差は最大 1 階調(パス 2 の GPU FFT が vDSP と丸めが異なるため)。
 // インスタンスは再入できない(作業領域とワーカーの作業域を書き換え、出力を outS に残す)。1 度に 1 ページ。
+// 段の間に止める位置(PrintAppearanceStopPoint)を置き、止めるときも失敗するときも、積んだコマンドバッファの
+// 完了をすべて待ってから戻る(先に積んだバッファが共有の記憶域へ書くため。設計書 §5)。
 
 enum StageDevice { case gpu, cpu }
 
@@ -82,6 +84,8 @@ final class Descreener {
     var q3OnGPU: Bool { opts.post == .gpu && gpu != nil }
     /// 実行中のページの CPU 段の並列数
     private var threads = 1
+    /// この run で積んだコマンドバッファ。run のどの出口でも drain() で完了を待つ
+    private var committed: [MTLCommandBuffer] = []
 
     init(params: Params, a2: A2Params, options: EngineOptions, gpu: GPUContext?, threads: Int) throws {
         try validateParams(params)
@@ -134,10 +138,32 @@ final class Descreener {
     /// 直前の run の出力(W * H バイト)。次の run まで有効
     var output: UnsafePointer<UInt8> { UnsafePointer(outS.u8()) }
 
-    func run(src: UnsafePointer<UInt8>, W: Int, H: Int, geo: Geometry, threads requested: Int) throws -> DescreenResult {
+    /// 確保済みの作業域のバイト数(記憶域と作業者のタイル面。稼働状況の表示用の概算)
+    var workingBytes: Int {
+        let stores = [srcS, linS, deltaS, exS, aS, tmpS, outS, meansS, actS, zS, psS, candS, ntS, neS, rbS, cntS, qS]
+        return stores.reduce(0) { $0 + $1.length } + pool.workers.count * 4 * NN * 4
+    }
+
+    private func commit(_ cb: MTLCommandBuffer) {
+        cb.commit()
+        committed.append(cb)
+    }
+
+    /// 積んだコマンドバッファの完了をすべて待つ。正常な出口ではもう終わっているので待たない
+    private func drain() {
+        for cb in committed { cb.waitUntilCompleted() }
+        committed.removeAll()
+    }
+
+    /// stop は各停止位置で呼ばれ、止めるときは例外を投げる。呼ぶのは run を呼んだスレッドだけ
+    /// (並列の反復の中からは呼ばない)
+    func run(src: UnsafePointer<UInt8>, W: Int, H: Int, geo: Geometry, threads requested: Int,
+             stop: (PrintAppearanceStopPoint) throws -> Void = { _ in }) throws -> DescreenResult {
         guard W >= N && H >= N else {
             throw PrintAppearanceError.unsupportedPage("辺が 128 px 未満 (\(W)x\(H))")
         }
+        defer { drain() }
+        try stop(.beforeRun)
         let threads = max(1, requested)
         self.threads = threads
         try pool.reserve(threads)
@@ -176,7 +202,7 @@ final class Descreener {
                 encodeBlur(enc, g, src: aS.buffer, dst: exS.buffer, sigma: p.gateSigmaPx, pg: &pg)
             }
             enc.endEncoding()
-            cb.commit()   // CPU の解析と並行して走る。同じキューなので後の段より先に終わる
+            commit(cb)   // CPU の解析と並行して走る。同じキューなので後の段より先に終わる
         }
         // q3 の窓の選択は src だけに依存する: 別のコマンドバッファで今積み、CPU のパス 1 と並行して走らせる
         // (同じキューなので、それを読む後段より先に終わる)
@@ -187,18 +213,20 @@ final class Descreener {
             enc.set([srcS.buffer, qS.buffer, g.q3EncBuf]); enc.bytes(pg, 3)
             enc.grid2D(g.pipe(.q3Window), W, H)
             enc.endEncoding()
-            cb.commit()
+            commit(cb)
             cbQ = cb
         }
         // ---- パス 1: スペクトルと検出
         var found = [[Peak]](repeating: [], count: T)
-        try pass1(&found, detector: detector, W: W, H: H, nx: nx, T: T, K: K)
+        try pass1(&found, detector: detector, W: W, H: H, nx: nx, T: T, K: K, stop: stop)
+        try stop(.afterPass1)
         // ---- 近傍の一致(タイルをまたぐ唯一の同期点)
         var (kept, dropped) = NeighbourGateA(p: p, threads: threads).gate(found: found, nx: nx, ny: ny)
         res.dropped = dropped
+        try stop(.afterNeighbourGate)
         // ---- A2: 連結成分の一貫性(CPU、Double)を残った列に対して行う
-        res.a2 = A2Gate(a2).run(kept: &kept, nx: nx, ny: ny, lin: UnsafePointer(lin), W: W, H: H, pool: pool,
-                                threads: threads)
+        res.a2 = try A2Gate(a2).run(kept: &kept, nx: nx, ny: ny, lin: UnsafePointer(lin), W: W, H: H, pool: pool,
+                                    threads: threads, stop: { try stop(.betweenFillRounds) })
         var active: [Int] = []
         for ti in 0..<T {
             let peaks = kept[ti]
@@ -207,6 +235,8 @@ final class Descreener {
             if peaks.contains(where: { $0.r < 1 - 1e-6 }) { active.append(ti) }
         }
         res.tilesNotched = active.count
+        // 出力を作る段(最後のコマンドバッファ)に入る前の最後の停止位置
+        try stop(.beforeOutput)
         // ---- パス 2 + 後段
         let delta = deltaS.f()
         if opts.pass2 == .gpu, let g = gpu {
@@ -214,10 +244,10 @@ final class Descreener {
             try encodePass2(cb, g, active: active, kept: kept, geo: geo, W: W, H: H, nx: nx, K: K, pg: &pg)
             if opts.post == .gpu {
                 try encodePost(cb, g, count: count, pg: &pg)
-                cb.commit(); cb.waitUntilCompleted()
+                commit(cb); cb.waitUntilCompleted()
                 try checkStatus(cb)
             } else {
-                cb.commit(); cb.waitUntilCompleted()
+                commit(cb); cb.waitUntilCompleted()
                 try checkStatus(cb)
                 wsumPattern.withUnsafeBufferPointer { pat in
                     for y in 0..<H { for x in 0..<W where delta[y * W + x] != 0 { delta[y * W + x] /= pat[(y & 31) * 32 + (x & 31)] } }
@@ -242,7 +272,7 @@ final class Descreener {
             if opts.post == .gpu, let g = gpu {
                 let cb = try g.makeCommandBuffer()
                 try encodePost(cb, g, count: count, pg: &pg, divide: false)
-                cb.commit(); cb.waitUntilCompleted()
+                commit(cb); cb.waitUntilCompleted()
                 try checkStatus(cb)
             } else {
                 let pr = try gateAndEncodeCPU(lin: lin, delta: delta, src: src, out: outS.u8(), W: W, H: H, p: p,
@@ -288,18 +318,27 @@ final class Descreener {
 
     // MARK: パス 1
 
-    private func pass1(_ found: inout [[Peak]], detector: DetectorA, W: Int, H: Int, nx: Int, T: Int, K: Int) throws {
+    private func pass1(_ found: inout [[Peak]], detector: DetectorA, W: Int, H: Int, nx: Int, T: Int, K: Int,
+                       stop: (PrintAppearanceStopPoint) throws -> Void) throws {
         let lin = linS.f()
         let threads = self.threads
         if !opts.prefilter {
-            // CPU のみ: 各作業者がタイルを解析してその場で検出する(スペクトルを保持しない)
-            found.withUnsafeMutableBufferPointer { fp in
-                pool.run(T, threads: threads) { w, ti in
-                    w.analyse(lin, w: W, h: H, x0: -96 + 32 * (ti % nx), y0: -96 + 32 * (ti / nx))
-                    w.powerSpectrum(into: w.power)
-                    // 候補を渡さない全走査は断らない
-                    fp[ti] = detector.detect(power: w.power, candidates: nil) ?? []
+            // CPU のみ: 各作業者がタイルを解析してその場で検出する(スペクトルを保持しない)。
+            // 止められるよう K タイルずつに分ける。各タイルは自分の欄だけを書くので、分け方で結果は変わらない
+            var start = 0
+            while start < T {
+                if start > 0 { try stop(.betweenPass1Chunks) }
+                let first = start, n = min(K, T - start)
+                found.withUnsafeMutableBufferPointer { fp in
+                    pool.run(n, threads: threads) { w, i in
+                        let ti = first + i
+                        w.analyse(lin, w: W, h: H, x0: -96 + 32 * (ti % nx), y0: -96 + 32 * (ti / nx))
+                        w.powerSpectrum(into: w.power)
+                        // 候補を渡さない全走査は断らない
+                        fp[ti] = detector.detect(power: w.power, candidates: nil) ?? []
+                    }
                 }
+                start += n
             }
             return
         }
@@ -335,6 +374,7 @@ final class Descreener {
         // 前のチャンクの検出を重ねる
         var start = 0, ci = 0
         while start < T {
+            if start > 0 { try stop(.betweenPass1Chunks) }
             let n = min(K, T - start), parity = ci & 1
             let pOff = parity * K * NN * 4
             let base = psS.f(parity * K * NN)
@@ -352,7 +392,7 @@ final class Descreener {
             enc.dispatchThreads(MTLSize(width: words * 32, height: n, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             enc.endEncoding()
-            cb.commit()
+            commit(cb)
             if let pd = pending { try detectChunk(pd) }
             pending = (cb, start, n, parity)
             start += n

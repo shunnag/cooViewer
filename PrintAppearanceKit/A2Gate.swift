@@ -26,8 +26,9 @@ final class A2Gate {
     let q: A2Params
     init(_ q: A2Params) { self.q = q }
 
+    /// stop は位相揃いの回の間(2 回目以降の回の前)に呼ぶ。止めるときは例外を投げる(設計書 §5)
     func run(kept: inout [[Peak]], nx: Int, ny: Int, lin: UnsafePointer<Float>, W: Int, H: Int, pool: WorkerPool,
-             threads: Int) -> A2Outcome {
+             threads: Int, stop: () throws -> Void = {}) rethrows -> A2Outcome {
         var out = A2Outcome()
         // 成分の段は次の条件のときだけ行う
         guard q.clusterMinTiles > 1 || q.fillCore > 0 else { return out }
@@ -237,6 +238,7 @@ final class A2Gate {
             return waiting ? nil : 0
         }
         var decided = [Int?](repeating: nil, count: C)
+        var round = 0
         while true {
             for c in 0..<C { want[c] = 0 }
             for r in 0..<C where decided[r] == nil { decided[r] = decide(r) }
@@ -251,6 +253,8 @@ final class A2Gate {
                 nodes.append(contentsOf: order[c][done[c]..<(done[c] + take)])
             }
             if nodes.isEmpty { break }
+            if round > 0 { try stop() }
+            round += 1
             nodes.sort()
             evaluate(nodes)
             for c in 0..<C where want[c] > 0 {
