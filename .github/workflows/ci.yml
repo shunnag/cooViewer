@@ -35,7 +35,7 @@ jobs:
     outputs:
       full: ${{ steps.decide.outputs.full }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # 文書のみ・検査済み tree でも appcast の検査は毎回行う。
@@ -196,7 +196,7 @@ jobs:
     # macos-26 の通常約 10 分に対し、hang は約 2 倍で打ち切る。
     timeout-minutes: 20
     env:
-      # reopen(options:) は未リリースのためコミットを固定し、KaitoKit 0.18.0 公開時にタグへ戻す。
+      # 通常は次に出荷する版のタグに固定する。未リリースの兄弟変更が要る PR だけ完全なコミット SHA を指定する。
       KAITOKIT_REF: v0.22.1
       WASHI_REF: 1.27.2
     strategy:
@@ -209,7 +209,7 @@ jobs:
         run: echo 'plan の判定により macOS のビルド・テストを省略する。'
       - name: Checkout
         if: needs.plan.outputs.full == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Prepare clean build workspace
         if: needs.plan.outputs.full == 'true'
@@ -276,7 +276,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: tree
         run: |
           set -euo pipefail
@@ -285,7 +285,7 @@ jobs:
           printf 'tree=%s\n' "$tree" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/tested-tree"
           printf 'tree %s\ncommit %s\nrun %s\n' "$tree" "$GITHUB_SHA" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/tested-tree/tested-tree.txt"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tested-tree-${{ steps.tree.outputs.tree }}
           path: ${{ runner.temp }}/tested-tree/tested-tree.txt
