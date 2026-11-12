@@ -29,7 +29,7 @@ bd dolt push          # Push beads data to remote
 - mmap の open 失敗時は file 入口で一度再試行し、列挙失敗は unreadable とする。
 - 旧書庫・文字コード判定エンジンの framework・submodule・ライセンス資産は PR 2 で撤去済み。
 - サブモジュールは不要。KaitoKit / Washi は兄弟チェックアウトからビルドし、Sparkle は Fetch Sparkle フェーズで取得する。
-- KaitoKit(MIT、`KaitoKit-LICENSE.txt` 同梱)・Washi(MIT)・Sparkle(MIT)・ML モデルの第三者表記を維持する。
+- KaitoKit(MIT、`KaitoKit-LICENSE.txt` と Unicode CLDR 由来データの `KaitoKit-NOTICE.txt` を同梱)・Washi(MIT)・Sparkle(MIT、`Sparkle-LICENSE.txt` 同梱)・ML モデルの第三者表記を維持する。
 - ビルド・設計・ライセンスの詳細は `CLAUDE.md` と `Documentation/development-guide.md` §3.6 を参照。
 
 ## Non-Interactive Shell Commands

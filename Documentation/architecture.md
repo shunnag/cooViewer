@@ -266,6 +266,8 @@ CooViewer/
 └── Resources/
     ├── Localizable.xcstrings       — ja/en
     ├── Credits.rtf                 — KaitoKit・Washi・Sparkle・ML モデルの表記
+    ├── *-LICENSE.txt / KaitoKit-NOTICE.txt — 第三者のライセンス全文(KaitoKit・Washi・
+    │                                 Sparkle、KaitoKit の Unicode CLDR 由来データ)
     └── AppIcon.icon ほか
 CooViewerTests/                     — ソート・ソース(スプール/暗号化 zip/ネスト含む)・
                                       Book・バインディング移行・履歴・キャッシュ・
