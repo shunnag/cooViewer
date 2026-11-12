@@ -2,9 +2,11 @@
 # Sparkle(自動更新フレームワーク。MIT ライセンス)の公式バイナリ配布を
 # Frameworks/ へ取得する。Xcode の Fetch Sparkle フェーズから単独で呼ばれる。
 # バージョンと SHA-256 を固定し、改ざん・すり替えを検出する。
-# 更新するときは SPARKLE_VERSION と SPARKLE_SHA256 を併せて上げること。
+# 更新するときは SPARKLE_VERSION と SPARKLE_SHA256 を併せて上げ、取得した
+# Frameworks/Sparkle-dist/LICENSE を CooViewer/Resources/Sparkle-LICENSE.txt へ写すこと。
 # EN: Fetches the pinned official Sparkle binary distribution into Frameworks/,
-# EN: verifying its SHA-256. Bump SPARKLE_VERSION and SPARKLE_SHA256 together.
+# EN: verifying its SHA-256. Bump SPARKLE_VERSION and SPARKLE_SHA256 together and copy
+# EN: Frameworks/Sparkle-dist/LICENSE to CooViewer/Resources/Sparkle-LICENSE.txt.
 set -euo pipefail
 
 SPARKLE_VERSION="2.10.1"

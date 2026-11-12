@@ -227,7 +227,10 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
 
 ## Third-party notices
 
-Keep KaitoKit's MIT notice and bundled `KaitoKit-LICENSE.txt`, and the MIT notices for Washi and Sparkle.
+Keep KaitoKit's MIT notice and bundled `KaitoKit-LICENSE.txt`, KaitoKit's Unicode CLDR notice
+(`KaitoKit-NOTICE.txt`, a copy of `../KaitoKit/NOTICE`; Unicode License v3), and the MIT notices for
+Washi and Sparkle (`Sparkle-LICENSE.txt`, a copy of the pinned distribution's `LICENSE`). Refresh both
+copies when KaitoKit's NOTICE or the Sparkle version changes.
 Preserve the KaitoKit, Sparkle, and ML model credits in `Credits.rtf`.
 ML model distributions must include their MIT/BSD notices in `LICENSES-models.txt` (development-guide §4).
 

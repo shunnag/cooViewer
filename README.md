@@ -174,8 +174,12 @@ MacPaw), which supported archive extraction and filename-encoding detection thro
 
 - cooViewer 本体: MIT ライセンス([Licence.txt](Licence.txt))。Copyright (c) 2005- coo.
 - [KaitoKit](https://github.com/shunnag/KaitoKit): MIT
-  ([KaitoKit-LICENSE.txt](CooViewer/Resources/KaitoKit-LICENSE.txt) をアプリに同梱)
-- [Washi](https://github.com/shunnag/Washi) / [Sparkle](https://sparkle-project.org/): MIT
+  ([KaitoKit-LICENSE.txt](CooViewer/Resources/KaitoKit-LICENSE.txt) をアプリに同梱)。
+  名前の文字コード判定に使う Unicode CLDR 由来のデータは Unicode License v3
+  ([KaitoKit-NOTICE.txt](CooViewer/Resources/KaitoKit-NOTICE.txt) をアプリに同梱)
+- [Washi](https://github.com/shunnag/Washi): MIT
+- [Sparkle](https://sparkle-project.org/): MIT
+  ([Sparkle-LICENSE.txt](CooViewer/Resources/Sparkle-LICENSE.txt) をアプリに同梱)
 - 補間(描画品質)の ML モデル(必要時にダウンロード): waifu2x anime_noise2 は
   [imxieyi/waifu2x-mac](https://github.com/imxieyi/waifu2x-mac)(MIT、元重みは
   [nagadomi/waifu2x](https://github.com/nagadomi/waifu2x)、MIT)からの無改変再配布、
