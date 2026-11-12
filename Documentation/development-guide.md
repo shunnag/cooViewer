@@ -440,7 +440,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 サイズ未宣言 entry の最終上限、機微なネスト子の無上限のメモリ常駐、Washi の外部参照と bidi 表示の
 残余は [architecture.md](architecture.md) の予算・残余の節を参照する。
 
-## 4. リリース手順(2.0b55 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
+## 4. リリース手順(2.0b56 まで検証済み。notarytool の keychain profile は KaitoFinder と共用の `KaitoFinder`、2026-09-22 に登録)
 
 1. pbxproj の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` を bump(各 4 箇所)。
    同梱する KaitoKit / Washi の版を変更する場合は、CI の `KAITOKIT_REF` / `WASHI_REF` も
