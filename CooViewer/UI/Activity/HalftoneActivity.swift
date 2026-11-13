@@ -228,6 +228,7 @@ enum PrintAppearanceStatsReport {
                 "preemptions": stats.preemptions,
                 "promotions": stats.promotions,
                 "declined": stats.declinedJobs,
+                "replanned": stats.replannedJobs,
                 "cancelled": stats.cancelledJobs,
                 "storeReleases": stats.storeReleases,
                 "reservations": stats.reservations,

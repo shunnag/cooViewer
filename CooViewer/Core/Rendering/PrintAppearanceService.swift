@@ -29,6 +29,7 @@ import PrintAppearanceKit
 // 作業域の予約: 表示のページはデコードの間に、そのページの大きさの作業域をこのキューで先に用意する(reserve)。
 //   確保と初回の頁の割り当ては 13 MP で数十 ms かかり、起動直後の最初のページと、大きなページの後に作業域を
 //   手放した後のジャンプで毎回払っていたため(設計書 §5)。
+// 再計画: 先読みの計画が変わっても新しい計画に残るページの仕事は辞退させず、新しい計画の順に並べ直す(replan)。
 // GPU の失敗はエンジンが同じページを CPU の厳密な経路で処理し直して返す。ここでは生の画素を返す道を
 // 作らない(キャッシュのタグの下に未処理の画素が入り、超解像のディスクキャッシュまで残るため)。
 
@@ -113,6 +114,16 @@ final class PrintAppearanceTicket: Sendable {
         if let binding { binding.service.decline(job: binding.job) }
     }
 
+    /// 先読みの計画が変わっても、このページを新しい計画でも読む: 待っている先読みの仕事を辞退させずに
+    /// 新しい計画の順へ並べ直す(呼んだ順に後ろへ付く)。表示に上がった仕事と辞退した仕事には何もしない。
+    /// まだサービスに届いていなければ、届いたときの到着の順がそのまま新しい計画の順になる
+    func replan() {
+        let binding = state.withLock { state -> Binding? in
+            state.intent == .prefetch ? state.binding : nil
+        }
+        if let binding { binding.service.replan(job: binding.job) }
+    }
+
     /// サービスが仕事を受け付けるとき、サービスのロックの中から呼ぶ。その時点の意図を返す。
     /// ロックの順はサービス → 券に限る(券の側はロックを外してからサービスを呼ぶ)
     fileprivate func attach(to service: PrintAppearanceService, job: UInt64) -> Intent {
@@ -191,6 +202,8 @@ final class PrintAppearanceService: Sendable {
         var preemptions = 0
         var promotions = 0
         var declinedJobs = 0
+        /// 先読みの計画が変わっても辞退させずに並べ直した仕事
+        var replannedJobs = 0
         var cancelledJobs = 0
         var storeReleases = 0
         /// 表示のページのデコードの間に作業域を予約した回数
@@ -391,6 +404,17 @@ final class PrintAppearanceService: Sendable {
             return job.continuation
         }
         continuation?.resume(throwing: PrefetchDecodeGate.Declined())
+    }
+
+    /// 券から: 待っている先読みの仕事に新しい到着の番号を付け、新しい計画の順へ並べ直す
+    fileprivate func replan(job id: UInt64) {
+        state.withLock { state in
+            guard var job = state.jobs[id], job.phase == .waiting, !job.isDisplay, !job.cancelled else { return }
+            state.nextArrival += 1
+            job.arrival = state.nextArrival
+            state.jobs[id] = job
+            state.stats.replannedJobs += 1
+        }
     }
 
     // MARK: - 作業域の予約

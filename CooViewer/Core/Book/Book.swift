@@ -902,7 +902,7 @@ final class Book {
     }
 
     func moveNext() -> MoveResult {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard !entries.isEmpty else { return .hitEnd }
         guard currentIndex + lastDisplayCount < entries.count else { return .hitEnd }
         explicitNavigationRevision &+= 1
@@ -959,7 +959,7 @@ final class Book {
 
     /// 見開きから 1 ページだけ進む/戻る(仕様書 §5.5 action 2/3)
     func moveHalfNext() -> MoveResult {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard currentIndex + 1 < entries.count else { return .hitEnd }
         explicitNavigationRevision &+= 1
         currentIndex += 1
@@ -968,7 +968,7 @@ final class Book {
     }
 
     func moveHalfPrevious() -> MoveResult {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard currentIndex > 0 else { return .hitStart }
         explicitNavigationRevision &+= 1
         currentIndex -= 1
@@ -977,14 +977,14 @@ final class Book {
     }
 
     func goTo(index: Int) {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard !entries.isEmpty else { return }
         explicitNavigationRevision &+= 1
         currentIndex = min(max(0, index), entries.count - 1)
     }
 
     func goToFirst() {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         explicitNavigationRevision &+= 1
         currentIndex = 0
         lastMoveForward = true
@@ -993,7 +993,7 @@ final class Book {
     /// 末尾へ。見開きなら最終 2 枚がペアになる場合 count-2 に着地(仕様書 §4.3.3)。
     @discardableResult
     func goToLast() async -> Bool {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         let generation = navigationGeneration
         guard !entries.isEmpty,
               let start = await precedingSpreadStart(before: entries.count,
@@ -1152,8 +1152,11 @@ final class Book {
         declineQueuedPrefetchLoads()
     }
 
-    private func declineQueuedPrefetchLoads() {
-        for load in inFlightLoads.values where load.prefetch {
+    /// keeping: 辞退させない網点処理の先読み(entry.id)。keepingTicketed なら網点処理の先読みは全て残す。
+    /// 網点処理の券のない先読み(切っている本)は常に辞退させる(従来どおり)
+    private func declineQueuedPrefetchLoads(keeping kept: Set<Int> = [], keepingTicketed: Bool = false) {
+        for (key, load) in inFlightLoads where load.prefetch {
+            if load.ticket != nil && (keepingTicketed || kept.contains(key)) { continue }
             load.promotion?.declineQueuedPrefetch()
             // 網点処理を待っている先読みも辞退させる(表示に上がった仕事と実行中の仕事は続く。設計書 §5)
             load.ticket?.decline()
@@ -1195,10 +1198,21 @@ final class Book {
         for task in decodeTasks.values { task.cancel() }
     }
 
-    private func invalidatePendingNavigation() {
+    /// replanningPrefetch: ページ移動。網点処理の先読みは辞退させず、移動先の見開きが揃ったときの
+    /// schedulePrefetch で新しい計画に残るかを決める(設計書 §5)。辞退させると、デコードと prepare を済ませて
+    /// エンジンを待つページを捨て、新しい計画がすぐ同じページを読み直すため(1 秒に 1 回の 11.1 MP の見開きで
+    /// 10 回のページ送りに 16〜19 件)。新しい計画は移動先が決まってからでないと作れない。
+    /// 本の切替・閉じる・並べ替え・見開きの条件の変更では従来どおり全て辞退させる
+    private func invalidatePendingNavigation(replanningPrefetch: Bool = false) {
         navigationGeneration &+= 1
         stateRevision &+= 1
-        cancelPrefetch()
+        if replanningPrefetch {
+            prefetchTask?.cancel()
+            prefetchTask = nil
+            declineQueuedPrefetchLoads(keepingTicketed: true)
+        } else {
+            cancelPrefetch()
+        }
     }
 
     // MARK: - サブフォルダ移動(仕様書 §4.3.5: containerPath 単位で巡回)
@@ -1297,18 +1311,36 @@ final class Book {
     }
 
     private func schedulePrefetch() {
-        cancelPrefetch()
-        guard !isClosed else { return }
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        guard !isClosed else {
+            declineQueuedPrefetchLoads()
+            return
+        }
         // 同じ名前の source を宣言より前のクロージャで参照すると Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、クロージャより先にローカルへ取る。
         let source = source
         let entries = entries
-        let targets = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
+        let planned = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
             ahead: prefetchAhead, behind: prefetchBehind, forward: lastMoveForward, count: entries.count,
             volumeKey: { source.prefetchVolumeKey(for: entries[$0]) })
-        let captured = targets.map { (index: $0, id: entries[$0].id,
-                                      volume: source.prefetchVolumeKey(for: entries[$0])) }
-        let aheadCount = targets.filter { $0 > currentIndex }.count
-        let leadingCount = lastMoveForward ? aheadCount : targets.count - aheadCount
+        // 新しい計画に残る網点処理の先読みは辞退させず、新しい計画の順に並べ直す(設計書 §5)。
+        // 戻り読みの完成画像があるため読まないページ(beginPrefetchImageLoad が飛ばす)は残さない。
+        // 残した読み込みは計画の先頭に置いて並列幅に数え、エンジンを待つデコード済みのページを幅までに保つ
+        let kept = planned.filter { index in
+            let id = entries[index].id
+            guard let load = inFlightLoads[id], load.prefetch, load.ticket != nil else { return false }
+            return !hasCachedResampleForEvictedOriginal(at: index)
+        }
+        let keptIDs = Set(kept.map { entries[$0].id })
+        declineQueuedPrefetchLoads(keeping: keptIDs)
+        for index in kept { inFlightLoads[entries[index].id]?.ticket?.replan() }
+        let rest = planned.filter { !keptIDs.contains(entries[$0].id) }
+        let targets = kept + rest
+        let aheadCount = planned.filter { $0 > currentIndex }.count
+        let plannedLeading = Set(planned.prefix(lastMoveForward ? aheadCount : planned.count - aheadCount))
+        let captured = rest.map { (index: $0, id: entries[$0].id,
+                                   volume: source.prefetchVolumeKey(for: entries[$0])) }
+        let leadingCount = rest.filter { plannedLeading.contains($0) }.count
         // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)。網点処理の要求があるときは
         // 4 までに絞り、エンジンを待つデコード済みのページを抑える(設計書 §5)
         let width = PreresamplePolicy.decodeWidth(mediaConcurrency: mediaProfile.bookPrefetchConcurrency,
@@ -1339,7 +1371,7 @@ final class Book {
                         }
                     }
                 } else {
-                    for target in Self.serialOrder(captured, aheadCount: leadingCount) {
+                    for target in kept + Self.serialOrder(captured, aheadCount: leadingCount) {
                         guard !Task.isCancelled else { return }
                         let load = self?.beginPrefetchImageLoad(at: target)
                         _ = await load?.value

@@ -117,6 +117,79 @@ final class BookPrintAppearanceTests: XCTestCase {
         await book.close().value
     }
 
+    // MARK: - 先読みの再計画
+
+    /// ページ移動では網点処理の先読みを辞退させない。移動先の見開きが揃ったら、新しい計画に残る先読みは
+    /// 読み直さずにそのまま残し(並列幅に数える)、計画から外れたものだけを辞退させる(設計書 §5)
+    func testNavigationKeepsPrefetchLoadsThatStayInTheNewPlan() async throws {
+        let source = PrintAppearanceStubSource(pageCount: 12, holds: true, parallel: true)
+        let book = try await Book.open(source: source, printAppearance: .standard)
+        book.readMode = .leftToRightSingle
+        let width = PreresamplePolicy.decodeWidth(mediaConcurrency: book.mediaProfile.bookPrefetchConcurrency,
+                                                  printAppearance: true)
+        book.prefetchAhead = width
+        book.prefetchBehind = 0
+        func ticket(_ entry: Int) async -> PrintAppearanceTicket? {
+            await source.requests.last { $0.entryID == entry }?.ticket
+        }
+        func releaseRequest(for entry: Int) async {
+            if let index = await source.requests.lastIndex(where: { $0.entryID == entry }) { await source.release(index) }
+        }
+
+        // 1 ページ目を表示し、先読みが幅いっぱい(ページ 1...width)始まるのを待つ
+        let first = Task { await book.currentSpread() }
+        let firstStarted = await waitUntil { await source.heldCount == 1 }
+        XCTAssertTrue(firstStarted)
+        await releaseRequest(for: 0)
+        _ = await first.value
+        let prefetching = await waitUntil { await source.heldCount == width }
+        XCTAssertTrue(prefetching)
+        var before: [PrintAppearanceTicket?] = []
+        for entry in 1...width { before.append(await ticket(entry)) }
+        XCTAssertEqual(before.map { $0?.intent }, Array(repeating: .prefetch, count: width))
+
+        // 次のページへ: 移動の時点では辞退させない
+        XCTAssertEqual(book.moveNext(), .moved)
+        XCTAssertEqual(before.map { $0?.intent }, Array(repeating: .prefetch, count: width))
+        // 移動先(ページ 1)の表示は先読みの読み込みに合流し、揃ったら新しい計画(2...width+1)を立てる
+        let second = Task { await book.currentSpread() }
+        let joined = await waitUntil { before[0]?.intent == .display }
+        XCTAssertTrue(joined)
+        await releaseRequest(for: 1)
+        _ = await second.value
+        let replanned = await waitUntil { await source.heldCount == width }
+        XCTAssertTrue(replanned, "残した読み込みも並列幅に数える")
+        for (offset, kept) in before.dropFirst().enumerated() {
+            XCTAssertEqual(kept?.intent, .prefetch, "ページ \(offset + 2) は新しい計画に残るので辞退させない")
+        }
+        let requests = await source.requests
+        for entry in 2...width {
+            XCTAssertEqual(requests.filter { $0.entryID == entry }.count, 1, "残したページ \(entry) を読み直さない")
+        }
+        let newcomer = await ticket(width + 1)
+        XCTAssertEqual(newcomer?.intent, .prefetch)
+
+        // 遠くへ移動: 移動先の計画から外れた先読みだけを辞退させる
+        book.goTo(index: 9)
+        XCTAssertEqual(newcomer?.intent, .prefetch, "移動の時点では辞退させない")
+        let far = Task { await book.currentSpread() }
+        let farStarted = await waitUntil { await source.requests.contains { $0.entryID == 9 } }
+        XCTAssertTrue(farStarted)
+        await releaseRequest(for: 9)
+        _ = await far.value
+        for kept in before.dropFirst() + [newcomer] {
+            XCTAssertEqual(kept?.intent, .declined, "計画から外れた先読みは辞退させる")
+        }
+        // 止めている読み込みをすべて放してから閉じる
+        for index in 0..<(await source.requestCount) { await source.release(index) }
+        let drained = await waitUntil {
+            for index in 0..<(await source.requestCount) { await source.release(index) }
+            return await source.heldCount == 0
+        }
+        XCTAssertTrue(drained)
+        await book.close().value
+    }
+
     // MARK: - 失効
 
     /// 設定の変更はキャッシュを捨て、遅れて届いた旧い印の読み込みを登録しない。待っていた image(at:) は
@@ -429,16 +502,18 @@ private actor PrintAppearanceStubSource: BookSource {
         case cancelled
     }
 
+    nonisolated let supportsParallelPageLoads: Bool
     private let pageCount: Int
     private let holds: Bool
     private var outcomes: [Outcome]
     private(set) var requests: [Request] = []
     private var held: [Int: CheckedContinuation<Void, Never>] = [:]
 
-    init(pageCount: Int = 4, holds: Bool = false, outcomes: [Outcome] = []) {
+    init(pageCount: Int = 4, holds: Bool = false, outcomes: [Outcome] = [], parallel: Bool = false) {
         self.pageCount = pageCount
         self.holds = holds
         self.outcomes = outcomes
+        supportsParallelPageLoads = parallel
     }
 
     var requestCount: Int { requests.count }

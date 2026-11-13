@@ -209,6 +209,39 @@ final class PrintAppearanceServiceTests: XCTestCase {
         XCTAssertEqual(stats.waitingPrefetch, 0)
     }
 
+    // MARK: - 再計画
+
+    /// replan は待っている先読みの仕事を辞退させずに、呼んだ順で後ろへ並べ直す。表示に上がった仕事・
+    /// 辞退した仕事・まだ届いていない仕事には何もしない
+    func testReplanReordersWaitingPrefetchJobsInCallOrder() async throws {
+        let engine = FakePrintAppearanceEngine()
+        let service = Self.service(engine)
+        let book = BookToken()
+        let blocker = engine.hold(1, at: 0)
+        var tasks = [Self.submit(service, 1)]
+        try await Self.reach(blocker)
+        let p10 = book.ticket(prefetch: true), p11 = book.ticket(prefetch: true), p12 = book.ticket(prefetch: true)
+        tasks.append(Self.submit(service, 10, ticket: p10))
+        try await Self.waitUntil(service) { $0.waitingPrefetch == 1 }
+        tasks.append(Self.submit(service, 11, ticket: p11))
+        try await Self.waitUntil(service) { $0.waitingPrefetch == 2 }
+        tasks.append(Self.submit(service, 12, ticket: p12))
+        try await Self.waitUntil(service) { $0.waitingPrefetch == 3 }
+        // 新しい計画の順: 12, 10(11 は計画に残らず後ろのまま。実際の Book では辞退させる)
+        p12.replan()
+        p10.replan()
+        let notYetSubmitted = book.ticket(prefetch: true)
+        notYetSubmitted.replan()
+        let display = book.ticket(prefetch: false)
+        display.replan()
+        XCTAssertEqual(service.stats().replannedJobs, 2)
+        XCTAssertEqual(p10.intent, .prefetch)
+        blocker.proceed.signal()
+        for task in tasks { _ = try await task.value }
+        XCTAssertEqual(engine.markers, [1, 11, 12, 10])
+        XCTAssertEqual(service.stats().declinedJobs, 0)
+    }
+
     // MARK: - 作業域の予約
 
     /// 予約はページの仕事より先にエンジンのキューで作業域を用意し、予約が積まれている間は大きなページの後でも
