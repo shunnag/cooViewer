@@ -119,8 +119,9 @@ final class BookPrintAppearanceTests: XCTestCase {
 
     // MARK: - 先読みの再計画
 
-    /// ページ移動では網点処理の先読みを辞退させない。移動先の見開きが揃ったら、新しい計画に残る先読みは
-    /// 読み直さずにそのまま残し(並列幅に数える)、計画から外れたものだけを辞退させる(設計書 §5)
+    /// ページ移動では、移動先の先読みの窓に入る網点処理の先読みを辞退させない。移動先の見開きが揃ったら、
+    /// 新しい計画に残る先読みは読み直さずにそのまま残し(並列幅に数える)、計画から外れたものだけを辞退させる。
+    /// 遠くへのジャンプでは、窓の外になった先読みを移動の時点で辞退させる(設計書 §5)
     func testNavigationKeepsPrefetchLoadsThatStayInTheNewPlan() async throws {
         let source = PrintAppearanceStubSource(pageCount: 12, holds: true, parallel: true)
         let book = try await Book.open(source: source, printAppearance: .standard)
@@ -169,17 +170,17 @@ final class BookPrintAppearanceTests: XCTestCase {
         let newcomer = await ticket(width + 1)
         XCTAssertEqual(newcomer?.intent, .prefetch)
 
-        // 遠くへ移動: 移動先の計画から外れた先読みだけを辞退させる
+        // 遠くへ移動: 移動先の窓の外になった先読みは移動の時点で辞退させる(移動先のデコードの間に
+        // エンジンが旧い計画のページを始めないように)
         book.goTo(index: 9)
-        XCTAssertEqual(newcomer?.intent, .prefetch, "移動の時点では辞退させない")
+        for kept in before.dropFirst() + [newcomer] {
+            XCTAssertEqual(kept?.intent, .declined, "窓の外の先読みは移動の時点で辞退させる")
+        }
         let far = Task { await book.currentSpread() }
         let farStarted = await waitUntil { await source.requests.contains { $0.entryID == 9 } }
         XCTAssertTrue(farStarted)
         await releaseRequest(for: 9)
         _ = await far.value
-        for kept in before.dropFirst() + [newcomer] {
-            XCTAssertEqual(kept?.intent, .declined, "計画から外れた先読みは辞退させる")
-        }
         // 止めている読み込みをすべて放してから閉じる
         for index in 0..<(await source.requestCount) { await source.release(index) }
         let drained = await waitUntil {

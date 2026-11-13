@@ -908,6 +908,7 @@ final class Book {
         explicitNavigationRevision &+= 1
         currentIndex += lastDisplayCount
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
         return .moved
     }
 
@@ -964,6 +965,7 @@ final class Book {
         explicitNavigationRevision &+= 1
         currentIndex += 1
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
         return .moved
     }
 
@@ -973,6 +975,7 @@ final class Book {
         explicitNavigationRevision &+= 1
         currentIndex -= 1
         lastMoveForward = false
+        declinePrefetchOutsideWindow()
         return .moved
     }
 
@@ -981,6 +984,7 @@ final class Book {
         guard !entries.isEmpty else { return }
         explicitNavigationRevision &+= 1
         currentIndex = min(max(0, index), entries.count - 1)
+        declinePrefetchOutsideWindow()
     }
 
     func goToFirst() {
@@ -988,6 +992,7 @@ final class Book {
         explicitNavigationRevision &+= 1
         currentIndex = 0
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
     }
 
     /// 末尾へ。見開きなら最終 2 枚がペアになる場合 count-2 に着地(仕様書 §4.3.3)。
@@ -1004,6 +1009,7 @@ final class Book {
         explicitNavigationRevision &+= 1
         currentIndex = start
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
         return true
     }
 
@@ -1198,11 +1204,29 @@ final class Book {
         for task in decodeTasks.values { task.cancel() }
     }
 
-    /// replanningPrefetch: ページ移動。網点処理の先読みは辞退させず、移動先の見開きが揃ったときの
+    /// replanningPrefetch: ページ移動。網点処理の先読みはここでは辞退させず、移動先が決まったら
+    /// declinePrefetchOutsideWindow で窓の外のものだけを辞退させ、残りは移動先の見開きが揃ったときの
     /// schedulePrefetch で新しい計画に残るかを決める(設計書 §5)。辞退させると、デコードと prepare を済ませて
     /// エンジンを待つページを捨て、新しい計画がすぐ同じページを読み直すため(1 秒に 1 回の 11.1 MP の見開きで
     /// 10 回のページ送りに 16〜19 件)。新しい計画は移動先が決まってからでないと作れない。
     /// 本の切替・閉じる・並べ替え・見開きの条件の変更では従来どおり全て辞退させる
+    /// ページ移動で移動先が決まった後: 移動先の先読みの窓(どちらの向きにも、見開き 1 つ分の余裕を含めて
+    /// 次の計画が取りうる範囲)の外にある網点処理の先読みを、すぐ辞退させる。遠くへのジャンプで旧い計画の
+    /// 仕事を残すと、移動先のページのデコードの間にエンジンがそれを始め、パス 1 を過ぎると止められずに
+    /// 移動先の表示を待たせるため(13.4 MP の見開きで実測。設計書 §5)
+    private func declinePrefetchOutsideWindow() {
+        guard !entries.isEmpty else { return }
+        let low = max(0, currentIndex - max(0, prefetchBehind))
+        let high = min(entries.count - 1, currentIndex + 1 + max(0, prefetchAhead))
+        let window = low <= high ? Set(entries[low...high].map(\.id)) : []
+        let outside = Set(inFlightLoads.compactMap { key, load in
+            load.prefetch && load.ticket != nil && !window.contains(key) ? key : nil
+        })
+        guard !outside.isEmpty else { return }
+        let inside = Set(inFlightLoads.keys).subtracting(outside)
+        declineQueuedPrefetchLoads(keeping: inside)
+    }
+
     private func invalidatePendingNavigation(replanningPrefetch: Bool = false) {
         navigationGeneration &+= 1
         stateRevision &+= 1

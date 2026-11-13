@@ -421,12 +421,13 @@ final class PrintAppearanceService: Sendable {
 
     /// 表示のページのデコードの間に、そのページの作業域をエンジンのキューで先に用意する(設計書 §5)。
     /// ページの仕事より先にキューへ積まれるので、確保はデコードと並んで進み、ページはそのまま処理を始められる。
-    /// 色のページになりうる(ヘッダがグレーでない)ページは、このプロセスでまだ 1 ページも処理していなければ
-    /// 予約しない(色の本では使わない作業域を持たないため)。メモリ圧迫が critical なら予約しない。
+    /// 色のページになりうる(ヘッダがグレーでない)ページは、直前の RGB のソースのページを処理したときだけ予約する
+    /// (色の本では使わない作業域を持たないため。最初の RGB のページと、色のページの次は予約しない)。
+    /// メモリ圧迫が critical なら予約しない。
     /// 予約したページがエンジンまで来なくても(色・取り消し・間引き)、予約の後に仕事がなければ解放の予約を立てる
     func reserve(width: Int, height: Int, colourPossible: Bool) {
         let accepted = state.withLock { state -> Bool in
-            guard state.pressure != .critical, !colourPossible || state.stats.processedPages > 0 else { return false }
+            guard state.pressure != .critical, !colourPossible || state.lastRGBSourceProcessed else { return false }
             state.pendingReservations += 1
             state.stats.reservations += 1
             return true
@@ -444,6 +445,12 @@ final class PrintAppearanceService: Sendable {
             }
             scheduleIdleReleaseIfQuiet()
         }
+    }
+
+    /// デコードの入口が RGB のソースのページの結果を知らせる: 処理した(色を保って明るさを変えた)か、
+    /// 色のページとして素通しにしたか。次の RGB のヘッダのページを予約するかを決める
+    func noteRGBSource(processed: Bool) {
+        state.withLock { $0.lastRGBSourceProcessed = processed }
     }
 
     // MARK: - 実行
@@ -768,6 +775,8 @@ private extension PrintAppearanceService {
         var idleCancel: DelayedScheduler.Cancel?
         /// キューに積んでまだ終わっていない作業域の予約
         var pendingReservations = 0
+        /// 直前の RGB のソースのページを処理したか(色のページなら偽)
+        var lastRGBSourceProcessed = false
         var stats = Stats()
 
         init(pressure: MemoryPressureLevel) {

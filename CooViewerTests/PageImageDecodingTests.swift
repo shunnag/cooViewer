@@ -278,13 +278,30 @@ final class PageImageDecodingTests: XCTestCase {
         let firstReserve = try XCTUnwrap(events.firstIndex { $0.hasPrefix("reserve") })
         XCTAssertEqual(events[firstReserve + 1].hasPrefix("process"), true, "\(events)")
 
-        // RGB のヘッダのページは、このサービスがまだ 1 ページも処理していなければ予約しない
+        // RGB のヘッダのページは、直前の RGB のソースのページを処理したときだけ予約する: 最初の RGB のページと
+        // 色のページの次は予約せず、色を保って処理したページの次は予約する
         let fresh = FakePrintAppearanceEngine()
         let freshService = Self.service(engine: fresh)
         let colour = try Self.colourJPEG(width: 600, height: 800)
+        let neutral = try Self.encode(Self.neutralRGBImage(
+            PrintAppearanceTestPages.screen(width: 300, height: 420, period: 4, angle: 45), width: 300, height: 420),
+            as: .png)
         _ = try await Self.decode(colour, cap: nil, target: nil, service: freshService)
         await freshService.flushForTesting()
         XCTAssertEqual(fresh.events, [], "色のページになりうるページで使わない作業域を持たない")
+        _ = try await Self.decode(neutral, cap: nil, target: nil, service: freshService)
+        await freshService.flushForTesting()
+        XCTAssertEqual(fresh.events.filter { $0.hasPrefix("reserve") }, [], "最初の RGB のページは予約しない")
+        _ = try await Self.decode(neutral, cap: nil, target: nil, service: freshService)
+        await freshService.flushForTesting()
+        XCTAssertEqual(fresh.events.filter { $0.hasPrefix("reserve") }.count, 1, "処理した RGB のページの次は予約する")
+        // 処理した RGB のページの次に来た色のページ自体は予約する(デコードするまで色と分からない)
+        _ = try await Self.decode(colour, cap: nil, target: nil, service: freshService)
+        await freshService.flushForTesting()
+        XCTAssertEqual(fresh.events.filter { $0.hasPrefix("reserve") }.count, 2)
+        _ = try await Self.decode(neutral, cap: nil, target: nil, service: freshService)
+        await freshService.flushForTesting()
+        XCTAssertEqual(fresh.events.filter { $0.hasPrefix("reserve") }.count, 2, "色のページの次は予約しない")
     }
 
     // MARK: - 補助

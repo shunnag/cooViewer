@@ -277,9 +277,10 @@ final class PrintAppearanceServiceTests: XCTestCase {
         XCTAssertEqual(engine.events.suffix(2), ["process(7)", "release(true)"])
     }
 
-    /// 色のページになりうるページは、このプロセスでまだ 1 ページも処理していなければ予約しない。
+    /// 色のページになりうるページは、直前の RGB のソースのページを処理したときだけ予約する(最初の RGB の
+    /// ページと色のページの次は予約しない。グレーのページを処理しても変わらない)。
     /// メモリ圧迫が critical なら予約しない
-    func testReservationSkipsPossibleColourBeforeFirstPageAndUnderCriticalPressure() async throws {
+    func testReservationSkipsPossibleColourUnlessLastRGBPageWasProcessedAndUnderCriticalPressure() async throws {
         let engine = FakePrintAppearanceEngine()
         let center = NotificationCenter()
         let pressure = MutablePressure()
@@ -290,14 +291,24 @@ final class PrintAppearanceServiceTests: XCTestCase {
         _ = try await Self.submit(service, 5).value
         service.reserve(width: 2000, height: 3000, colourPossible: true)
         await service.flushForTesting()
+        XCTAssertEqual(engine.events, ["process(5)"], "グレーのページを処理しただけでは予約しない")
+        service.noteRGBSource(processed: true)
+        service.reserve(width: 2000, height: 3000, colourPossible: true)
+        await service.flushForTesting()
         XCTAssertEqual(engine.events, ["process(5)", "reserve(2000x3000,6)"])
+        service.noteRGBSource(processed: false)
+        service.reserve(width: 2100, height: 3000, colourPossible: true)
+        service.reserve(width: 1500, height: 2000, colourPossible: false)
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events, ["process(5)", "reserve(2000x3000,6)", "reserve(1500x2000,6)"],
+                       "色のページの次は予約せず、グレーのヘッダのページは予約する")
         pressure.set(.critical, center: center)
         await service.flushForTesting()
         let before = engine.events.count
         service.reserve(width: 2000, height: 3000, colourPossible: false)
         await service.flushForTesting()
         XCTAssertFalse(engine.events.dropFirst(before).contains { $0.hasPrefix("reserve") })
-        XCTAssertEqual(service.stats().reservations, 1)
+        XCTAssertEqual(service.stats().reservations, 2)
     }
 
     // MARK: - 追い越し

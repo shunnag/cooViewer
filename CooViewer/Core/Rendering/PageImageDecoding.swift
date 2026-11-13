@@ -124,9 +124,11 @@ enum PageImageDecoding {
         switch prepared {
         case .unchanged(let image, let reason):
             service.recordPassThrough(reason)
+            if reason == .colour { service.noteRGBSource(processed: false) }
             return .unchanged(image, path: "pass-through-\(reason)")
         case .ready(let ready):
             page = ready
+            if ready.keepsColour { service.noteRGBSource(processed: true) }
         }
         let gray: PrintAppearanceGray
         let engineStart = ContinuousClock.now
