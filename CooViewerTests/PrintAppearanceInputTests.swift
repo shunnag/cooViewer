@@ -265,9 +265,10 @@ final class PrintAppearanceInputTests: XCTestCase {
         guard case .colour = try PageInput.redrawnLuma(image, mayBeColour: true) else {
             return XCTFail("色を数える指定なのに色ありにならない")
         }
-        guard case .luma(let luma) = try PageInput.redrawnLuma(image, mayBeColour: false) else {
+        guard case .luma(let luma, let redraw) = try PageInput.redrawnLuma(image, mayBeColour: false) else {
             return XCTFail("色を数えない指定なのに輝度を返さない")
         }
+        XCTAssertNil(redraw, "グレーのソースは描き直しを保たない")
         let weighted: Int = 299 * 255 + 587 * 128 + 114 * 128 + 500
         XCTAssertEqual(luma[9], UInt8(weighted / 1000))
         XCTAssertEqual(luma[1], 128)

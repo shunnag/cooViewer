@@ -30,6 +30,13 @@ import ImageIO
 //     Y = (299 R + 587 G + 114 B + 500) / 1000 を整数で求める。
 //   色: ヘッダの色モデルがグレー、または不透明な 1 チャンネルのデコードは色なし。それ以外は同じ描き直しの上で
 //     max - min >= 32 の画素の割合が 0.5% を超えれば色あり。描き直しは 1 回で、輝度・色・透明度に使う。
+//
+// 完成画像の色(設計書 §5。変えるのは明るさだけで、ファイルの色は保つ):
+//   1 チャンネルのグレーのソース(ヘッダの色モデルがグレー、または不透明な 1 チャンネルのデコード)は
+//     グレーの L' にする。描き直しは輝度を求めたら手放す。
+//   それ以外(RGB と索引色)で色なしと判定したページは、描き直しをページに持たせて recolour まで保ち、
+//     各画素に輝度の差 d = L' - L を足した sRGB の RGB にする(PageOutput.swift)。薄い色のインクで刷った
+//     ページや、黄ばんだ紙のページの色を灰色にしないため。
 
 enum PageInput {
     static func prepare(_ data: Data, maxPixels: Int) throws -> PrintAppearancePreparation {
@@ -62,8 +69,8 @@ enum PageInput {
             return .passThrough(.transparency, raw: image)
         case .colour:
             return .passThrough(.colour, raw: image)
-        case .luma(let luma):
-            return .ready(PrintAppearancePage(checked: luma, width: width, height: height))
+        case .luma(let luma, let redraw):
+            return .ready(PrintAppearancePage(checked: luma, width: width, height: height, redraw: redraw))
         }
     }
 
@@ -134,12 +141,14 @@ enum PageInput {
     }
 
     enum Redrawn {
-        case luma([UInt8])
+        /// 輝度と、色を戻すための描き直し(mayBeColour のときだけ。グレーのソースは nil)
+        case luma([UInt8], SRGBRedraw?)
         case colour
         case transparent
     }
 
-    /// sRGB RGBA へ 1 回描き直し、透明度・輝度・色を調べる
+    /// sRGB RGBA へ 1 回描き直し、透明度・輝度・色を調べる。mayBeColour(RGB のソース)で色なしなら、
+    /// 完成画像の色に使うので描き直しを返す
     static func redrawnLuma(_ image: CGImage, mayBeColour: Bool) throws -> Redrawn {
         let w = image.width, h = image.height
         guard let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
@@ -176,7 +185,7 @@ enum PageInput {
             }
         }
         if mayBeColour && Double(colourPixels) / Double(w * h) > Params.printAppearance.colourFrac { return .colour }
-        return .luma(out)
+        return .luma(out, mayBeColour ? SRGBRedraw(context: context, base: base) : nil)
     }
 
     // MARK: - 縮小

@@ -70,6 +70,27 @@ enum PrintAppearanceTestPages {
         return out
     }
 
+    /// 輝度のページを、インク(値 20)と紙(値 240)の 2 色の間の色で塗った sRGB の画素にする
+    /// (1 画素 4 バイト R, G, B, 255)。2 色とも最大と最小の差を 32 未満にすれば、混ざった画素も含めて
+    /// 色なしの判定になる(差は 2 色の差の内分に丸めの 1 を足した値を超えない)
+    static func tinted(_ values: [UInt8], ink: [UInt8], paper: [UInt8]) -> [UInt8] {
+        var out = [UInt8](repeating: 255, count: values.count * 4)
+        for i in 0..<values.count {
+            let f = min(1, max(0, (Double(values[i]) - 20) / 220))
+            for c in 0..<3 {
+                out[4 * i + c] = clampByte(Double(ink[c]) + (Double(paper[c]) - Double(ink[c])) * f)
+            }
+        }
+        return out
+    }
+
+    /// 紫の 1 色刷り: 薄い紫のインクの網点と白い紙(どちらも最大と最小の差が 32 未満)
+    static let purpleInk: [UInt8] = [100, 78, 108]
+    static let whitePaper: [UInt8] = [248, 246, 250]
+    /// 黄ばんだ紙: 墨の網点とクリーム色の紙(どちらも最大と最小の差が 32 未満)
+    static let blackInk: [UInt8] = [38, 34, 30]
+    static let creamPaper: [UInt8] = [242, 234, 214]
+
     /// 帯 index(mix の 4 段のうち)の内側の矩形(端から margin px 離す)
     static func mixBand(_ index: Int, width: Int, height: Int, margin: Int = 64) -> (x0: Int, y0: Int, x1: Int, y1: Int) {
         let y0 = height * index / 4, y1 = height * (index + 1) / 4

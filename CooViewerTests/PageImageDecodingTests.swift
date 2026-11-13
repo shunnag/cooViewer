@@ -7,9 +7,10 @@ import XCTest
 @testable import PrintAppearanceKit
 
 /// ページのデコードの入口の検査(設計書 §5): 網点処理の要求がなければ ImageDecoding.decode と同じ画素、
-/// 素通しのページは要求があっても同じ画素(上限の内でも外でも)、処理するページは原寸で処理してから縮めた
-/// 1 チャンネルの Generic Gray 2.2。画像はすべてテストの中で合成する。
-/// 処理の期待値は CPU の厳密な経路のエンジンで prepare + process を直接呼んで作る(GPU に依存しない)
+/// 素通しのページは要求があっても同じ画素(上限の内でも外でも)、処理するページは原寸で処理・仕上げしてから
+/// 縮めた完成画像(1 チャンネルのグレーのソースは Generic Gray 2.2、RGB のソースは色を保った sRGB の RGB)。
+/// 画像はすべてテストの中で合成する。処理の期待値は CPU の厳密な経路のエンジンで prepare + process +
+/// recolour を直接呼んで作る(GPU に依存しない)
 final class PageImageDecodingTests: XCTestCase {
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
     private static let p3 = CGColorSpace(name: CGColorSpace.displayP3)!
@@ -99,50 +100,108 @@ final class PageImageDecodingTests: XCTestCase {
         XCTAssertEqual(service.stats().processedPages, 3 * Self.targets.count)
     }
 
-    /// 無彩色の RGB のページも 1 チャンネルの Generic Gray 2.2 になる(PNG と JPEG)
-    func testNeutralRGBPageIsProcessedToGenericGray() async throws {
+    /// 無彩色の RGB のページは sRGB の RGB のまま R = G = B = L' になる(PNG。JPEG は prepare + process +
+    /// recolour と同じバイト)。表示先があればその空間へ、切ったときの RGB のページと同じ変換をかける
+    func testNeutralRGBPageStaysRGBWithEqualChannels() async throws {
         let service = Self.service()
         let luma = PrintAppearanceTestPages.mix(width: 384, height: 512)
         for type in [UTType.png, .jpeg] {
             let data = try Self.encode(Self.neutralRGBImage(luma, width: 384, height: 512), as: type,
                                        properties: [kCGImageDestinationLossyCompressionQuality: 0.9])
             let expected = try Self.expected(data, level: .strong, cap: nil)
-            let image = try await Self.decode(data, cap: nil, target: DisplayColorTarget(rgb: Self.p3),
-                                              service: service, level: .strong)
-            Self.assertGenericGray(image)
+            let image = try await Self.decode(data, cap: nil, target: nil, service: service, level: .strong)
+            Self.assertSRGB(image)
             Self.assertIdentical(image, expected, type.identifier)
+            if type == .png {
+                let processed = try Self.processedLuma(data, level: .strong)
+                XCTAssertNotEqual(processed, luma, "細かい網点は変わる")
+                XCTAssertEqual(Self.channels(image), [processed, processed, processed], "R = G = B = L'")
+            }
+            let p3 = DisplayColorTarget(rgb: Self.p3)
+            let converted = try await Self.decode(data, cap: nil, target: p3, service: service, level: .strong)
+            Self.assertIdentical(converted, try XCTUnwrap(p3.converted(expected)), "\(type.identifier) P3")
         }
     }
 
-    /// エンジンが 1 画素も変えないページも、処理したページとして同じグレーを返す
-    func testUnchangedPageStillComesBackGray() async throws {
+    /// 薄い色の 1 色刷りとクリーム色の紙のページは、デコードの入口からも色を保って返る:
+    /// prepare + process + recolour と同じバイトで、ファイルの各画素のチャンネルの差を保つ(収めた画素を除く)
+    func testTintedPagesKeepTheirColourThroughDecode() async throws {
+        let service = Self.service()
+        let luma = PrintAppearanceTestPages.screen(width: 600, height: 900, period: 3, angle: 45)
+        let pages: [(String, [UInt8], [UInt8])] = [
+            ("紫の 1 色刷り", PrintAppearanceTestPages.purpleInk, PrintAppearanceTestPages.whitePaper),
+            ("クリーム色の紙", PrintAppearanceTestPages.blackInk, PrintAppearanceTestPages.creamPaper),
+        ]
+        for (name, ink, paper) in pages {
+            let tinted = PrintAppearanceTestPages.tinted(luma, ink: ink, paper: paper)
+            let data = try Self.encode(Self.image(width: 600, height: 900, bitsPerPixel: 32, space: Self.sRGB,
+                                                  alpha: .noneSkipLast, bytes: tinted), as: .png)
+            let image = try await Self.decode(data, cap: nil, target: DisplayColorTarget(rgb: Self.sRGB),
+                                              service: service)
+            Self.assertSRGB(image)
+            Self.assertIdentical(image, try Self.expected(data, level: .standard, cap: nil), name)
+            let before = try Self.readyPage(data).luma
+            let after = try Self.processedLuma(data, level: .standard)
+            let out = Self.channels(image)
+            var kept = 0, moved = 0
+            for i in 0..<luma.count {
+                let s = (Int(tinted[4 * i]), Int(tinted[4 * i + 1]), Int(tinted[4 * i + 2]))
+                let o = (Int(out[0][i]), Int(out[1][i]), Int(out[2][i]))
+                // 0〜255 に収めた画素(ファイルの値 + d がどれかのチャンネルで範囲を出る)は差が変わり得るので除く
+                let d = Int(after[i]) - Int(before[i])
+                guard [s.0 + d, s.1 + d, s.2 + d].allSatisfy({ (0...255).contains($0) }) else { continue }
+                guard o.0 - o.1 == s.0 - s.1, o.1 - o.2 == s.1 - s.2 else {
+                    return XCTFail("\(name): チャンネルの差が変わった (\(i)): \(s) → \(o)")
+                }
+                kept += 1
+                if d != 0 { moved += 1 }
+            }
+            XCTAssertGreaterThan(kept, luma.count * 9 / 10, name)
+            XCTAssertGreaterThan(moved, luma.count / 3, "\(name): 細かい網点がまとまっていない")
+        }
+        XCTAssertEqual(service.stats().processedPages, 2)
+    }
+
+    /// エンジンが 1 画素も変えないページも処理したページとして返す: グレーのソースは同じグレー、
+    /// RGB のソースは描き直しと同じ RGB
+    func testUnchangedPageStillComesBackFinished() async throws {
         let service = Self.service()
         let flat = PrintAppearanceTestPages.flat(width: 300, height: 420, value: 128)
         let gray = try Self.grayPNG(flat, width: 300, height: 420)
         let rgb = try Self.encode(Self.neutralRGBImage(flat, width: 300, height: 420), as: .png)
-        for data in [gray, rgb] {
-            let image = try await Self.decode(data, cap: nil, target: DisplayColorTarget(rgb: Self.sRGB),
+        let grayImage = try await Self.decode(gray, cap: nil, target: DisplayColorTarget(rgb: Self.sRGB),
                                               service: service)
-            Self.assertGenericGray(image)
-            XCTAssertEqual(Self.grayBytes(image), flat)
-        }
+        Self.assertGenericGray(grayImage)
+        XCTAssertEqual(Self.grayBytes(grayImage), flat)
+        let rgbImage = try await Self.decode(rgb, cap: nil, target: DisplayColorTarget(rgb: Self.sRGB),
+                                             service: service)
+        Self.assertSRGB(rgbImage)
+        XCTAssertEqual(Self.channels(rgbImage), [flat, flat, flat])
         let stats = service.stats()
         XCTAssertEqual(stats.processedPages, 2)
         XCTAssertEqual(stats.unchangedPages, 2)
     }
 
-    /// 上限を超えるページは原寸で処理してから cappedDimensions の大きさへ縮める
+    /// 上限を超えるページは原寸で処理・仕上げしてから cappedDimensions の大きさへ縮める
+    /// (グレーのソースはグレー、RGB のソースは RGB のまま)
     func testPageAboveCapIsProcessedAtFullSizeThenReduced() async throws {
         let service = Self.service()
         let luma = PrintAppearanceTestPages.mix(width: 400, height: 600)
-        let data = try Self.grayPNG(luma, width: 400, height: 600)
-        for cap in [300, 590, 150] {
-            let image = try await Self.decode(data, cap: cap, target: nil, service: service)
-            let size = try XCTUnwrap(ImageDecoding.cappedDimensions(width: 400, height: 600, cap: cap))
-            XCTAssertEqual(image.width, size.width)
-            XCTAssertEqual(image.height, size.height)
-            Self.assertGenericGray(image)
-            Self.assertIdentical(image, try Self.expected(data, level: .standard, cap: cap), "cap \(cap)")
+        let gray = try Self.grayPNG(luma, width: 400, height: 600)
+        let tinted = try Self.encode(Self.image(
+            width: 400, height: 600, bitsPerPixel: 32, space: Self.sRGB, alpha: .noneSkipLast,
+            bytes: PrintAppearanceTestPages.tinted(luma, ink: PrintAppearanceTestPages.purpleInk,
+                                                   paper: PrintAppearanceTestPages.whitePaper)), as: .png)
+        for (data, isRGB) in [(gray, false), (tinted, true)] {
+            for cap in [300, 590, 150] {
+                let image = try await Self.decode(data, cap: cap, target: nil, service: service)
+                let size = try XCTUnwrap(ImageDecoding.cappedDimensions(width: 400, height: 600, cap: cap))
+                XCTAssertEqual(image.width, size.width)
+                XCTAssertEqual(image.height, size.height)
+                if isRGB { Self.assertSRGB(image) } else { Self.assertGenericGray(image) }
+                Self.assertIdentical(image, try Self.expected(data, level: .standard, cap: cap),
+                                     "cap \(cap) RGB \(isRGB)")
+            }
         }
     }
 
@@ -220,18 +279,32 @@ final class PageImageDecodingTests: XCTestCase {
         }
     }
 
-    /// prepare + CPU の厳密な経路の process(+ 上限を超えれば reduce)で作った期待値
+    /// prepare + CPU の厳密な経路の process + recolour(+ 上限を超えれば reduce)で作った期待値
     private static func expected(_ data: Data, level: PrintAppearanceLevel, cap: Int?) throws -> CGImage {
+        let page = try readyPage(data)
+        let gray = try PrintAppearanceEngine(mode: .cpuOnly).process(page, level: level, threads: 4)
+        var output = try PrintAppearance.recolour(page, processed: gray)
+        if let cap, max(output.width, output.height) > cap {
+            let size = try XCTUnwrap(ImageDecoding.cappedDimensions(width: output.width, height: output.height,
+                                                                    cap: cap))
+            output = try PrintAppearance.reduce(output, width: size.width, height: size.height)
+        }
+        return try XCTUnwrap(output.makeImage())
+    }
+
+    /// prepare + CPU の厳密な経路の process のエンジンの出力 L'(行の詰め物なし)
+    private static func processedLuma(_ data: Data, level: PrintAppearanceLevel) throws -> [UInt8] {
+        let gray = try PrintAppearanceEngine(mode: .cpuOnly).process(try readyPage(data), level: level, threads: 4)
+        guard let image = gray.makeImage() else { throw PrintAppearanceError.invalidPage("画像化") }
+        return rows(image)
+    }
+
+    private static func readyPage(_ data: Data) throws -> PrintAppearancePage {
         guard case .ready(let page) = try PrintAppearance.prepare(data, maxPixels: 16_000_000) else {
             XCTFail("処理するはずのページが素通し")
             throw PrintAppearanceError.invalidPage("素通し")
         }
-        var gray = try PrintAppearanceEngine(mode: .cpuOnly).process(page, level: level, threads: 4)
-        if let cap, max(gray.width, gray.height) > cap {
-            let size = try XCTUnwrap(ImageDecoding.cappedDimensions(width: gray.width, height: gray.height, cap: cap))
-            gray = try PrintAppearance.reduce(gray, width: size.width, height: size.height)
-        }
-        return try XCTUnwrap(gray.makeImage())
+        return page
     }
 
     private static func name(_ target: DisplayColorTarget?) -> String {
@@ -274,6 +347,23 @@ final class PageImageDecodingTests: XCTestCase {
     private static func grayBytes(_ image: CGImage) -> [UInt8] {
         XCTAssertEqual(image.bitsPerPixel, 8)
         return rows(image)
+    }
+
+    /// 色を保った完成画像の形式: sRGB の 8 bit、1 画素 4 バイト(4 番目は使わない)
+    private static func assertSRGB(_ image: CGImage, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(image.bitsPerComponent, 8, file: file, line: line)
+        XCTAssertEqual(image.bitsPerPixel, 32, file: file, line: line)
+        XCTAssertEqual(image.alphaInfo, .noneSkipLast, file: file, line: line)
+        XCTAssertEqual(image.colorSpace?.name as String?, CGColorSpace.sRGB as String, file: file, line: line)
+    }
+
+    /// sRGB の完成画像の R・G・B の面(行の詰め物と 4 番目を除く)
+    private static func channels(_ image: CGImage) -> [[UInt8]] {
+        XCTAssertEqual(image.bitsPerPixel, 32)
+        let bytes = rows(image)
+        var planes = [[UInt8]](repeating: [], count: 3)
+        for c in 0..<3 { planes[c] = stride(from: c, to: bytes.count, by: 4).map { bytes[$0] } }
+        return planes
     }
 
     private static func image(width: Int, height: Int, bitsPerPixel: Int, space: CGColorSpace,

@@ -5,9 +5,10 @@ import Foundation
 // 公開 API(設計書 §5)。アプリの型には依存しない。演算は移植したエンジン
 // (Descreener ほか)がそのまま行い、ここは入出力の形とモードだけを定める。
 // どのページを処理するかは prepare(PageInput.swift)が、どう止めて戻すかはエンジン
-// (PrintAppearanceEngine.swift)が決める。
+// (PrintAppearanceEngine.swift)が、エンジンの出力をどの色の完成画像にするかは recolour
+// (PageOutput.swift)が決める。
 
-/// 版、ページの受け付け、段階の解決、縮小。
+/// 版、ページの受け付け、段階の解決、完成画像への仕上げ、縮小。
 public enum PrintAppearance {
     /// 出力のバイトが変わり得る変更のたびに上げる。キャッシュのタグに入る
     public static let engineVersion = 1
@@ -39,6 +40,31 @@ public enum PrintAppearance {
     public static func reduce(_ page: PrintAppearanceGray, width: Int, height: Int) throws -> PrintAppearanceGray {
         try PageInput.reduce(page, width: width, height: height)
     }
+
+    /// 色を保った RGB のページを width x height へ縮める。グレーと同じ高品質の再標本化を
+    /// 各チャンネルに独立にかける。changed は引き継ぐ
+    public static func reduce(_ page: PrintAppearanceRGB, width: Int, height: Int) throws -> PrintAppearanceRGB {
+        try PageOutput.reduce(page, width: width, height: height)
+    }
+
+    /// 完成したページを width x height へ縮める(グレーはグレーのまま、RGB は RGB のまま)
+    public static func reduce(_ page: PrintAppearanceOutput, width: Int, height: Int) throws -> PrintAppearanceOutput {
+        switch page {
+        case .gray(let gray): return .gray(try reduce(gray, width: width, height: height))
+        case .rgb(let rgb): return .rgb(try reduce(rgb, width: width, height: height))
+        }
+    }
+
+    /// エンジンの出力(輝度 L')をファイルの色に戻した完成画像にする。変えるのは明るさだけ(設計書 §5)。
+    /// 1 チャンネルのグレーのソースは processed をそのまま返す。RGB のソースは prepare が作った sRGB の
+    /// 描き直しの各画素 (R, G, B) に d = L' - L(L はその画素の輝度)を足し、0〜255 に収めた sRGB の RGB にする。
+    /// 輝度の重みの和が 1000 なので、どのチャンネルも収める必要のない画素では出力の輝度がちょうど L' になり、
+    /// L' == L の画素は描き直しのまま、R = G = B のページは R = G = B = L' になる。
+    /// page は prepare が返したもの、processed はそのページのエンジンの出力。大きさが違えば投げる
+    public static func recolour(_ page: PrintAppearancePage,
+                                processed: PrintAppearanceGray) throws -> PrintAppearanceOutput {
+        try PageOutput.recolour(page, processed: processed)
+    }
 }
 
 /// 強さの段階。値は設定キーに保存する整数と一致させる
@@ -49,11 +75,19 @@ public enum PrintAppearanceLevel: Int, Sendable, CaseIterable {
 }
 
 /// エンジンへの入力: 8 bit の輝度(上の行から順、行の詰め物なし)。
+/// RGB のソースは、色を戻すための sRGB の描き直しも持つ(1 画素 4 バイト。輝度と合わせて 5 バイト)。
+/// エンジンの処理を待つ間と処理中もこれを保ち、recolour で完成画像にしたら手放す(設計書 §5)
 public struct PrintAppearancePage: Sendable {
     public let width: Int
     public let height: Int
     public let luma: [UInt8]
+    /// RGB のソースの sRGB の描き直し。1 チャンネルのグレーのソースと、輝度から直接作ったページは nil
+    let redraw: SRGBRedraw?
 
+    /// 完成画像がファイルの色を保った RGB になるか(偽なら 1 チャンネルのグレー)
+    public var keepsColour: Bool { redraw != nil }
+
+    /// 輝度だけのページ(完成画像はグレー)
     public init(luma: [UInt8], width: Int, height: Int) throws {
         guard width > 0, height > 0, luma.count == width * height else {
             throw PrintAppearanceError.invalidPage("輝度の大きさが幅×高さと一致しない")
@@ -61,11 +95,34 @@ public struct PrintAppearancePage: Sendable {
         self.init(checked: luma, width: width, height: height)
     }
 
-    /// 大きさを確かめ済みの輝度から作る
-    init(checked luma: [UInt8], width: Int, height: Int) {
+    /// 大きさを確かめ済みの輝度から作る。redraw は同じ大きさの描き直しで、luma はその輝度
+    init(checked luma: [UInt8], width: Int, height: Int, redraw: SRGBRedraw? = nil) {
         self.width = width
         self.height = height
         self.luma = luma
+        self.redraw = redraw
+    }
+}
+
+/// prepare が輝度と色の判定に使った sRGB の描き直し(8 bit RGBA、premultipliedLast、全画素が不透明なので
+/// 値は乗算前と同じ)。描いた後は書き換えず、読むだけなので、どのスレッドから読んでもよい
+/// (@unchecked Sendable の根拠)。描いた文脈ごと持つのは、バイト列を複製せず、輝度を求めたときと
+/// 同じ描き直しをそのまま使うため
+final class SRGBRedraw: @unchecked Sendable {
+    /// バイト列の持ち主。描いた後は触らない
+    private let context: CGContext
+    let base: UnsafePointer<UInt8>
+    let bytesPerRow: Int
+    let width: Int
+    let height: Int
+
+    /// base は context のバイト列の先頭
+    init(context: CGContext, base: UnsafeMutablePointer<UInt8>) {
+        self.context = context
+        self.base = UnsafePointer(base)
+        bytesPerRow = context.bytesPerRow
+        width = context.width
+        height = context.height
     }
 }
 
@@ -138,6 +195,75 @@ public struct PrintAppearanceGray: Sendable {
         return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: bytesPerRow,
                        space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
+/// 色を保った完成画像: 8 bit の sRGB、1 画素 4 バイト(R, G, B, 255 の順。4 番目は使わない)。
+/// 行は 16 バイト境界に揃える。網点処理を切ったときの RGB のファイルと同じ 1 画素 4 バイト
+public struct PrintAppearanceRGB: Sendable {
+    public let width: Int
+    public let height: Int
+    public let bytesPerRow: Int
+    /// bytesPerRow × height バイト。行末の詰め物は 0
+    public let pixels: Data
+    /// エンジンが輝度を 1 画素でも変えたか(稼働状況の集計用)
+    public let changed: Bool
+
+    /// 16 バイト境界に揃えた 1 行のバイト数
+    static func alignedRowBytes(_ width: Int) -> Int { (width * 4 + 15) & ~15 }
+
+    init(width: Int, height: Int, bytesPerRow: Int, pixels: Data, changed: Bool) {
+        self.width = width
+        self.height = height
+        self.bytesPerRow = bytesPerRow
+        self.pixels = pixels
+        self.changed = changed
+    }
+
+    /// sRGB の 8 bit 画像として包む(バイト列は複製しない)。描き直しと同じ空間なので、
+    /// ファイルの色はそのまま表示先の変換へ渡る
+    public func makeImage() -> CGImage? {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let provider = CGDataProvider(data: pixels as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                       space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
+/// 完成画像(recolour の結果)。1 チャンネルのグレーのソースはグレー、RGB のソースは色を保った RGB
+public enum PrintAppearanceOutput: Sendable {
+    case gray(PrintAppearanceGray)
+    case rgb(PrintAppearanceRGB)
+
+    public var width: Int {
+        switch self {
+        case .gray(let gray): gray.width
+        case .rgb(let rgb): rgb.width
+        }
+    }
+
+    public var height: Int {
+        switch self {
+        case .gray(let gray): gray.height
+        case .rgb(let rgb): rgb.height
+        }
+    }
+
+    /// エンジンが輝度を 1 画素でも変えたか
+    public var changed: Bool {
+        switch self {
+        case .gray(let gray): gray.changed
+        case .rgb(let rgb): rgb.changed
+        }
+    }
+
+    /// グレーは Generic Gray 2.2、RGB は sRGB の 8 bit 画像として包む
+    public func makeImage() -> CGImage? {
+        switch self {
+        case .gray(let gray): gray.makeImage()
+        case .rgb(let rgb): rgb.makeImage()
+        }
     }
 }
 
