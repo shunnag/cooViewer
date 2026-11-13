@@ -25,7 +25,11 @@ import ImageIO
 //   CGImageSourceCopyPropertiesAtIndex やゲインマップの問い合わせをすると、JPEG によってはデコード結果が
 //   ±1 変わる(実測)。検証済みの実装とアプリの上限なしの経路(ImageDecoding の最後の分岐)は問い合わせずに
 //   デコードする。上限ありの経路は先にヘッダを読むので、素通しの raw はそちらとは一致しないことがある。
-//   輝度: 8 bit・不透明・1 チャンネルで色空間の名前が Generic Gray Gamma 2.2 の画像は標本のバイトをそのまま使う。
+//   ヘッダの色モデルがグレーのページだけは、同じく何も問い合わせていないソースから ShouldCache を切った
+//   遅延デコードの画像を作り、輝度の領域へ描く中でデコードする(全面のデコード結果を ImageIO が malloc に
+//   作らないため。設計書 §2.3。輝度・判定・raw が従来の呼び出しと同じになることをコーパスの全ページで確かめた)。
+//   輝度: 8 bit・不透明・1 チャンネルで色空間の名前が Generic Gray Gamma 2.2 の画像は標本のバイトをそのまま使う
+//     (同じ形式・同じ色空間の文脈へ等倍で描いて得る)。
 //     それ以外は 0 で埋めた 8 bit sRGB RGBA(premultipliedLast)の文脈へ描き直し、
 //     Y = (299 R + 587 G + 114 B + 500) / 1000 を整数で求める。
 //   色: ヘッダの色モデルがグレー、または不透明な 1 チャンネルのデコードは色なし。それ以外は同じ描き直しの上で
@@ -52,26 +56,39 @@ enum PageInput {
                                        maxPixels: maxPixels) {
             return .passThrough(verdict, raw: nil)
         }
-        let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+        let headerGray = (properties[kCGImagePropertyColorModel] as? String) == (kCGImagePropertyColorModelGray as String)
+        // ヘッダがグレーのページは遅延デコードの画像から輝度の領域へ直接描く(デコードはその描画の中で起き、
+        // ImageIO が全面のデコード結果を malloc に作らない。手放したそれが large-entry キャッシュに残るため。
+        // 設計書 §2.3)。グレーのページは色で素通しにならないので、素通しの raw が要るのはまれな透明度・形式の
+        // ときだけで、そのときは従来と同じ呼び出しでデコードし直す。RGB のヘッダのページは色のページとして
+        // 素通しになりうる(raw を表示に使う)ので、従来どおり先にデコードする
+        let options = (headerGray ? [kCGImageSourceShouldCache: false]
+            : [kCGImageSourceShouldCacheImmediately: true]) as CFDictionary
         guard let decoder = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(decoder, 0, options) else {
             return .passThrough(.format, raw: nil)
         }
+        func raw() -> CGImage? { headerGray ? fullDecode(data) : image }
         if let verdict = decodedVerdict(image, width: width, height: height) {
-            return .passThrough(verdict, raw: image)
+            return .passThrough(verdict, raw: raw())
         }
-        let headerGray = (properties[kCGImagePropertyColorModel] as? String) == (kCGImagePropertyColorModelGray as String)
         if let luma = try directLuma(image) {
             return .ready(PrintAppearancePage(checked: luma, width: width, height: height))
         }
         switch try redrawnLuma(image, mayBeColour: !headerGray && !isOpaqueOneChannel(image)) {
         case .transparent:
-            return .passThrough(.transparency, raw: image)
+            return .passThrough(.transparency, raw: raw())
         case .colour:
-            return .passThrough(.colour, raw: image)
+            return .passThrough(.colour, raw: raw())
         case .luma(let luma, let redraw):
             return .ready(PrintAppearancePage(checked: luma, width: width, height: height, redraw: redraw))
         }
+    }
+
+    /// 何も問い合わせていない新しいソースからの全面のデコード(ShouldCacheImmediately だけ。素通しの raw)
+    static func fullDecode(_ data: Data) -> CGImage? {
+        guard let decoder = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(decoder, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
     }
 
     /// 作業域の予約に使う大きさ(PrintAppearance.reservationSize)。ゲインマップの問い合わせはしない
@@ -145,18 +162,23 @@ enum PageInput {
 
     /// 8 bit・不透明・1 チャンネル・Generic Gray Gamma 2.2 の画像の標本のバイト(行の詰め物を除く)。
     /// この画像を sRGB へ描き直すと v はそのまま v になるので、描き直しと同じ輝度になる。
-    /// 輝度は仮想記憶の領域に置く(設計書 §2.3)
+    /// 輝度は仮想記憶の領域に置き(設計書 §2.3)、同じ形式・同じ色空間の文脈へ等倍で描いて得る: 色の変換も
+    /// 補間も起きないので標本のバイトそのものになり(コーパスの全ページで確かめた)、遅延デコードの画像では
+    /// デコードがこの描画の中で起きる
     static func directLuma(_ image: CGImage) throws -> PageBuffer? {
         guard image.bitsPerComponent == 8, image.bitsPerPixel == 8, image.alphaInfo == .none,
               let space = image.colorSpace, space.model == .monochrome,
               (space.name as String?) == (CGColorSpace.genericGrayGamma2_2 as String),
-              image.bitmapInfo.intersection(.floatComponents).isEmpty,
-              let data = image.dataProvider?.data, let base = CFDataGetBytePtr(data) else { return nil }
-        let w = image.width, h = image.height, bpr = image.bytesPerRow
-        guard CFDataGetLength(data) >= bpr * (h - 1) + w else { return nil }
+              image.bitmapInfo.intersection(.floatComponents).isEmpty else { return nil }
+        let w = image.width, h = image.height
         let out = try PageBuffer(byteCount: w * h)
-        let o = out.bytes
-        for y in 0..<h { memcpy(o + y * w, base + y * bpr, w) }
+        // 文脈は領域を保持しないので、描き終えるまで持ち主を保つ(戻り値で保たれる)
+        guard let context = CGContext(data: out.base, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
+            throw PrintAppearanceError.allocationFailed("輝度の文脈 \(w)x\(h)")
+        }
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         return out
     }
 
