@@ -61,7 +61,7 @@ enum PageInput {
             return .passThrough(verdict, raw: image)
         }
         let headerGray = (properties[kCGImagePropertyColorModel] as? String) == (kCGImagePropertyColorModelGray as String)
-        if let luma = directLuma(image) {
+        if let luma = try directLuma(image) {
             return .ready(PrintAppearancePage(checked: luma, width: width, height: height))
         }
         switch try redrawnLuma(image, mayBeColour: !headerGray && !isOpaqueOneChannel(image)) {
@@ -124,8 +124,9 @@ enum PageInput {
     }
 
     /// 8 bit・不透明・1 チャンネル・Generic Gray Gamma 2.2 の画像の標本のバイト(行の詰め物を除く)。
-    /// この画像を sRGB へ描き直すと v はそのまま v になるので、描き直しと同じ輝度になる
-    static func directLuma(_ image: CGImage) -> [UInt8]? {
+    /// この画像を sRGB へ描き直すと v はそのまま v になるので、描き直しと同じ輝度になる。
+    /// 輝度は仮想記憶の領域に置く(設計書 §2.3)
+    static func directLuma(_ image: CGImage) throws -> PageBuffer? {
         guard image.bitsPerComponent == 8, image.bitsPerPixel == 8, image.alphaInfo == .none,
               let space = image.colorSpace, space.model == .monochrome,
               (space.name as String?) == (CGColorSpace.genericGrayGamma2_2 as String),
@@ -133,32 +134,36 @@ enum PageInput {
               let data = image.dataProvider?.data, let base = CFDataGetBytePtr(data) else { return nil }
         let w = image.width, h = image.height, bpr = image.bytesPerRow
         guard CFDataGetLength(data) >= bpr * (h - 1) + w else { return nil }
-        var out = [UInt8](repeating: 0, count: w * h)
-        out.withUnsafeMutableBufferPointer { o in
-            for y in 0..<h { memcpy(o.baseAddress! + y * w, base + y * bpr, w) }
-        }
+        let out = try PageBuffer(byteCount: w * h)
+        let o = out.bytes
+        for y in 0..<h { memcpy(o + y * w, base + y * bpr, w) }
         return out
     }
 
     enum Redrawn {
         /// 輝度と、色を戻すための描き直し(mayBeColour のときだけ。グレーのソースは nil)
-        case luma([UInt8], SRGBRedraw?)
+        case luma(PageBuffer, SRGBRedraw?)
         case colour
         case transparent
     }
 
     /// sRGB RGBA へ 1 回描き直し、透明度・輝度・色を調べる。mayBeColour(RGB のソース)で色なしなら、
-    /// 完成画像の色に使うので描き直しを返す
+    /// 完成画像の色に使うので描き直しを返す。
+    /// 描き直しと輝度は仮想記憶の領域に置く(設計書 §2.3)。行のバイト数は、文脈に領域を任せたときに
+    /// CoreGraphics が選ぶ値(4 * 幅を 32 バイトに揃えたもの)と同じにし、描き方を変えない
     static func redrawnLuma(_ image: CGImage, mayBeColour: Bool) throws -> Redrawn {
         let w = image.width, h = image.height
+        let bpr = (w * 4 + 31) & ~31
+        let buffer = try PageBuffer(byteCount: bpr * h)
+        // 文脈は領域を保持しないので、描いて読み終えるまで持ち主を保つ
+        defer { withExtendedLifetime(buffer) {} }
         guard let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let base = context.data?.assumingMemoryBound(to: UInt8.self) else {
+              let context = CGContext(data: buffer.base, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bpr,
+                                      space: sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             throw PrintAppearanceError.allocationFailed("描き直しの文脈 \(w)x\(h)")
         }
+        let base = buffer.bytes
         context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        let bpr = context.bytesPerRow
         let hasAlpha: Bool
         switch image.alphaInfo {
         case .none, .noneSkipFirst, .noneSkipLast: hasAlpha = false
@@ -171,42 +176,51 @@ enum PageInput {
             }
         }
         let level = Params.printAppearance.colourLevel
-        var out = [UInt8](repeating: 0, count: w * h)
+        let out = try PageBuffer(byteCount: w * h)
         var colourPixels = 0
-        out.withUnsafeMutableBufferPointer { o in
-            let op = o.baseAddress!
-            for y in 0..<h {
-                let row = base + y * bpr
-                for x in 0..<w {
-                    let p = row + x * 4
-                    op[y * w + x] = UInt8((299 * Int(p[0]) + 587 * Int(p[1]) + 114 * Int(p[2]) + 500) / 1000)
-                    if Int(max(p[0], p[1], p[2])) - Int(min(p[0], p[1], p[2])) >= level { colourPixels += 1 }
-                }
+        let op = out.bytes
+        for y in 0..<h {
+            let row = base + y * bpr
+            for x in 0..<w {
+                let p = row + x * 4
+                op[y * w + x] = UInt8((299 * Int(p[0]) + 587 * Int(p[1]) + 114 * Int(p[2]) + 500) / 1000)
+                if Int(max(p[0], p[1], p[2])) - Int(min(p[0], p[1], p[2])) >= level { colourPixels += 1 }
             }
         }
         if mayBeColour && Double(colourPixels) / Double(w * h) > Params.printAppearance.colourFrac { return .colour }
-        return .luma(out, mayBeColour ? SRGBRedraw(context: context, base: base) : nil)
+        return .luma(out, mayBeColour ? SRGBRedraw(buffer: buffer, bytesPerRow: bpr, width: w, height: h) : nil)
     }
 
     // MARK: - 縮小
 
+    /// 出力と vImage の一時領域は仮想記憶に置く(設計書 §2.3。一時領域を渡しても結果は同じ)
     static func reduce(_ page: PrintAppearanceGray, width: Int, height: Int) throws -> PrintAppearanceGray {
         guard width > 0, height > 0 else { throw PrintAppearanceError.invalidPage("縮小先の大きさ \(width)x\(height)") }
         if width == page.width && height == page.height { return page }
         let rowBytes = PrintAppearanceGray.alignedRowBytes(width)
-        var pixels = Data(count: rowBytes * height)
-        let error = page.pixels.withUnsafeBytes { src in
-            pixels.withUnsafeMutableBytes { dst in
+        let pixels = try PageMemory.zeroedData(byteCount: rowBytes * height) { dst in
+            let error = page.pixels.withUnsafeBytes { src in
                 var s = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: src.baseAddress!),
                                       height: vImagePixelCount(page.height), width: vImagePixelCount(page.width),
                                       rowBytes: page.bytesPerRow)
-                var d = vImage_Buffer(data: dst.baseAddress!, height: vImagePixelCount(height),
+                var d = vImage_Buffer(data: dst, height: vImagePixelCount(height),
                                       width: vImagePixelCount(width), rowBytes: rowBytes)
-                return vImageScale_Planar8(&s, &d, nil, vImage_Flags(kvImageHighQualityResampling))
+                let flags = vImage_Flags(kvImageHighQualityResampling)
+                return withScaleTemp(vImageScale_Planar8(&s, &d, nil, flags | vImage_Flags(kvImageGetTempBufferSize))) {
+                    vImageScale_Planar8(&s, &d, $0, flags)
+                }
             }
+            guard error == kvImageNoError else { throw PrintAppearanceError.allocationFailed("vImageScale: \(error)") }
         }
-        guard error == kvImageNoError else { throw PrintAppearanceError.allocationFailed("vImageScale: \(error)") }
         return PrintAppearanceGray(width: width, height: height, bytesPerRow: rowBytes, pixels: pixels,
                                    changed: page.changed)
+    }
+
+    /// vImageScale の一時領域を仮想記憶に用意して scale を呼ぶ。size は kvImageGetTempBufferSize の答え
+    /// (負なら誤りの番号として返す。0 なら一時領域なしで呼ぶ)
+    static func withScaleTemp(_ size: vImage_Error, _ scale: (UnsafeMutableRawPointer?) -> vImage_Error) -> vImage_Error {
+        guard size > 0 else { return size < 0 ? size : scale(nil) }
+        guard let temp = try? PageBuffer(byteCount: size) else { return vImage_Error(kvImageMemoryAllocationError) }
+        return withExtendedLifetime(temp) { scale(temp.base) }
     }
 }

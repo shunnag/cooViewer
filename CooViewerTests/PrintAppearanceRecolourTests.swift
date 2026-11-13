@@ -62,9 +62,10 @@ final class PrintAppearanceRecolourTests: XCTestCase {
             let redraw = try XCTUnwrap(page.redraw, name)
             let expected = try Self.independentRedraw(data)
             XCTAssertEqual(Self.rgb(redraw), expected, "\(name): 描き直しのバイト")
-            for i in 0..<page.luma.count {
+            let luma = page.luma
+            for i in 0..<luma.count {
                 let p = 3 * i
-                guard Int(page.luma[i]) == Self.luma(expected[p], expected[p + 1], expected[p + 2]) else {
+                guard Int(luma[i]) == Self.luma(expected[p], expected[p + 1], expected[p + 2]) else {
                     return XCTFail("\(name): 輝度が描き直しの Y と違う (\(i))")
                 }
             }
@@ -83,8 +84,9 @@ final class PrintAppearanceRecolourTests: XCTestCase {
         let after = Self.bytes(processed)
         let out = Self.rgb(output)
         var unclipped = 0, moved = 0, same = 0
-        for i in 0..<page.luma.count {
-            let d = Int(after[i]) - Int(page.luma[i])
+        let luma = page.luma
+        for i in 0..<luma.count {
+            let d = Int(after[i]) - Int(luma[i])
             let s = (Int(source[3 * i]), Int(source[3 * i + 1]), Int(source[3 * i + 2]))
             let o = (out[3 * i], out[3 * i + 1], out[3 * i + 2])
             if d == 0 {
@@ -127,6 +129,20 @@ final class PrintAppearanceRecolourTests: XCTestCase {
 
     /// 紫の 1 色刷り(色ありの画素が 0.5% 未満)とクリーム色の紙のページは、細かい網点がまとまっても
     /// 各画素のチャンネルの差(R - G、G - B)を保つ。0〜255 に収めた画素だけは除く
+    /// RGB のソースの描き直しと色を戻した出力・その縮小は malloc ではなく仮想記憶に置く(設計書 §2.3)
+    func testRedrawAndRecolouredOutputLiveOutsideMalloc() throws {
+        func assertVirtualMemory(_ pointer: UnsafeRawPointer, _ name: String) {
+            XCTAssertEqual(Int(bitPattern: pointer) % Int(getpagesize()), 0, "\(name) は頁の境目から")
+            XCTAssertEqual(malloc_size(pointer), 0, "\(name) は malloc の外")
+        }
+        let (page, _, rgb) = try Self.processTinted(ink: PrintAppearanceTestPages.purpleInk,
+                                                    paper: PrintAppearanceTestPages.whitePaper)
+        assertVirtualMemory(UnsafeRawPointer(try XCTUnwrap(page.redraw).base), "描き直し")
+        rgb.pixels.withUnsafeBytes { assertVirtualMemory($0.baseAddress!, "色を戻した出力") }
+        let reduced = try PrintAppearance.reduce(rgb, width: rgb.width / 2, height: rgb.height / 2)
+        reduced.pixels.withUnsafeBytes { assertVirtualMemory($0.baseAddress!, "縮小の出力") }
+    }
+
     func testTintedPagesKeepTheirChannelDifferences() throws {
         let pages: [(String, [UInt8], [UInt8], Bool)] = [
             ("紫の 1 色刷り", PrintAppearanceTestPages.purpleInk, PrintAppearanceTestPages.whitePaper, true),
@@ -138,8 +154,9 @@ final class PrintAppearanceRecolourTests: XCTestCase {
             let after = Self.bytes(processed)
             let out = Self.rgb(output)
             var clipped = 0, moved = 0, tinted = 0
-            for i in 0..<page.luma.count {
-                let d = Int(after[i]) - Int(page.luma[i])
+            let luma = page.luma
+            for i in 0..<luma.count {
+                let d = Int(after[i]) - Int(luma[i])
                 let s = (Int(source[3 * i]), Int(source[3 * i + 1]), Int(source[3 * i + 2]))
                 guard Self.inRange(s.0 + d), Self.inRange(s.1 + d), Self.inRange(s.2 + d) else {
                     clipped += 1

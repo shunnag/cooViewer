@@ -76,13 +76,18 @@ public enum PrintAppearanceLevel: Int, Sendable, CaseIterable {
 
 /// エンジンへの入力: 8 bit の輝度(上の行から順、行の詰め物なし)。
 /// RGB のソースは、色を戻すための sRGB の描き直しも持つ(1 画素 4 バイト。輝度と合わせて 5 バイト)。
-/// エンジンの処理を待つ間と処理中もこれを保ち、recolour で完成画像にしたら手放す(設計書 §5)
+/// エンジンの処理を待つ間と処理中もこれを保ち、recolour で完成画像にしたら手放す(設計書 §5)。
+/// 輝度と描き直しは仮想記憶に置き、手放したらすぐ OS へ返す(設計書 §2.3。PageMemory.swift)
 public struct PrintAppearancePage: Sendable {
     public let width: Int
     public let height: Int
-    public let luma: [UInt8]
+    /// 輝度の持ち主(width * height バイト)。作った後は書き換えない
+    let lumaBuffer: PageBuffer
     /// RGB のソースの sRGB の描き直し。1 チャンネルのグレーのソースと、輝度から直接作ったページは nil
     let redraw: SRGBRedraw?
+
+    /// 輝度の写し(検査と診断用。処理の経路は withLuma で複製せずに読む)
+    public var luma: [UInt8] { withLuma { Array($0) } }
 
     /// 完成画像がファイルの色を保った RGB になるか(偽なら 1 チャンネルのグレー)
     public var keepsColour: Bool { redraw != nil }
@@ -92,37 +97,45 @@ public struct PrintAppearancePage: Sendable {
         guard width > 0, height > 0, luma.count == width * height else {
             throw PrintAppearanceError.invalidPage("輝度の大きさが幅×高さと一致しない")
         }
-        self.init(checked: luma, width: width, height: height)
+        let buffer = try PageBuffer(byteCount: luma.count)
+        luma.withUnsafeBufferPointer { _ = memcpy(buffer.base, $0.baseAddress!, $0.count) }
+        self.init(checked: buffer, width: width, height: height)
     }
 
-    /// 大きさを確かめ済みの輝度から作る。redraw は同じ大きさの描き直しで、luma はその輝度
-    init(checked luma: [UInt8], width: Int, height: Int, redraw: SRGBRedraw? = nil) {
+    /// 大きさを確かめ済みの輝度(width * height バイト)から作る。redraw は同じ大きさの描き直しで、
+    /// luma はその輝度
+    init(checked luma: PageBuffer, width: Int, height: Int, redraw: SRGBRedraw? = nil) {
         self.width = width
         self.height = height
-        self.luma = luma
+        lumaBuffer = luma
         self.redraw = redraw
+    }
+
+    /// 輝度を複製せずに読む
+    func withLuma<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R {
+        try body(UnsafeBufferPointer(start: UnsafePointer(lumaBuffer.bytes), count: width * height))
     }
 }
 
 /// prepare が輝度と色の判定に使った sRGB の描き直し(8 bit RGBA、premultipliedLast、全画素が不透明なので
 /// 値は乗算前と同じ)。描いた後は書き換えず、読むだけなので、どのスレッドから読んでもよい
-/// (@unchecked Sendable の根拠)。描いた文脈ごと持つのは、バイト列を複製せず、輝度を求めたときと
-/// 同じ描き直しをそのまま使うため
+/// (@unchecked Sendable の根拠)。バイト列は仮想記憶の領域に描き、その領域ごと持つ: 複製せず、輝度を
+/// 求めたときと同じ描き直しをそのまま使い、手放したらすぐ OS へ返すため
 final class SRGBRedraw: @unchecked Sendable {
     /// バイト列の持ち主。描いた後は触らない
-    private let context: CGContext
+    private let buffer: PageBuffer
     let base: UnsafePointer<UInt8>
     let bytesPerRow: Int
     let width: Int
     let height: Int
 
-    /// base は context のバイト列の先頭
-    init(context: CGContext, base: UnsafeMutablePointer<UInt8>) {
-        self.context = context
-        self.base = UnsafePointer(base)
-        bytesPerRow = context.bytesPerRow
-        width = context.width
-        height = context.height
+    /// buffer は context が描いた領域(context はもう描かない)
+    init(buffer: PageBuffer, bytesPerRow: Int, width: Int, height: Int) {
+        self.buffer = buffer
+        base = UnsafePointer(buffer.bytes)
+        self.bytesPerRow = bytesPerRow
+        self.width = width
+        self.height = height
     }
 }
 
@@ -171,9 +184,8 @@ public struct PrintAppearanceGray: Sendable {
 
     init(copying bytes: UnsafePointer<UInt8>, width: Int, height: Int, changed: Bool) {
         let rowBytes = Self.alignedRowBytes(width)
-        var data = Data(count: rowBytes * height)
-        data.withUnsafeMutableBytes { raw in
-            let base = raw.bindMemory(to: UInt8.self).baseAddress!
+        // 仮想記憶に置き、手放したらすぐ OS へ返す(設計書 §2.3)。行末の詰め物は 0 のまま
+        let data = PageMemory.zeroedData(byteCount: rowBytes * height) { base in
             for y in 0..<height { memcpy(base + y * rowBytes, bytes + y * width, width) }
         }
         self.init(width: width, height: height, bytesPerRow: rowBytes, pixels: data, changed: changed)

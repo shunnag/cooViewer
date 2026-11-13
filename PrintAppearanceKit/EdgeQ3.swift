@@ -68,8 +68,15 @@ func q3BoxTL(src: UnsafePointer<UInt8>, W: Int, H: Int, lo: UnsafeMutablePointer
 func q3ClampCPU(lin: UnsafePointer<Float>, delta: UnsafeMutablePointer<Float>, src: UnsafePointer<UInt8>, W: Int, H: Int,
                 threads: Int) -> Int {
     let n = W * H
-    let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: 4 * n)
-    defer { buf.deallocate() }
+    // ページの 4 倍の一時領域は仮想記憶に置き、手放したらすぐ OS へ返す(設計書 §2.3)。
+    // 確保できなければ従来の確保に戻る(どちらも確保できなければ止まるのは従来と同じ)
+    let vm = try? PageBuffer(byteCount: 4 * n)
+    let heap = vm == nil ? UnsafeMutablePointer<UInt8>.allocate(capacity: 4 * n) : nil
+    defer {
+        heap?.deallocate()
+        withExtendedLifetime(vm) {}
+    }
+    let buf = vm?.bytes ?? heap!
     let blo = buf, bhi = buf + n
     q3BoxTL(src: src, W: W, H: H, lo: blo, hi: bhi, scratch: buf + 2 * n, threads: threads)
     let rows = UnsafeMutablePointer<Int>.allocate(capacity: H)

@@ -270,8 +270,8 @@ final class PrintAppearanceInputTests: XCTestCase {
         }
         XCTAssertNil(redraw, "グレーのソースは描き直しを保たない")
         let weighted: Int = 299 * 255 + 587 * 128 + 114 * 128 + 500
-        XCTAssertEqual(luma[9], UInt8(weighted / 1000))
-        XCTAssertEqual(luma[1], 128)
+        XCTAssertEqual(luma.bytes[9], UInt8(weighted / 1000))
+        XCTAssertEqual(luma.bytes[1], 128)
         let gray = try Self.grayImage(Self.ramp(width: 200, height: 300), width: 200, height: 300)
         XCTAssertTrue(PageInput.isOpaqueOneChannel(gray))
         XCTAssertFalse(PageInput.isOpaqueOneChannel(image))

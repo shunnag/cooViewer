@@ -150,7 +150,7 @@ public final class PrintAppearanceEngine {
 
     private func run(_ engine: Descreener, _ page: PrintAppearancePage, geo: Geometry, threads: Int,
                      stop: (PrintAppearanceStopPoint) throws -> Void) throws -> PrintAppearanceGray {
-        let result = try page.luma.withUnsafeBufferPointer {
+        let result = try page.withLuma {
             try engine.run(src: $0.baseAddress!, W: page.width, H: page.height, geo: geo, threads: threads, stop: stop)
         }
         return PrintAppearanceGray(copying: engine.output, width: page.width, height: page.height,
@@ -224,6 +224,7 @@ public final class PrintAppearanceEngine {
         for y in 0..<n {
             for x in 0..<n { luma[y * n + x] = (x / 2 + y / 2) % 2 == 0 ? 40 : 220 }
         }
-        return PrintAppearancePage(checked: luma, width: n, height: n)
+        // 64 KB の領域が確保できないなら、どのページも処理できない
+        return try! PrintAppearancePage(luma: luma, width: n, height: n)
     }()
 }

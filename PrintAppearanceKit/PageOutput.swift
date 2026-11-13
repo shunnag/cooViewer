@@ -21,15 +21,14 @@ enum PageOutput {
         }
         guard let redraw = page.redraw else { return .gray(processed) }
         let w = page.width, h = page.height
-        guard redraw.width == w, redraw.height == h, page.luma.count == w * h else {
+        guard redraw.width == w, redraw.height == h else {
             throw PrintAppearanceError.invalidPage("描き直しの大きさがページと一致しない")
         }
         let rowBytes = PrintAppearanceRGB.alignedRowBytes(w)
-        var pixels = Data(count: rowBytes * h)
-        pixels.withUnsafeMutableBytes { dst in
+        // 仮想記憶に置き、手放したらすぐ OS へ返す(設計書 §2.3)
+        let pixels = PageMemory.zeroedData(byteCount: rowBytes * h) { out in
             processed.pixels.withUnsafeBytes { after in
-                page.luma.withUnsafeBufferPointer { before in
-                    let out = dst.bindMemory(to: UInt8.self).baseAddress!
+                page.withLuma { before in
                     let lAfter = after.bindMemory(to: UInt8.self).baseAddress!
                     let lBefore = before.baseAddress!
                     for y in 0..<h {
@@ -62,23 +61,26 @@ enum PageOutput {
 
     /// グレーの縮小と同じ高品質の再標本化(vImage)。ARGB8888 の関数は 4 つのチャンネルを同じ核で独立に
     /// 再標本化し、どれも透明度として扱わない(Planar8 をチャンネルごとにかけたのと同じバイト。検査で確かめる)。
-    /// 4 番目の欄は 255 のまま保たれる
+    /// 4 番目の欄は 255 のまま保たれる。出力と vImage の一時領域は仮想記憶に置く(設計書 §2.3)
     static func reduce(_ page: PrintAppearanceRGB, width: Int, height: Int) throws -> PrintAppearanceRGB {
         guard width > 0, height > 0 else { throw PrintAppearanceError.invalidPage("縮小先の大きさ \(width)x\(height)") }
         if width == page.width && height == page.height { return page }
         let rowBytes = PrintAppearanceRGB.alignedRowBytes(width)
-        var pixels = Data(count: rowBytes * height)
-        let error = page.pixels.withUnsafeBytes { src in
-            pixels.withUnsafeMutableBytes { dst in
+        let pixels = try PageMemory.zeroedData(byteCount: rowBytes * height) { dst in
+            let error = page.pixels.withUnsafeBytes { src in
                 var s = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: src.baseAddress!),
                                       height: vImagePixelCount(page.height), width: vImagePixelCount(page.width),
                                       rowBytes: page.bytesPerRow)
-                var d = vImage_Buffer(data: dst.baseAddress!, height: vImagePixelCount(height),
+                var d = vImage_Buffer(data: dst, height: vImagePixelCount(height),
                                       width: vImagePixelCount(width), rowBytes: rowBytes)
-                return vImageScale_ARGB8888(&s, &d, nil, vImage_Flags(kvImageHighQualityResampling))
+                let flags = vImage_Flags(kvImageHighQualityResampling)
+                return PageInput.withScaleTemp(
+                    vImageScale_ARGB8888(&s, &d, nil, flags | vImage_Flags(kvImageGetTempBufferSize))) {
+                    vImageScale_ARGB8888(&s, &d, $0, flags)
+                }
             }
+            guard error == kvImageNoError else { throw PrintAppearanceError.allocationFailed("vImageScale: \(error)") }
         }
-        guard error == kvImageNoError else { throw PrintAppearanceError.allocationFailed("vImageScale: \(error)") }
         return PrintAppearanceRGB(width: width, height: height, bytesPerRow: rowBytes, pixels: pixels,
                                   changed: page.changed)
     }

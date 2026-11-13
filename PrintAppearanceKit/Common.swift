@@ -208,7 +208,8 @@ func gaussianBlurVImage(_ src: UnsafeMutablePointer<Float>, _ dst: UnsafeMutable
     guard error == kvImageNoError else { throw PrintAppearanceError.allocationFailed("vImageConvolve: \(error)") }
 }
 
-/// ページ境界に揃えて 0 で埋めた Float の作業面(CPU 経路の後段で使う)
+/// ページ境界に揃えて 0 で埋めた Float の作業面(CPU 経路の後段で使う)。仮想記憶から確保し
+/// (vm_allocate の領域は 0 で埋まっている)、手放したらすぐ OS へ返す(設計書 §2.3)
 final class FloatPlane {
     let count: Int
     let byteCount: Int
@@ -217,14 +218,12 @@ final class FloatPlane {
         self.count = count
         let page = Int(getpagesize())
         byteCount = max(page, ((count * 4) + page - 1) / page * page)
-        var raw: UnsafeMutableRawPointer?
-        guard posix_memalign(&raw, page, byteCount) == 0, let raw else {
+        guard let raw = PageMemory.allocate(byteCount) else {
             throw PrintAppearanceError.allocationFailed("作業面 \(byteCount) バイト")
         }
-        memset(raw, 0, byteCount)
         ptr = raw.bindMemory(to: Float.self, capacity: byteCount / 4)
     }
-    deinit { free(ptr) }
+    deinit { PageMemory.deallocate(UnsafeMutableRawPointer(ptr), byteCount) }
 }
 
 /// concurrentPerform の各反復へ非 Sendable な値(ロック・カウンタ・本体・作業者)を渡す箱。

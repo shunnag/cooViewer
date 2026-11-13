@@ -87,7 +87,7 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
                  shouldStop: (PrintAppearanceStopPoint) -> Bool) throws -> PrintAppearanceGray {
         recordContext()
         let qos = qos_class_self()
-        let marker = page.luma[0]
+        let marker = page.withLuma { $0[0] }
         let hold = state.withLockUnchecked { $0.holds.removeValue(forKey: marker) }
         for (index, point) in Self.points.enumerated() {
             if let hold, hold.index == index {
@@ -105,7 +105,7 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
         }
         state.withLockUnchecked { $0.workingBytes = 1000 }
         record(Call(marker: marker, threads: threads, level: level, stoppedAt: nil, qos: qos))
-        return page.luma.withUnsafeBufferPointer {
+        return page.withLuma {
             PrintAppearanceGray(copying: $0.baseAddress!, width: page.width, height: page.height,
                                 changed: marker != 255)
         }
@@ -129,6 +129,7 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
 
     /// 目印 marker で埋めたページ
     static func page(_ marker: UInt8, width: Int = 128, height: Int = 128) -> PrintAppearancePage {
-        PrintAppearancePage(checked: [UInt8](repeating: marker, count: width * height), width: width, height: height)
+        // 128 x 128 などの小さなページの領域は必ず確保できる
+        try! PrintAppearancePage(luma: [UInt8](repeating: marker, count: width * height), width: width, height: height)
     }
 }

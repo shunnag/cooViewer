@@ -113,13 +113,14 @@ final class PrintAppearanceEngineTests: XCTestCase {
         let W = 512, H = 2048
         let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: W, height: H), width: W, height: H)
         let gpu = PrintAppearanceEngine(mode: .automatic), cpu = PrintAppearanceEngine(mode: .cpuOnly)
+        let input = page.luma
         for level in PrintAppearanceLevel.allCases {
             let a = Self.bytes(try gpu.process(page, level: level, threads: 4))
             let b = Self.bytes(try cpu.process(page, level: level, threads: 4))
             var maxDifference = 0, changed = 0
             for i in 0..<(W * H) {
                 maxDifference = max(maxDifference, abs(Int(a[i]) - Int(b[i])))
-                if b[i] != page.luma[i] { changed += 1 }
+                if b[i] != input[i] { changed += 1 }
             }
             XCTAssertGreaterThan(changed, 0, "\(level)")
             XCTAssertLessThanOrEqual(maxDifference, 1, "\(level)")
@@ -283,6 +284,41 @@ final class PrintAppearanceEngineTests: XCTestCase {
             XCTAssertEqual(Self.bytes(try engine.process(second, level: .low, threads: 4)), expectedSecond, "\(mode)")
             XCTAssertEqual(Self.bytes(try engine.process(first, level: .low, threads: 4)), expectedFirst, "\(mode)")
         }
+    }
+
+    // MARK: - 記憶域
+
+    /// ページ大の輝度・出力・描き直し・縮小の出力は malloc ではなく仮想記憶に置く(手放したらすぐ OS へ返す。
+    /// 設計書 §2.3)。仮想記憶の領域は頁の境目から始まり、malloc の管理外(malloc_size が 0)
+    func testPageSizedBuffersLiveOutsideMalloc() throws {
+        func assertVirtualMemory(_ pointer: UnsafeRawPointer, _ name: String) {
+            XCTAssertEqual(Int(bitPattern: pointer) % Int(getpagesize()), 0, "\(name) は頁の境目から")
+            XCTAssertEqual(malloc_size(pointer), 0, "\(name) は malloc の外")
+        }
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 512, height: 1024), width: 512,
+                                           height: 1024)
+        page.withLuma { assertVirtualMemory(UnsafeRawPointer($0.baseAddress!), "輝度") }
+        for mode in Self.modes() {
+            let gray = try PrintAppearanceEngine(mode: mode).process(page, level: .standard, threads: 4)
+            gray.pixels.withUnsafeBytes { assertVirtualMemory($0.baseAddress!, "エンジンの出力 \(mode)") }
+            let reduced = try PrintAppearance.reduce(gray, width: 256, height: 512)
+            reduced.pixels.withUnsafeBytes { assertVirtualMemory($0.baseAddress!, "縮小の出力 \(mode)") }
+            // CGImage へ包んでも複製しない
+            let image = try XCTUnwrap(gray.makeImage())
+            let provided = try XCTUnwrap(image.dataProvider?.data)
+            gray.pixels.withUnsafeBytes {
+                XCTAssertEqual(UnsafeRawPointer(CFDataGetBytePtr(provided)), $0.baseAddress, "\(mode)")
+            }
+        }
+        let plane = try FloatPlane(count: 300_000)
+        assertVirtualMemory(UnsafeRawPointer(plane.ptr), "CPU の経路の作業面")
+        XCTAssertTrue((0..<plane.count).allSatisfy { plane.ptr[$0] == 0 }, "作業面は 0 で埋まっている")
+        let store = Store(nil)
+        let raw = try store.ensure(1 << 20)
+        assertVirtualMemory(UnsafeRawPointer(raw), "CPU の経路の記憶域")
+        let grown = try store.ensure(3 << 20)
+        assertVirtualMemory(UnsafeRawPointer(grown), "伸ばした記憶域")
+        XCTAssertEqual(store.length, 3 << 20)
     }
 
     // MARK: - GPU の失敗からの回復

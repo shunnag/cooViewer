@@ -32,7 +32,8 @@ struct DescreenResult {
 }
 
 /// 伸びるだけのホストまたは GPU 共有の記憶域。確保したらすぐ触れるので、初回のページフォルトは
-/// 処理本体ではなく prepare() で起きる
+/// 処理本体ではなく prepare() で起きる。ホストの記憶域は仮想記憶から確保し、手放したらすぐ OS へ返す
+/// (malloc の大きな確保は手放した後もキャッシュに残るため。設計書 §2.3)
 final class Store {
     let device: MTLDevice?
     private var mtl: MTLBuffer?
@@ -49,13 +50,13 @@ final class Store {
             }
             mtl = b
         } else {
-            free(host)
+            if let host { PageMemory.deallocate(host, length) }
             host = nil
             length = 0
-            guard posix_memalign(&host, page, len) == 0, host != nil else {
-                host = nil
+            guard let made = PageMemory.allocate(len) else {
                 throw PrintAppearanceError.allocationFailed("作業域 \(len) バイト")
             }
+            host = made
         }
         length = len
         memset(raw, 0, len)
@@ -67,7 +68,7 @@ final class Store {
     func f(_ offsetFloats: Int = 0) -> UnsafeMutablePointer<Float> { raw.bindMemory(to: Float.self, capacity: 1) + offsetFloats }
     func u8() -> UnsafeMutablePointer<UInt8> { raw.bindMemory(to: UInt8.self, capacity: 1) }
     func u32() -> UnsafeMutablePointer<UInt32> { raw.bindMemory(to: UInt32.self, capacity: 1) }
-    deinit { free(host) }
+    deinit { if let host { PageMemory.deallocate(host, length) } }
 }
 
 final class Descreener {
