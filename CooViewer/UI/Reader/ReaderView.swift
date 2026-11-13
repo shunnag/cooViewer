@@ -80,12 +80,16 @@ final class ReaderView: NSView {
             zoomed: isZoomed, loupe: isLoupeEnabled, interpolation: interpolation)
     }
 
-    func canDisplayResampled(_ pages: [ResampledPage], sources: [DecodedPageInfo]) -> Bool {
+    /// printAppearanceTag を渡すとその印で照合する(setPages が差し替える前の見開きを確かめるため)。
+    /// 省略すると表示中の見開きの印で照合する
+    func canDisplayResampled(_ pages: [ResampledPage], sources: [DecodedPageInfo],
+                             printAppearanceTag: String? = nil) -> Bool {
         guard allowsResampledDisplay, pages.count == sources.count,
               let sizes = predictedResampleSizes(for: sources.map(\.size)), sizes.count == pages.count else { return false }
+        let processing = imageProcessingSettings(printAppearanceTag: printAppearanceTag ?? self.printAppearanceTag)
         return pages.indices.allSatisfy { index in
             !sources[index].preservesHDR && pages[index].size == sizes[index]
-                && pages[index].processing == imageProcessingSettings
+                && pages[index].processing == processing
                 && pages[index].colorTarget == displayColorTarget
         }
     }
@@ -156,8 +160,11 @@ final class ReaderView: NSView {
             }
         }
     }
-    /// リサンプルキャッシュの名前空間(本の cacheKey。本切替時の取り違え防止)
-    var resampleKeyPrefix = ""
+    /// リサンプルキャッシュの名前空間(本の renderKey。本切替時の取り違え防止)。
+    /// 画像・名前空間・網点処理の印が一緒に変わるよう、setPages の中でだけ置く(設計書 §5)
+    private(set) var resampleKeyPrefix = ""
+    /// 表示中の見開きを読み込んだときの網点処理の印(切っているときは空)
+    private(set) var printAppearanceTag = ""
     /// 超解像(最高)のディスクキャッシュを暗号化して残すか。パスワード付き書庫では
     /// true を注入し、復号済みページをキーチェーン鍵で暗号化して SuperRes/ に
     /// 残す(平文で残さない。CWE-312)。既定 false(通常本は従来どおり平文)
@@ -264,8 +271,15 @@ final class ReaderView: NSView {
         }
     }
 
+    /// 表示中の見開きの処理条件(補間・ML 段階・網点処理の印)
     var imageProcessingSettings: ImageProcessingSettings {
-        .init(interpolation: interpolation, noiseReduction: noiseReductionLevel)
+        imageProcessingSettings(printAppearanceTag: printAppearanceTag)
+    }
+
+    /// 印だけを差し替えた処理条件。これから表示する見開きの完成画像を、その見開きの印で照合・作成するため
+    func imageProcessingSettings(printAppearanceTag: String) -> ImageProcessingSettings {
+        .init(interpolation: interpolation, noiseReduction: noiseReductionLevel,
+              printAppearanceTag: printAppearanceTag)
     }
 
     var backgroundColor: NSColor = .black {
@@ -351,11 +365,14 @@ final class ReaderView: NSView {
 
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
+    /// keyPrefix はリサンプルキャッシュの名前空間(本の renderKey)、printAppearanceTag は画像を
+    /// 読み込んだときの網点処理の印。画像と一緒にだけ置き換える(設計書 §5)。
     /// preResampled はリサンプル済みキャッシュの事前引き当て(サイズ+画像。
     /// 未命中は nil): 渡すと最初のレイアウトから完成画像を使うため、
     /// めくり効果のスナップショットにもフィルタ済みの絵が入る。
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
+                  keyPrefix: String = "", printAppearanceTag: String = "",
                   preResampled: [ResampledPage?] = [],
                   preparedDisplayImages: [CGImage?] = [],
                   decodedSources: [DecodedPageInfo]? = nil,
@@ -364,7 +381,8 @@ final class ReaderView: NSView {
         if let decodedSources {
             let pages = preResampled.compactMap { $0 }
             guard decodedSources.count == images.count, pages.count == images.count,
-                  canDisplayResampled(pages, sources: decodedSources) else { return }
+                  canDisplayResampled(pages, sources: decodedSources,
+                                      printAppearanceTag: printAppearanceTag) else { return }
         }
         // スワイプ追従カールの予約(表示確定直前にコントローラが設定)。
         // 自動再生の turn より優先する
@@ -383,6 +401,8 @@ final class ReaderView: NSView {
             addTurnTransitionIfNeeded(turn, newReadsFromLeft: readsFromLeft)
         }
         self.images = images
+        resampleKeyPrefix = keyPrefix
+        self.printAppearanceTag = printAppearanceTag
         originalLoadTask?.cancel()
         originalLoadTask = nil
         originalLoadGeneration &+= 1

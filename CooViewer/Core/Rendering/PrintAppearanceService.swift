@@ -40,6 +40,24 @@ struct PrintAppearanceRequest: Sendable {
     }
 }
 
+/// キャッシュの名前空間に入れる網点処理の印(設計書 §5)。ページキャッシュの名前空間・ページキー・
+/// リサンプルのキー・超解像のディスクキャッシュのキーに入る。
+/// 切っているときは空文字なので、既存のキーはすべて従来のまま。入れているときは "~pa<エンジンの版><段階>"
+/// (例 ~pa1s)で、要求した段階を表す(強め が 800 px 未満で 標準 に留まるページ、色のページ、処理しない
+/// ページも、ファイルのバイト列とこの印で結果が決まるため、印はページごとでなく設定ごとでよい)。
+/// '#' を含まないので、ページキー "<本のキー>#<ID>" の分割(ImageResampler.bookKey)を崩さない
+enum PrintAppearanceTag {
+    static func tag(for level: PrintAppearanceLevel?) -> String {
+        guard let level else { return "" }
+        let letter = switch level {
+        case .low: "l"
+        case .standard: "s"
+        case .strong: "h"
+        }
+        return "~pa\(PrintAppearance.engineVersion)\(letter)"
+    }
+}
+
 /// 1 回のページ読み込みと、サービスの中のその仕事を結ぶ唯一の経路(設計書 §5)。Book が読み込みごとに作る。
 /// 表示の要求が合流したら touch、未開始の先読みを辞退させるときは decline を呼ぶ。
 /// 仕事がまだサービスに届いていない間(デコード中)の touch・decline は券が覚え、届いたときに反映する

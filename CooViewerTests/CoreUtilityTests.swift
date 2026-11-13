@@ -550,6 +550,34 @@ final class PreresamplePolicyTests: XCTestCase {
         XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 64), 16)
         XCTAssertEqual(PreresamplePolicy.decodeBehind(ahead: 4), 3)  // 下限 3
     }
+
+    /// 設計書 §5: 網点処理の要求があるときは予算の項を使わず、媒体別下限とリサンプル先読み+4 で決める。
+    /// 省エネでは従来の規則どおり半分にする
+    func testDecodeAheadWithPrintAppearanceDropsBudgetTerm() {
+        // 小さなグレーのページ: 予算の項なら上限 64、網点処理では媒体別下限 12
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 8, decodedPageBytes: 3 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 12), PreresamplePolicy.maxDecodePages)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 8, decodedPageBytes: 3 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 12, printAppearance: true), 12)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 8, decodedPageBytes: 3 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 20, printAppearance: true), 20)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 12, decodedPageBytes: 3 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 12, printAppearance: true), 16)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 8, decodedPageBytes: 3 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 12, conserveEnergy: true, printAppearance: true), 6)
+        XCTAssertEqual(PreresamplePolicy.decodeAhead(resamplePages: 8, decodedPageBytes: 3 << 20,
+            pageCacheByteLimit: 2 << 30, mediaFloor: 20, conserveEnergy: true, printAppearance: true), 10)
+    }
+
+    /// 設計書 §5: 網点処理の要求があるときのデコード先読みの並列幅は 4 まで。ないときは従来どおり
+    func testDecodeWidthWithPrintAppearanceIsAtMostFour() {
+        XCTAssertEqual(PreresamplePolicy.decodeWidth(mediaConcurrency: 6, printAppearance: false), 6)
+        XCTAssertEqual(PreresamplePolicy.decodeWidth(mediaConcurrency: 0, printAppearance: false), 1)
+        XCTAssertEqual(PreresamplePolicy.decodeWidth(mediaConcurrency: 6, printAppearance: true), 4)
+        XCTAssertEqual(PreresamplePolicy.decodeWidth(mediaConcurrency: 2, printAppearance: true), 2)
+        XCTAssertEqual(PreresamplePolicy.decodeWidth(mediaConcurrency: 1, printAppearance: true), 1)
+        XCTAssertEqual(PreresamplePolicy.decodeWidth(mediaConcurrency: 0, printAppearance: true), 1)
+    }
 }
 
 @MainActor
