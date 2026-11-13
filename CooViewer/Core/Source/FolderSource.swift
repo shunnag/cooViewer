@@ -219,9 +219,6 @@ final class FolderSource: BookSource {
             throw error
         }
         await readGate.release()
-        return try await PrefetchDecodeGate.run {
-            try ImageDecoding.decode(data, maxPixelSize: maxPixelSize,
-                                    displayTarget: PageRequestIntent.displayColorTarget)
-        }
+        return try await PageImageDecoding.decode(data, maxPixelSize: maxPixelSize)
     }
 }

@@ -13,6 +13,9 @@ enum PageRequestIntent {
     @TaskLocal static var decodePromotion: DecodePromotion?
     /// 合本の子にも用途を伝え、PDF の表示文書を汚さない(設計書 §5)。
     @TaskLocal static var isThumbnail = false
+    /// 網点処理の要求。本のページ読み込みとルーペだけが立てる(設計書 §5)。
+    /// 原寸のデコードの直後で処理するため、子のソースへの委譲にもついて行く。
+    @TaskLocal static var printAppearance: PrintAppearanceRequest?
 }
 
 enum BookSourceError: Error {

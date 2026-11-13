@@ -140,10 +140,7 @@ actor EPUBSource: BookSource {
         }
         if let imagePath = info.simpleImagePath {
             let (data, _) = try publication.resource(at: imagePath)
-            return try await PrefetchDecodeGate.run {
-                try ImageDecoding.decode(data, maxPixelSize: maxPixelSize,
-                                        displayTarget: PageRequestIntent.displayColorTarget)
-            }
+            return try await PageImageDecoding.decode(data, maxPixelSize: maxPixelSize)
         }
         // 複雑ページ(テキスト・SVG 合成)は WebKit でラスタライズ
         return try await FXLRasterizerPool.render(

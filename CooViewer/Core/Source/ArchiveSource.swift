@@ -1082,10 +1082,7 @@ actor ArchiveSource: BookSource {
             }
             // nonisolated async はグローバル実行系で走るため、このデコードは
             // actor の外。展開・スプールと画像デコードが並行できる
-            return try await PrefetchDecodeGate.run {
-                try ImageDecoding.decode(data, maxPixelSize: maxPixelSize,
-                                        displayTarget: PageRequestIntent.displayColorTarget)
-            }
+            return try await PageImageDecoding.decode(data, maxPixelSize: maxPixelSize)
         case .pooled(let poolIndex, let extractor, let entryIndex):
             // 展開は貸し出された係の隔離で走る(本 actor と他の係に対して並列)
             let data = await extractor.contents(ofEntry: entryIndex)
@@ -1097,10 +1094,7 @@ actor ArchiveSource: BookSource {
             if AnimatedImage.candidateExtensions.contains((entry.name as NSString).pathExtension.lowercased()) {
                 await rememberRawData(id: entry.id, data: data)
             }
-            return try await PrefetchDecodeGate.run {
-                try ImageDecoding.decode(data, maxPixelSize: maxPixelSize,
-                                        displayTarget: PageRequestIntent.displayColorTarget)
-            }
+            return try await PageImageDecoding.decode(data, maxPixelSize: maxPixelSize)
         }
     }
 
