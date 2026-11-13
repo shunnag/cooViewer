@@ -89,6 +89,29 @@ final class PrintAppearanceInputTests: XCTestCase {
         try Self.assertPassThrough(data, .transparency, rawDecoded: true)
     }
 
+    /// ヘッダがグレーのページ(遅延デコードで輝度の領域へ直接描く)でも、デコードの後に決まる素通しの raw は
+    /// 従来と同じ呼び出しの全面のデコード結果(設計書 §2.3)
+    func testGrayHeaderPassThroughRawIsTheFullDecode() throws {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.genericGrayGamma2_2))
+        var bytes = [UInt8](repeating: 255, count: 200 * 300 * 2)
+        let values = Self.ramp(width: 200, height: 300)
+        for i in 0..<values.count { bytes[2 * i] = values[i] }
+        bytes[2 * 12_345 + 1] = 200
+        let data = try Self.encode([Self.image(width: 200, height: 300, bitsPerComponent: 8, bitsPerPixel: 16,
+                                               bytesPerRow: 400, space: space, alpha: .last, bytes: bytes)],
+                                   as: .png)
+        try Self.assertHeader(data, depth: 8, model: "Gray", hasAlpha: true)
+        guard case .passThrough(.transparency, let raw?) = try PrintAppearance.prepare(data, maxPixels: 16_000_000)
+        else { return XCTFail("透明度のあるグレーのページがデコード結果付きの素通しにならない") }
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        let expected = try XCTUnwrap(CGImageSourceCreateImageAtIndex(
+            source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary))
+        XCTAssertEqual(raw.width, expected.width)
+        XCTAssertEqual(raw.bitsPerPixel, expected.bitsPerPixel)
+        XCTAssertEqual(raw.alphaInfo, expected.alphaInfo)
+        XCTAssertEqual(raw.dataProvider?.data as Data?, expected.dataProvider?.data as Data?)
+    }
+
     /// 1 bit のスキャンは素通し(デコードの前に決まる)
     func testOneBitPassesThrough() throws {
         let rowBytes = 25
