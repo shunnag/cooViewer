@@ -1,4 +1,5 @@
 import AppKit
+import PrintAppearanceKit
 import SwiftUI
 import Washi
 
@@ -204,6 +205,8 @@ final class ReaderWindowController: NSWindowController {
     private var openingRetryName: String?
 
     let settings = SettingsStore.shared
+    /// 網かけの表示の切 ↔ 入でエンジンを準備・解放する契機(設計書 §5)。テストは記録用に差し替える
+    var printAppearanceLifecycle = PrintAppearanceLifecycle.shared
     /// 本の保存先を明示する。通常は共有ストア、検証時は隔離ストアを渡す。
     let history: BookHistoryStore
     var bindings = BindingConfiguration.load()
@@ -632,6 +635,9 @@ final class ReaderWindowController: NSWindowController {
         if filterChanged {
             preresampleAdjacentSpread()
         }
+        // 網点処理を入れたらエンジンの準備を積み、切ったら手放す。本の有無によらず、切 ↔ 入の変わり目だけ
+        // (設計書 §5)。準備は直列キューで、続いて積まれる新しい見開きの処理より先に走る
+        printAppearanceLifecycle.observe(enabled: settings.printAppearanceRequest != nil)
         // 網点処理の設定は変わったときだけ反映する(この関数は defaults の変更のたびに呼ばれる)
         if let book, book.printAppearanceLevel != settings.printAppearanceRequest {
             applyPrintAppearance(to: book)
@@ -1894,7 +1900,8 @@ final class ReaderWindowController: NSWindowController {
         thumbnailOverlayModel.clear()
         lockedBookReason = reason
         window?.title = placeholder.displayName
-        readerView.setPages([], readsFromLeft: false)
+        readerView.setPages([], readsFromLeft: false, keyPrefix: placeholder.renderKey,
+                            printAppearanceTag: placeholder.printAppearanceTag)
         showBookStatusMessage(reason)
     }
 
@@ -2665,7 +2672,8 @@ final class ReaderWindowController: NSWindowController {
             preresampleJobs.cancelAll()
             // ページのない本: 理由をウインドウ中央に表示する
             // (旧 empty.png 方式 §4.17 を多言語メッセージに置換)
-            readerView.setPages([], readsFromLeft: book.readMode.readsFromLeft)
+            readerView.setPages([], readsFromLeft: book.readMode.readsFromLeft, keyPrefix: book.renderKey,
+                                printAppearanceTag: book.printAppearanceTag)
             let reason = lockedBookReason
                 ?? String(localized: "This book contains no displayable images.")
             showBookStatusMessage(reason)
@@ -3731,6 +3739,18 @@ final class ReaderWindowController: NSWindowController {
         settings.toggleInterpolationNone()
     }
 
+    /// 網かけの表示(タグ 0 = スキャンのまま / 1 = 本の見え方に近づける)。設定ペインと同じ defaults を
+    /// 書くだけで、表示は applySettings が新しい見開きが揃ったところで一度に差し替える(設計書 §5・§7.5)
+    @objc func changeHalftoneDisplayMode(_ sender: NSMenuItem) {
+        settings.halftoneDisplayEnabled = sender.tag == 1
+    }
+
+    /// 網かけの表示の強さ(タグは HalftoneDisplayStrength の値)
+    @objc func changeHalftoneDisplayStrength(_ sender: NSMenuItem) {
+        guard let level = PrintAppearanceLevel(rawValue: sender.tag) else { return }
+        settings.halftoneDisplayStrength = level
+    }
+
     /// ページめくり効果の切替(設定「表示」ペインと同じ defaults を共有)
     @objc func changePageTurnAnimation(_ sender: NSMenuItem) {
         guard let animation = PageTurnAnimation(rawValue: sender.tag) else { return }
@@ -3795,6 +3815,14 @@ final class ReaderWindowController: NSWindowController {
         case #selector(toggleInterpolationMenu(_:)),
              #selector(rotateLeft(_:)), #selector(rotateRight(_:)):
             return !isEPUBMode
+        // 網かけの表示はスキャン画像のページだけに効くので、リフロー EPUB では全項目を無効にする。
+        // 強さは切っている間は無効(選んだ値はチェックで示したまま。設計書 §2.4)
+        case #selector(changeHalftoneDisplayMode(_:)):
+            menuItem.state = (settings.halftoneDisplayEnabled ? 1 : 0) == menuItem.tag ? .on : .off
+            return !isEPUBMode
+        case #selector(changeHalftoneDisplayStrength(_:)):
+            menuItem.state = settings.halftoneDisplayStrength.rawValue == menuItem.tag ? .on : .off
+            return !isEPUBMode && settings.halftoneDisplayEnabled
         case #selector(toggleCoverSingleMenu(_:)):
             menuItem.state = settings.spreadCoverSingle ? .on : .off
             return !isEPUBMode

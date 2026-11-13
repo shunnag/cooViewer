@@ -188,7 +188,19 @@ final class PrintAppearanceService: Sendable {
         var lastWaitMilliseconds: Double?
         var lastEngineMilliseconds: Double?
         var lastWarmUpMilliseconds: Double?
+        /// 直近 timingWindow ページの中央値(待ち・エンジン)
+        var medianWaitMilliseconds: Double?
+        var medianEngineMilliseconds: Double?
+        /// 処理したページの、ゲートの中のデコードと prepare(最後と中央値)
+        var lastPrepareMilliseconds: Double?
+        var medianPrepareMilliseconds: Double?
+        /// 処理したページの、デコードの入口に入ってから完成画像までの全体(最後と中央値)
+        var lastPageMilliseconds: Double?
+        var medianPageMilliseconds: Double?
     }
+
+    /// 中央値を取る直近のページ数
+    static let timingWindow = 32
 
     let configuration: Configuration
     var maxPixels: Int { configuration.maxPixels }
@@ -230,6 +242,12 @@ final class PrintAppearanceService: Sendable {
             stats.waitingPrefetch = state.jobs.values.count(where: { $0.phase == .waiting && !$0.isDisplay })
             stats.isRunning = state.running != nil
             stats.isWarmingUp = state.warmUp == .running
+            stats.medianWaitMilliseconds = state.waitSamples.median
+            stats.medianEngineMilliseconds = state.engineSamples.median
+            stats.lastPrepareMilliseconds = state.prepareSamples.last
+            stats.medianPrepareMilliseconds = state.prepareSamples.median
+            stats.lastPageMilliseconds = state.pageSamples.last
+            stats.medianPageMilliseconds = state.pageSamples.median
             return stats
         }
     }
@@ -260,6 +278,14 @@ final class PrintAppearanceService: Sendable {
     /// デコードの入口が prepare の素通しを知らせる(集計だけ)
     func recordPassThrough(_ reason: PrintAppearancePassReason) {
         state.withLock { $0.stats.passedThrough[reason, default: 0] += 1 }
+    }
+
+    /// デコードの入口が処理したページの所要時間を知らせる(稼働状況の表示用。集計だけ)
+    func recordProcessedPage(prepare: Duration, total: Duration) {
+        state.withLock { state in
+            state.prepareSamples.append(prepare.milliseconds)
+            state.pageSamples.append(total.milliseconds)
+        }
     }
 
     private func register(_ id: UInt64, continuation: Continuation) {
@@ -454,6 +480,9 @@ final class PrintAppearanceService: Sendable {
     /// その後ろに並ぶので、二重にコンパイルしない
     func prepareIfNeeded() {
         let start = state.withLock { state -> Bool in
+            // まだ走っていない releaseAll を取り消す(切ってすぐ入れ直したとき、後からキューで走る解放が
+            // 入れている間のパイプラインを捨てないように)
+            state.releaseGeneration &+= 1
             guard state.warmUp == .none else { return false }
             state.warmUp = .running
             return true
@@ -462,6 +491,8 @@ final class PrintAppearanceService: Sendable {
         let runDummyPage = !power.shouldConserveEnergy
         let threads = configuration.displayThreads
         queue.async(qos: .userInitiated, flags: .enforceQoS) { [self] in
+            // 積んだ後に releaseAll が来ていたら(すぐ切られた)準備しない。続く解放が手放すものを作らないため
+            guard state.withLock({ $0.warmUp == .running }) else { return }
             let engine = slot.engine()
             let clock = ContinuousClock()
             let begin = clock.now
@@ -470,7 +501,8 @@ final class PrintAppearanceService: Sendable {
             let elapsed = clock.now - begin
             let status = engine.status
             state.withLock { state in
-                state.warmUp = .done
+                // 準備の間に releaseAll が準備前へ戻していたら、そのままにする(次の prepareIfNeeded が積み直す)
+                if state.warmUp == .running { state.warmUp = .done }
                 state.stats.lastWarmUpMilliseconds = elapsed.milliseconds
                 state.stats.engine = status
             }
@@ -479,15 +511,25 @@ final class PrintAppearanceService: Sendable {
     }
 
     /// 全ての窓で網点処理が切られたとき: 作業域と GPU のパイプラインを手放す。
-    /// CPU だけで動く理由はエンジンが保つ(GPU の失敗が続いたプロセスでは戻さない)
+    /// CPU だけで動く理由はエンジンが保つ(GPU の失敗が続いたプロセスでは戻さない)。
+    /// 準備の状態はここで準備前へ戻し、解放はキューで行う。キューで走る前に prepareIfNeeded が来たら
+    /// (切ってすぐ入れ直した)解放しない
     func releaseAll() {
+        let generation = state.withLock { state -> UInt64 in
+            state.releaseGeneration &+= 1
+            state.warmUp = .none
+            return state.releaseGeneration
+        }
         queue.async(qos: .utility) { [self] in
+            guard state.withLock({ $0.releaseGeneration == generation }) else { return }
             let engine = slot.existing
             engine?.releaseWorkingMemory(keepPipelines: false)
             let status = engine?.status
             let hadEngine = engine != nil
             let cancelIdle = state.withLock { state -> DelayedScheduler.Cancel? in
-                state.warmUp = .none
+                // 解放の前に処理したページが準備済みにしていたら、準備前へ戻す
+                // (解放の間に prepareIfNeeded が来ていれば、その状態を保つ)
+                if state.releaseGeneration == generation { state.warmUp = .none }
                 if hadEngine {
                     state.stats.storeReleases += 1
                     state.stats.engine = status
@@ -652,6 +694,12 @@ private extension PrintAppearanceService {
         var running: UInt64?
         var pressure: MemoryPressureLevel
         var warmUp = WarmUp.none
+        /// releaseAll の世代。prepareIfNeeded が進めると、積んだままの解放は何もしない
+        var releaseGeneration: UInt64 = 0
+        var waitSamples = TimingSamples()
+        var engineSamples = TimingSamples()
+        var prepareSamples = TimingSamples()
+        var pageSamples = TimingSamples()
         var idleGeneration: UInt64 = 0
         var idleCancel: DelayedScheduler.Cancel?
         var stats = Stats()
@@ -677,7 +725,9 @@ private extension PrintAppearanceService {
             job.phase = .running
             jobs[id] = job
             running = id
-            stats.lastWaitMilliseconds = (ContinuousClock.now - job.queuedAt).milliseconds
+            let wait = (ContinuousClock.now - job.queuedAt).milliseconds
+            stats.lastWaitMilliseconds = wait
+            waitSamples.append(wait)
             let threads = job.isDisplay ? configuration.displayThreads
                 : (conserving ? configuration.conservingPrefetchThreads : configuration.prefetchThreads)
             return Pick(id: id, page: job.page, level: job.level, isDisplay: job.isDisplay, threads: threads)
@@ -718,6 +768,7 @@ private extension PrintAppearanceService {
                 stats.processedPages += 1
                 if !gray.changed { stats.unchangedPages += 1 }
                 stats.lastEngineMilliseconds = elapsed.milliseconds
+                engineSamples.append(elapsed.milliseconds)
             case .failure(let error):
                 if case .unsupportedPage? = error as? PrintAppearanceError {
                     stats.refusedPages += 1
@@ -753,6 +804,31 @@ private extension PrintAppearanceService {
             idleGeneration += 1
             defer { idleCancel = nil }
             return idleCancel
+        }
+    }
+
+    /// 所要時間の直近 timingWindow 件(古いものから上書きする)。中央値だけを出す
+    struct TimingSamples: Sendable {
+        private var values: [Double] = []
+        private var next = 0
+        private(set) var last: Double?
+
+        mutating func append(_ value: Double) {
+            last = value
+            if values.count < PrintAppearanceService.timingWindow {
+                values.append(value)
+            } else {
+                values[next] = value
+            }
+            next = (next + 1) % PrintAppearanceService.timingWindow
+        }
+
+        /// 偶数件では中央の 2 つの平均
+        var median: Double? {
+            guard !values.isEmpty else { return nil }
+            let sorted = values.sorted()
+            let middle = sorted.count / 2
+            return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
         }
     }
 

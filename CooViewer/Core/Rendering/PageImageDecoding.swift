@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import os
 import PrintAppearanceKit
 
 /// 本のページ画像のデコードの入口(設計書 §5)。フォルダ・書庫(2 か所)・EPUB の単一画像ページが
@@ -21,7 +22,13 @@ import PrintAppearanceKit
 /// 未処理の画素を返すのは決定的な素通し(prepare の判定と、CPU の経路でも断られたページ)だけ。
 /// GPU の失敗・作業域の不足・取り消し・間引き・辞退は例外のまま返す(キャッシュのタグの下に未処理の画素を
 /// 入れないため。超解像のディスクキャッシュのキーにもタグが入る)。
+///
+/// 要求のあるページは 1 枚ごとに signpost の区間 1 つと Logger の debug 行 1 つを出す(カテゴリ PrintAppearance)。
+/// 行に載せるのは段階の名前・寸法・経路・所要時間だけで、ファイル名と距離は載せない(設計書 §5)。
 enum PageImageDecoding {
+    private static let logger = Logger(subsystem: "jp.coo.cooViewer", category: "PrintAppearance")
+    private static let signposter = OSSignposter(subsystem: "jp.coo.cooViewer", category: "PrintAppearance")
+
     /// service はテスト用の差し替え。nil なら要求があるときだけ共有のサービスを使う
     /// (要求のない従来の経路ではサービスに触れず、何も作らない)
     static func decode(_ data: Data, maxPixelSize: Int?,
@@ -43,19 +50,47 @@ enum PageImageDecoding {
     }
 
     private enum Processed: Sendable {
-        /// 網点処理を切ったときと同じ画素(決定的な素通し)
-        case unchanged(CGImage)
-        /// 原寸の完成画像
-        case finished(PrintAppearanceOutput)
+        /// 網点処理を切ったときと同じ画素(決定的な素通し)。path は記録に出す経路の名前
+        case unchanged(CGImage, path: String)
+        /// 原寸の完成画像。prepare はゲートの中のデコードと prepare、engine はエンジンの待ちと処理の時間
+        case finished(PrintAppearanceOutput, prepare: Duration, engine: Duration)
     }
 
     private static func decode(_ data: Data, maxPixelSize: Int?, request: PrintAppearanceRequest,
                                service: PrintAppearanceService) async throws -> CGImage {
-        switch try await process(data, maxPixelSize: maxPixelSize, request: request, service: service) {
-        case .unchanged(let image):
-            return image
-        case .finished(let output):
-            return try finishedImage(output, maxPixelSize: maxPixelSize)
+        let clock = ContinuousClock()
+        let begin = clock.now
+        let interval = signposter.beginInterval("page", id: signposter.makeSignpostID())
+        let requested = name(request.level)
+        do {
+            switch try await process(data, maxPixelSize: maxPixelSize, request: request, service: service) {
+            case .unchanged(let image, let path):
+                let total = text(clock.now - begin)
+                let size = "\(image.width)x\(image.height)"
+                signposter.endInterval("page", interval, "\(path, privacy: .public)")
+                logger.debug(
+                    "page \(size, privacy: .public) level=\(requested, privacy: .public) path=\(path, privacy: .public) total=\(total, privacy: .public)")
+                return image
+            case .finished(let output, let prepare, let engine):
+                let image = try finishedImage(output, maxPixelSize: maxPixelSize)
+                let elapsed = clock.now - begin
+                service.recordProcessedPage(prepare: prepare, total: elapsed)
+                let effective = name(PrintAppearance.effectiveLevel(request.level, heightPx: output.height))
+                let path = output.changed ? "processed" : "processed-unchanged"
+                let size = "\(output.width)x\(output.height)"
+                let times = "prepare=\(text(prepare)) engine=\(text(engine)) total=\(text(elapsed))"
+                signposter.endInterval("page", interval, "\(path, privacy: .public)")
+                logger.debug(
+                    "page \(size, privacy: .public) level=\(requested, privacy: .public) effective=\(effective, privacy: .public) path=\(path, privacy: .public) \(times, privacy: .public)")
+                return image
+            }
+        } catch {
+            let total = text(clock.now - begin)
+            let failure = String(describing: type(of: error))
+            signposter.endInterval("page", interval, "failed")
+            logger.debug(
+                "page level=\(requested, privacy: .public) path=failed error=\(failure, privacy: .public) total=\(total, privacy: .public)")
+            throw error
         }
     }
 
@@ -64,24 +99,29 @@ enum PageImageDecoding {
     private static func process(_ data: Data, maxPixelSize: Int?, request: PrintAppearanceRequest,
                                 service: PrintAppearanceService) async throws -> Processed {
         let maxPixels = service.maxPixels
-        // prepare が投げるのは作業域を確保できないときだけ。素通しにはせず、読み込みの失敗にする
-        let prepared = try await PrefetchDecodeGate.run { () throws -> Prepared in
+        // prepare が投げるのは作業域を確保できないときだけ。素通しにはせず、読み込みの失敗にする。
+        // 時間はゲートの中だけを測る(ゲートの待ちは含めない)
+        let (prepared, prepareTime) = try await PrefetchDecodeGate.run { () throws -> (Prepared, Duration) in
+            let start = ContinuousClock.now
+            let result: Prepared
             switch try PrintAppearance.prepare(data, maxPixels: maxPixels) {
             case .passThrough(let reason, let raw):
-                return .unchanged(try unchangedImage(data, maxPixelSize: maxPixelSize, raw: raw), reason)
+                result = .unchanged(try unchangedImage(data, maxPixelSize: maxPixelSize, raw: raw), reason)
             case .ready(let page):
-                return .ready(page)
+                result = .ready(page)
             }
+            return (result, ContinuousClock.now - start)
         }
         let page: PrintAppearancePage
         switch prepared {
         case .unchanged(let image, let reason):
             service.recordPassThrough(reason)
-            return .unchanged(image)
+            return .unchanged(image, path: "pass-through-\(reason)")
         case .ready(let ready):
             page = ready
         }
         let gray: PrintAppearanceGray
+        let engineStart = ContinuousClock.now
         do {
             gray = try await service.process(page, request: request)
         } catch PrintAppearanceError.unsupportedPage {
@@ -89,9 +129,25 @@ enum PageImageDecoding {
             return .unchanged(try await PrefetchDecodeGate.run {
                 try ImageDecoding.decode(data, maxPixelSize: maxPixelSize,
                                         displayTarget: PageRequestIntent.displayColorTarget)
-            })
+            }, path: "refused")
         }
-        return .finished(try PrintAppearance.recolour(page, processed: gray))
+        let engineTime = ContinuousClock.now - engineStart
+        return .finished(try PrintAppearance.recolour(page, processed: gray),
+                         prepare: prepareTime, engine: engineTime)
+    }
+
+    /// 記録に出す段階の名前
+    private static func name(_ level: PrintAppearanceLevel) -> String {
+        switch level {
+        case .low: "low"
+        case .standard: "standard"
+        case .strong: "strong"
+        }
+    }
+
+    private static func text(_ duration: Duration) -> String {
+        let (seconds, attoseconds) = duration.components
+        return String(format: "%.1fms", Double(seconds) * 1000 + Double(attoseconds) / 1e15)
     }
 
     /// 素通しのページは網点処理を切ったときと同じ画素にする。上限なしの要求で prepare がデコードを済ませて

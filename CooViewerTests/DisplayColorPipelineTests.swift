@@ -83,6 +83,7 @@ final class DisplayColorPipelineTests: XCTestCase {
         let size = try XCTUnwrap(view.predictedResampleSizes(for: [CGSize(width: 160, height: 240)])?.first)
         let completed = try image(space: srgb, width: Int(size.width), height: Int(size.height))
         view.setPages([input], readsFromLeft: true, keyPrefix: "transition-\(UUID().uuidString)",
+            printAppearanceTag: "",
             preResampled: [ResampledPage(size: size, image: completed, processing: view.imageProcessingSettings)])
         let container = try XCTUnwrap(view.layer?.sublayers?.first)
         let page = try XCTUnwrap(container.sublayers?.first)

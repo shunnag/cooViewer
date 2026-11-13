@@ -440,6 +440,68 @@ final class PrintAppearanceServiceTests: XCTestCase {
         XCTAssertEqual(lazyEngine.events, ["process(6)"])
     }
 
+    /// 切ってすぐ入れ直したら(releaseAll の直後に prepareIfNeeded)、後からキューで走る解放は何もせず、
+    /// 準備を積み直す。releaseAll だけなら解放する。準備の最中に切られたら、準備の後に解放し、
+    /// 次の prepareIfNeeded は準備を積み直す(設計書 §5)
+    func testPrepareRightAfterReleaseKeepsPipelines() async throws {
+        let engine = FakePrintAppearanceEngine()
+        let service = Self.service(engine)
+        _ = try await Self.submit(service, 5).value
+        await service.flushForTesting()
+        service.releaseAll()
+        service.prepareIfNeeded()
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events, ["process(5)", "warmUp(true)"])
+        XCTAssertEqual(service.stats().storeReleases, 0)
+
+        service.releaseAll()
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events, ["process(5)", "warmUp(true)", "release(false)"])
+        XCTAssertEqual(service.stats().storeReleases, 1)
+
+        let hold = engine.hold(9, at: 0)
+        let running = Self.submit(service, 9)
+        try await Self.reach(hold)
+        service.prepareIfNeeded()
+        service.releaseAll()
+        hold.proceed.signal()
+        _ = try await running.value
+        await service.flushForTesting()
+        XCTAssertEqual(Array(engine.events.suffix(2)), ["process(9)", "release(false)"],
+                       "ページの最中の prepare は準備を積み、その後の releaseAll が取り消す")
+        service.prepareIfNeeded()
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events.last, "warmUp(true)", "解放した後は準備を積み直す")
+    }
+
+    /// 稼働状況の時間: 待ちとエンジンは処理したページごとに、prepare と全体はデコードの入口が知らせた分だけ。
+    /// 中央値は直近 timingWindow 件(偶数件は中央の 2 つの平均)
+    func testTimingMediansCoverRecentPages() async throws {
+        let engine = FakePrintAppearanceEngine()
+        let service = Self.service(engine)
+        XCTAssertNil(service.stats().medianEngineMilliseconds)
+        for marker in UInt8(1)...3 { _ = try await Self.submit(service, marker).value }
+        let stats = service.stats()
+        XCTAssertNotNil(stats.medianWaitMilliseconds)
+        XCTAssertNotNil(stats.medianEngineMilliseconds)
+        XCTAssertNil(stats.medianPrepareMilliseconds)
+
+        for value in [40, 10, 30, 20] { service.recordProcessedPage(prepare: .milliseconds(value),
+                                                                     total: .milliseconds(value * 10)) }
+        var recorded = service.stats()
+        XCTAssertEqual(recorded.lastPrepareMilliseconds, 20)
+        XCTAssertEqual(recorded.medianPrepareMilliseconds, 25)
+        XCTAssertEqual(recorded.lastPageMilliseconds, 200)
+        XCTAssertEqual(recorded.medianPageMilliseconds, 250)
+        // 古いものから捨てる: 1000 を timingWindow 件足すと中央値は 1000
+        for _ in 0..<PrintAppearanceService.timingWindow {
+            service.recordProcessedPage(prepare: .milliseconds(1000), total: .milliseconds(1000))
+        }
+        recorded = service.stats()
+        XCTAssertEqual(recorded.medianPrepareMilliseconds, 1000)
+        XCTAssertEqual(recorded.medianPageMilliseconds, 1000)
+    }
+
     // MARK: - 作業域の解放
 
     /// 仕事がなくなって 20 秒(省エネ中は 5 秒)で作業域を手放す。パイプラインは残す。

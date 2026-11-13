@@ -366,13 +366,14 @@ final class ReaderView: NSView {
     /// 読み順のページ画像(1 or 2 枚)を表示する。
     /// ids はリサンプルキャッシュのキーに使う(空なら画像順の連番)。
     /// keyPrefix はリサンプルキャッシュの名前空間(本の renderKey)、printAppearanceTag は画像を
-    /// 読み込んだときの網点処理の印。画像と一緒にだけ置き換える(設計書 §5)。
+    /// 読み込んだときの網点処理の印。画像と一緒にだけ置き換える(設計書 §5)。どちらも省略できない
+    /// (渡し忘れると "#<ID>" のキーが本をまたいで共有され、別の本・別の印の完成画像を引き当てるため)。
     /// preResampled はリサンプル済みキャッシュの事前引き当て(サイズ+画像。
     /// 未命中は nil): 渡すと最初のレイアウトから完成画像を使うため、
     /// めくり効果のスナップショットにもフィルタ済みの絵が入る。
     /// turn を渡すとページめくり効果を付ける(ページ送り系のみ。nil で即時)
     func setPages(_ images: [CGImage], ids: [Int] = [], readsFromLeft: Bool,
-                  keyPrefix: String = "", printAppearanceTag: String = "",
+                  keyPrefix: String, printAppearanceTag: String,
                   preResampled: [ResampledPage?] = [],
                   preparedDisplayImages: [CGImage?] = [],
                   decodedSources: [DecodedPageInfo]? = nil,
@@ -1108,6 +1109,10 @@ final class ReaderView: NSView {
             loupe.update(content: loupeContent())
         }
     }
+
+    /// ルーペが映す各ページの画像(高解像度が届いていればそれ)。検証用: ルーペの拡大はオフスクリーンの
+    /// 撮影に写らないため、網点処理の画素が届いているかを画像で確かめる
+    var loupePageImages: [CGImage] { loupeContent().pages.map(\.image) }
 
     private func loupeContent() -> LoupeController.Content {
         LoupeController.Content(

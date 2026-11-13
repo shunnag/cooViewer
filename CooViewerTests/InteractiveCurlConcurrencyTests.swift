@@ -56,7 +56,7 @@ final class InteractiveCurlConcurrencyTests: XCTestCase {
         let view = controller.readerViewForInput
         view.frame = NSRect(x: 0, y: 0, width: 160, height: 120)
         let image = await book.image(at: 0)
-        view.setPages([try XCTUnwrap(image)], readsFromLeft: false)
+        view.setPages([try XCTUnwrap(image)], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         controller.beginInteractiveCurl(forward: true, progress: 0.1)
         await controller.interactiveCurlSession?.task?.value
         XCTAssertTrue(view.hasInteractiveCurl)

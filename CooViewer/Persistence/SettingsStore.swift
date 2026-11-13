@@ -236,6 +236,11 @@ final class SettingsStore {
         halftoneDisplayEnabled ? halftoneDisplayStrength : nil
     }
 
+    /// キー操作 55 の切り替え(設計書 §2.4)。強さは変えない。未知の保存値は切として読むので、入に変わる
+    func toggleHalftoneDisplay() {
+        halftoneDisplayEnabled.toggle()
+    }
+
     /// ホイール動作(仕様書 §4.16)
     var canScrollMode: Int { defaults.integer(forKey: "CanScrollMode") }
 

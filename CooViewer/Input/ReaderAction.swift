@@ -38,6 +38,8 @@ enum ReaderAction: Equatable, Sendable {
     case toggleInterpolation
     /// EPUB のリンク移動元へ戻る(cooViewer-oxr.31・設計書 §2.4、旧番号 54)
     case epubGoBack
+    /// 網かけの表示(スキャンのまま ⇔ 本の見え方に近づける)の切り替え(設計書 §2.4・§5、旧番号 55)
+    case toggleHalftoneDisplay
 
     // 画面の左右どちらで操作したかで分岐する系(仕様書 §5.6 の **)
     case positionalNextPrevPage, positionalHalfNextPrev, positionalLastTop
@@ -105,6 +107,7 @@ extension ReaderAction {
         case 52: .reduceViewMode
         case 53: .toggleInterpolation
         case 54: .epubGoBack
+        case 55: .toggleHalftoneDisplay
         default: nil
         }
     }

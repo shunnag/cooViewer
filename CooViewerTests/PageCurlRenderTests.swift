@@ -58,7 +58,7 @@ final class PageCurlRenderTests: XCTestCase {
     /// ページを表示した実物の ReaderView(ウインドウなしでレイアウト済み)
     private func makeReaderView(image: CGImage? = nil) -> ReaderView {
         let view = ReaderView(frame: CGRect(origin: .zero, size: size))
-        view.setPages([image ?? quadrantImage()], readsFromLeft: false)
+        view.setPages([image ?? quadrantImage()], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         view.layoutSubtreeIfNeeded()
         return view
     }
@@ -284,7 +284,7 @@ final class PageCurlRenderTests: XCTestCase {
         context.fill(CGRect(origin: .zero, size: targets[0]))
         let bright = context.makeImage()!
 
-        view.setPages([dark], readsFromLeft: false,
+        view.setPages([dark], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "",
                       preResampled: [ResampledPage(size: targets[0], image: bright,
                           processing: view.imageProcessingSettings)])
         view.layoutSubtreeIfNeeded()
@@ -296,7 +296,7 @@ final class PageCurlRenderTests: XCTestCase {
             "中央画素が明るい=事前引き当てが最初のレイアウトで使われている")
 
         // 引き当てなしの対照: 原画(暗)がそのまま出る
-        view.setPages([dark], readsFromLeft: false)
+        view.setPages([dark], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         view.layoutSubtreeIfNeeded()
         let plain = try XCTUnwrap(view.snapshotContent())
         let plainData = try XCTUnwrap(plain.dataProvider?.data) as Data
@@ -324,7 +324,7 @@ final class PageCurlRenderTests: XCTestCase {
             context.fill(CGRect(origin: .zero, size: targets[0]))
             let bright = try XCTUnwrap(context.makeImage())
             // 旧設定で取得した完成画像が、設定変更後に届く状況を実表示へ渡す。
-            view.setPages([dark], readsFromLeft: false,
+            view.setPages([dark], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "",
                           preResampled: [.init(size: targets[0], image: bright, processing: processing)])
             view.layoutSubtreeIfNeeded()
             let snapshot = try XCTUnwrap(view.snapshotContent())

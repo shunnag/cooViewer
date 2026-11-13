@@ -60,7 +60,7 @@ final class LoupeConcurrencyTests: XCTestCase {
 
     private func show(_ book: Book, in view: ReaderView) async throws {
         let image = await book.image(at: 0)
-        view.setPages([try XCTUnwrap(image)], ids: [0], readsFromLeft: false)
+        view.setPages([try XCTUnwrap(image)], ids: [0], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         view.enableLoupe(size: 16, rate: 1)
         XCTAssertTrue(view.isLoupeEnabled)
     }

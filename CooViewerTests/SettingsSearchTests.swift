@@ -89,6 +89,49 @@ final class SettingsSearchTests: XCTestCase {
         }
     }
 
+    /// 「網かけの表示」の行の索引語(英語の原文キー。SettingsView.searchTerms(for: .display) と同じ鍵)
+    private static let halftoneKeys = [
+        "Halftone display:",
+        "Strength:",
+        "Halftone, screentone, descreen, moire",
+    ]
+
+    /// 「網かけの表示」の 2 行と行に現れない語が実際の「表示」ペインの索引に載っている(設計書 §2.4)
+    @MainActor
+    func testRealDisplayIndexContainsHalftoneRows() {
+        let terms = SettingsView.searchTerms(for: .display)
+        for key in Self.halftoneKeys {
+            XCTAssertTrue(terms.contains(String(localized: String.LocalizationValue(key))), key)
+        }
+    }
+
+    /// 自明な語(網かけ・網点・スクリーントーン・モアレ・強さ / halftone・screentone・descreen・moire・
+    /// strength)で「表示」ペインが見つかる。日本語の訳にも英語の語を含める。実行機の言語に依存しないよう、
+    /// 日英の訳を lproj から解決して索引を組む
+    func testHalftoneRowsAreFoundByObviousTermsInJapaneseAndEnglish() throws {
+        let app = Bundle(for: SettingsStore.self)
+        let queries = [
+            "ja": ["網かけ", "網点", "スクリーントーン", "モアレ", "強さ", "halftone", "screentone", "descreen", "moire"],
+            "en": ["halftone", "screentone", "descreen", "moire", "strength"],
+        ]
+        for (language, words) in queries {
+            let bundle = app.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:))
+            if language == "ja" { XCTAssertNotNil(bundle, "ja.lproj がアプリに無い") }
+            let terms = Self.halftoneKeys.map {
+                bundle?.localizedString(forKey: $0, value: $0, table: nil) ?? $0
+            }
+            if language == "ja" {
+                XCTAssertNotEqual(terms, Self.halftoneKeys, "日本語訳が解決されていない")
+            }
+            let entry = SettingsSearch.Entry(id: SettingsPane.display.rawValue, title: "", terms: terms)
+            for word in words {
+                let matches = SettingsSearch.filter(query: word, entries: [entry])
+                XCTAssertEqual(matches.map(\.id), [SettingsPane.display.rawValue], "\(language): \(word)")
+                XCTAssertFalse(matches.first?.matchedTerms.isEmpty ?? true, "\(language): \(word)")
+            }
+        }
+    }
+
     /// 実際の索引が全ペインを網羅していること(新ペイン追加時の追従漏れ検出)
     @MainActor
     func testRealIndexCoversEveryPane() {

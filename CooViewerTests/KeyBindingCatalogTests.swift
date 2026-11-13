@@ -10,10 +10,10 @@ final class KeyBindingCatalogTests: XCTestCase {
     }
 
     func testCategoriesCoverAllKeyActions() {
-        // カテゴリ表はキーアクション 0-54 を重複なく網羅する
+        // カテゴリ表はキーアクション 0-55 を重複なく網羅する
         let all = ActionNames.keyActionCategories.flatMap(\.numbers)
         XCTAssertEqual(all.count, Set(all).count, "重複あり")
-        XCTAssertEqual(Set(all), Set(0...54))
+        XCTAssertEqual(Set(all), Set(0...55))
     }
 
     func testEPUBGoBackHasCatalogName() {
@@ -48,7 +48,7 @@ final class KeyBindingCatalogTests: XCTestCase {
 
     func testKeySwitchEligibilityMatchesSwapPairs() {
         // 入替ペア(switchedLegacyKeyNumber)の両側だけが対象
-        for number in 0...54 {
+        for number in 0...55 {
             let swaps = ReaderAction.switchedLegacyKeyNumber(number) != number
             XCTAssertEqual(ActionNames.keySwitchActionEligible.contains(number), swaps,
                            "action \(number)")

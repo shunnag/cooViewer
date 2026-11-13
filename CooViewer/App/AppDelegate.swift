@@ -13,8 +13,11 @@ enum AutomatedRun {
             || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
     }
 
+    /// スナップショット系の検証実行。網点処理の統計の書き出し(--dump-print-appearance-stats)は
+    /// --snapshot なしでも使うので同じ扱いにする(更新確認・全画面起動・WebKit の予熱を起動しない)
     static var isSnapshot: Bool {
         CommandLine.arguments.contains("--snapshot")
+            || CommandLine.arguments.contains("--dump-print-appearance-stats")
     }
 
     static var isArchiveAudit: Bool {
@@ -50,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var debugPreviewWindow: NSWindow?
     private(set) var renderingPrewarmTask: Task<Void, Never>?
     private(set) var webKitPrewarmTask: Task<Void, Never>?
+    private(set) var printAppearancePrewarmTask: Task<Void, Never>?
     private var webKitPrewarmer: EPUBWebKitPrewarmer?
 
     /// Sparkle の自動更新(設計書 §配布)。フィード URL と EdDSA 公開鍵は
@@ -122,6 +126,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let target = DisplayColorTarget.current(window: controller.window)
             renderingPrewarmTask = Task.detached(priority: .utility) {
                 await ImageResampler.shared.prewarm(displayTarget: target)
+            }
+        }
+        // 設計書 §5: 網かけの表示を入れて起動したら、最初のページより先に網点処理のエンジンを準備する。
+        // 最初のページもパイプラインを要するので、描画の予熱と違い省エネ中も行う(合成ページを処理するかは
+        // サービスが省エネの判定で決める)。スナップショット実行でも行う。コンパイルはサービスが
+        // userInitiated で積む(utility のコンパイルの後ろで最初のページが待たないように)
+        if SettingsStore.shared.printAppearanceRequest != nil {
+            printAppearancePrewarmTask = Task.detached(priority: .utility) {
+                PrintAppearanceService.shared.prepareIfNeeded()
             }
         }
         if !AutomatedRun.isSnapshot {
@@ -399,6 +412,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 navigationSteps.append { [weak self] in
                     self?.readerWindowController?.debugToggleEPUBLoupeAtCenter()
                 }
+            case "--then-toggle-halftone":
+                // 網かけの表示をキー操作 55 と同じ経路で切り替える(defaults を書き、applySettings が
+                // 表示を差し替える。設計書 §5)。引数ドメインの -HalftoneDisplayMode は書き込みを覆い隠すので
+                // 併用しない
+                navigationSteps.append { [weak self] in
+                    self?.readerWindowController?.perform(.toggleHalftoneDisplay, value: nil, leftHalf: nil)
+                }
             case "--then-toggle-bookmark":
                 // リフローしおりのトグルを直接叩く E2E 検証用(仕様書 §4.7.1)
                 navigationSteps.append { [weak self] in
@@ -540,6 +560,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.readerWindowController?.openBook(at: URL(fileURLWithPath: path))
             }
         }
+        if let index = arguments.firstIndex(of: "--dump-print-appearance-stats"), index + 1 < arguments.count,
+           !arguments.contains("--snapshot") {
+            // 検証用: --snapshot なしでも、--then の完了と表示整定を待ち、さらに 2 秒後に網点処理の統計を
+            // JSON で書き出して終了する(撮影と同じ時点。性能の測定で使う。設計書 §5)
+            let path = arguments[index + 1]
+            let statsNavigationTask = navTask
+            Task { @MainActor in
+                await statsNavigationTask?.value
+                await self.readerWindowController?.debugAwaitDisplaySettled()
+                try? await Task.sleep(for: .seconds(2))
+                self.writePrintAppearanceStats(to: path)
+                NSApp.terminate(nil)
+            }
+        }
         if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
             let path = arguments[index + 1]
             // 連打ステップは自分の所要時間(N×70ms)+整定のぶん撮影を遅らせる
@@ -572,6 +606,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         protectedFlag = String(await source.containsProtectedContent())
                     }
                     print("[thumbnail-stats] protected=\(protectedFlag)\n\(stats)")
+                }
+                // 検証用: 網点処理の統計を JSON で書き出す(撮影と同じ時点。設計書 §5)
+                if let statsIndex = arguments.firstIndex(of: "--dump-print-appearance-stats"),
+                   statsIndex + 1 < arguments.count {
+                    self.writePrintAppearanceStats(to: arguments[statsIndex + 1])
                 }
                 // アクティビティ窓が開いていれば ImageRenderer で撮る
                 // (NSHostingView + ScrollView はヘッドレスの cacheDisplay で
@@ -630,6 +669,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let index = arguments.firstIndex(of: "--snapshot-settings"), index + 1 < arguments.count {
             let path = arguments[index + 1]
             showSettings(nil)
+            // 検証用: --snapshot-settings-height <pt> で窓を縦に伸ばし、長いペインの下の方の行も撮る
+            // (撮影はスクロール位置の外を写さないため)
+            if let heightIndex = arguments.firstIndex(of: "--snapshot-settings-height"),
+               heightIndex + 1 < arguments.count, let height = Double(arguments[heightIndex + 1]), height > 0,
+               let window = settingsWindow {
+                window.setContentSize(NSSize(width: window.contentLayoutRect.width, height: height))
+            }
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
                 // サイドバーの NSVisualEffectView は layer.render に写らないため
@@ -638,6 +684,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSApp.terminate(nil)
             }
         }
+    }
+
+    /// 網点処理の統計(PrintAppearanceService.stats() と設定・先読みの実効値)を JSON で書き出す
+    private func writePrintAppearanceStats(to path: String) {
+        let report = ActivitySnapshot.Halftone.current(book: readerWindowController?.book)
+        try? PrintAppearanceStatsReport.json(report).write(to: URL(fileURLWithPath: path))
     }
 
     /// 互換用の CLI 指定を UserDefaults へ保存せず、このプロセスで今後開く本だけに

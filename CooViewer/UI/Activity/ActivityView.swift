@@ -47,6 +47,7 @@ struct ActivityView: View {
                 bookSection(book)
                 if let loading = s.loading { loadingSection(loading) }
                 if let resample = s.resample { resampleSection(resample) }
+                if let halftone = s.halftone { halftoneSection(halftone) }
                 if let lru = s.lru { lruSection(lru) }
                 if let plan = s.prefetchPlan { prefetchPlanSection(plan) }
                 if let spool = s.spool { spoolSection(spool) }
@@ -57,6 +58,7 @@ struct ActivityView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.top, 40)
+                if let halftone = s.halftone { halftoneSection(halftone) }
                 mlSection(s.ml)
             }
         }
@@ -142,6 +144,13 @@ struct ActivityView: View {
         section(String(localized: "Resource limits")) {
             ForEach(r.rows, id: \.label) { item in row(item.label, item.value) }
             Text(r.scopeText).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// 網かけの表示(網点処理のエンジン・ページ・待ち・時間・計画。設計書 §5)
+    private func halftoneSection(_ h: ActivitySnapshot.Halftone) -> some View {
+        section(String(localized: "Halftone Display")) {
+            ForEach(h.rows, id: \.label) { item in row(item.label, item.value) }
         }
     }
 

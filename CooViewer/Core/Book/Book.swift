@@ -358,7 +358,10 @@ final class Book {
     /// 網点処理の設定を変える(設計書 §5)。updateDisplayColorTarget と同じく、ページキャッシュと
     /// 寸法・省略情報を捨て、未開始の先読みを辞退させ、進行中の読み込みには以後合流させない
     /// (遅れて届いた結果は登録の照合で捨てられる)。待っている image(at:) は renderEpoch の変化を見て
-    /// 新しい印で読み直す。旧い印の原寸中間画像は保持する集合を空にして手放す
+    /// 新しい印で読み直す。旧い印の原寸中間画像は保持する集合を空にして手放す。
+    /// 走っている先読みの計画も止める: 旧い計画は網点処理を切っていたときの幅(最大 12)と的(最大 64)の
+    /// まま新しい印の読み込みを始め続け、エンジンを待つページの上限(4)を超えるため。EPUB 表示モード中は
+    /// 計画し直しが来ないので、止めなければ的を使い切るまで続く。次の currentSpread が計画し直す
     @discardableResult
     func updatePrintAppearance(_ level: PrintAppearanceLevel?) -> Bool {
         guard level != printAppearanceLevel else { return false }
@@ -371,7 +374,7 @@ final class Book {
         cache.removeAll()
         decodedPageInfo.removeAll()
         evictedResampleKeys.removeAll()
-        declineQueuedPrefetchLoads()
+        cancelPrefetch()
         inFlightLoads.removeAll()
         if !isClosed { releaseStrongIntermediates(bookKey: previousRenderKey) }
         return true

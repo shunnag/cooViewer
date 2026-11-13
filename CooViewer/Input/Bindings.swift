@@ -277,6 +277,16 @@ struct BindingConfiguration: Sendable {
                 bindings.append(KeyBinding(legacyActionNumber: 53, key: "f",
                                            modifiers: 0, value: nil, switchAction: false))
             }
+            // 網かけの表示の切替(55)の既定 h も同じ条件で補う: 素の h が未使用で、55 が未割当で、
+            // 2.0 の UI で未編集のときだけ。メモリ内だけで、1.x と共有する defaults へは書き戻さない
+            // (設計書 §2.4)
+            if name == "KeyArray",
+               !defaults.bool(forKey: "KeyArrayUserEdited"),
+               !bindings.contains(where: { $0.key == "h" && $0.modifiers == 0 }),
+               !bindings.contains(where: { $0.legacyActionNumber == 55 }) {
+                bindings.append(KeyBinding(legacyActionNumber: 55, key: "h",
+                                           modifiers: 0, value: nil, switchAction: false))
+            }
             // Control+↑/↓ とその Shift 付きは通常/低速の Mission Control に取られるため、
             // 本/サブフォルダ移動の新既定を未編集の KeyArray にキー+修飾の組ごとに補う
             // (仕様書 §5.7.1 → 設計書 §2.4)。
@@ -390,7 +400,8 @@ struct BindingConfiguration: Sendable {
             key(10, "a"), key(11, "s"), key(12, "p"),
             key(13, tab, value: 10), key(14, backTab, LegacyModifier.shift, value: 10),
             key(15, "w"), key(16, "q"), key(17, "g"), key(18, "t"), key(19, "r"),
-            key(20, "o"), key(34, "l"), key(53, "f"),
+            // 55 = 網かけの表示の切替(設計書 §2.4。h は内蔵の割当で未使用、⌘H とは修飾が違う)
+            key(20, "o"), key(34, "l"), key(53, "f"), key(55, "h"),
             // 低速の Mission Control に取られる Control+Shift+↑/↓ は Option+Shift へ
             // 移し、文字キーの既定は保つ(仕様書 §5.7.1 → 設計書 §2.4)。
             key(35, "C", LegacyModifier.shift + LegacyModifier.control),
