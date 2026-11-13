@@ -675,11 +675,18 @@ private extension PrintAppearanceService {
             guard var job = jobs[id] else { return .none }
             if case .failure(let error) = result, let error = error as? PrintAppearanceError,
                case .stopped = error, !job.cancelled {
+                stats.preemptions += 1
+                // 実行中に辞退された先読みは、止めた時点で待ちに戻るので、待っている先読みと同じく辞退で終える
+                if !job.isDisplay, job.ticket?.intent == .declined {
+                    jobs[id] = nil
+                    job.ticket?.detach()
+                    stats.declinedJobs += 1
+                    return .resume(job.continuation, .failure(PrefetchDecodeGate.Declined()))
+                }
                 job.phase = .waiting
                 headArrival = min(headArrival, job.arrival) - 1
                 job.arrival = headArrival
                 jobs[id] = job
-                stats.preemptions += 1
                 return .requeued(isDisplay: job.isDisplay)
             }
             jobs[id] = nil

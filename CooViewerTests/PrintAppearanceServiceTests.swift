@@ -186,6 +186,29 @@ final class PrintAppearanceServiceTests: XCTestCase {
         XCTAssertEqual(service.stats().declinedJobs, 1)
     }
 
+    /// 実行中に辞退された先読みは最後まで処理するが、追い越しで止めたらそこで辞退で終える(待ちに戻さない)
+    func testDeclinedRunningPrefetchEndsWhenPreempted() async throws {
+        let engine = FakePrintAppearanceEngine()
+        let service = Self.service(engine)
+        let book = BookToken()
+        let ticket = book.ticket(prefetch: true)
+        let hold = engine.hold(10, at: 1)
+        let declined = Self.submit(service, 10, ticket: ticket)
+        try await Self.reach(hold)
+        ticket.decline()
+        let display = Self.submit(service, 20, ticket: book.ticket(prefetch: false))
+        try await Self.waitUntil(service) { $0.waitingDisplay == 1 }
+        hold.proceed.signal()
+        await Self.assertThrows(declined, PrefetchDecodeGate.Declined.self)
+        _ = try await display.value
+        XCTAssertEqual(engine.markers, [10, 20])
+        XCTAssertEqual(engine.calls[0].stoppedAt, .betweenPass1Chunks)
+        let stats = service.stats()
+        XCTAssertEqual(stats.declinedJobs, 1)
+        XCTAssertEqual(stats.preemptions, 1)
+        XCTAssertEqual(stats.waitingPrefetch, 0)
+    }
+
     // MARK: - 追い越し
 
     /// 表示の仕事が来たら、パス 1 の途中の先読みのページを次のチャンクの境目で止めて表示を先に処理し、
