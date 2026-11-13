@@ -346,25 +346,50 @@ final class PrintAppearanceService: Sendable {
     /// 表示の枠は userInitiated、先読みの枠は utility で積む(設計書 §5)
     private func submitRunBlock(display: Bool) {
         if display {
-            queue.async(qos: .userInitiated, flags: .enforceQoS) { [self] in runNext() }
+            queue.async(qos: .userInitiated, flags: .enforceQoS) { [self] in runNext(inDisplayBlock: true) }
         } else {
-            queue.async(qos: .utility) { [self] in runNext() }
+            queue.async(qos: .utility) { [self] in runNext(inDisplayBlock: false) }
         }
     }
 
-    private func runNext() {
+    private enum Start: Sendable {
+        case idle
+        /// 表示の枠で先読みの仕事しか待っていない: 先読みの枠へ回す
+        case deferToPrefetchBlock
+        case run(Pick, cancelIdle: DelayedScheduler.Cancel?)
+    }
+
+    /// 枠の QoS は積んだときの仕事のもので、選ぶ仕事と食い違うことがある(先に積んだ先読みの枠が後から来た
+    /// 表示の仕事を拾い、表示の枠には先読みの仕事が残る)。表示の仕事は userInitiated に引き上げて同じ
+    /// スレッドで処理し(concurrentPerform の作業者はこのスレッドの QoS に合わせて走る)、表示の枠は先読みの
+    /// 仕事を処理せず utility の枠を積み直す。引き上げはできても引き下げはできないため(設計書 §5)
+    private func runNext(inDisplayBlock: Bool) {
         let conserving = power.shouldConserveEnergy
         let configuration = configuration
-        let started = state.withLock { state -> (pick: Pick, cancelIdle: DelayedScheduler.Cancel?)? in
-            guard let pick = state.startNext(configuration: configuration, conserving: conserving) else { return nil }
-            return (pick, state.invalidateIdleRelease())
+        let start = state.withLock { state -> Start in
+            if let pick = state.startNext(configuration: configuration, conserving: conserving,
+                                          allowPrefetch: !inDisplayBlock) {
+                return .run(pick, cancelIdle: state.invalidateIdleRelease())
+            }
+            return state.hasWaitingJob ? .deferToPrefetchBlock : .idle
         }
-        guard let started else {
+        switch start {
+        case .idle:
             scheduleIdleReleaseIfQuiet()
-            return
+        case .deferToPrefetchBlock:
+            submitRunBlock(display: false)
+        case .run(let pick, let cancelIdle):
+            cancelIdle?()
+            if pick.isDisplay && !inDisplayBlock {
+                DispatchWorkItem(qos: .userInitiated, flags: .enforceQoS) { [self] in execute(pick) }.perform()
+            } else {
+                execute(pick)
+            }
         }
-        started.cancelIdle?()
-        let pick = started.pick
+    }
+
+    /// 選んだ 1 ページをエンジンで処理し、結果を返すか先読みの先頭へ戻す(キューの上)
+    private func execute(_ pick: Pick) {
         let engine = slot.engine()
         let clock = ContinuousClock()
         let begin = clock.now
@@ -584,6 +609,7 @@ private extension PrintAppearanceService {
         let id: UInt64
         let page: PrintAppearancePage
         let level: PrintAppearanceLevel
+        let isDisplay: Bool
         let threads: Int
     }
 
@@ -619,11 +645,14 @@ private extension PrintAppearanceService {
         var hasWaitingJob: Bool { jobs.values.contains { $0.phase == .waiting } }
         var isQuiet: Bool { running == nil && !hasWaitingJob }
 
-        /// 最も優先する待ちの仕事を実行中にする: 表示を新しい順、次に先読みを到着順
-        mutating func startNext(configuration: Configuration, conserving: Bool) -> Pick? {
+        /// 最も優先する待ちの仕事を実行中にする: 表示を新しい順、次に先読みを到着順。
+        /// allowPrefetch が偽なら表示の仕事だけを選ぶ
+        mutating func startNext(configuration: Configuration, conserving: Bool, allowPrefetch: Bool) -> Pick? {
             let waiting = jobs.filter { $0.value.phase == .waiting }
-            let chosen = waiting.filter { $0.value.isDisplay }.max { $0.value.touch < $1.value.touch }
-                ?? waiting.min { $0.value.arrival < $1.value.arrival }
+            var chosen = waiting.filter { $0.value.isDisplay }.max { $0.value.touch < $1.value.touch }
+            if chosen == nil, allowPrefetch {
+                chosen = waiting.min { $0.value.arrival < $1.value.arrival }
+            }
             guard let chosen else { return nil }
             let id = chosen.key
             var job = chosen.value
@@ -633,7 +662,7 @@ private extension PrintAppearanceService {
             stats.lastWaitMilliseconds = (ContinuousClock.now - job.queuedAt).milliseconds
             let threads = job.isDisplay ? configuration.displayThreads
                 : (conserving ? configuration.conservingPrefetchThreads : configuration.prefetchThreads)
-            return Pick(id: id, page: job.page, level: job.level, threads: threads)
+            return Pick(id: id, page: job.page, level: job.level, isDisplay: job.isDisplay, threads: threads)
         }
 
         /// 1 ページが終わった。止めたのが取り消しでなければ(追い越し)先読みの先頭へ戻す

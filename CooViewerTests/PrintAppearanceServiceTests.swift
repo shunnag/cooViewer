@@ -31,6 +31,10 @@ final class PrintAppearanceServiceTests: XCTestCase {
         blocker.proceed.signal()
         for task in tasks { _ = try await task.value }
         XCTAssertEqual(engine.markers, [1, 21, 20, 10, 11])
+        // 表示の仕事は先に積まれた先読みの枠が拾っても表示の QoS で、先読みの仕事は先読みの QoS で処理する
+        XCTAssertEqual(engine.calls.map(\.qos.rawValue),
+                       [QOS_CLASS_USER_INITIATED, QOS_CLASS_USER_INITIATED, QOS_CLASS_USER_INITIATED,
+                        QOS_CLASS_UTILITY, QOS_CLASS_UTILITY].map(\.rawValue))
         let stats = service.stats()
         XCTAssertEqual(stats.processedPages, 5)
         XCTAssertEqual(stats.waitingDisplay + stats.waitingPrefetch, 0)
@@ -200,6 +204,9 @@ final class PrintAppearanceServiceTests: XCTestCase {
         hold.proceed.signal()
         for task in [preempted, later, display] { _ = try await task.value }
         XCTAssertEqual(engine.markers, [10, 20, 10, 11])
+        // 先読みの枠が拾った表示の仕事も表示の QoS で処理し、表示の枠は先読みの仕事を処理しない
+        XCTAssertEqual(engine.calls.map(\.qos.rawValue),
+                       [QOS_CLASS_UTILITY, QOS_CLASS_USER_INITIATED, QOS_CLASS_UTILITY, QOS_CLASS_UTILITY].map(\.rawValue))
         XCTAssertEqual(engine.calls[0].stoppedAt, .betweenPass1Chunks)
         XCTAssertNil(engine.calls[2].stoppedAt)
         XCTAssertEqual(service.stats().preemptions, 1)

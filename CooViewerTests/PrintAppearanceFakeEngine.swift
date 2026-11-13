@@ -15,6 +15,8 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
         let level: PrintAppearanceLevel
         /// 止めた位置。最後まで処理したら nil
         let stoppedAt: PrintAppearanceStopPoint?
+        /// 処理したスレッドの QoS(concurrentPerform の作業者はこれを受け継ぐ)
+        let qos: qos_class_t
     }
 
     /// 1 度だけ、指定のページの指定の位置で止まって待つ
@@ -84,6 +86,7 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
     func process(_ page: PrintAppearancePage, level: PrintAppearanceLevel, threads: Int,
                  shouldStop: (PrintAppearanceStopPoint) -> Bool) throws -> PrintAppearanceGray {
         recordContext()
+        let qos = qos_class_self()
         let marker = page.luma[0]
         let hold = state.withLockUnchecked { $0.holds.removeValue(forKey: marker) }
         for (index, point) in Self.points.enumerated() {
@@ -92,16 +95,16 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
                 hold.hold.proceed.wait()
             }
             if shouldStop(point) {
-                record(Call(marker: marker, threads: threads, level: level, stoppedAt: point))
+                record(Call(marker: marker, threads: threads, level: level, stoppedAt: point, qos: qos))
                 throw PrintAppearanceError.stopped(point)
             }
         }
         if let failure = state.withLockUnchecked({ $0.failure }) {
-            record(Call(marker: marker, threads: threads, level: level, stoppedAt: nil))
+            record(Call(marker: marker, threads: threads, level: level, stoppedAt: nil, qos: qos))
             throw failure
         }
         state.withLockUnchecked { $0.workingBytes = 1000 }
-        record(Call(marker: marker, threads: threads, level: level, stoppedAt: nil))
+        record(Call(marker: marker, threads: threads, level: level, stoppedAt: nil, qos: qos))
         return page.luma.withUnsafeBufferPointer {
             PrintAppearanceGray(copying: $0.baseAddress!, width: page.width, height: page.height,
                                 changed: marker != 255)
