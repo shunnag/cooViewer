@@ -24,8 +24,11 @@ import PrintAppearanceKit
 //   パス 1 を過ぎたページは最後まで処理する(残りは短い)。
 // 取り消し: 待っている仕事は外し、実行中の仕事は次の停止位置で止めて CancellationError で終える。
 // 作業域の解放(コンパイル済みのパイプラインは残す): 20 秒(省エネ中は 5 秒)仕事がない、
-//   400 万画素を超えるページの後に待ちがない、メモリ圧迫が warning で待ちがない、critical では毎ページの後。
+//   400 万画素を超えるページの後に待ちも予約もない、メモリ圧迫が warning で待ちがない、critical では毎ページの後。
 //   全ての窓で網点処理が切られたら(releaseAll)パイプラインも手放す。
+// 作業域の予約: 表示のページはデコードの間に、そのページの大きさの作業域をこのキューで先に用意する(reserve)。
+//   確保と初回の頁の割り当ては 13 MP で数十 ms かかり、起動直後の最初のページと、大きなページの後に作業域を
+//   手放した後のジャンプで毎回払っていたため(設計書 §5)。
 // GPU の失敗はエンジンが同じページを CPU の厳密な経路で処理し直して返す。ここでは生の画素を返す道を
 // 作らない(キャッシュのタグの下に未処理の画素が入り、超解像のディスクキャッシュまで残るため)。
 
@@ -128,6 +131,7 @@ final class PrintAppearanceTicket: Sendable {
 protocol PrintAppearanceProcessing: AnyObject {
     var status: PrintAppearanceEngineStatus { get }
     func warmUp(runDummyPage: Bool, threads: Int) throws
+    func reserve(width: Int, height: Int, threads: Int) throws
     func process(_ page: PrintAppearancePage, level: PrintAppearanceLevel, threads: Int,
                  shouldStop: (PrintAppearanceStopPoint) -> Bool) throws -> PrintAppearanceGray
     func releaseWorkingMemory(keepPipelines: Bool)
@@ -149,10 +153,14 @@ final class PrintAppearanceService: Sendable {
         var maxPixels = PrintAppearance.defaultMaxPixels
         /// 本ごとに待てる表示の仕事の数
         var displayWaitLimit = 4
-        /// 表示・ルーペ・準備の並列数: min(8, 高性能コアの数)。16 にしても 8 からの短縮は 15% 未満
-        var displayThreads = min(8, PrintAppearanceService.performanceCoreCount())
-        /// 先読みの並列数(4 なら 8 の 1.3〜1.7 倍の時間。ページあたりの CPU 時間はほぼ同じ)
-        var prefetchThreads = 4
+        /// 表示・ルーペ・準備の並列数: 全てのコア(16 まで)。利用者が待つページなので高効率コアも使う。
+        /// 13.4 MP のページで 8 から 16 にするとエンジンが 15〜17% 短くなる(M4 Max、12 + 4 コアで 221 → 183 ms。
+        /// 設計書 §5 の min(8, 高性能コアの数) からの変更)。高性能コアが 6 つの Mac では 6 から 10 になる
+        var displayThreads = min(16, max(1, ProcessInfo.processInfo.activeProcessorCount))
+        /// 先読みの並列数: min(8, 高性能コアの数)。4 では 8 の 1.3〜1.4 倍の時間がかかり(11.1 MP で 294〜308 ms
+        /// に対して 210〜222 ms、M4 Max で実測)、1 秒に 1 回の見開きのページ送りに先読みが追いつかない。
+        /// ページあたりの CPU 時間はほぼ同じ
+        var prefetchThreads = min(8, PrintAppearanceService.performanceCoreCount())
         /// 省エネ中の先読みの並列数
         var conservingPrefetchThreads = 2
         /// 仕事がないまま作業域を手放すまでの時間(作り直しは数 ms)
@@ -185,6 +193,8 @@ final class PrintAppearanceService: Sendable {
         var declinedJobs = 0
         var cancelledJobs = 0
         var storeReleases = 0
+        /// 表示のページのデコードの間に作業域を予約した回数
+        var reservations = 0
         var lastWaitMilliseconds: Double?
         var lastEngineMilliseconds: Double?
         var lastWarmUpMilliseconds: Double?
@@ -383,6 +393,35 @@ final class PrintAppearanceService: Sendable {
         continuation?.resume(throwing: PrefetchDecodeGate.Declined())
     }
 
+    // MARK: - 作業域の予約
+
+    /// 表示のページのデコードの間に、そのページの作業域をエンジンのキューで先に用意する(設計書 §5)。
+    /// ページの仕事より先にキューへ積まれるので、確保はデコードと並んで進み、ページはそのまま処理を始められる。
+    /// 色のページになりうる(ヘッダがグレーでない)ページは、このプロセスでまだ 1 ページも処理していなければ
+    /// 予約しない(色の本では使わない作業域を持たないため)。メモリ圧迫が critical なら予約しない。
+    /// 予約したページがエンジンまで来なくても(色・取り消し・間引き)、予約の後に仕事がなければ解放の予約を立てる
+    func reserve(width: Int, height: Int, colourPossible: Bool) {
+        let accepted = state.withLock { state -> Bool in
+            guard state.pressure != .critical, !colourPossible || state.stats.processedPages > 0 else { return false }
+            state.pendingReservations += 1
+            state.stats.reservations += 1
+            return true
+        }
+        guard accepted else { return }
+        let threads = configuration.displayThreads
+        queue.async(qos: .userInitiated, flags: .enforceQoS) { [self] in
+            let engine = slot.engine()
+            // 失敗してもページの処理がその場で確保し直す(GPU の失敗の扱いもそちらに任せる)
+            try? engine.reserve(width: width, height: height, threads: threads)
+            let status = engine.status
+            state.withLock { state in
+                state.pendingReservations -= 1
+                state.stats.engine = status
+            }
+            scheduleIdleReleaseIfQuiet()
+        }
+    }
+
     // MARK: - 実行
 
     /// 待っている仕事 1 つにつき実行の枠を 1 つ積む。枠は実行するときに最も優先する仕事を選ぶので、
@@ -544,7 +583,8 @@ final class PrintAppearanceService: Sendable {
     private func releaseAfterPage(_ engine: any PrintAppearanceProcessing, pixels: Int) {
         let largePage = pixels > configuration.largePagePixels
         let release = state.withLock { state -> Bool in
-            let quiet = !state.hasWaitingJob
+            // 予約が積まれていれば、すぐ来る表示のページのために残す
+            let quiet = !state.hasWaitingJob && state.pendingReservations == 0
             switch state.pressure {
             case .critical: return true
             case .warning: return quiet
@@ -702,6 +742,8 @@ private extension PrintAppearanceService {
         var pageSamples = TimingSamples()
         var idleGeneration: UInt64 = 0
         var idleCancel: DelayedScheduler.Cancel?
+        /// キューに積んでまだ終わっていない作業域の予約
+        var pendingReservations = 0
         var stats = Stats()
 
         init(pressure: MemoryPressureLevel) {
@@ -709,7 +751,7 @@ private extension PrintAppearanceService {
         }
 
         var hasWaitingJob: Bool { jobs.values.contains { $0.phase == .waiting } }
-        var isQuiet: Bool { running == nil && !hasWaitingJob }
+        var isQuiet: Bool { running == nil && !hasWaitingJob && pendingReservations == 0 }
 
         /// 最も優先する待ちの仕事を実行中にする: 表示を新しい順、次に先読みを到着順。
         /// allowPrefetch が偽なら表示の仕事だけを選ぶ

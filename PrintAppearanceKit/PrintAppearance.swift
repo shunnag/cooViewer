@@ -35,6 +35,14 @@ public enum PrintAppearance {
         try PageInput.prepare(data, maxPixels: maxPixels)
     }
 
+    /// 作業域を先に用意するための、ヘッダだけで分かるページの大きさ(設計書 §5)。prepare がヘッダで素通しに
+    /// する理由(辺が 128 px 未満・向き・深さ・色モデル・画素数の上限・縦横比)のどれにも当たらなければ
+    /// 幅と高さと、ヘッダの色モデルがグレーか(偽なら色のページとして素通しになりうる)を返す。
+    /// prepare とは別の CGImageSource で読むので、prepare のデコード結果に影響しない
+    public static func reservationSize(_ data: Data, maxPixels: Int) -> (width: Int, height: Int, grayHeader: Bool)? {
+        PageInput.reservationSize(data, maxPixels: maxPixels)
+    }
+
     /// 処理済みのページを width x height へ縮める(vImage の高品質な再標本化。粗い網点が残ったページを
     /// 1.5〜2 倍以上縮めても折り返しが出ないよう、前置フィルタを持つ方式を使う)。changed は引き継ぐ
     public static func reduce(_ page: PrintAppearanceGray, width: Int, height: Int) throws -> PrintAppearanceGray {

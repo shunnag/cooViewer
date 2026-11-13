@@ -230,6 +230,7 @@ enum PrintAppearanceStatsReport {
                 "declined": stats.declinedJobs,
                 "cancelled": stats.cancelledJobs,
                 "storeReleases": stats.storeReleases,
+                "reservations": stats.reservations,
             ],
             "milliseconds": [
                 "lastPrepare": number(stats.lastPrepareMilliseconds),

@@ -74,6 +74,26 @@ enum PageInput {
         }
     }
 
+    /// 作業域の予約に使う大きさ(PrintAppearance.reservationSize)。ゲインマップの問い合わせはしない
+    /// (まれな HDR の画像で予約が無駄になるだけで、判定は prepare が行う)
+    static func reservationSize(_ data: Data, maxPixels: Int) -> (width: Int, height: Int, grayHeader: Bool)? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+        let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+        guard width > 0, height > 0, min(width, height) >= N,
+              ((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1) == 1,
+              ((properties[kCGImagePropertyDepth] as? NSNumber)?.intValue ?? 8) == 8,
+              isAcceptedAspect(width: width, height: height) else { return nil }
+        let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow, pixels <= maxPixels else { return nil }
+        let model = properties[kCGImagePropertyColorModel] as? String
+        if model == (kCGImagePropertyColorModelGray as String) { return (width, height, true) }
+        if model == nil || model == (kCGImagePropertyColorModelRGB as String) { return (width, height, false) }
+        return nil
+    }
+
     /// デコードせずにヘッダだけで決まる素通しの理由
     static func headerVerdict(source: CGImageSource, properties: [CFString: Any], width: Int, height: Int,
                               maxPixels: Int) -> PrintAppearancePassReason? {

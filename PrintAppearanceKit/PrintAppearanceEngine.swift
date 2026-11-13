@@ -99,6 +99,31 @@ public final class PrintAppearanceEngine {
         if runDummyPage { _ = try process(Self.warmUpPage, level: .standard, threads: threads) }
     }
 
+    /// width x height のページの作業域と作業者を、ページが来る前に用意して触れておく(設計書 §5)。
+    /// 表示のページのデコードの間にサービスのキューで呼び、記憶域の確保と初回の頁の割り当て(13 MP で数十 ms)を
+    /// デコードの裏に隠す。処理する経路(GPU を使えれば GPU、そうでなければ CPU)の作業域だけを伸ばす。
+    /// 出力には影響しない(記憶域は伸びるだけで、各段は使う範囲を毎回書く)。辺が 128 px 未満なら何もしない
+    public func reserve(width: Int, height: Int, threads: Int) throws {
+        guard width >= N, height >= N else { return }
+        let engine: Descreener
+        if let gpuEngine = gpuDescreenerIfAvailable(threads: threads) {
+            engine = gpuEngine
+        } else {
+            engine = try cpuEngine(threads: threads)
+        }
+        try engine.pool.reserve(max(1, threads))
+        try engine.prepare(W: Self.storeExtent(width), H: Self.storeExtent(height))
+    }
+
+    /// 検査用: 処理する経路の線形化の記憶域のバイト数(ページの画素数に比例する記憶域の代表。
+    /// 作業域の合計はタイルごとのノッチの数でも伸びるので、確保し直しの有無はこちらで見る)
+    var linearStoreBytesForTesting: Int { (gpuDescreener ?? cpuDescreener)?.linS.length ?? 0 }
+
+    /// 記憶域を伸ばすときの辺の大きさ: 128 px 単位に切り上げる。スキャンの本はページごとに数 px ずつ寸法が
+    /// 違い、記憶域はそれまでより大きいページで全部を確保し直すため(確保し直したページは 13 MP で 2〜3 割
+    /// 遅い)、少しの余裕(13 MP で約 3%)を持たせて確保し直しを減らす
+    static func storeExtent(_ pixels: Int) -> Int { (pixels + 127) / 128 * 128 }
+
     /// 作業域と作業者を手放す。keepPipelines が偽なら GPU のパイプラインも手放す(次のページで作り直す)。
     /// CPU だけで動く理由は保つ
     public func releaseWorkingMemory(keepPipelines: Bool) {
@@ -150,6 +175,8 @@ public final class PrintAppearanceEngine {
 
     private func run(_ engine: Descreener, _ page: PrintAppearancePage, geo: Geometry, threads: Int,
                      stop: (PrintAppearanceStopPoint) throws -> Void) throws -> PrintAppearanceGray {
+        // 記憶域は切り上げた大きさで伸ばす(run の中の prepare は足りていれば何もしない)
+        try engine.prepare(W: Self.storeExtent(page.width), H: Self.storeExtent(page.height))
         let result = try page.withLuma {
             try engine.run(src: $0.baseAddress!, W: page.width, H: page.height, geo: geo, threads: threads, stop: stop)
         }

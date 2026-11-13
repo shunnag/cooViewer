@@ -286,7 +286,38 @@ final class PrintAppearanceEngineTests: XCTestCase {
         }
     }
 
-    // MARK: - 記憶域
+    // MARK: - 作業域の予約と記憶域
+
+    /// 予約(reserve)は出力を変えない。予約した大きさに収まるページは記憶域を確保し直さず、
+    /// 128 px 単位の切り上げに収まる少し大きなページも確保し直さない(設計書 §5)
+    func testReserveKeepsBytesAndAvoidsRegrowth() throws {
+        let page = try PrintAppearancePage(luma: PrintAppearanceTestPages.mix(width: 384, height: 1000, seed: 31),
+                                           width: 384, height: 1000)
+        let slightlyLarger = try PrintAppearancePage(
+            luma: PrintAppearanceTestPages.mix(width: 380, height: 1020, seed: 32), width: 380, height: 1020)
+        for mode in Self.modes() {
+            let expected = Self.bytes(try PrintAppearanceEngine(mode: mode).process(page, level: .standard, threads: 4))
+            let expectedLarger = Self.bytes(try PrintAppearanceEngine(mode: mode).process(slightlyLarger,
+                                                                                         level: .standard, threads: 4))
+            let engine = PrintAppearanceEngine(mode: mode)
+            try engine.reserve(width: 384, height: 1000, threads: 4)
+            let reserved = engine.linearStoreBytesForTesting
+            XCTAssertGreaterThanOrEqual(reserved, 384 * 1024 * 4, "128 px 単位に切り上げて確保する \(mode)")
+            XCTAssertGreaterThan(engine.status.workingBytes, 0, "\(mode)")
+            XCTAssertEqual(Self.bytes(try engine.process(page, level: .standard, threads: 4)), expected, "\(mode)")
+            XCTAssertEqual(engine.linearStoreBytesForTesting, reserved, "予約した大きさのページで確保し直さない \(mode)")
+            XCTAssertEqual(Self.bytes(try engine.process(slightlyLarger, level: .standard, threads: 4)), expectedLarger,
+                           "\(mode)")
+            XCTAssertEqual(engine.linearStoreBytesForTesting, reserved, "切り上げに収まるページで確保し直さない \(mode)")
+            // 辺が 128 px 未満の予約は何もしない
+            let fresh = PrintAppearanceEngine(mode: mode)
+            try fresh.reserve(width: 100, height: 1000, threads: 4)
+            XCTAssertEqual(fresh.linearStoreBytesForTesting, 0, "\(mode)")
+        }
+        XCTAssertEqual(PrintAppearanceEngine.storeExtent(3000), 3072)
+        XCTAssertEqual(PrintAppearanceEngine.storeExtent(4451), 4480)
+        XCTAssertEqual(PrintAppearanceEngine.storeExtent(256), 256)
+    }
 
     /// ページ大の輝度・出力・描き直し・縮小の出力は malloc ではなく仮想記憶に置く(手放したらすぐ OS へ返す。
     /// 設計書 §2.3)。仮想記憶の領域は頁の境目から始まり、malloc の管理外(malloc_size が 0)

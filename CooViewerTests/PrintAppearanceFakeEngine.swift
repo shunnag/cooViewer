@@ -75,6 +75,14 @@ final class FakePrintAppearanceEngine: PrintAppearanceProcessing, @unchecked Sen
         }
     }
 
+    func reserve(width: Int, height: Int, threads: Int) throws {
+        recordContext()
+        state.withLockUnchecked { state in
+            state.events.append("reserve(\(width)x\(height),\(threads))")
+            state.workingBytes = max(state.workingBytes, 1000)
+        }
+    }
+
     func releaseWorkingMemory(keepPipelines: Bool) {
         recordContext()
         state.withLockUnchecked { state in

@@ -209,6 +209,64 @@ final class PrintAppearanceServiceTests: XCTestCase {
         XCTAssertEqual(stats.waitingPrefetch, 0)
     }
 
+    // MARK: - 作業域の予約
+
+    /// 予約はページの仕事より先にエンジンのキューで作業域を用意し、予約が積まれている間は大きなページの後でも
+    /// 作業域を手放さない。予約の後に仕事がなければ解放の予約を立てる
+    func testReservationRunsBeforePageAndHoldsLargePageRelease() async throws {
+        let engine = FakePrintAppearanceEngine()
+        let scheduler = ManualDelayScheduler()
+        var configuration = Self.configuration
+        configuration.largePagePixels = 100 * 100
+        let service = Self.service(engine, configuration: configuration, scheduler: scheduler)
+        // 仕事のない予約: 予約の後に解放の予約を立てる
+        service.reserve(width: 3000, height: 4000, colourPossible: false)
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events, ["reserve(3000x4000,6)"])
+        XCTAssertEqual(scheduler.live.count, 1, "ページが来なくても解放の予約を立てる")
+        XCTAssertEqual(service.stats().reservations, 1)
+        // 大きなページの処理中に予約が積まれたら、そのページの後で手放さない
+        let hold = engine.hold(6, at: 0)
+        let large = Task.detached {
+            try await service.process(FakePrintAppearanceEngine.page(6, width: 128, height: 128),
+                                      request: PrintAppearanceRequest(level: .standard))
+        }
+        try await Self.reach(hold)
+        service.reserve(width: 128, height: 128, colourPossible: false)
+        hold.proceed.signal()
+        _ = try await large.value
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events.suffix(2), ["process(6)", "reserve(128x128,6)"], "予約があるので手放さない")
+        // 予約が終わって待ちがなければ、次の大きなページの後で手放す
+        _ = try await service.process(FakePrintAppearanceEngine.page(7, width: 128, height: 128),
+                                      request: PrintAppearanceRequest(level: .standard))
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events.suffix(2), ["process(7)", "release(true)"])
+    }
+
+    /// 色のページになりうるページは、このプロセスでまだ 1 ページも処理していなければ予約しない。
+    /// メモリ圧迫が critical なら予約しない
+    func testReservationSkipsPossibleColourBeforeFirstPageAndUnderCriticalPressure() async throws {
+        let engine = FakePrintAppearanceEngine()
+        let center = NotificationCenter()
+        let pressure = MutablePressure()
+        let service = Self.service(engine, pressure: pressure, center: center)
+        service.reserve(width: 2000, height: 3000, colourPossible: true)
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events, [])
+        _ = try await Self.submit(service, 5).value
+        service.reserve(width: 2000, height: 3000, colourPossible: true)
+        await service.flushForTesting()
+        XCTAssertEqual(engine.events, ["process(5)", "reserve(2000x3000,6)"])
+        pressure.set(.critical, center: center)
+        await service.flushForTesting()
+        let before = engine.events.count
+        service.reserve(width: 2000, height: 3000, colourPossible: false)
+        await service.flushForTesting()
+        XCTAssertFalse(engine.events.dropFirst(before).contains { $0.hasPrefix("reserve") })
+        XCTAssertEqual(service.stats().reservations, 1)
+    }
+
     // MARK: - 追い越し
 
     /// 表示の仕事が来たら、パス 1 の途中の先読みのページを次のチャンクの境目で止めて表示を先に処理し、
@@ -369,7 +427,8 @@ final class PrintAppearanceServiceTests: XCTestCase {
 
     // MARK: - 並列数とキュー
 
-    /// 表示は表示の並列数、先読みは 4、省エネ中の先読みは 2
+    /// 表示は表示の並列数、先読みは先読みの並列数、省エネ中の先読みは 2。
+    /// 既定は表示が全てのコア(16 まで)、先読みが min(8, 高性能コアの数)
     func testThreadBudgets() async throws {
         for conserving in [false, true] {
             let engine = FakePrintAppearanceEngine()
@@ -383,8 +442,9 @@ final class PrintAppearanceServiceTests: XCTestCase {
                            "conserving: \(conserving)")
         }
         let defaults = PrintAppearanceService.Configuration()
-        XCTAssertEqual(defaults.displayThreads, min(8, PrintAppearanceService.performanceCoreCount()))
-        XCTAssertEqual(defaults.prefetchThreads, 4)
+        XCTAssertEqual(defaults.displayThreads, min(16, ProcessInfo.processInfo.activeProcessorCount))
+        XCTAssertEqual(defaults.prefetchThreads, min(8, PrintAppearanceService.performanceCoreCount()))
+        XCTAssertGreaterThanOrEqual(defaults.displayThreads, defaults.prefetchThreads)
         XCTAssertEqual(defaults.conservingPrefetchThreads, 2)
         XCTAssertEqual(defaults.displayWaitLimit, 4)
         XCTAssertEqual(defaults.maxPixels, PrintAppearance.defaultMaxPixels)

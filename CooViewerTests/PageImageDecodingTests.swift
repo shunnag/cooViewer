@@ -253,6 +253,40 @@ final class PageImageDecodingTests: XCTestCase {
         XCTAssertEqual(engine.calls, [])
     }
 
+    // MARK: - 作業域の予約
+
+    /// 表示のページ(表示の券・券のないルーペ)はデコードの前にヘッダの大きさで作業域を予約し、
+    /// 先読みのページは予約しない。グレーのヘッダでないページは、まだ 1 ページも処理していなければ予約しない
+    func testDisplayPagesReserveStoresBeforeDecode() async throws {
+        let gray = try Self.grayPNG(PrintAppearanceTestPages.screen(width: 300, height: 420, period: 4, angle: 45),
+                                    width: 300, height: 420)
+        let engine = FakePrintAppearanceEngine()
+        let service = Self.service(engine: engine)
+        let prefetch = PrintAppearanceTicket(book: ObjectIdentifier(self), isPrefetch: true)
+        _ = try await Self.decode(gray, cap: nil, target: nil, service: service,
+                                  request: PrintAppearanceRequest(level: .standard, ticket: prefetch))
+        XCTAssertEqual(engine.events.filter { $0.hasPrefix("reserve") }, [], "先読みは予約しない")
+        let display = PrintAppearanceTicket(book: ObjectIdentifier(self), isPrefetch: false)
+        _ = try await Self.decode(gray, cap: nil, target: nil, service: service,
+                                  request: PrintAppearanceRequest(level: .standard, ticket: display))
+        _ = try await Self.decode(gray, cap: 200, target: nil, service: service)
+        await service.flushForTesting()
+        let events = engine.events.filter { !$0.hasPrefix("release") }
+        XCTAssertEqual(events.filter { $0.hasPrefix("reserve") }.count, 2)
+        XCTAssertEqual(events.first { $0.hasPrefix("reserve") }?.hasPrefix("reserve(300x420,"), true)
+        // 予約はそのページの仕事より先に積まれる
+        let firstReserve = try XCTUnwrap(events.firstIndex { $0.hasPrefix("reserve") })
+        XCTAssertEqual(events[firstReserve + 1].hasPrefix("process"), true, "\(events)")
+
+        // RGB のヘッダのページは、このサービスがまだ 1 ページも処理していなければ予約しない
+        let fresh = FakePrintAppearanceEngine()
+        let freshService = Self.service(engine: fresh)
+        let colour = try Self.colourJPEG(width: 600, height: 800)
+        _ = try await Self.decode(colour, cap: nil, target: nil, service: freshService)
+        await freshService.flushForTesting()
+        XCTAssertEqual(fresh.events, [], "色のページになりうるページで使わない作業域を持たない")
+    }
+
     // MARK: - 補助
 
     private static func service(engine: FakePrintAppearanceEngine? = nil) -> PrintAppearanceService {

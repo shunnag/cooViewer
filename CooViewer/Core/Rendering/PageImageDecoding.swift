@@ -18,6 +18,8 @@ import PrintAppearanceKit
 ///      RGB のソースのページは sRGB の描き直し(1 画素 4 バイト)を持ってエンジンを待ち、ここで手放す。
 ///   4. 上限(maxPixelSize)を超えるページは原寸で処理・仕上げしてから縮める。処理は原寸のラスタの網点の
 ///      周期を見るので、縮めてから処理しない。
+///   表示のページ(券が表示か、券のないルーペ)は、1 の前にヘッダだけを読み、そのページの作業域をエンジンの
+///   キューで予約する。確保をデコードの裏で済ませ、ページが待たずに処理を始められるようにする。
 ///
 /// 未処理の画素を返すのは決定的な素通し(prepare の判定と、CPU の経路でも断られたページ)だけ。
 /// GPU の失敗・作業域の不足・取り消し・間引き・辞退は例外のまま返す(キャッシュのタグの下に未処理の画素を
@@ -99,6 +101,12 @@ enum PageImageDecoding {
     private static func process(_ data: Data, maxPixelSize: Int?, request: PrintAppearanceRequest,
                                 service: PrintAppearanceService) async throws -> Processed {
         let maxPixels = service.maxPixels
+        // 表示のページの作業域をデコードの裏で用意する。ヘッダは prepare とは別のソースで読む
+        // (同じソースで先に問い合わせると JPEG によってはデコード結果が変わるため)
+        if request.ticket.map({ $0.intent == .display }) ?? true,
+           let size = PrintAppearance.reservationSize(data, maxPixels: maxPixels) {
+            service.reserve(width: size.width, height: size.height, colourPossible: !size.grayHeader)
+        }
         // prepare が投げるのは作業域を確保できないときだけ。素通しにはせず、読み込みの失敗にする。
         // 時間はゲートの中だけを測る(ゲートの待ちは含めない)
         let (prepared, prepareTime) = try await PrefetchDecodeGate.run { () throws -> (Prepared, Duration) in
