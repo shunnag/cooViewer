@@ -8,8 +8,9 @@ final class PrintAppearanceEngineTests: XCTestCase {
 
     // MARK: - 速度
 
-    /// エンジンは Debug のアプリからでも最適化済み(-O)のフレームワークとして呼ばれる。最適化なしでは
-    /// 1362x2046 の 1 ページに数秒かかるので、温まった後の 1 ページが 0.3 秒未満であることで確かめる
+    /// エンジンは Debug のアプリからでも最適化済み(-O)のフレームワークとして呼ばれる。温まった後の
+    /// 1362x2046 の 1 ページは -O で 0.3 秒未満、最適化なしでは 4 秒を超えるので、1 秒未満であることで
+    /// 確かめる(遅い CI の実行機でも誤って落ちず、最適化なしは確実に落ちる境目)
     func testOptimizedEngineProcessesFullPageQuickly() throws {
         try Self.requireGPUPath()
         let W = 1362, H = 2046
@@ -24,7 +25,7 @@ final class PrintAppearanceEngineTests: XCTestCase {
             XCTAssertTrue(gray.changed)
         }
         print("PrintAppearanceEngineTests: 1362x2046 の温まった 1 ページの最短時間 \(best) 秒")
-        XCTAssertLessThan(best, 0.3, "温まった 1 ページの最短時間 \(best) 秒")
+        XCTAssertLessThan(best, 1.0, "温まった 1 ページの最短時間 \(best) 秒")
     }
 
     // MARK: - 出力の性質
