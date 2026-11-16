@@ -14,6 +14,9 @@ final class CPUTileWorker {
     var touched: [Int] = []
     /// この作業者の A2 位相揃いの作業領域(初めて使うときに確保する)
     lazy var fillScratch = FillScratch()
+    /// タイルの検出の列と A2 の辺の列を書く、作業者ごとに使い回す配列(タイルごとに確保しない。設計書 §2.3)
+    var peakList: [Peak] = []
+    var edgeList: [UInt64] = []
 
     init() throws {
         func alloc() -> UnsafeMutablePointer<Float>? {
@@ -34,6 +37,8 @@ final class CPUTileWorker {
         self.re = re; self.im = im; self.gain = gain; self.power = power
         for k in 0..<NN { gain[k] = 1 }
         touched.reserveCapacity(NN)
+        peakList.reserveCapacity(128)
+        edgeList.reserveCapacity(1024)
     }
 
     deinit {

@@ -17,6 +17,10 @@ import Foundation
 // bestFill = max(0, 成員の位相揃い))を通してしか使わない。そこで、述語に届き得る成分について、
 // 必要なしきい値に 1 つの成員が届いた時点で評価を止め、届かなければ全成員を評価する。
 // 述語の答え、したがってすべての判定は、全ノードを評価したときと同じになる。
+//
+// 節点・辺・成分の表は 1 ページの間だけ使う作業域(ScratchArena と FlatLists。EngineScratch.swift)から取り、
+// ページごとに malloc しない(設計書 §2.3)。数の分かる表は先に数えてから取る。落とした成分のピークは
+// 残したかの印(PeakLists.keep)を消して列から除く。
 
 struct A2Outcome {
     var componentsKept = 0, componentsDropped = 0, peaksDroppedComponent = 0
@@ -26,68 +30,83 @@ final class A2Gate {
     let q: A2Params
     init(_ q: A2Params) { self.q = q }
 
-    /// stop は位相揃いの回の間(2 回目以降の回の前)に呼ぶ。止めるときは例外を投げる(設計書 §5)
-    func run(kept: inout [[Peak]], nx: Int, ny: Int, lin: UnsafePointer<Float>, W: Int, H: Int, pool: WorkerPool,
-             threads: Int, stop: () throws -> Void = {}) rethrows -> A2Outcome {
+    /// stop は位相揃いの回の間(2 回目以降の回の前)に呼ぶ。止めるときは例外を投げる(設計書 §5)。
+    /// 作業域の確保に失敗したときは allocationFailed を投げる
+    func run(peaks: PeakLists, nx: Int, ny: Int, lin: UnsafePointer<Float>, W: Int, H: Int, pool: WorkerPool,
+             arena: ScratchArena, edges edgeLists: FlatLists<UInt64>, threads: Int,
+             stop: () throws -> Void = {}) throws -> A2Outcome {
         var out = A2Outcome()
         // 成分の段は次の条件のときだけ行う
         guard q.clusterMinTiles > 1 || q.fillCore > 0 else { return out }
         let T = nx * ny
-        // ---- ノード(タイルごとの CSR)
-        var nodeStart = [Int](repeating: 0, count: T + 1)
-        var nodeTile: [Int32] = [], nodeIdx: [Int32] = [], ncu: [Double] = [], ncv: [Double] = [], northo: [Bool] = []
-        var namp: [Double] = []
+        // ---- ノード(タイルごとの CSR)。ノードは残したピークのうち r < 1 - 1e-6 のもの。
+        // nodeIdx はタイルの検出の列の中の位置(残したかの印を消すのに使う)
+        var M = 0
         for t in 0..<T {
-            nodeStart[t] = nodeTile.count
-            for (j, pk) in kept[t].enumerated() where pk.r < 1 - 1e-6 {
-                nodeTile.append(Int32(t)); nodeIdx.append(Int32(j)); ncu.append(pk.cu); ncv.append(pk.cv); northo.append(pk.ortho)
-                namp.append(pk.amp)
+            let list = peaks.found(t)
+            if list.isEmpty { continue }
+            let keep = peaks.keep(t)
+            for j in 0..<list.count where keep[j] != 0 && list[j].r < 1 - 1e-6 { M += 1 }
+        }
+        let nodeStart = try arena.take(Int.self, T + 1)
+        let nodeTile = try arena.take(Int32.self, M), nodeIdx = try arena.take(Int32.self, M)
+        let ncu = try arena.take(Double.self, M), ncv = try arena.take(Double.self, M)
+        let northo = try arena.take(Bool.self, M), namp = try arena.take(Double.self, M)
+        var m = 0
+        for t in 0..<T {
+            nodeStart[t] = m
+            let list = peaks.found(t)
+            if list.isEmpty { continue }
+            let keep = peaks.keep(t)
+            for j in 0..<list.count where keep[j] != 0 && list[j].r < 1 - 1e-6 {
+                let pk = list[j]
+                nodeTile[m] = Int32(t); nodeIdx[m] = Int32(j); ncu[m] = pk.cu; ncv[m] = pk.cv; northo[m] = pk.ortho
+                namp[m] = pk.amp
+                m += 1
             }
         }
-        nodeStart[T] = nodeTile.count
-        let M = nodeTile.count
+        nodeStart[T] = m
         // ---- つながり: 組と距離の式は固定。距離の判定はタイルごとに並列に行い(タイルごとの辺の列)、
         // 併合は逐次に行う。併合の順番によらず同じ分割(連結成分)になる
-        var parent = [Int32](repeating: 0, count: M)
+        let parent = try arena.take(Int32.self, M)
         for i in 0..<M { parent[i] = Int32(i) }
         let tol = q.clusterTolBins
-        let busy = (0..<T).filter { nodeStart[$0] < nodeStart[$0 + 1] }
-        var edges = [[UInt64]](repeating: [], count: busy.count)
-        ncu.withUnsafeBufferPointer { cup in
-            ncv.withUnsafeBufferPointer { cvp in
-                edges.withUnsafeMutableBufferPointer { ep in
-                    let cu = cup.baseAddress!, cv = cvp.baseAddress!
-                    parallelFor(busy.count, grain: 32, threads: threads) { i in
-                        let t = busy[i], tx = t % nx, ty = t / nx
-                        let a0 = nodeStart[t], a1 = nodeStart[t + 1]
-                        var local: [UInt64] = []
-                        for (dx, dy) in [(1, 0), (0, 1), (1, 1), (-1, 1)] {
-                            let x = tx + dx, y = ty + dy
-                            guard x >= 0, x < nx, y < ny else { continue }
-                            let u = y * nx + x
-                            let b0 = nodeStart[u], b1 = nodeStart[u + 1]
-                            if b0 == b1 { continue }
-                            for a in a0..<a1 {
-                                for b in b0..<b1 {
-                                    let du = cu[a] - cu[b], dv = cv[a] - cv[b]
-                                    if (du * du + dv * dv).squareRoot() <= tol { local.append(UInt64(a) << 32 | UInt64(b)) }
-                                }
-                            }
-                        }
-                        ep[i] = local
+        let busySlots = try arena.take(Int.self, T)
+        var busyCount = 0
+        for t in 0..<T where nodeStart[t] < nodeStart[t + 1] { busySlots[busyCount] = t; busyCount += 1 }
+        let busy = UnsafeBufferPointer(rebasing: busySlots[0..<busyCount])
+        // 辺の列は作業者の配列で作り、忙しいタイルの欄へ写す(タイルごとに配列を確保しない)
+        try edgeLists.begin(slots: busy.count, expected: M * 8)
+        let cu = ncu.baseAddress!, cv = ncv.baseAddress!
+        pool.run(busy.count, threads: threads) { w, i in
+            let t = busy[i], tx = t % nx, ty = t / nx
+            let a0 = nodeStart[t], a1 = nodeStart[t + 1]
+            w.edgeList.removeAll(keepingCapacity: true)
+            for (dx, dy) in [(1, 0), (0, 1), (1, 1), (-1, 1)] {
+                let x = tx + dx, y = ty + dy
+                guard x >= 0, x < nx, y < ny else { continue }
+                let u = y * nx + x
+                let b0 = nodeStart[u], b1 = nodeStart[u + 1]
+                if b0 == b1 { continue }
+                for a in a0..<a1 {
+                    for b in b0..<b1 {
+                        let du = cu[a] - cu[b], dv = cv[a] - cv[b]
+                        if (du * du + dv * dv).squareRoot() <= tol { w.edgeList.append(UInt64(a) << 32 | UInt64(b)) }
                     }
                 }
             }
+            _ = w.edgeList.withUnsafeBufferPointer { edgeLists.put(i, $0) }   // 確保の失敗は finish が投げる
         }
-        parent.withUnsafeMutableBufferPointer { pp in
-            let par = pp.baseAddress!
+        let edges = try edgeLists.finish()
+        do {
+            let par = parent.baseAddress!
             @inline(__always) func find(_ a: Int) -> Int {
                 var a = a
                 while Int(par[a]) != a { par[a] = par[Int(par[a])]; a = Int(par[a]) }
                 return a
             }
-            for list in edges {
-                for e in list {
+            for i in 0..<busy.count {
+                for e in edges[i] {
                     let ra = find(Int(e >> 32)), rb = find(Int(e & 0xffff_ffff))
                     if ra != rb { par[ra] = Int32(rb) }
                 }
@@ -96,8 +115,8 @@ final class A2Gate {
             for a in 0..<M { _ = find(a) }
         }
         // ---- 成分は最初のノードの順に番号を付け、成員はノード順に並べる
-        var compOf = [Int32](repeating: -1, count: M)
-        var rootComp = [Int32](repeating: -1, count: M)
+        let compOf = try arena.take(Int32.self, M, repeating: -1)
+        let rootComp = try arena.take(Int32.self, M, repeating: -1)
         var C = 0
         for a in 0..<M {
             var r = Int(parent[a])
@@ -105,32 +124,33 @@ final class A2Gate {
             if rootComp[r] < 0 { rootComp[r] = Int32(C); C += 1 }
             compOf[a] = rootComp[r]
         }
-        var memberStart = [Int](repeating: 0, count: C + 1)
+        let memberStart = try arena.take(Int.self, C + 1, repeating: 0)
         for a in 0..<M { memberStart[Int(compOf[a]) + 1] += 1 }
         for c in 0..<C { memberStart[c + 1] += memberStart[c] }
-        var members = [Int32](repeating: 0, count: M)
-        var fillPos = memberStart
+        let members = try arena.take(Int32.self, M, repeating: 0)
+        let fillPos = try arena.take(Int.self, C + 1)
+        _ = fillPos.initialize(fromContentsOf: memberStart)
         for a in 0..<M { let c = Int(compOf[a]); members[fillPos[c]] = Int32(a); fillPos[c] += 1 }   // ノード順の昇順
         // 異なるタイル(成員はノード順なのでタイルも昇順)、直交タイル、ノード順の重心の和
-        var tileStart = [Int](repeating: 0, count: C + 1)
-        var tiles: [Int32] = []
-        tiles.reserveCapacity(M)
-        var orthoTiles = [Int](repeating: 0, count: C)
-        var mu = [Double](repeating: 0, count: C), mv = [Double](repeating: 0, count: C)
+        let tileStart = try arena.take(Int.self, C + 1, repeating: 0)
+        let tiles = try arena.take(Int32.self, M)
+        var tileCountAll = 0
+        let orthoTiles = try arena.take(Int.self, C, repeating: 0)
+        let mu = try arena.take(Double.self, C, repeating: 0), mv = try arena.take(Double.self, C, repeating: 0)
         for c in 0..<C {
-            tileStart[c] = tiles.count
+            tileStart[c] = tileCountAll
             var last: Int32 = -1, lastOrtho: Int32 = -1
             var su = 0.0, sv = 0.0
             for k in memberStart[c]..<memberStart[c + 1] {
                 let a = Int(members[k])
-                if nodeTile[a] != last { tiles.append(nodeTile[a]); last = nodeTile[a] }
+                if nodeTile[a] != last { tiles[tileCountAll] = nodeTile[a]; tileCountAll += 1; last = nodeTile[a] }
                 if northo[a] && nodeTile[a] != lastOrtho { orthoTiles[c] += 1; lastOrtho = nodeTile[a] }
                 su += ncu[a]; sv += ncv[a]
             }
             let cnt = Double(memberStart[c + 1] - memberStart[c])
             mu[c] = su / cnt; mv[c] = sv / cnt
         }
-        tileStart[C] = tiles.count
+        tileStart[C] = tileCountAll
         @inline(__always) func tileCount(_ c: Int) -> Int { tileStart[c + 1] - tileStart[c] }
 
         // ---- 残す規則。条件(n >= clusterMinTiles || orthoOK)を満たす成分は
@@ -145,7 +165,7 @@ final class A2Gate {
         @inline(__always) func isBig(_ c: Int) -> Bool { q.clusterBigTiles > 0 && tileCount(c) >= q.clusterBigTiles }
         @inline(__always) func orthoTilesOK(_ c: Int) -> Bool { q.orthoMinTiles > 0 && orthoTiles[c] >= q.orthoMinTiles }
         // 成分の平均重心の半径と角度
-        var rhoC = [Double](repeating: 0, count: C), angC = [Double](repeating: 0, count: C)
+        let rhoC = try arena.take(Double.self, C, repeating: 0), angC = try arena.take(Double.self, C, repeating: 0)
         for c in 0..<C {
             let u = mu[c], v = mv[c]
             rhoC[c] = (u * u + v * v).squareRoot(); angC[c] = atan2(v, u) * 180 / Double.pi
@@ -168,43 +188,53 @@ final class A2Gate {
             guard d >= q.partnerAngleMin && d <= q.partnerAngleMax else { return false }
             return !disjoint(r, p)
         }
-        let sized = (0..<C).filter { tileCount($0) >= cmt }     // 相手になり得る成分
+        let sizedSlots = try arena.take(Int.self, C)          // 相手になり得る成分
+        var sizedCount = 0
+        for c in 0..<C where tileCount(c) >= cmt { sizedSlots[sizedCount] = c; sizedCount += 1 }
+        let sized = UnsafeBufferPointer(rebasing: sizedSlots[0..<sizedCount])
 
         // ---- 位相揃いは必要になったものだけ評価する
         // 上の規則を成分ごとの再開できる判定として走らせる: 述語 (bestFill(c) >= t) は評価済みの成員の 1 つが
         // t に届けば真、全成員を評価して届かなければ偽。答えが出ない述語は c の成員をさらに求める
         // (振幅の降順、同点はノード順。1 回に 1, 1, 2, 4, ... 個)。全成分の要求をまとめてタイル単位で並列に評価する。
         // 答えは厳密なので、どの判定も全評価と同じになる。順番が変えるのは仕事の量だけ
-        var fills = [Double](repeating: -1, count: M)      // -1 = 未評価
-        func evaluate(_ nodes: [Int32]) {
+        let fills = try arena.take(Double.self, M, repeating: -1)      // -1 = 未評価
+        // 1 回の評価のタイルの区切り(nodes の位置。仕事 gi は groupStart[gi]..<groupStart[gi + 1])
+        let groupStart = try arena.take(Int.self, M + 1)
+        func evaluate(_ nodes: UnsafeBufferPointer<Int32>) {
             // nodes は昇順なので同じタイルは連続する: 1 タイルを 1 つの仕事にする
-            var groups: [Range<Int>] = []
+            var groups = 0
             var s = 0
             while s < nodes.count {
                 var e = s + 1
                 while e < nodes.count && nodeTile[Int(nodes[e])] == nodeTile[Int(nodes[s])] { e += 1 }
-                groups.append(s..<e)
+                groupStart[groups] = s
+                groups += 1
                 s = e
             }
-            fills.withUnsafeMutableBufferPointer { fp in
-                let f = fp.baseAddress!
-                pool.run(groups.count, threads: threads) { w, gi in
-                    let g = groups[gi]
-                    let t = Int(nodeTile[Int(nodes[g.lowerBound])])
-                    let sc = w.fillScratch
-                    sc.load(lin, W: W, H: H, tile: t, x0: -96 + 32 * (t % nx), y0: -96 + 32 * (t / nx), block: q.fillBlock)
-                    for k in g {
-                        let a = Int(nodes[k])
-                        f[a] = sc.fill(cu: ncu[a], cv: ncv[a])
-                    }
+            groupStart[groups] = nodes.count
+            let f = fills.baseAddress!
+            pool.run(groups, threads: threads) { w, gi in
+                let g = groupStart[gi]..<groupStart[gi + 1]
+                let t = Int(nodeTile[Int(nodes[g.lowerBound])])
+                let sc = w.fillScratch
+                sc.load(lin, W: W, H: H, tile: t, x0: -96 + 32 * (t % nx), y0: -96 + 32 * (t / nx), block: q.fillBlock)
+                for k in g {
+                    let a = Int(nodes[k])
+                    f[a] = sc.fill(cu: ncu[a], cv: ncv[a])
                 }
             }
         }
-        var bestHi = [Double](repeating: 0, count: C)      // max(0, 評価済みの成員の位相揃い)
-        var exact = [Bool](repeating: false, count: C)     // 全成員を評価済み: bestHi が bestFill そのもの
-        var done = [Int](repeating: 0, count: C)           // 評価済みの成員の数(成分の並びの先頭から)
-        var want = [Double](repeating: 0, count: C)        // この回で答えの出ていない最大のしきい値
-        var order: [[Int32]] = Array(repeating: [], count: C)
+        let bestHi = try arena.take(Double.self, C, repeating: 0)     // max(0, 評価済みの成員の位相揃い)
+        let exact = try arena.take(Bool.self, C, repeating: false)    // 全成員を評価済み: bestHi が bestFill そのもの
+        let done = try arena.take(Int.self, C, repeating: 0)          // 評価済みの成員の数(成分の並びの先頭から)
+        let want = try arena.take(Double.self, C, repeating: 0)       // この回で答えの出ていない最大のしきい値
+        // 成分 c の成員を振幅の降順に並べたもの(成員と同じ位置 memberStart[c]..<memberStart[c + 1] に置く。
+        // 初めて要るときに並べる)
+        let order = try arena.take(Int32.self, M)
+        @inline(__always) func orderCount(_ c: Int) -> Int { memberStart[c + 1] - memberStart[c] }
+        // 1 回に評価するノード(各ノードは 1 度だけ評価するので M 個に収まる)
+        let nodeSlots = try arena.take(Int32.self, M)
         /// bestFill(c) >= t: 真、偽、または nil(未決: c の成員をさらに求める)
         func ask(_ c: Int, _ t: Double) -> Bool? {
             if t <= 0 || bestHi[c] >= t { return true }
@@ -237,37 +267,45 @@ final class A2Gate {
             }
             return waiting ? nil : 0
         }
-        var decided = [Int?](repeating: nil, count: C)
+        let decided = try arena.take(Int?.self, C, repeating: nil)
+        /// 成員の並べ方: 振幅の降順、同点はノード順(全順序)
+        func byAmplitude(_ a: Int32, _ b: Int32) -> Bool {
+            let x = namp[Int(a)], y = namp[Int(b)]
+            return x != y ? x > y : a < b
+        }
         var round = 0
         while true {
             for c in 0..<C { want[c] = 0 }
             for r in 0..<C where decided[r] == nil { decided[r] = decide(r) }
-            var nodes: [Int32] = []
+            var nodeCount = 0
             for c in 0..<C where want[c] > 0 {
+                let o = memberStart[c]
                 if done[c] == 0 {
-                    order[c] = Array(members[memberStart[c]..<memberStart[c + 1]]).sorted { a, b in
-                        namp[Int(a)] != namp[Int(b)] ? namp[Int(a)] > namp[Int(b)] : a < b
-                    }
+                    // 比較は全順序(同点はノード順)なので、並べ替えの方法によらず同じ並びになる
+                    for k in o..<memberStart[c + 1] { order[k] = members[k] }
+                    var span = UnsafeMutableBufferPointer(rebasing: order[o..<memberStart[c + 1]])
+                    span.sort(by: byAmplitude)
                 }
-                let take = min(max(1, done[c]), order[c].count - done[c])   // 1, 1, 2, 4, ...
-                nodes.append(contentsOf: order[c][done[c]..<(done[c] + take)])
+                let take = min(max(1, done[c]), orderCount(c) - done[c])   // 1, 1, 2, 4, ...
+                for k in done[c]..<(done[c] + take) { nodeSlots[nodeCount] = order[o + k]; nodeCount += 1 }
             }
-            if nodes.isEmpty { break }
+            if nodeCount == 0 { break }
             if round > 0 { try stop() }
             round += 1
+            var nodes = UnsafeMutableBufferPointer(rebasing: nodeSlots[0..<nodeCount])
             nodes.sort()
-            evaluate(nodes)
+            evaluate(UnsafeBufferPointer(nodes))
             for c in 0..<C where want[c] > 0 {
-                let take = min(max(1, done[c]), order[c].count - done[c])
-                for k in done[c]..<(done[c] + take) { bestHi[c] = max(bestHi[c], fills[Int(order[c][k])]) }
+                let o = memberStart[c]
+                let take = min(max(1, done[c]), orderCount(c) - done[c])
+                for k in done[c]..<(done[c] + take) { bestHi[c] = max(bestHi[c], fills[Int(order[o + k])]) }
                 done[c] += take
-                exact[c] = done[c] == order[c].count
+                exact[c] = done[c] == orderCount(c)
             }
         }
-        order.removeAll()
 
         // ---- 残すかどうか(ループを抜けた時点で全成分が決まっている)
-        var keep = [Bool](repeating: false, count: C)
+        let keep = try arena.take(Bool.self, C, repeating: false)
         for r in 0..<C {
             let d = decided[r]!
             keep[r] = d != 0
@@ -281,19 +319,24 @@ final class A2Gate {
             }
             for _ in 0..<2 {
                 // 残した集合の写し: タイル -> 残した成分(CSR)
-                var cntT = [Int](repeating: 0, count: T + 1)
+                let cntT = try arena.take(Int.self, T + 1, repeating: 0)
                 for c in 0..<C where keep[c] { for k in tileStart[c]..<tileStart[c + 1] { cntT[Int(tiles[k]) + 1] += 1 } }
                 for t in 0..<T { cntT[t + 1] += cntT[t] }
-                var keptAt = [Int32](repeating: 0, count: cntT[T])
-                var pos = cntT
+                let keptAt = try arena.take(Int32.self, cntT[T], repeating: 0)
+                let pos = try arena.take(Int.self, T + 1)
+                _ = pos.initialize(fromContentsOf: cntT)
                 for c in 0..<C where keep[c] {
                     for k in tileStart[c]..<tileStart[c + 1] { let t = Int(tiles[k]); keptAt[pos[t]] = Int32(c); pos[t] += 1 }
                 }
                 // 落とした成分はどれもこの回の写しだけに対して調べるので互いに独立: 並列に調べて後から反映する
                 // (逐次に調べて反映するのと同じ結果)
-                let cand = (0..<C).filter { !keep[$0] }
-                var hits = [Bool](repeating: false, count: cand.count)
-                hits.withUnsafeMutableBufferPointer { hp in
+                let candSlots = try arena.take(Int.self, C)
+                var candCount = 0
+                for c in 0..<C where !keep[c] { candSlots[candCount] = c; candCount += 1 }
+                let cand = UnsafeBufferPointer(rebasing: candSlots[0..<candCount])
+                let hits = try arena.take(Bool.self, cand.count, repeating: false)
+                do {
+                    let hp = hits
                     parallelFor(cand.count, grain: 16, threads: threads) { ci in
                         let r = cand[ci]
                         var parents: [Int] = []
@@ -336,19 +379,11 @@ final class A2Gate {
             }
         }
 
-        // ---- 反映
+        // ---- 反映: 落とした成分のノードの印を消す(残した列はノードを除いた順のまま)
         for c in 0..<C { if keep[c] { out.componentsKept += 1 } else { out.componentsDropped += 1 } }
-        var drop = [Bool](repeating: false, count: M)
-        for a in 0..<M where !keep[Int(compOf[a])] { drop[a] = true; out.peaksDroppedComponent += 1 }
-        for t in 0..<T {
-            let a0 = nodeStart[t], a1 = nodeStart[t + 1]
-            if a0 == a1 { continue }
-            var anyDrop = false
-            for a in a0..<a1 where drop[a] { anyDrop = true; break }
-            if !anyDrop { continue }
-            var dropIdx = Set<Int>()
-            for a in a0..<a1 where drop[a] { dropIdx.insert(Int(nodeIdx[a])) }
-            kept[t] = kept[t].enumerated().filter { !dropIdx.contains($0.offset) }.map { $0.element }
+        for a in 0..<M where !keep[Int(compOf[a])] {
+            out.peaksDroppedComponent += 1
+            peaks.keep(Int(nodeTile[a]))[Int(nodeIdx[a])] = 0
         }
         return out
     }

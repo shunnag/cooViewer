@@ -17,8 +17,9 @@ protocol TileDetector: AnyObject {
 }
 
 protocol TileGate {
-    /// 絞り込み前のパス 1 の列に対するタイル間の判定。残した列と落としたピークの数を返す
-    func gate(found: [[Peak]], nx: Int, ny: Int) -> (kept: [[Peak]], dropped: Int)
+    /// 絞り込み前のパス 1 の列に対するタイル間の判定。残すピークに印を付け(PeakLists.keep)、
+    /// 落としたピークの数を返す
+    func gate(_ peaks: PeakLists, nx: Int, ny: Int) -> Int
 }
 
 /// 半平面の走査の 1 ビン(v = 0...63 が外側、u = -63...63 が内側。v = 0 かつ u <= 0 と、半径 rminBins 未満は除く)。
@@ -92,10 +93,15 @@ final class DetectorA: TileDetector {
     /// A2 の直交フラグを付ける条件(半径の許容比、角度の許容度)。nil なら付けない
     var ortho: (radiusTol: Double, angleTol: Double)?
 
-    init(params: Params, geometry: Geometry) {
+    convenience init(params: Params, geometry: Geometry) {
+        self.init(params: params, geometry: geometry, scan: makeScan(params))
+    }
+
+    /// scan は makeScan(params) の結果(エンジンが作ったものを使い回し、ページごとに作らない。設計書 §2.3)
+    init(params: Params, geometry: Geometry, scan: [ScanEntry]) {
         p = params
         geo = geometry
-        scan = makeScan(params)
+        self.scan = scan
         ampScale = 16.0 / (3.0 * Double(NN))
         minPow3 = Float(pow(Double(params.ampMin) / ampScale, 2) * 0.25)
         mmPerPx = geometry.pageHeightMM / Double(geometry.pageHeightPx)
@@ -103,6 +109,13 @@ final class DetectorA: TileDetector {
 
     func detect(power: UnsafePointer<Float>, candidates: UnsafePointer<UInt32>?) -> [Peak]? {
         var peaks: [Peak] = []
+        return detect(power: power, candidates: candidates, into: &peaks) ? peaks : nil
+    }
+
+    /// detect と同じ検出を、呼び出し側が使い回す配列 peaks へ書く(中身を捨てて容量は残す。
+    /// タイルごとに配列を確保しないため。設計書 §2.3)。断ったときは偽を返す(peaks の中身は使わない)
+    func detect(power: UnsafePointer<Float>, candidates: UnsafePointer<UInt32>?, into peaks: inout [Peak]) -> Bool {
+        peaks.removeAll(keepingCapacity: true)
         var refused = false
         withUnsafeTemporaryAllocation(of: Float.self, capacity: 64) { sb in
             let scratch = sb.baseAddress!
@@ -156,7 +169,7 @@ final class DetectorA: TileDetector {
             // 絞り込み前の列を読むため、ここで付ける
             if let o = ortho { markOrtho(&peaks, radiusTol: o.radiusTol, angleTol: o.angleTol) }
         }
-        return refused ? nil : peaks
+        return !refused
     }
 
     /// A2(倍音の判定の後): r < 1 - 1e-6 のピークは、同じタイルの絞り込み前の列に別のピーク(r は問わず kind != 1)
@@ -232,50 +245,54 @@ final class DetectorA: TileDetector {
     }
 }
 
-/// 近傍の一致: 消すべきピーク(r < 1)は、周り 8 タイルのうち minNeighbours 個以上に近い重心のピークがあるときだけ残す
+/// 近傍の一致: 消すべきピーク(r < 1)は、周り 8 タイルのうち minNeighbours 個以上に近い重心のピークがあるときだけ残す。
+/// 残した列はパス 1 の列への印で表す(タイルごとの配列を作らない。設計書 §2.3)。印は列の全部のピークに書く
 struct NeighbourGateA: TileGate {
     let p: Params
     let threads: Int
-    func gate(found: [[Peak]], nx: Int, ny: Int) -> (kept: [[Peak]], dropped: Int) {
+    func gate(_ peaks: PeakLists, nx: Int, ny: Int) -> Int {
         let T = nx * ny
-        var kept = [[Peak]](repeating: [], count: T)
         let drops = UnsafeMutablePointer<Int>.allocate(capacity: T)
         drops.initialize(repeating: 0, count: T)
         defer { drops.deallocate() }
         let tol = p.neighbourTolBins, minN = p.minNeighbours
-        found.withUnsafeBufferPointer { fp in
-            kept.withUnsafeMutableBufferPointer { kp in
-                parallelFor(T, grain: 64, threads: threads) { t in
-                    let list = fp[t]
-                    if list.isEmpty { return }
-                    let tx = t % nx, ty = t / nx
-                    func recurs(_ pk: Peak) -> Int {
-                        var count = 0
-                        for dy in -1...1 {
-                            for dx in -1...1 where !(dx == 0 && dy == 0) {
-                                let x = tx + dx, y = ty + dy
-                                guard x >= 0, x < nx, y >= 0, y < ny else { continue }
-                                if fp[y * nx + x].contains(where: { q in
-                                    let du = q.cu - pk.cu, dv = q.cv - pk.cv
-                                    return (du * du + dv * dv).squareRoot() <= tol
-                                }) { count += 1 }
-                            }
-                        }
-                        return count
+        parallelFor(T, grain: 64, threads: threads) { t in
+            let list = peaks.found(t)
+            if list.isEmpty { return }
+            let keep = peaks.keep(t)
+            let tx = t % nx, ty = t / nx
+            func recurs(_ pk: Peak) -> Int {
+                var count = 0
+                for dy in -1...1 {
+                    for dx in -1...1 where !(dx == 0 && dy == 0) {
+                        let x = tx + dx, y = ty + dy
+                        guard x >= 0, x < nx, y >= 0, y < ny else { continue }
+                        if peaks.found(y * nx + x).contains(where: { q in
+                            let du = q.cu - pk.cu, dv = q.cv - pk.cv
+                            return (du * du + dv * dv).squareRoot() <= tol
+                        }) { count += 1 }
                     }
-                    var d = 0
-                    kp[t] = list.filter { pk in
-                        if pk.r >= 1 - 1e-6 { return true }
-                        if recurs(pk) >= minN { return true }
-                        d += 1
-                        return false
-                    }
-                    drops[t] = d
                 }
+                return count
             }
+            var d = 0
+            for j in 0..<list.count {
+                let pk = list[j]
+                let kept: Bool
+                if pk.r >= 1 - 1e-6 {
+                    kept = true
+                } else if recurs(pk) >= minN {
+                    kept = true
+                } else {
+                    d += 1
+                    kept = false
+                }
+                keep[j] = kept ? 1 : 0
+            }
+            drops[t] = d
         }
         var dropped = 0
         for t in 0..<T { dropped += drops[t] }
-        return (kept, dropped)
+        return dropped
     }
 }

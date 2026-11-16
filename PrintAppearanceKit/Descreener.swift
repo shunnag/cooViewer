@@ -82,6 +82,10 @@ final class Descreener {
     let scanBuf: MTLBuffer?
     let srcS, linS, deltaS, exS, aS, tmpS, outS, meansS, actS, zS, psS, candS, ntS, neS, rbS, cntS: Store
     let qS: Store              // q3: 画素ごとの選んだ窓の (lo, hi)(GPU の後段のみ)、1 画素 2 バイト
+    /// パス 1 の検出の列と残したかの印、A2 の辺の列、1 ページの間だけ使う配列(EngineScratch.swift。設計書 §2.3)
+    let peakTable = PeakTable()
+    let edgeLists = FlatLists<UInt64>()
+    let arena = ScratchArena()
     var q3OnGPU: Bool { opts.post == .gpu && gpu != nil }
     /// 実行中のページの CPU 段の並列数
     private var threads = 1
@@ -143,6 +147,7 @@ final class Descreener {
     var workingBytes: Int {
         let stores = [srcS, linS, deltaS, exS, aS, tmpS, outS, meansS, actS, zS, psS, candS, ntS, neS, rbS, cntS, qS]
         return stores.reduce(0) { $0 + $1.length } + pool.workers.count * 4 * NN * 4
+            + peakTable.byteCount + edgeLists.byteCount + arena.byteCount
     }
 
     private func commit(_ cb: MTLCommandBuffer) {
@@ -175,7 +180,8 @@ final class Descreener {
         let K = min(opts.chunk, T)
         res.tiles = T
         try prepare(W: W, H: H)   // それまでより大きいページでなければ何もしない
-        let detector = DetectorA(params: p, geometry: geo)
+        arena.rewind()
+        let detector = DetectorA(params: p, geometry: geo, scan: scan)
         detector.ortho = (a2.orthoRadiusTol, a2.orthoAngleTol)
         var pg = PageInfo(W: Int32(W), H: Int32(H), nx: Int32(nx), ny: Int32(ny))
         memcpy(srcS.raw, src, count)
@@ -218,23 +224,28 @@ final class Descreener {
             cbQ = cb
         }
         // ---- パス 1: スペクトルと検出
-        var found = [[Peak]](repeating: [], count: T)
-        try pass1(&found, detector: detector, W: W, H: H, nx: nx, T: T, K: K, stop: stop)
+        let peaks = try pass1(detector: detector, W: W, H: H, nx: nx, T: T, K: K, stop: stop)
         try stop(.afterPass1)
-        // ---- 近傍の一致(タイルをまたぐ唯一の同期点)
-        var (kept, dropped) = NeighbourGateA(p: p, threads: threads).gate(found: found, nx: nx, ny: ny)
-        res.dropped = dropped
+        // ---- 近傍の一致(タイルをまたぐ唯一の同期点)。残したピークは peaks の印で表す
+        res.dropped = NeighbourGateA(p: p, threads: threads).gate(peaks, nx: nx, ny: ny)
         try stop(.afterNeighbourGate)
         // ---- A2: 連結成分の一貫性(CPU、Double)を残った列に対して行う
-        res.a2 = try A2Gate(a2).run(kept: &kept, nx: nx, ny: ny, lin: UnsafePointer(lin), W: W, H: H, pool: pool,
-                                    threads: threads, stop: { try stop(.betweenFillRounds) })
-        var active: [Int] = []
+        res.a2 = try A2Gate(a2).run(peaks: peaks, nx: nx, ny: ny, lin: UnsafePointer(lin), W: W, H: H, pool: pool,
+                                    arena: arena, edges: edgeLists, threads: threads,
+                                    stop: { try stop(.betweenFillRounds) })
+        let activeSlots = try arena.take(Int.self, T)
+        var activeCount = 0
         for ti in 0..<T {
-            let peaks = kept[ti]
-            if peaks.isEmpty { continue }
+            var any = false, notched = false
+            for pk in peaks.kept(ti) {
+                any = true
+                if pk.r < 1 - 1e-6 { notched = true; break }
+            }
+            if !any { continue }
             res.tilesWithPeaks += 1
-            if peaks.contains(where: { $0.r < 1 - 1e-6 }) { active.append(ti) }
+            if notched { activeSlots[activeCount] = ti; activeCount += 1 }
         }
+        let active = UnsafeBufferPointer(rebasing: activeSlots[0..<activeCount])
         res.tilesNotched = active.count
         // 出力を作る段(最後のコマンドバッファ)に入る前の最後の停止位置
         try stop(.beforeOutput)
@@ -242,7 +253,7 @@ final class Descreener {
         let delta = deltaS.f()
         if opts.pass2 == .gpu, let g = gpu {
             let cb = try g.makeCommandBuffer()
-            try encodePass2(cb, g, active: active, kept: kept, geo: geo, W: W, H: H, nx: nx, K: K, pg: &pg)
+            try encodePass2(cb, g, active: active, kept: peaks, geo: geo, W: W, H: H, nx: nx, K: K, pg: &pg)
             if opts.post == .gpu {
                 try encodePost(cb, g, count: count, pg: &pg)
                 commit(cb); cb.waitUntilCompleted()
@@ -266,7 +277,10 @@ final class Descreener {
             pool.run(active.count, threads: threads) { w, s in
                 let ti = active[s]
                 w.analyse(lin, w: W, h: H, x0: -96 + 32 * (ti % nx), y0: -96 + 32 * (ti / nx))
-                _ = w.notchDelta(kept[ti], p, geo)
+                // 残した列を作業者の配列へ写して渡す(タイルごとに配列を確保しない)
+                w.peakList.removeAll(keepingCapacity: true)
+                for pk in peaks.kept(ti) { w.peakList.append(pk) }
+                _ = w.notchDelta(w.peakList, p, geo)
                 memcpy(changes.ptr + s * NN, w.re, NN * 4)
             }
             overlapAddGatherCPU(delta: delta, W: W, H: H, nx: nx, slotOf: slotOf, changes: changes.ptr, threads: threads)
@@ -319,10 +333,13 @@ final class Descreener {
 
     // MARK: パス 1
 
-    private func pass1(_ found: inout [[Peak]], detector: DetectorA, W: Int, H: Int, nx: Int, T: Int, K: Int,
-                       stop: (PrintAppearanceStopPoint) throws -> Void) throws {
+    /// 検出の列は peakTable に書く(作業者の配列で検出し、タイルの欄へ写す。断ったタイルの列は空)
+    private func pass1(detector: DetectorA, W: Int, H: Int, nx: Int, T: Int, K: Int,
+                       stop: (PrintAppearanceStopPoint) throws -> Void) throws -> PeakLists {
         let lin = linS.f()
         let threads = self.threads
+        let table = peakTable
+        try table.begin(tiles: T)
         if !opts.prefilter {
             // CPU のみ: 各作業者がタイルを解析してその場で検出する(スペクトルを保持しない)。
             // 止められるよう K タイルずつに分ける。各タイルは自分の欄だけを書くので、分け方で結果は変わらない
@@ -330,18 +347,18 @@ final class Descreener {
             while start < T {
                 if start > 0 { try stop(.betweenPass1Chunks) }
                 let first = start, n = min(K, T - start)
-                found.withUnsafeMutableBufferPointer { fp in
-                    pool.run(n, threads: threads) { w, i in
-                        let ti = first + i
-                        w.analyse(lin, w: W, h: H, x0: -96 + 32 * (ti % nx), y0: -96 + 32 * (ti / nx))
-                        w.powerSpectrum(into: w.power)
-                        // 候補を渡さない全走査は断らない
-                        fp[ti] = detector.detect(power: w.power, candidates: nil) ?? []
+                pool.run(n, threads: threads) { w, i in
+                    let ti = first + i
+                    w.analyse(lin, w: W, h: H, x0: -96 + 32 * (ti % nx), y0: -96 + 32 * (ti / nx))
+                    w.powerSpectrum(into: w.power)
+                    // 候補を渡さない全走査は断らない
+                    if detector.detect(power: w.power, candidates: nil, into: &w.peakList) {
+                        table.put(tile: ti, w.peakList)
                     }
                 }
                 start += n
             }
-            return
+            return try table.finishPass1()
         }
         guard let g = gpu else { throw PrintAppearanceError.gpuUnavailable("候補の絞り込みに GPU が要る") }
         let minPow3 = detector.minPow3
@@ -359,13 +376,11 @@ final class Descreener {
             let surv = candS.u32() + c.parity * K * words
             let refused = UnsafeMutablePointer<Bool>.allocate(capacity: c.n)
             defer { refused.deallocate() }
-            found.withUnsafeMutableBufferPointer { fp in
-                pool.run(c.n, threads: threads) { _, i in
-                    let pw = UnsafePointer(P + i * NN)
-                    let list = detector.detect(power: pw, candidates: UnsafePointer(surv + i * words))
-                    fp[c.start + i] = list ?? []
-                    refused[i] = list == nil
-                }
+            pool.run(c.n, threads: threads) { w, i in
+                let pw = UnsafePointer(P + i * NN)
+                let ok = detector.detect(power: pw, candidates: UnsafePointer(surv + i * words), into: &w.peakList)
+                if ok { table.put(tile: c.start + i, w.peakList) }
+                refused[i] = !ok
             }
             for i in 0..<c.n where refused[i] {
                 throw PrintAppearanceError.gpuFailed("候補の絞り込みが顕著さの条件を満たさないビンを通した")
@@ -400,54 +415,74 @@ final class Descreener {
             ci += 1
         }
         if let pd = pending { try detectChunk(pd) }
+        return try table.finishPass1()
     }
 
     // MARK: パス 2(GPU)
 
-    private func encodePass2(_ cb: MTLCommandBuffer, _ g: GPUContext, active: [Int], kept: [[Peak]], geo: Geometry,
-                             W: Int, H: Int, nx: Int, K: Int, pg: inout PageInfo) throws {
+    private func encodePass2(_ cb: MTLCommandBuffer, _ g: GPUContext, active: UnsafeBufferPointer<Int>, kept: PeakLists,
+                             geo: Geometry, W: Int, H: Int, nx: Int, K: Int, pg: inout PageInfo) throws {
         let count = W * H
         // タイルの順: 位相 (tx mod 4, ty mod 4) を主キーにして、1 回のディスパッチに重なるタイルが入らないようにする
-        let order = active.sorted { a, b in
+        // (比較は全順序なので、並べ替えの方法によらず同じ並びになる。並びは 1 ページの間の作業域に置く)
+        var orderSlots = try arena.take(Int.self, active.count)
+        _ = orderSlots.initialize(fromContentsOf: active)
+        orderSlots.sort { a, b in
             let pa = ((a / nx) & 3) << 2 | ((a % nx) & 3), pb = ((b / nx) & 3) << 2 | ((b % nx) & 3)
             return pa != pb ? pa < pb : a < b
         }
+        let order = UnsafeBufferPointer(orderSlots)
         let A = order.count
         let act = actS.u32()
         for (i, ti) in order.enumerated() { act[i] = UInt32(ti) }
         // タイルごとのノッチのパラメータは Double で求め、Float で渡す
-        var entries: [NotchEntry] = []
         let nt = try ntS.ensure(max(1, A) * 16).bindMemory(to: NotchTile.self, capacity: max(1, A))
         func shape(_ rho: Double) -> (flat: Double, sigma: Double, extent: Double) {
             let flat = max(p.notchFlatBins, p.notchFlatFrac * rho)
             let sigma = max(p.notchSigmaBins, p.notchSigmaFrac * rho)
             return (flat, sigma, max(p.notchExtentBins, flat + 3 * sigma))
         }
-        for (i, ti) in order.enumerated() {
-            let act = kept[ti].filter { $0.r < 1 - 1e-6 }
-            let rhoLow = act.map(\.rho).min()!
-            let guardR = max(1.5, rhoLow - shape(rhoLow).extent)
-            var nGuard = max(0, Int((guardR * guardR).rounded(.down)) - 2)
-            while Double(nGuard).squareRoot() < guardR { nGuard += 1 }
-            nt[i] = NotchTile(entryStart: UInt32(entries.count), entryCount: UInt32(act.count * 2), nGuard: Int32(nGuard))
-            for pk in act {
+        // ノッチの項目は neS へ直接書く(配列を append で伸ばすと 11 MP のページで 32 MB とその倍々の列を
+        // malloc に残すため。設計書 §2.3)。先に数を数え、ノッチの範囲が GPU の集約に収まるかもここで確かめる
+        var entryCount = 0
+        for ti in order {
+            for pk in kept.kept(ti) where pk.r < 1 - 1e-6 {
                 let sh = shape(pk.rho)
                 let e = Int(ceil(sh.extent))
                 guard 2 * e + 1 <= 127 else {
                     throw PrintAppearanceError.unsupportedPage("ノッチの範囲 \(sh.extent) が GPU の集約に収まらない")
                 }
+                entryCount += 2
+            }
+        }
+        let entries = try neS.ensure(max(1, entryCount) * 48).bindMemory(to: NotchEntry.self, capacity: max(1, entryCount))
+        var written = 0
+        for (i, ti) in order.enumerated() {
+            // 列の最小の半径(Sequence.min と同じく、先頭から小さいものに置き換える)
+            var actCount = 0, rhoLow = 0.0
+            for pk in kept.kept(ti) where pk.r < 1 - 1e-6 {
+                if actCount == 0 || pk.rho < rhoLow { rhoLow = pk.rho }
+                actCount += 1
+            }
+            precondition(actCount > 0)
+            let guardR = max(1.5, rhoLow - shape(rhoLow).extent)
+            var nGuard = max(0, Int((guardR * guardR).rounded(.down)) - 2)
+            while Double(nGuard).squareRoot() < guardR { nGuard += 1 }
+            nt[i] = NotchTile(entryStart: UInt32(written), entryCount: UInt32(actCount * 2), nGuard: Int32(nGuard))
+            for pk in kept.kept(ti) where pk.r < 1 - 1e-6 {
+                let sh = shape(pk.rho)
+                let e = Int(ceil(sh.extent))
                 for sign in [1.0, -1.0] {
                     let cx = sign * pk.cu, cy = sign * pk.cv
                     let cxh = Float(cx), cyh = Float(cy)
-                    entries.append(NotchEntry(cxh: cxh, cxl: Float(cx - Double(cxh)), cyh: cyh, cyl: Float(cy - Double(cyh)),
-                                              bu: Int32(Int(cx.rounded())), bv: Int32(Int(cy.rounded())), e: Int32(e),
-                                              flat: Float(sh.flat), extent: Float(sh.extent),
-                                              inv2s2: Float(1 / (2 * sh.sigma * sh.sigma)), omr: Float(1 - pk.r)))
+                    entries[written] = NotchEntry(cxh: cxh, cxl: Float(cx - Double(cxh)), cyh: cyh, cyl: Float(cy - Double(cyh)),
+                                                  bu: Int32(Int(cx.rounded())), bv: Int32(Int(cy.rounded())), e: Int32(e),
+                                                  flat: Float(sh.flat), extent: Float(sh.extent),
+                                                  inv2s2: Float(1 / (2 * sh.sigma * sh.sigma)), omr: Float(1 - pk.r))
+                    written += 1
                 }
             }
         }
-        let ne = try neS.ensure(max(1, entries.count) * 48)
-        entries.withUnsafeBytes { if $0.count > 0 { memcpy(ne, $0.baseAddress!, $0.count) } }
         let rb = rbS.f()
         for n2 in 0...8192 {
             rb[n2] = p.floorAtBinRetention ? Float(retention(geo.cpd(Double(n2).squareRoot() / Double(N)))) : 0
