@@ -10,6 +10,66 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <language>en</language>
         <!-- make-appcast.sh inserts new items below -->
         <item>
+            <title>cooViewer 2.0b57</title>
+            <pubDate>Wed, 18 Nov 2026 05:34:42 +0000</pubDate>
+            <sparkle:version>2057</sparkle:version>
+            <sparkle:shortVersionString>2.0b57</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/shunnag/cooViewer/releases/tag/v2.0b57</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/shunnag/cooViewer/releases/tag/v2.0b57</sparkle:fullReleaseNotesLink>
+            <description><![CDATA[<style>
+:root { color-scheme: light dark; }
+body { font: 14px -apple-system, sans-serif; line-height: 1.6; color: #24292f; background: #fff; }
+a { color: #0969da; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+th, td { border: 1px solid #d0d7de; padding: 6px 10px; text-align: left; }
+th { background: #f6f8fa; }
+code, pre { font-family: ui-monospace, monospace; font-size: 0.9em; background: #f6f8fa; }
+code { padding: 0.15em 0.3em; border-radius: 3px; overflow-wrap: anywhere; }
+pre { padding: 12px; border-radius: 6px; overflow-x: auto; }
+pre code { padding: 0; overflow-wrap: normal; }
+@media (prefers-color-scheme: dark) {
+  body { color: #e6edf3; background: #0d1117; }
+  a { color: #79c0ff; }
+  th, td { border-color: #484f58; }
+  th, code, pre { background: #161b22; }
+}
+</style>
+<p dir="auto">新機能「網かけの表示」を加えました。スキャンした漫画の細かい網点(スクリーントーン)を、紙の本で見たときに近いなめらかな階調で表示できます。既定は従来どおりの「スキャンのまま」です。</p>
+<h2 dir="auto">網かけの表示</h2>
+<ul dir="auto">
+<li>表示メニューの「網かけの表示」、設定の「表示」、または H キーで切り替えます(H キーは、キー設定を一度も編集しておらず、H を別の操作に使っていない場合に使えます。それ以外の場合は、設定のキーの割り当てで「網かけの表示を切り替え」を追加してください)。</li>
+<li>「本の見え方に近づける」にすると、紙の本では目で見分けられない細かい網点をなめらかな階調にまとめます。粗い網点、線、文字はそのまま残します。</li>
+<li>強さは「控えめ」「標準」「強め」の 3 段階です。</li>
+<li>変えるのは明るさだけです。カラーページは変更しません。色味のついたモノクロのスキャンは、色味を保ったまま処理します。</li>
+<li>有効にしている間は、ページを開くと処理済みの画像ができるまで待ちます。通常は 0.1 秒前後で、1300 万画素級の大きいページでも M2 Pro で約 0.4 秒です。</li>
+<li>処理は GPU(Metal)で行います。GPU を使えないときは CPU で同じ処理を行います(遅くなります)。稼働状況はアクティビティのウインドウで確認できます。</li>
+</ul>
+<h3 dir="auto">制限</h3>
+<ul dir="auto">
+<li>PDF の本、サムネイル、原寸表示パネルには適用しません。</li>
+<li>1600 万画素を超えるページ(メモリが 16 GB 未満の Mac では 900 万画素超)、辺が 128 画素に満たない画像、極端に縦長・横長の画像は処理せず、そのまま表示します。</li>
+<li>1〜2 画素の細い線が点線のように見えることがあります(既知の問題です)。</li>
+</ul>
+<h2 dir="auto">前回までの主な変更</h2>
+<ul dir="auto">
+<li><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b56">2.0b56</a>: 同梱の EPUB ツールキット Washi を 1.27.2 に上げ、壊れた EPUB や細工された EPUB への守りを固めました。</li>
+<li><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b55">2.0b55</a>: KaitoKit 0.22.1 で書庫の展開を高速化しました。</li>
+</ul>
+<h2 dir="auto">同梱</h2>
+<p dir="auto">KaitoKit 0.22.1 / Washi 1.27.2 / Sparkle 2.10.1</p>
+<h2 dir="auto">1.x に戻す場合 / Reverting to 1.x</h2>
+<p dir="auto">2.0 は初回起動時に 1.x の設定・履歴・しおりを取り込み、旧データはその時点の内容で残します。1.x はそのまま起動できますが、2.0 で進めた読書位置や追加したしおりは 1.x には反映されません。</p>
+<p dir="auto">データを完全に消して初期状態へ戻したい場合だけ、アプリを終了してから次を実行してください。<strong>1.x のデータも消えます。</strong></p>
+<p dir="auto">2.0 imports 1.x data once and leaves the legacy data unchanged. You can still run 1.x, but reading positions and bookmarks added in 2.0 do not carry back. Only if you want to reset everything, quit the app and run the following commands. <strong>This also erases 1.x data.</strong></p>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">defaults delete jp.coo.cooViewer
+rm -rf <span class="pl-k">~</span>/Library/Application<span class="pl-cce">\ </span>Support/jp.coo.cooViewer
+rm -rf <span class="pl-k">~</span>/Library/Caches/jp.coo.cooViewer</pre></div>
+<p><a href="https://github.com/shunnag/cooViewer/releases/tag/v2.0b57">GitHub のリリースページ</a></p>
+]]></description>
+            <enclosure url="https://github.com/shunnag/cooViewer/releases/download/v2.0b57/cooViewer-2.0b57.zip" sparkle:edSignature="3fDW1MBinJrtmZaTg6mlBrvuYnAdBmYdih3o+pBPOqBAvyJzhlqCpjYoObvZJtcuGH7Kjne6NUpoGgF8ZAcnCg==" length="9740400" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>cooViewer 2.0b56</title>
             <pubDate>Thu, 12 Nov 2026 00:35:37 +0000</pubDate>
             <sparkle:version>2056</sparkle:version>
@@ -765,6 +825,6 @@ rm -rf <span class="pl-k">~</span>/Library/Caches/jp.coo.cooViewer</pre></div>
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: D876SEf1tL/WfkEvx6u3zx7bf+T/hjYNkchpIB7SH7RujWoGnl2WmbV4Co7locLYypbIWBndGxBEzP+c0WORCg==
-length: 62022
+edSignature: kUuwajpDDDpFTDlXOdAsuyLJwwgcK44iU2wgQVMhyqoCpW/lnPGGnLDIBXqurGp6rczn73418XsrFak/ooBKAQ==
+length: 67632
 -->
