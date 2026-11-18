@@ -280,7 +280,7 @@ actor ImageResampler {
         // フル CNN を再実行していた(cooViewer-kli)。中間結果を元サイズキーで
         // キャッシュし、リサイズ間で再利用する(.maximum は SR ディスク層が担う)
         let nrKey: String? = noiseReduction == .strong
-            ? "\(cacheKey)|\(image.width)x\(image.height)|nr-strong|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")" : nil
+            ? Self.strongIntermediateKey(cacheKey: cacheKey, image: image) : nil
         let source: CGImage
         let usedMLFallback: Bool
         let sourceCacheable: Bool
@@ -453,6 +453,18 @@ actor ImageResampler {
             noiseReduction: processing.noiseReduction, displayTarget: displayTarget)
     }
 
+    /// 強のノイズ低減の原寸中間画像のキー(元画像の寸法と色空間に依存し、表示先には依存しない)。
+    /// cacheKey はページキーなので網点処理の印を含む(設計書 §5)
+    nonisolated static func strongIntermediateKey(cacheKey: String, image: CGImage) -> String {
+        "\(cacheKey)|\(image.width)x\(image.height)|nr-strong|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
+    }
+
+    /// 超解像(×4)のディスクキャッシュのキー。印を含むページキーから作るので、網点処理の有無と段階ごとに
+    /// 別のファイルになる(設計書 §5)
+    nonisolated static func superResolutionKey(cacheKey: String, image: CGImage) -> String {
+        "\(cacheKey)|\(image.width)x\(image.height)|sr4|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
+    }
+
     private nonisolated static func makeKey(cacheKey: String, image: CGImage,
                                 width: Int, height: Int,
                                 upscaleWithMetalFX: Bool,
@@ -511,9 +523,7 @@ actor ImageResampler {
             // 設計書 §5: Book の入力は表示先へ変換済みなので SR もプロファイル別に保持する。
             // 原画を別保持する変更は復号・予算・暗号化の責務まで広がるため行わない。
             // 旧キーは一度だけ回収し、複製は MLSuperResolver の容量 LRU と保持日数で制限する。
-            let srKey = cacheKey.map {
-                "\($0)|\(image.width)x\(image.height)|sr4|cs:\(image.colorSpace.map(DisplayColorTarget.identity) ?? "none")"
-            }
+            let srKey = cacheKey.map { Self.superResolutionKey(cacheKey: $0, image: image) }
             if let upscaled = await superResolver.upscale(
                 image, cacheKey: srKey, encrypted: encrypted, displaySize: displaySize,
                 writeGeneration: writeGeneration, request: request) {

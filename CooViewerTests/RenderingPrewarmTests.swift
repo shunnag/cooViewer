@@ -8,10 +8,18 @@ final class RenderingPrewarmTests: XCTestCase {
     @MainActor
     func testLaunchPrewarmingSchedulesNoWorkInsideXCTestHost() {
         XCTAssertTrue(AutomatedRun.isXCTest)
+        // 網かけの表示を入れていても、XCTest では網点処理のエンジンを準備しない(設計書 §5)
+        let shared = UserDefaults.standard
+        let previous = shared.volatileDomain(forName: UserDefaults.argumentDomain)
+        shared.setVolatileDomain(previous.merging(["HalftoneDisplayMode": 1]) { _, new in new },
+                                 forName: UserDefaults.argumentDomain)
+        defer { shared.setVolatileDomain(previous, forName: UserDefaults.argumentDomain) }
+        XCTAssertNotNil(SettingsStore.shared.printAppearanceRequest)
         let delegate = AppDelegate()
         delegate.scheduleLaunchPrewarming(for: ReaderWindowController(window: nil))
         XCTAssertNil(delegate.renderingPrewarmTask)
         XCTAssertNil(delegate.webKitPrewarmTask)
+        XCTAssertNil(delegate.printAppearancePrewarmTask)
     }
 
     func testPrewarmUsesBothFormatsOnceAndLeavesNoSyntheticCacheEntries() async {

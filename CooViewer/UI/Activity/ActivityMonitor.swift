@@ -124,6 +124,8 @@ struct ActivitySnapshot: Sendable, Equatable {
     var ml: ML
     var memory: Memory?
     var resources: Resources
+    /// 網かけの表示(入れているか、エンジンが動いたことがあるときだけ。設計書 §5)
+    var halftone: Halftone?
 
     /// 本を開いていない時の空スナップショット(ML の導入状態と資源上限は常に映す)
     static func empty(ml: ML,
@@ -201,8 +203,14 @@ final class ActivityMonitor: ObservableObject {
     private func makeSnapshot() async -> ActivitySnapshot {
         let encrypted = controller?.currentBookIsEncrypted ?? false
         let ml = Self.mlSnapshot(encrypted: encrypted)
-        guard let controller, let book = controller.book, book.pageCount > 0 else {
-            return .empty(ml: ml)
+        let openBook = controller?.book.flatMap { $0.pageCount > 0 ? $0 : nil }
+        let halftone = ActivitySnapshot.Halftone.current(book: openBook)
+        let relevantHalftone = ActivitySnapshot.Halftone.isRelevant(enabled: halftone.enabled,
+                                                                    stats: halftone.stats) ? halftone : nil
+        guard let controller, let book = openBook else {
+            var empty = ActivitySnapshot.empty(ml: ml)
+            empty.halftone = relevantHalftone
+            return empty
         }
         let view = controller.readerViewForInput
         let settings = SettingsStore()
@@ -276,7 +284,8 @@ final class ActivityMonitor: ObservableObject {
             book: bookInfo, loading: loading, resample: resample,
             lru: lru, prefetchPlan: prefetchPlan, spool: spool, ml: ml, memory: memory,
             resources: ActivitySnapshot.Resources(
-                physicalMemory: ProcessInfo.processInfo.physicalMemory, pressure: pressureLevel))
+                physicalMemory: ProcessInfo.processInfo.physicalMemory, pressure: pressureLevel),
+            halftone: relevantHalftone)
     }
 
     // MARK: - 表示名の整形

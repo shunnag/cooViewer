@@ -330,7 +330,7 @@ final class DecodedOriginalRetentionTests: XCTestCase {
             processing: view.imageProcessingSettings, colorTarget: target)
         let spread = try XCTUnwrap(book.acceptResampledDisplay(candidate, pages: [page]))
         var lazyLoads = 0
-        view.setPages(spread.images.compactMap { $0 }, ids: [book.entries[4].id], readsFromLeft: false,
+        view.setPages(spread.images.compactMap { $0 }, ids: [book.entries[4].id], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "",
             preResampled: [page], decodedSources: candidate.sources, originalLoader: { _ in
                 lazyLoads += 1
                 return nil
@@ -419,8 +419,8 @@ final class DecodedOriginalRetentionTests: XCTestCase {
             processing: .init(interpolation: .high, noiseReduction: .strong), colorTarget: normal.displayColorTarget)
         XCTAssertFalse(cached.canDisplayResampled(changed, sources: sources))
         var loads = 0
-        normal.setPages(images, readsFromLeft: false, preResampled: pages.map { $0 })
-        cached.setPages(pages.map(\.image), readsFromLeft: false, preResampled: pages.map { $0 },
+        normal.setPages(images, readsFromLeft: false, keyPrefix: "", printAppearanceTag: "", preResampled: pages.map { $0 })
+        cached.setPages(pages.map(\.image), readsFromLeft: false, keyPrefix: "", printAppearanceTag: "", preResampled: pages.map { $0 },
             decodedSources: sources, originalLoader: { _ in loads += 1; return nil })
         XCTAssertEqual(cached.sourceImageSizes, sources.map(\.size))
         XCTAssertEqual(try XCTUnwrap(cached.snapshotContent()?.dataProvider?.data as Data?),
@@ -440,7 +440,7 @@ final class DecodedOriginalRetentionTests: XCTestCase {
             pages.append(ResampledPage(size: sizes[index], image: try XCTUnwrap(image),
                 processing: view.imageProcessingSettings, colorTarget: view.displayColorTarget))
         }
-        view.setPages(pages.map(\.image), readsFromLeft: true, preResampled: pages.map { $0 },
+        view.setPages(pages.map(\.image), readsFromLeft: true, keyPrefix: "", printAppearanceTag: "", preResampled: pages.map { $0 },
             decodedSources: sources, originalLoader: loader)
         return view
     }
@@ -573,7 +573,7 @@ final class DecodedOriginalRetentionTests: XCTestCase {
         await fulfillment(of: [converting], timeout: 3)
         let drain = Task { waiting.fulfill(); await view.waitForOriginalImages() }
         await fulfillment(of: [waiting], timeout: 3)
-        view.setPages([replacement], ids: [99], readsFromLeft: true)
+        view.setPages([replacement], ids: [99], readsFromLeft: true, keyPrefix: "", printAppearanceTag: "")
         try XCTUnwrap(release).resume(returning: input)
         await drain.value
         XCTAssertEqual(view.pageIDs, [99])
@@ -591,10 +591,10 @@ final class DecodedOriginalRetentionTests: XCTestCase {
                 upscaleWithMetalFX: false, displayTarget: target)
             let page = ResampledPage(size: size, image: try XCTUnwrap(image),
                 processing: normal.imageProcessingSettings, colorTarget: target)
-            normal.setPages([input], readsFromLeft: true, preResampled: [page])
+            normal.setPages([input], readsFromLeft: true, keyPrefix: "", printAppearanceTag: "", preResampled: [page])
             let loaded = expectation(description: "必要になった元画像の取得 \(change)")
             var calls = 0
-            cached.setPages([page.image], readsFromLeft: true, preResampled: [page],
+            cached.setPages([page.image], readsFromLeft: true, keyPrefix: "", printAppearanceTag: "", preResampled: [page],
                 decodedSources: [DecodedPageInfo(input)], originalLoader: { _ in
                     calls += 1
                     loaded.fulfill()

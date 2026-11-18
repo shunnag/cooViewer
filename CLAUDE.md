@@ -59,7 +59,7 @@ If `xcode-select` points at CommandLineTools, prefix with `DEVELOPER_DIR=/Applic
     Washi.framework explicitly** (its autolink for the now-separate WashiCore
     module can't otherwise resolve). All three are already set in the pbxproj.
 - The pbxproj is hand-written (objectVersion 77, filesystem-synchronized groups): files
-  added under `CooViewer/` or `CooViewerTests/` are picked up automatically — do not add
+  added under `CooViewer/`, `CooViewerTests/` or `PrintAppearanceKit/` are picked up automatically — do not add
   per-file entries to the pbxproj.
 - The app is **arm64-only by design** (`ARCHS = arm64` at project level; the frameworks in
   `Frameworks/` are built arm64-only). Never set `ARCHS = $(ARCHS_STANDARD)` on the target —
@@ -205,6 +205,25 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   pacing (`.unrestricted` for "always full speed", otherwise `.followSystem`), and the
   FXL rasterizer pool gives each rasterizer a 20 s `idleReleaseInterval`
   (matching Washi's census/thumbnail idle release; `invalidate()` on close is unchanged).
+- `PrintAppearanceKit/` — engine behind 網かけの表示 ("Halftone Display": as scanned / like the printed book;
+  subtle / standard / strong). A **native framework target in this repo** (filesystem-synchronized group; built
+  `-O` + whole-module in Debug too, because the app's Debug is `-Onone`; embedded and signed; linked by the tests).
+  No `.metal` files: the 11 kernels are a Swift string compiled at run time with `makeLibrary(source:options:)`.
+  Engine stages: linearise → pass 1 (128 px tiles at a 32 px hop, vDSP spectra + peak detection, GPU candidate
+  prefilter) → GPU front work → neighbour gate → A2 → pass 2 (notch, inverse FFT, overlap-add) → post (normalise,
+  energy gate, q3 edge clamp, re-encode). The GPU path stays within 1 level of the exact CPU path; output bytes
+  depend on the OS's vDSP/libm and the GPU, so tests assert properties, never golden bytes. App side:
+  `PageImageDecoding.decode` runs `PrintAppearance.prepare`, then the engine through `PrintAppearanceService`
+  (one engine on one serial queue, display jobs before prefetch), then `recolour` (luminance only: gray sources
+  stay one-channel, non-colour RGB keeps its colour) before `PageCache`. Keys `HalftoneDisplayMode` (0/1,
+  default 0) and `HalftoneDisplayStrength` (0/1/2, default 1) are global, not per book; key action 55 (default
+  `h`). Cache tag `~pa<engineVersion><l|s|h>` (`PrintAppearance.engineVersion` = 1; bump it for any change of
+  the output bytes). A GPU failure reruns the page on the CPU path; two in a row make the engine CPU-only; a failure
+  (GPU failure, allocation failure, cancel, shed, decline) throws and caches nothing, so only processed pages
+  and deterministic pass-throughs sit under an "on" tag. Not applied to PDF, thumbnails or View Original; pass-through for
+  colour pages, edges < 128 px, > 16 MP (9 MP under 16 GB RAM), aspect outside 0.5–1.6, EXIF orientation,
+  transparency and unsupported formats. Page-size scratch is VM-backed (`PageMemory`) and returned to the OS
+  after use — never malloc it. Details: architecture §5, development-guide §2/§5.
 - `CooViewer/Core/Book/` — `Book` (@MainActor: sorted entries, current index, spread
   pairing per §4.2, prefetch), `PageLayout`/`PageMarks` (spread decision, legacy "N"/"N-M"
   mark strings), `ReadMode`.

@@ -45,6 +45,7 @@
 │                               fileSystemSynchronizedGroups 方式)
 ├── CooViewer/               ← 新 Swift ソース(§3 のモジュール構成)
 ├── CooViewerTests/          ← ユニットテスト
+├── PrintAppearanceKit/      ← 網点処理エンジンのフレームワーク(ネイティブターゲット。§1.4・§5)
 ├── Documentation/           ← 仕様書・本設計書
 ├── Design/                  ← アイコン元画像(AppIcon.icon は Icon Composer 管理)
 ├── Frameworks/              ← KaitoKit / Washi / Sparkle(ビルド時生成・取得)
@@ -68,6 +69,20 @@ LGPL 表記も PR 2 で撤去し、通常の clone に旧エンジンを含め�
 - 3 framework をリンクし、**Embed & Sign** で同梱する。KaitoKit / Washi の Run Script は各スクリプトがソース・ツールチェーンの更新を判定する。Xcode の legacy build location と SwiftPM 参照が併用できないため、この方式を使う。
 - ソースのファイル名と内容の SHA-256 をスタンプへ含める。更新日時だけでは
   見えない削除・復元も検出し、署名・配置の成功後にスタンプを確定する。
+
+網点処理エンジン **PrintAppearanceKit**(網かけの表示。§5)だけは Run Script ではなく、このリポジトリ内の
+ネイティブのフレームワークターゲットとする。上の方式は legacy build location と SwiftPM 参照を併用できない
+ために要るもので、同じプロジェクトのネイティブターゲットにはその制約がなく、テストも `@testable import` できる。
+
+- ルートの `PrintAppearanceKit/` を filesystem-synchronized group とし、置いたファイルは自動でターゲットに入る
+  (ファイル単位のエントリは足さない)。兄弟チェックアウトもスクリプトも要らない。
+- Debug・Release とも `SWIFT_OPTIMIZATION_LEVEL = -O`・`SWIFT_COMPILATION_MODE = wholemodule`・`ARCHS = arm64`・
+  `ENABLE_CODE_COVERAGE = NO`。アプリの Debug は `-Onone` で、最適化なしではエンジンが極端に遅くなる
+  (`PrintAppearanceEngineTests` の速度の検査で -O であることを確かめる)。Debug はプロジェクトの
+  `ENABLE_TESTABILITY = YES` を継ぐ。
+- アプリが Embed & Sign(CodeSignOnCopy)で同梱し、テストターゲットもリンクする。依存は Foundation・
+  Darwin・CoreGraphics・ImageIO・Accelerate・Metal だけで、AppKit とアプリの型には依存しない。
+- Metal のカーネルは `.metal` ファイルにせず、実行時にコンパイルする(§7.7)。
 
 ---
 
@@ -148,13 +163,14 @@ Apple Remote スタック全体 / GlobalKeyboardDevice / KeyspanFrontRowControl 
 | ウインドウ位置の復元 | サイズも位置も AppKit の frame autosave("ReaderWindow")で復元する。AppKit は復元時に constrainFrameRect でウインドウを必ず画面内へ収める(解像度変更・ディスプレイ取り外し後も画面外に出ない。隔離クローンで実測)ため、**初回起動(保存フレームがまだ無い)のときだけ中央**へ置き、以降は autosave の復元に委ねる。以前は終了時に記録した画面解像度(defaults `ReaderWindowScreenSize`)が現在の画面と一致するときだけ位置を復元していたが、不一致時に呼ぶ window.center() が autosave の保存位置を上書きしてしまい、クラッシュ/強制終了で解像度記録が残らないと毎回中央へリセットされる不具合があったため撤去した(b19 の「位置が保存されない・リセットされる」報告)。**macOS 26 のタイル状態はフレームだけ復元し、タイルとしては復活させない**: タイル(フィル等)のまま終了すると autosave 文字列に tilingState JSON が付く。そのまま復元すると WindowManager がタイルを再確立して保存し直すため、以後ウインドウを動かしても古いフィルが毎回蘇る(自己永続化)。起動時に文字列を検査し、tilingState があれば JSON だけ除去してから setFrameAutosaveName を呼ぶ(ReaderWindowController.untileSavedWindowFrame)。フレーム欄は保存値のままなので、フィルで終了すれば次回も同じ見た目で起動し、外して終了すればその位置で起動する |
 | 表示モードの永続化と設定 UI | 旧: fitScreenMode は永続化されず毎回 0(全体フィット)で起動(§3.2)→ **defaults `FitMode`(新キー)にグローバル保存**し、次回起動時も復元。設定「表示」ペインのピッカーとメニュー ⌘1-4/キー巡回(action 42/51/52)は同じ値を共有(変更経路は ReaderWindowController.setFitMode に一本化)。方針: メニューにある設定的項目は必ず設定ウインドウにもあり、メニューは頻繁に切り替えるものの抜粋 |
 | 表紙の単ページ表示 | 旧実装には無い**新規**(既定オフ)。defaults `SpreadCoverSingle`。ON のとき見開きモードで先頭ページ(表紙)を常に単ページにし、以降を (1,2)(3,4)… で組む(PageLayout.isSmall の coverSingle 判定。marks の強制ペア「1-2」が最優先)。サムネイル一覧の見開きセルも同じ規則で追従。設定「表示」の読み方向直下のトグルと、表示メニュー > 読み方向 > 「表紙を単ページで表示」の両方から切替(即時反映)。ペア判定は §4.2 どおり現在位置から局所的に決まるため、切替の瞬間だけ Book.reanchorToLeadingPartition が先頭起点の区分を歩き直して現在位置を整列させる(途中ページで切り替えても 3-4 → 2-3 のように即座に組み替わる。サイズ未取得ページは縦長とみなし、marks の強制指定は常に優先。検証フラグ `--then-toggle-cover-single`) |
-| 設定ウインドウの構成 | 旧: 5 タブの TabView → **macOS のシステム設定風**(サイドバー+検索+詳細、NavigationSplitView。リサイズ可)。ペインは意味で再編: 一般(起動・履歴・記憶・アップデート確認)/本(並び順・サブフォルダ・本の端)/表示(読み方向・表紙単ページ・見開きしきい値・表示モード・補間・サムネイル)/ページ番号/ページバー/操作/キー割り当て/マウスとジェスチャ/デコーダ(高度から独立)/高度(チューニングのみ)。**キー割り当てとマウスとジェスチャは「できること別」**: 機能をカテゴリ列挙し、各行に入力(キーは実押下の捕捉、マウスは種類選択)をチップとして割り当てる。使用中の入力を選ぶと付け替え(シートで予告)。1 度でも UI から保存すると自動注入(f キー・サイドボタン)を止めるフラグ `KeyArrayUserEdited`/`MouseArrayUserEdited` が立ち、削除が定着する。**検索**はペインごとの索引(タイトル+項目ラベル、SettingsSearch)でサイドバーを絞り込み、一致した項目名を行の下に注釈表示。選択ペインは defaults `SettingsSelectedTab`(旧 0-4 の意味を保持し新ペインは 5 以降。検証は `-SettingsSelectedTab n --snapshot-settings`、検索は `-SettingsSearchText 語` で注入)。ペインへ項目を足すときは SettingsView.searchTerms への追加も必須 |
+| 設定ウインドウの構成 | 旧: 5 タブの TabView → **macOS のシステム設定風**(サイドバー+検索+詳細、NavigationSplitView。リサイズ可)。ペインは意味で再編: 一般(起動・履歴・記憶・アップデート確認)/本(並び順・サブフォルダ・本の端)/表示(読み方向・表紙単ページ・見開きしきい値・表示モード・補間・サムネイル)/ページ番号/ページバー/操作/キー割り当て/マウスとジェスチャ/デコーダ(高度から独立)/高度(チューニングのみ)。**キー割り当てとマウスとジェスチャは「できること別」**: 機能をカテゴリ列挙し、各行に入力(キーは実押下の捕捉、マウスは種類選択)をチップとして割り当てる。使用中の入力を選ぶと付け替え(シートで予告)。1 度でも UI から保存すると自動注入(f キー=53・h キー=55・サイドボタン)を止めるフラグ `KeyArrayUserEdited`/`MouseArrayUserEdited` が立ち、削除が定着する。h(55=網かけの表示の切替)の注入は f(53=補間の切替)と同じ条件で、未編集の保存済み `KeyArray` に素の h の行も 55 の行も無いときだけメモリ内で補い、1.x と共有する defaults へは書き戻さない。**検索**はペインごとの索引(タイトル+項目ラベル、SettingsSearch)でサイドバーを絞り込み、一致した項目名を行の下に注釈表示。選択ペインは defaults `SettingsSelectedTab`(旧 0-4 の意味を保持し新ペインは 5 以降。検証は `-SettingsSelectedTab n --snapshot-settings`、検索は `-SettingsSearchText 語` で注入)。ペインへ項目を足すときは SettingsView.searchTerms への追加も必須 |
 | 書庫の並列展開プール | エントリ独立圧縮の形式(zip/cbz)のみ、ArchiveEntryExtractor(独立した KaitoKit エンジンの actor)を最大 3 つプールし、未スプールのページ展開をエントリ間で並列化(PDFSource のレンダラープールと同型)。空き再利用が最優先で全員使用中のときだけ成長(直列読みでは 1 つのまま)。エントリ数不一致(差し替え)は成長を止めてメイン書庫の直列展開へ。solid 形式(rar/7z 等)は従来どおり直列 |
 | 縮小リサンプルの GPU 化 | 表示ピクセルへの縮小を CoreImage(Metal)の Lanczos で行う(LanczosDownscaler)。従来の CGContext 高品質補間(CPU)はフォールバック。SDR の RGB 出力は対象ウインドウの表示色空間へ GPU で変換する(未取得時は主画面、最後に sRGB)。単一チャンネル・8bit 以下・不透明な灰色は Generic Gray Gamma 2.2 の L8 を使う。画面外スナップショットは sRGB。初回表示も同じ色空間へ主スレッド外で変換し、合成時の色変換と追加コピーを避ける。CIImage(cgImage:) は CG と同じ向きのため反転補正は不要(色・向きの回帰テストあり) |
 | 次スプレッドの事前リサンプル | refreshDisplay 後、進行方向の隣接スプレッド列(Book.predictedAdjacentSpreads が moveNext/movePrevious と同じ規則で予測)を表示ピクセルサイズ(ReaderView.predictedResampleSizes)へ先行リサンプルし、ImageResampler のキャッシュに載せる。めくった直後の最初の描画から等倍のシャープな画像になる。先へ進む量は**メモリ予算内**(PreresamplePolicy: 1 ページの表示サイズ×枚数 ≤ 物理メモリの 1/8・最大 4GB。通常の非 ML は最大 8 ページ・4 見開き。ペアは分割しない)。**ML 品質(超高/最高)は 1 ページ数秒かかるため通常でも次の 2 見開き(最大 4 ページ)まで**、省エネ時(低電力モードまたは温度圧迫)と**アプリ非前面時は次の見開きだけ**(ML は 2 ページ、非 ML は 4 ページ)。バイト予算は従来値を維持(ML・省エネは 4/64・2/64。§5)。**ウインドウが見えていない間**(`NSWindow.occlusionState`: 隠蔽・最小化・アプリ非表示)は始めず、進行中の SR は次のタイル境界で止め、可視に戻ったら一度だけ組み直す(モードが変わらない隠蔽通知では組み直さない)。ImageResampler のキャッシュは件数制(8)から**バイト基準 LRU**(物理メモリの 1/5・最大 12GB=先読み予算+表示中・ルーペ分の余裕、メモリ圧迫の段階で実効上限を 1/2・1/4 に下げて normal まで保つ。§5)に変更。リサンプル済み(高品質化・ML 超解像)画像は再計算が高価なため広めに確保する(旧 1/6・最大 4.5GB はデコードキャッシュ 16GB に比べ使用率が高く大容量機でキャップが早く効いていたため引き上げ)。現スプレッドのリサンプルと競合しないよう 250ms 遅延+**表示中スプレッドの補間完了を待ってから**積む。SR は表示優先のジョブキューを使い、先読みは次のタイル境界で表示へ実行権を渡す。表示の全タイル完了後、保持した入力・出力バッファと次のタイル位置から再開し、完了済みタイルを再計算しない。同一キーへ合流した表示は共有計算を昇格させる。ページ送りで止めるのは旧計画だけとし、ページ処理は `PreresampleJobs` が計画とは別に所有する。新予測を 250ms の待機より前に確定して計画外を停止し、計画内と表示対象のキーは同じ処理へ合流する。保持は計画のページ数内(ML は最大 4 ページ、表示へ移った既存処理は表示用)で、隠蔽・閉窓・本の切替では全先読み処理を取り消す。不要なページは最後の待ち手の取消しを内側の共有タスクへ伝え、次のタイル境界で停止する。取消し後の代替結果は ML 完成キーへ保存しない。表示世代が進んでいたら残りを捨てる |
 | ページめくり効果 | 旧実装には無い**新規**(既定オフ)。defaults `PageTurnAnimation`(0=なし/1=フェード/2=スライド/3=ズームフェード/4=ページカール)。フェード/スライドは CATransition(スライドは読み方向連動: 右→左読みで進むと新ページが左から入る。PageTurnAnimation.entersFromLeft)、ズームフェードは container への軽い拡大+フェード。**ページカール**は本式のめくり: 画面をノド(中央)で左右に分割し、空く側の半面をストリップ列(12 本)として 0→π 回転+外側ほど大きい曲げ角(sin θ 比例)で紙のしなりを表現(piecewise 円筒近似。幾何は PageCurlGeometry の純関数)。リーフの表=旧内容の空く側半面、裏=新内容の着地側半面(実際の紙の裏=次のページ)で、α が π/2 を跨いだストリップから discrete キーフレームで裏面に切替。裏面用の複製は **180° 回転**(水平だけでなく垂直も反転): 裏面描画の向きは机上の行列計算では決められず、**CARenderer による実描画テスト**(PageCurlRenderTests: 実物の ReaderView に実経路のスナップショットを流し、終端の絵=ライブ表示の絵をピクセル比較する自己校正方式)で確定した。リーフは**帯(横割り 24)×ストリップ(縦割り 12)のパッチ格子**で、ストリップ角は α = min(π, θ×(1+curl×外側度)×(1+lead×下端度)) の巻き込み+ねじれモデル(自由端が先に裏返って丸まる Apple Books 風の剥がれ方で、**下の帯ほど先行**して下の角から持ち上がる)。ノイズ対策: ねじれは序盤に集中させ二乗フェードで中盤に 0 へ(帯間の食い違い=階段状の横線を消す)、パッチは 1.2pt 重ねる(丸め由来のヘアラインを消す)。**影はパッチに載せない**(パッチ毎の陰は重なり部分で二重に暗くなり格子が見える。過去実装の反省点): 幾何(ロール頂点の投影 x)に追従する単一レイヤー群 — 投影影(広く柔らかい)+接触影(芯)+綴じ目の陰影+着地側の影。紙の縁ハイライトは不採用: リーフは「画面の半分」でありページ実体より広いため、ページが画面より小さいとき明線が黒背景まで届いて白線ノイズになる(実装後に撤去)。ページ束の表現もユーザー判断で不採用。濃さはいずれも sin θ 比例で始端・終端は消える。キーフレームは 48 分割(120Hz 表示でも補間段差なし)。メモリ圧迫時はオーバーレイ(スナップショット 2 枚)を即時解放。白ページの行輝度走査でシームを検出する実描画テストあり。どの帯も連結はノドから始まるため**綴じは離れない**(リーフ全体の面内回転で角先行を作ると上端がノドから浮く。過去実装の反省点。ノド起点は幾何の単体テストで固定)。角に応じた陰(パッチ毎)と着地側の影も付く。非公開の CATransition "pageCurl" は macOS 26 ではフェードにフォールバックすることをプローブで確認済み(採用不可)。着地側には旧内容を静止表示する。**スナップショットの向きに注意**: flipped ビューの layer を直接 render すると上下逆の像になるため snapshotContent が補正する(この取り違えが「着地側が上下反転」の原因だった。裏面は水平鏡像の複製で正像に戻る)。**スワイプ追従**: 設定がページカールのとき、2 本指スワイプはオーバーレイを speed=0 で組んで timeOffset を指の移動量(350pt でめくり切り)でスクラブする。モデルは追従開始時に先へ進めておき、確定=残り再生、取消=巻き戻してからモデルを戻す(スワイプの向きが次/前ページに割り当てられている場合のみ追従。修飾キー付き・別割当・端到達は従来動作)。オーバーレイ構築は PageCurlOverlay(静止フレーム版 makeStatic がテスト用)。完了時にオーバーレイごと除去。回転表示・ルーペ表示中とリサイズ時は省略/打ち切り。適用はページ送り(次/前/半ページ・スライドショー)のみで、ジャンプ・設定変更の再表示には付けない(ReaderWindowController.pendingTurnForward の消費方式)。「視差効果を減らす」で自動無効。設定「表示」ペインと表示メニューの両方から切替(§7.5 の不変条件)。**めくりに使う絵はフィルタ済みを優先**: 表示前にリサンプル済みキャッシュを照会のみで引き当て(ImageResampler.cached → setPages の preResampled)、命中すれば最初のレイアウト=めくりのスナップショットから完成画像(ML 高画質化込み)が入る(次スプレッドの事前リサンプルが温めているため通常のページ送りはほぼ命中。未命中は従来どおり原画で開始し完成後に差し替え)。検証フラグ `--then-next-page` |
 | メニューのキー割当の互換 | 旧 §8.1 のメニューショートカットを踏襲: ⌘, / ⌘O / **⇧⌘O(最後の本)** / ⌘W / ⌘1-4(表示モード)/ **⌘5・⌘6(回転)** / ⌘M。**編集メニュー**(⌘Z/⇧⌘Z/⌘X/⌘C/⌘V/⌘A、FirstResponder 接続)も旧同様に用意 — 無いとテキスト欄(パスワード・しおり名・ページ番号)でコピペのキーが効かない。旧の ⇧⌘F(フィルタ)は機能ごと見送り(§2.2)。リフロー EPUB の本文検索追加に伴い、**⌘F は検索へ再割当し、フルスクリーンは macOS 標準の ⌃⌘F へ移す**。検索の次/前は ⌘G / ⇧⌘G。新規追加: ⇧⌘R(Finder 表示)/ ⌘I(ファイル情報)/ ⌘T(サムネイル)/ **⌘L(ルーペ。旧実装はキー l のみでメニューなし。メニューからも切替可、チェックマーク付き)** |
 | 補間=描画品質 5 段階(ML 高画質化統合) | 旧「補間」(4 種)と 2.0b16 の「圧縮ノイズ低減」を **UI 上 1 本の「補間」5 段階に統合**: なし(ニアレスト)/標準(高品質縮小)/高(+MetalFX 拡大)/**超高(+waifu2x の ML ノイズ除去)**/**最高(+Real-ESRGAN の ×4 ML 超解像)**(RenderQuality enum。設定「表示」ペインと表示メニュー「補間」の両方から選択・§7.5 の同値性維持。メニュー経由の ML 選択も NSAlert で同意を取る)。**保存は旧互換の 2 キーの組合せ**(SettingsStore.renderQuality): `Interpolation` は旧 0-3 のまま(1.x と共有するドメインに未知値を書かないため。なし→1/標準→0/高以上→3)、ML 段階は `NoiseReductionLevel`(超高→3/最高→4)。読み出しは ML 段階優先、旧「低」(2)は標準扱い(選択肢からは廃止)、旧 CI 弱・中(NR 1-2)は表示上は基礎補間だがパイプラインでは従来どおり効く。f キーのトグル(toggleInterpolationNone)は ML 段階も含めた品質単位で往復。**全ページ対象**(2.0b16 の JPEG 限定は撤廃 — waifu2x/Real-ESRGAN はアニメ・漫画絵全般の高画質化に有効なため)。適用範囲(メイン表示のみ/+ルーペ/原寸も。`NoiseReductionScope`)は ML 段階に対して従来どおり。モデルは 2 つとも**本リポジトリのリリース資産(models-1 タグ)から自前配信**(外部リポジトリの構成変更・消失に影響されない): **超高 = waifu2x anime_noise2(MIT、約 1.2MB。imxieyi/waifu2x-mac から無改変で再配布、元重みは nagadomi/waifu2x。帰属表示とライセンス全文はリリース資産 LICENSES-models.txt)**、**最高 = Real-ESRGAN x4plus anime 6B(BSD-3-Clause、© 2021 Xintao Wang)**の自前 CoreML 変換(`Scripts/convert-realesrgan.py`、fp16 約 9MB、PyTorch パリティ最大誤差 0.003)。いずれも**初回選択時の同意後・必要時にのみ** DL し SHA-256 ピン照合→コンパイル→Application Support/Models にキャッシュ(同意フラグ `NoiseReductionMLAccepted` / `NoiseReductionSRAccepted`、取得共通処理は MLModelInstaller、状態表示は MLModelInstallStatus.noise / .superResolution)。waifu2x は 128px タイル+7px 文脈で 1 タイル約 2ms(MLNoiseReducer)。Real-ESRGAN は入力 [1,3,256,256] の 0-1 → 出力 [1,3,1024,1024]、内容 240px タイル+8px 文脈で 1 タイル約 46ms(MLSuperResolver)。×4 はリサンプル前段で行い後段の表示縮小で画質向上を得る設計のため、**等倍系(ルーペ・原寸)は超高へ格下げ**(cappedForOriginalSize)し、**長辺 2048px 超の元画像も超高へフォールバック**。タイル継ぎ目は「マージン捨て」だけでは不十分(GAN は平坦部のトーンがタイル毎に Δ1-2 階調揺れ、帯として見える。実測): 右・下へ margin 分を余計に書き、次のタイルが**線形フェザーで合成**+8bit 量子化の残段差は **Bayer 8×8 の秩序ディザ**で分散(いずれも決定的処理)。×4 結果は HEIC でディスクキャッシュ(Caches/jp.coo.cooViewer/SuperRes/、キー=リサンプルキー+元サイズの SHA-256、サムネイルと同じ保持日数で起動時トリム)。未導入・失敗・XCTest 時は 1 段ずつフォールバック(最高→超高→中相当の CI)。メイン表示は ImageResampler のリサンプル前段で適用しレベル込みのキーでキャッシュ(事前リサンプルも同一条件)、ルーペは超解像前、原寸はフル解像度デコード後に適用 |
+| 網かけの表示 | 旧実装には無い**新規**(既定は「スキャンのまま」)。「本の見え方に近づける」にすると、紙の本では見分けられない細かい網点をなめらかな階調にまとめる(粗い網点・線・文字は残す)。**変えるのは明るさだけ**で、ファイルの色は保つ(1 チャンネルのグレーのソースはグレー、色なしと判定した RGB のソースは輝度の差を各チャンネルに足した RGB、カラーページは素通し)。新設 Int キー `HalftoneDisplayMode`(0=スキャンのまま/1=本の見え方に近づける。既定 0)と `HalftoneDisplayStrength`(0=控えめ/1=標準/2=強め。registerDefaults で既定 1)。描画品質と同じく**全体の設定**で、本ごとの状態(v2 ストア)には入れない。1.x はこれらのキーを読まない。未知の値は既定として読み、書き戻さない。強め は高さ 800 px 未満のページでは 標準 に留める。UI: 表示メニュー「網かけの表示」(「補間」の後。2 つの選択・区切り・強さ 3 段階。キーイクイバレントなし。リフロー EPUB では全項目を、切っている間は強さを無効にする)、設定「表示」ペインの「網かけの表示:」「強さ:」と説明文(エンジンが GPU を使えず CPU だけで動いているときは注記を足す)、設定検索の語(網点・スクリーントーン・モアレ ほか)、キー操作 55「網かけの表示を切り替え」(既定 h。注入の条件は「設定ウインドウの構成」の行)。入れている間は最初の表示も処理済みのページを待ち、未処理の画素を一度も出さない(キーを押し続けると途中のページを飛ばす)。**処理するのは本のページの画像だけ**: PDF・サムネイル(一覧とページバーのバブル)・原寸表示パネル(View Original)・WebKit でラスタライズする FXL のページ・リフロー EPUB は処理しない。素通しの条件・段の順・キャッシュの印・失敗時の扱い・省エネとメモリは §5。アクティビティ窓に「網かけの表示」の節(入れているか、このプロセスでエンジンが動いたときだけ出す)。検証フラグ `--dump-print-appearance-stats` / `--then-toggle-halftone`(development-guide §2) |
 | オープン進捗表示 | 旧実装には無い**新規**。開くのに 0.35 秒を超えたら中央に HUD(スピナー+「“名前” を開いています…」)。統合ソースの組み立て中は「書庫 n/m」の進捗を併記(NestedFolderSource の進捗コールバック)。ドリルダウン中は畳まず引き継ぐ |
 | EPUB 対応(Washi 統合) | 旧実装には無い**新規**(cooViewer-c6s)。EPUB 3 の解析・描画は**独立 SwiftPM リポジトリ(兄弟チェックアウト `../Washi`)**(MIT・依存ゼロ・macOS 14+。詳細は `../Washi/README.md`)が担い、cooViewer はそれを利用する。**ビルド統合**: Xcode は legacy build location(build/ 直下)とパッケージ参照を併用できないため、SwiftPM 参照ではなく `Scripts/build-washi-framework.sh` が `Frameworks/Washi.framework` を組み立てて埋め込む(KaitoKit と同じ方式。Washi のソース更新後は `rm -rf Frameworks/Washi.framework` で再ビルド)。**形式の振り分け**は `openBookFlow` の 1 点(全オープン入口が `openBook(at:)` に合流するため): ①**固定レイアウト**(日本の漫画配信の標準形)→ `EPUBSource` が「1 XHTML = 画像 1 枚」構造(電書協 FXL テンプレートの SVG ラッパー含む)から画像を直接取り出し**既存の画像パイプラインへ**(先読み・見開き・ページカール・ルーペ・サムネイルすべて有効。複雑ページのみ WKWebView ラスタライズ)。spine の `page-spread-left/right/center` と `page-progression-direction` は ComicInfo ヒント(章=nav 目次、シリーズ=belongs-to-collection、右綴じ=Manga 相当)へ写像。②**リフロー**(縦組み小説等)→ **同じリーダーウインドウの EPUB 表示モード**(`ReaderWindowController+EPUB.swift` が readerView と Washi の `EPUBReaderView` を入替表示。独立ウインドウにしないのは PDF 等と操作感を揃えるため — 同一の開閉・次/前の本・メニュー・履歴・章メニュー(nav 目次)・D&D が働く)。版面は **Apple Books に倣う**: ウインドウ幅で単ページ⇔**見開き 2 ページ**を自動切替(横書き=標準 multicol 2 カラム、縦書き=`-webkit-column-axis: horizontal` の半幅ページボックス〈WKWebView 専用・実測検証済み。アンカー位置はプローブで自己校正〉)、中央にノド(内容幅の約 7%)、**ノンブルは各ページの下部中央に素の番号**(書名はウインドウタイトルが担い、ページ面に柱は置かない。ただしページ番号ラベル「N-M/総数 (章題)」の下配置(PageNumPosition 2/3)ではホストの不透明帯ラベルとノンブルが重なるため、その配置に限りノンブルを抑止しラベル一本にする=`epubShowsFolio`。上配置 0/1 は上隅ラベル+下中央ノンブルで両立)。表紙等の画像単独ページは見開き時も単独の中央フィット。**配色はシステム外観に追従**(ライト=紙白/ダーク=Apple Books 系のほぼ黒 + 明灰文字、`color-scheme` 注入。EPUBReaderTheme で固定も可)。縦組みは「標準 multicol の縦積みカラム+無アニメーションジャンプ」方式(Bibi/Readium CSS と同じ実証済みモデル。行が途中で割れない)、ルビ・縦中横・圏点・右綴じは WebKit ネイティブ+電書協互換 CSS(`-epub-`/`-webkit-` 別名は WebKit が解釈)。**キーバインドは resolveKey まで共有**し(fitMode 0、readsFromLeft=綴じ方向。switchAction の対称入替も効く)、実行だけ EPUB 用の縮小ディスパッチャ(WKWebView がキーを食うためローカル NSEvent モニタで捕捉)。メニューは同名セレクタ実装で MainMenuBuilder 無改修。**水平スワイプ/ホイールめくり**は Washi が内部でめくるため、`EPUBReaderSettings.horizontalWheelTurnsPages`(= SwipeToTurnPage でゲート)と `reversesHorizontalWheelTurn`(向きを画像本のスワイプめくりへそろえる。反転条件 = `bookRTL != (実効綴じ方向 != FlipSwipeDirection)` を `currentEPUBReaderSettings` が算出。混在方向コレクションでは Washi が本の宣言方向でめくる差もここで吸収)で画像本と対称にする(監査 #2。既定=画像本と一致するため通常は無反転)。**ハードウェアのスワイプ/回転**は EPUB モードでも `.swipe`/`.rotate` のローカル NSEvent モニタ(`installEPUBGestureMonitorIfNeeded`)で拾い、画像本と同じスワイプ仮想ボタン(swipeDown=次の本/swipeUp=前の本/水平=前後ページ・回転)へ写像して `performEPUB` へ流す(写像は `ReaderView.swipe(with:)`/`rotate(with:)` と同一。カスタム割当も尊重。監査 #10)。**残差**(bd cooViewer-252): 2 本指スクロール由来の水平スワイプは Washi の scrollWheel がめくりに使うため、そこへの**カスタム(非ページめくり)割当だけ**は EPUB で効かない(常に前後ページめくり=#2 の向き整合済み)。core の縦スクロール読みを壊す risk があるため scrollWheel の横取りはしない — 同じカスタム割当は 3 本指スワイプで発火する。**読書位置**は v2 ストアに `lastReflowPosition`(spine index+進行率 0..1。オプショナル追加なのでスキーマ互換)として保存し、復元ゲート(§7.3 write-time 意味論)・**GoToLastPage(0=確認/1=自動/2=無効。確認は全体進行率%で表示)**・移動追跡の urlBookmark・ループ設定 2 の「前の本を末尾から」(atLastPage)は固定ページと共有。**DRM**(ADEPT/LCP/FairPlay)は指紋検出して明示アラート(§4.17 黙殺の例外: ファイルは正常で原因がストア保護だと分かるため)。フォント難読化(IDPF/Adobe)は Washi が透過解除。**全文ページ数は census**(`EPUBPaginationCensus`: 画面外 WKWebView で全 spine 項目を本番と同一メトリクス・同一 `__washi.setup()` で実測。フォント倍率・寸法・見開き切替で再実測、メトリクスキーでキャッシュ)が供給し、ページ番号表示「N-M/総数 (章題)」・ページバーのページ単位進捗/ジャンプ・0-9 の%ジャンプを画像本と同じ意味論にする(census 完了までは spine 近似でバーのみ)。**EPUB 専用の設定ペイン**(SettingsPane.epub=rawValue 10): 文字サイズ(EPUBFontScale。倍率≠1 のときは body をルート相対 1rem に正規化し、`font-size: medium` 等の絶対指定の本にも効かせる)・版面余白(EPUBPageMargins: 狭い/標準/広い→insets 写像)・本が指定しない場合の既定フォント(EPUBDefaultFont。html レベルへ !important なし注入=本の指定が最優先)・ピンチトグル。**コレクション統合**: フォルダ内の FXL EPUB は統合ソースの子になれる。リフロー EPUB は**表紙 1 ページの代理エントリ**(`ReflowEPUBPlaceholderSource`・`PageEntry.reflowEPUBURL`。表紙が無い本はタイトルカード合成。見開きには決して混ぜない)として合本に入り、表示到達で自動的に EPUB モードへ(前進=先頭/復元、後退=末尾)、巻端で合本の隣接エントリへ復帰(合本自体の巻端は §4.3.4 のループ規則)。コレクション文脈では次/前の本=コレクションの隣の本、**キー/マウスの綴じ方向解決はコレクションの readMode に従う**(`EPUBCollectionContext`。表示は本の宣言どおり — 混在方向のコレクションで操作系が本ごとに反転しない)。子 EPUB は履歴(最近使った本)に入れない。**サムネイル一覧(t / §4.8)**も EPUB 対応: セルは表示と同じ「画面」単位(単ページ/見開き 1 面)で census のページ割り・全文ページ番号に一致し、Washi の画面外レンダラ(EPUBScreenThumbnailRenderer。本番と同一メトリクス+現テーマ配色、FXL 項目はラスタライザ委譲、FIFO 直列)が生成、既存オーバーレイへは BookSource アダプタ(EPUBScreenThumbnailSource)で供給。出力の長辺は `maxPixelSize: Int` でピクセル数を指定し(省略時 320 px)、表示倍率の補正は Washi に任せる。単体・合本の EPUB 画面キャッシュは描画条件キーの `pixels:2` で旧ポイント指定の過大画像と分離し、旧フォルダは既存の期限切れ削除で回収する(画像本のキーは変更しない)。census 未完了時は章単位にフォールバック。クリックで該当位置へジャンプ、表示中のページ送りキーは一覧の画面送りに転用。**コレクション(合本)の一覧では代理ページを census の画面セル列へ「全ページ展開」**(EPUBScreenMetrics=画面計画の単一の正、EPUBScreenAtlas=リーダー外の census/サムネイル、EPUBAtlasStore で LRU 共有、CollectionThumbnailPlan が展開とジャンプ先を対応付け)。クリックでその位置へ直接入場(atLocator が復元より優先)。EPUB 内(コレクション文脈)から開いた一覧も合本全体を表示し、実ページへの復帰・同一/別 EPUB の位置への横断ジャンプができる(census 失敗の本は表紙 1 セルのまま)。**画面外 WebKit の教訓**: 最初の JS 実行を低 QoS(.utility の先読み等)の継承優先度で発行すると応答が永久に返らない(実測)— ラスタライザ/census/サムネイルのジョブは明示的に .userInitiated で回す。**ページバー/ページ番号も合本全体基準**(CollectionPageMap: 画像=1・リフロー EPUB=census ページ数の通し。書庫内 zip・サブフォルダと同じ §3.4 意味論): EPUB 内でも「全体 N/総数」を表示し、バードラッグ・0-9 の %ジャンプは全体基準で 画像ページ復帰/EPUB 内移動/別 EPUB への横断を振り分ける。開いている本の census はリーダー実測を流用し、未計測の巻は暫定 1 ページで表示→計測でき次第差し替え、欠落があれば未完マップとして**欠落巻だけ再計測**(毎ナビゲーション再解析しない上限つき。読了した巻のリーダー census が出れば上限後でもゼロコストで取り込む)。census が恒久的に取れない巻(DRM 等)は表紙 1 セルのまま。書庫内の固定レイアウト EPUB は合本へ取り込む(cooViewer-c6s.14。ArchiveSource が temp 展開して EPUBSource で画像化。リフロー EPUB と暗号化祖先下の EPUB は c6s.23 まで従来どおり無視)。検証: `--open x.epub --snapshot`(EPUB 窓は takeSnapshot 合成)+ `--then-next-page`(--then-* 系はコマンドライン順に逐次実行)+ `--show-thumbnails` |
 | 自動更新 | 旧実装には無い **Sparkle 2** による自動更新を追加(2.0b3〜)。フィードは master の `appcast.xml`(raw URL)、更新 zip は EdDSA 署名。フレームワークは公式バイナリ配布をバージョン+SHA-256 固定で取得(`Scripts/fetch-sparkle.sh`)。検証スナップショット実行(`--snapshot`)ではアップデーターを起動しない。**自動チェックの有無・周期(毎日/毎週/毎月)・自動ダウンロード**は設定「一般」ペインの「ソフトウェアアップデート」セクションで変更でき、起動済み `SPUUpdater` へ即時反映される(`UpdateSettingsSection` / `UpdaterViewModel`。永続化は Sparkle の UserDefaults キー `SUEnableAutomaticChecks`/`SUScheduledCheckInterval`/`SUAutomaticallyUpdate`)。updater 未起動のスナップショット/XCTest では nil を注入し UserDefaults 直読みで UI のみ成立させる |
@@ -213,7 +229,12 @@ CooViewer/
 │   │   │                             +フェザー合成+ディザ、HEIC ディスクキャッシュ)
 │   │   ├── DisplayCapPolicy.swift  — ウインドウ実寸に応じたデコード上限(1024 刻み)
 │   │   ├── ReaderDisplaySettings.swift — 表示モード・補間の値型(UI 非依存)
-│   │   └── ResampledPage.swift     — 完成画像と取得時の補間・ノイズ低減条件
+│   │   ├── PageImageDecoding.swift — 本のページのデコードの入口(フォルダ・書庫・EPUB の単一画像
+│   │   │                             ページ。網点処理の要求があれば prepare→エンジン→色の復元→縮小。§5)
+│   │   ├── PrintAppearanceService.swift — 網点処理の実行役(エンジン 1 つを専用の直列キューで。
+│   │   │                             表示優先の順・間引き・追い越し・準備・作業域の解放。§5)
+│   │   ├── PrintAppearanceLifecycle.swift — 網かけの表示の切 ↔ 入でエンジンを準備・解放
+│   │   └── ResampledPage.swift     — 完成画像と取得時の補間・ノイズ低減条件・網点処理の印
 │   ├── Sort/PageSorter.swift       — 自然順ほか SortMode 全種(§4.4.3)
 │   ├── ImageDecoding.swift         — ImageIO デコード(HDR ゲインマップ・SVG・
 │   │                                 レトロ形式へのフォールバック)
@@ -254,6 +275,9 @@ CooViewer/
 │   │                                 ThumbnailGridLayout(ウインドウ内オーバーレイ §4.8)
 │   ├── Bookmarks/ (SwiftUI)        — BookmarkEditorView(しおり編集シート §4.7.2) /
 │   │                                 EPUBBookmarkLogic(リフロー位置の一致・編集解決)
+│   ├── Activity/                   — ActivityMonitor / ActivityView(SwiftUI)/ HalftoneActivity
+│   │                                 (アクティビティ窓の網かけの表示の節と
+│   │                                 --dump-print-appearance-stats の JSON)
 │   └── Settings/ (SwiftUI)         — SettingsView(システム設定風サイドバー+検索。
 │                                     9 ペイン)+ SettingsSearch + KeyBindingsPane
 ├── Persistence/
@@ -273,7 +297,13 @@ CooViewerTests/                     — ソート・ソース(スプール/暗�
                                       Book・バインディング移行・履歴・キャッシュ・
                                       リサンプル/MetalFX 色回帰・レトロデコーダ・
                                       メディアプロファイル・設定・設定検索・
-                                      EPUB リフロー位置のユニットテスト
+                                      EPUB リフロー位置・網点処理(合成ページのみ)のユニットテスト
+PrintAppearanceKit/                 — 網点処理エンジン(ネイティブのフレームワーク。§1.4・§5)。公開 API
+                                      (PrintAppearance / PrintAppearanceEngine)、ページの受け付けと仕上げ
+                                      (PageInput / PageOutput)、段の本体(Descreener・Detector・A2Gate・
+                                      CoherentFill・EdgeQ3・CPUEngine・Common)、実行時にコンパイルする
+                                      Metal カーネル(Kernels・GPUContext)、仮想記憶の作業域(PageMemory・
+                                      EngineScratch)、調整値の定数(Parameters)
 ../Washi/                           — EPUB 3 ツールキット(リポジトリ外の独立 SwiftPM リポジトリ・MIT。
                                       OCF/OPF/nav/難読化解除/リフローレンダラー/FXL。
                                       単体テストは `cd ../Washi && swift test`。../Washi/README.md 参照)
@@ -646,6 +676,176 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
 250ms 遅延、完了・キャッシュ命中時は出ない。ML 高画質化の初回
 ダウンロード中もこれが進行表示を兼ねる。
 
+**網かけの表示(網点処理、2026-11 追加)**: 紙の本では見分けられない細かい網点をなめらかな階調に
+まとめる(§2.4 の行)。エンジンは PrintAppearanceKit(§1.4)、実行役は `PrintAppearanceService`、入口は
+`PageImageDecoding.decode` の 1 か所(フォルダ・書庫の 2 か所・EPUB の単一画像ページが通る)。要求は
+タスク局所値 `PageRequestIntent.printAppearance` で渡り、設定するのは `Book` のページ読み込み(表示・
+先読み)とルーペだけ。要求がなければ従来どおり先読みゲートの中で `ImageDecoding.decode` を呼ぶだけで、
+結果も従来と同じ(サービスにも触れない)。
+
+段の順。網点の周期はスキャンの原寸の画素で見るので、上限への縮小・リサンプル・ML より前に原寸で処理する:
+
+```
+ファイルのバイト列 → [PrefetchDecodeGate の中] PrintAppearance.prepare(原寸の全面デコード・判定・輝度 L)
+  → [ゲートの外] PrintAppearanceService → PrintAppearanceEngine.process(L → L')
+  → PrintAppearance.recolour(ファイルの色へ戻す)→ 上限を超えれば PrintAppearance.reduce → 表示先の色変換
+  → PageCache → ImageResampler(ノイズ低減・ML → 縮小/拡大)→ レイヤー
+```
+
+- ゲートの枠はデコードと prepare の同期の葉だけを覆い、エンジンを待つ間は持たない(持つと別の本や
+  カラーページの先読みまでエンジンの速さに縛られる)。
+- 上限(`displayPixelCap`)を超えるページは原寸で処理・仕上げしてから `ImageDecoding.cappedDimensions` の
+  寸法へ縮める(vImage の高品質な再標本化。処理後も粗い網点が残るページを 1.5〜2 倍以上縮めても
+  折り返しが出ないよう、前置フィルタを持つ方式を使う。RGB は各チャンネルに同じ核)。
+- 完成画像: 1 チャンネルのグレーのソース(ヘッダの色モデルがグレー、または不透明な 1 チャンネルの
+  デコード)は 8 bit の Generic Gray Gamma 2.2(アプリのグレーの表示先と同じ空間で、表示の色変換で
+  符号値が変わらない)。それ以外で色なしと判定したページ(RGB・索引色)は、prepare の sRGB の描き直し
+  (R, G, B) に d = L' − L を足して 0〜255 に収めた sRGB の RGB(1 画素 4 バイト。切ったときの RGB のファイルと
+  同じ大きさ)。輝度は Y = (299 R + 587 G + 114 B + 500) / 1000 で重みの和が 1000 なので、どのチャンネルも
+  収める必要のない画素では出力の輝度がちょうど L' になり、R = G = B のページは R = G = B = L' になる。
+  薄い色のインクで刷ったページや黄ばんだ紙の色を灰色にしないため。エンジンが 1 画素も変えなかった
+  ページも同じ形で返す。
+
+素通し(`PrintAppearancePassReason`)。判定は同じファイルに対して常に同じで、素通しの画素は網点処理を
+切ったときと同じにする。ヘッダだけで決まる素通し(`small`・`orientation`・`tooLarge`・`aspect` とヘッダで分かる
+`format`)はデコードせずに従来の `ImageDecoding.decode` へ渡す。デコードの後に決まる素通し(`colour`・
+`transparency`・デコード後の `format`)は、上限なしの要求なら prepare がデコードした画像を使い、上限ありの
+要求なら `ImageDecoding.decode` をもう一度呼ぶ(そのページはデコードが 2 回になる):
+
+| 理由 | 条件 |
+|---|---|
+| `format` | ImageIO で開けない(SVG・レトロ形式は従来のフォールバックへ)、フレームが 1 つでない、8 bit 以外、HDR のゲインマップや HDR の色空間、色モデルがグレー・RGB・索引色以外(CMYK など) |
+| `small` | 辺が 128 px 未満(エンジンのタイル 1 枚に満たない) |
+| `orientation` | EXIF の向きが 1 以外(エンジンは保存されたラスタをそのまま扱い、向きを変えた見え方では確かめていない) |
+| `tooLarge` | 画素数が上限を超える: 物理メモリ 16 GB 未満の Mac は 900 万画素、それ以外は 1600 万画素(`PrintAppearance.defaultMaxPixels`。マシンごとに固定で、メモリ圧迫では変えない) |
+| `aspect` | 幅 / 高さが 0.5〜1.6 の外。画素から距離への換算はページの高さを 173 mm とみなすので、単ページ(約 0.7)と 1 枚に収めた見開き(約 1.4)では成り立つが、縦長の帯や横長のパノラマでは強くまとめすぎる |
+| `transparency` | 不透明でない画素がある |
+| `colour` | sRGB へ描き直して max − min ≥ 32 の画素が 0.5% を超える(ヘッダがグレー、または不透明な 1 チャンネルのデコードは色なし) |
+
+prepare は輝度と判定のために、ヘッダを読んだソースとは別の、何も問い合わせていない `CGImageSource` で
+デコードする(同じソースで先にヘッダやゲインマップを問い合わせると、JPEG によってはデコード結果が ±1 変わる)。
+
+エンジンの段の順(`Descreener`):
+
+1. 線形化(8 bit の符号値 → 線形光。CPU)
+2. パス 1: 128 px のタイルを 32 px 間隔で並べ、各タイルのスペクトルを CPU(vDSP)で求めて網点のピークを
+   検出する。既定の経路は 256 タイルずつ GPU で候補を絞ってから CPU で検出する
+3. GPU の前段(タイル平均・delta の 0 埋め・エネルギーゲートの高域・q3 の窓の選択)。パス 1 の後に積み、
+   続く CPU の段の間に GPU で走らせる
+4. 近傍の一致(タイルをまたぐ唯一の同期点)
+5. A2 判定(連結成分の一貫性。CPU・Double)
+6. パス 2: ノッチ・逆 FFT・重ね合わせ
+7. 後段: 正規化・エネルギーゲート・q3 エッジクランプ・再符号化
+
+既定の経路(`PrintAppearanceEngine.Mode.automatic`)は候補の絞り込み・パス 2・後段を GPU で行い、CPU だけの
+厳密な経路(`.cpuOnly`)との差は最大 1 階調(パス 2 の GPU FFT の丸めが vDSP と違うため)。調整値は定数で
+(`Parameters.swift`、全項目を `PrintAppearanceKernelTests` で固定)、CPU 段の並列数は出力に影響しない。
+1 ページの処理は段の境目の 6 か所(`PrintAppearanceStopPoint`: 開始前・パス 1 のチャンクの間・パス 1 の後・
+近傍の一致の後・A2 の回の間・出力の段の前)で止められ、止めるときも失敗するときも、積んだコマンドバッファの
+完了を待ってから戻る(先に積んだバッファが共有の記憶域へ書くため)。
+
+**キャッシュの印**: `PrintAppearanceTag` は切なら空文字(既存のキーはすべて従来のまま)、入なら
+`~pa<engineVersion><段階>`(段階は l / s / h。例 `~pa1s`)を返す。`PrintAppearance.engineVersion` は
+現在 1 で、出力のバイトが変わり得る変更のたびに上げる。印は PageCache の名前空間(`"<色の同一性>|<印>"`)、
+`Book.renderKey`(= `cacheKey` + 印)と `Book.pageKey(forEntryID:)`(`"<renderKey>#<ID>"`。印は `#` を
+含まない)、そこから作るリサンプル・強ノイズ低減の中間画像・超解像(ディスク層を含む)・ルーペのキー、
+`ImageProcessingSettings.printAppearanceTag` に入る。サムネイルは処理しないので `Book.cacheKey` のまま。
+印はページごとでなく設定ごと(強め が 標準 に留まるページ・色のページ・素通しのページも、ファイルの
+バイト列と印で結果が決まる)。印の下に入る画素は処理済みの画素と決定的な素通しだけで、GPU の失敗・
+作業域の不足・取り消し・間引き・辞退は例外のまま返し、何もキャッシュしない(未処理の画素が「入」の印の
+下に入ると、超解像のディスクキャッシュまで残るため)。
+
+**切り替え**: `applySettings` が設定の変化を見て `Book.updatePrintAppearance` を呼ぶ。表示先の色の変更と
+同じく PageCache・復号時の寸法の索引(`decodedPageInfo`)・省略情報(`evictedResampleKeys`)を捨て
+(ページの寸法の索引 `pageSizeCache` は捨てない)、先読みの計画を止め、進行中の読み込みには以後合流させず、
+`renderEpoch` と `stateRevision` を進め、旧い印の強ノイズ低減の中間画像の保持を外す。続けて表示の更新と
+事前リサンプルの要求を失効させ、先読みの深さを組み直してから表示し直す(EPUB 表示モード中は戻るときの
+`refreshDisplay` が新しい印で読む)。表示中の見開きは新しい見開きが揃うまで残り、一度に差し替わる
+(空白も旧い印の画素も挟まない)。画像とキーは同じ `Book` の状態から組にする: `Book.Spread` は読み込んだ
+ときの `renderKey` を持ち、`refreshDisplay`・元画像の再読込・事前リサンプル・ルーペはそれが現在の
+`renderKey` と一致するときだけ採用する。`Book.image(at:)` は待つ前後で `renderEpoch` を比べ、旧い印の
+画素を返さずに読み直す。本は作るときに現在の要求を受け取り、`refreshDisplay` も要求を合わせ直す。
+
+**実行役**: `PrintAppearanceService.shared` はプロセスに 1 つで、エンジンも 1 つ(2 つ目は作業域を倍にする)。
+エンジンは専用の直列 `DispatchQueue` の上だけで動き(§7.3)、待ち行列の状態はロック 1 つに置く。
+
+| 規則 | 内容 |
+|---|---|
+| 順序 | 表示の仕事を最後に触れた順(新しいものから)、次に先読みの仕事を到着順 |
+| 券 | `Book` は読み込みごとに `PrintAppearanceTicket` を作る。表示の要求が合流したら `touch`(表示の最新へ動かし、先読みなら表示に上げる)、未開始の先読みを辞退させるときは `decline`、計画が変わっても残るページは `replan`(辞退させずに新しい計画の順へ並べ直す) |
+| 間引き | 本ごとに待っている表示の仕事は 4 つまで。5 つ目が来たら最も古く触れたものを `PrintAppearanceService.Superseded` で終える(表示の読み込みは取り消されないので、押しっぱなしのキーでは処理より速く溜まり、キーを離した後もエンジンが古いページで塞がるため)。`Book` は何もキャッシュせず、位置・並び・条件が変わっていなければ `image(at:)` が 3 回まで読み直す。ルーペの仕事(券なし)は数えず、間引かない |
+| 追い越し | 表示の仕事が待っていれば、実行中の先読みのページを開始前かパス 1 のチャンクの境目で止め、先読みの先頭へ戻す。パス 1 を過ぎたページは最後まで処理する |
+| 取り消し | 待っている仕事は外し、実行中の仕事は次の停止位置で止めて `CancellationError` で終える |
+| QoS と並列数 | 表示・ルーペ・準備は `.userInitiated`(`.enforceQoS`)で全コア(16 まで)、先読みは `.utility` で min(8, 高性能コアの数)、省エネ中の先読みは 2。先に積んだ utility の枠が表示の仕事を拾ったときは、その仕事を userInitiated に引き上げて処理する |
+| 作業域の予約 | 表示のページはデコードの間にヘッダだけを読み(`PrintAppearance.reservationSize`)、そのページの大きさの作業域をエンジンのキューで先に用意する。色のページになりうる(ヘッダがグレーでない)ページは直前の RGB のソースのページを処理したときだけ予約し、メモリ圧迫が critical の間は予約しない |
+| 先読み | 要求があるとき `PreresamplePolicy.decodeAhead` はバイト予算の項を使わず、max(媒体別下限, リサンプル先読み+4)(12〜20 ページ。省エネ中は従来の規則で半分)。並列幅は `PreresamplePolicy.printAppearanceDecodeWidth`(4)まで(エンジンは 1 ページずつ処理するので、それ以上並べてもデコード済みのページが溜まるだけ) |
+
+**準備**: カーネルは起動のたびにコンパイルする(§7.7)ので、最初のページを待たせないよう
+`PrintAppearanceService.prepareIfNeeded()` が 1 度だけ、エンジンを作り、定数表に触れ、パイプラインを
+コンパイルし、省エネ中でなければ 256×256 の合成ページを 1 枚処理する。網かけの表示を入れて起動したら
+`AppDelegate.scheduleLaunchPrewarming` が `Task.detached(priority: .utility)` で呼ぶ(描画の予熱と違い省エネ中も、
+`--snapshot` の実行でも行う。XCTest と書庫監査では行わない)。コンパイルの枠自体は `.userInitiated` で積む
+(実行中の枠には後から優先度の引き上げが届かず、utility のコンパイルの後ろで最初のページが待つのが最悪の
+場合のため)。起動後の切 ↔ 入は `applySettings` から `PrintAppearanceLifecycle` が受け、入れたら準備を積み、
+切ったら `releaseAll` で作業域と GPU のパイプラインを手放す(設定は全体で 1 つなので、切った時点で全ての窓で
+切られている。最初の観測は記録だけで、XCTest と書庫監査では何もしない)。準備の間に来たページは同じ
+直列キューでその後ろに並ぶので二重にコンパイルせず、何も準備していなければ最初のページがその場で用意する。
+
+**失敗時の扱い**(GPU が使えないことで未処理の画素を返すことはない):
+
+| 事象 | 扱い |
+|---|---|
+| Metal のデバイスが無い、ライブラリ・パイプラインを作れない、カーネルの前提(実行幅 32 と各カーネルのスレッドグループの大きさ)を満たさない | 以後このエンジンは CPU だけで動く(`PrintAppearanceCPUOnlyReason.gpuUnavailable`) |
+| GPU をまだ作っていないときにファイル記述子の余裕が無い(`FileDescriptorHeadroom.isAvailable()` が偽) | そのページは CPU の経路で処理し、次のページで GPU の作成を試みる |
+| GPU の失敗(コマンドバッファの失敗、GPU の候補の絞り込みと CPU の判定の食い違い、作業域を確保できない) | 積んだ仕事の完了を待ち、同じページを CPU の厳密な経路で処理し直して返す |
+| GPU の失敗が 2 ページ続く | 以後 CPU だけ(`repeatedGPUFailures`)。網かけの表示を切っても戻さない |
+| GPU の集約に収まらないページ(ノッチの範囲が大きい) | CPU の経路で処理し直す(ページで決まることなので GPU の失敗には数えない) |
+| CPU の経路でも断るページ(`unsupportedPage`) | 決定的な素通し(切ったときと同じ画素)。アクティビティ窓の「失敗 / 断り」の「断り」に数える |
+
+CPU だけで動いている状態は、アクティビティ窓(理由つき)と設定「表示」ペインの注記に出る。
+
+**省エネ・アイドル・メモリ**: 省エネの判定は `PowerStateProviding.shouldConserveEnergy` の一つで、省エネ中は
+先読みの並列数を 2、作業域を手放すまでのアイドルを 5 秒(通常 20 秒)にし、準備で合成ページを処理しない
+(先読みの深さは従来の規則で半分)。網かけの表示そのものは省エネ中も入ったまま(ページの見た目を
+決める設定のため)。作業域(記憶域と作業者)は次のときに手放し、コンパイル済みのパイプラインは残す:
+
+| 契機 | 扱い |
+|---|---|
+| 待ちも実行中の仕事も予約もないまま 20 秒(省エネ中 5 秒) | 作業域を手放す |
+| 400 万画素を超えるページの後に待ちも予約もない | 作業域を手放す |
+| メモリ圧迫が warning 以上になり、仕事がない | すぐ作業域を手放す |
+| メモリ圧迫が critical の間 | 毎ページの後に手放す |
+| 網かけの表示を切る(`releaseAll`) | 作業域と GPU のパイプラインを手放す |
+
+ページ大の一時領域(輝度、RGB のソースの sRGB の描き直し、エンジンの出力、色を戻した出力、縮小の出力と
+vImage の一時領域、CPU の経路の記憶域と作業面、1 ページの間だけ使う表 `EngineScratch`)は malloc でなく
+仮想記憶(`PageMemory`、`vm_allocate`)から確保し、手放したらすぐ OS へ返す。malloc の大きな確保は手放した
+後も large-entry キャッシュに汚れたまま残り、ページ送りを止めた後もプロセスの使用量に数えられ続けるため
+(`MallocLargeCache=0` で消えることで確かめた)。GPU の記憶域は共有ストレージの `MTLBuffer`。ヘッダがグレーの
+ページは遅延デコードの画像を作業域へ描く中でデコードし、ImageIO に全面のデコード結果を作らせない。RGB の
+ソースのページは描き直し(1 画素 4 バイト)を持ってエンジンを待ち、`recolour` の後に手放す。PageCache に
+入る完成画像はグレーが 1 画素 1 バイト、RGB が 1 画素 4 バイト。
+
+**制限**: 処理するのは、`PageImageDecoding.decode` を通り、しかも網点処理の要求
+(`PageRequestIntent.printAppearance`)を渡した本のページの画像だけ。要求を渡すのは `Book` のページ読み込みと
+ルーペだけ。PDF は `PDFSource` が描くページで入口を通らないため処理しない(PDF に入ったスキャンの漫画も
+この版では処理しない)。サムネイル(一覧とページバーのバブル)は `ThumbnailCache` が同じ
+`source.image(for:maxPixelSize:)`(同じ入口)で作るが、要求を渡さないので処理しない(ディスクキャッシュの
+キーも `Book.cacheKey` のまま)。原寸表示パネル(View Original)もファイルそのものを見せるため要求を渡さない。
+WebKit でラスタライズする FXL のページとリフロー EPUB も対象外。素通しの条件(上の表。縦横比・画素数の上限・辺 128 px を含む)はファイルだけで決まる。
+**既知の制限**: 細い線が点線状(破線状)に途切れて見えることがある。
+
+**検証と性能**: 出力のバイトは OS の vDSP・libm と GPU に依存する。テストは合成ページだけを使い、性質と
+「CPU の経路から 1 階調以内」を確かめ、期待バイト列(ゴールデン)は持たない。Metal・GPU の経路を用意
+できない環境では GPU の検査を `XCTSkip` で飛ばす。余弦・正弦の表に使う `__sincos_stret` は libm の非公開の
+入口で、無くなったら `engineVersion` を上げて照合し直す。要求のあるページごとに `Logger` の debug 行 1 つと
+signpost の区間 1 つを出す(subsystem `jp.coo.cooViewer`、カテゴリ `PrintAppearance`。段階の名前・寸法・経路・所要時間だけで、
+ファイル名は載せない)。稼働状況は `PrintAppearanceService.stats()` と、設定(入切・強さ)・本の先読みの
+実効値(深さ・幅)・サービスの構成(並列数・画素数の上限)から組み、アクティビティ窓の節と
+`--dump-print-appearance-stats` の JSON が同じ値を出す(サービスが持たない値は出さない)。
+合成ページでの実測(M2 Pro、2026-11-18、98d4f59): 13.4 MP の単ページが cold で約 0.42 秒、11.1 MP が約 0.36 秒、
+13.4 MP の見開きが約 0.75 秒。
+
 ## 6. リスクと対策
 
 | リスク | 対策 |
@@ -764,6 +964,14 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   保持中のレンダラも最後の描画から 20 秒アイドルなら Washi が不可視ウインドウと
   WebContent プロセスだけを畳み、次の描画で作り直す(`idleReleaseInterval`、
   Washi の census / サムネイルの解放間隔と同じ。本を閉じたときの `invalidate()` は従来どおり)。
+- 網点処理のエンジン(`PrintAppearanceEngine`)は `concurrentPerform` と GPU の完了待ちでブロックするので、
+  `PrintAppearanceService` の専用の直列 `DispatchQueue` の上だけで動かし、メインアクタ・Swift Concurrency の
+  協調スレッド・`ImageResampler` の actor には載せない。呼び出し側は取り消しハンドラ付きの継続で待つ。
+  エンジンは Sendable でないクラスで、キューの上からだけ作り触る箱に入れる。待ち行列の状態は
+  `OSAllocatedUnfairLock` 1 つに置く(actor にしないのは、表示の要求がメインアクタから先読みの仕事を
+  追い越すとき、並べ替えと停止の判定を同期的に済ませるため。実行中のページの停止位置から actor へは
+  問い合わせられない)。ロックは 1 ページの処理の間は持たず、`PrefetchDecodeGate` の枠もエンジンを待つ間は
+  持たない(§5)。
 
 ### 7.4 エラーの扱い
 
@@ -836,6 +1044,15 @@ setPrefetchIndicator)。白いページ上でも見えるよう半透過の角�
   マップ表示)、多コア並列デコード(読み取りゲートと分離)を積極的に使う。
 - 大きなピクセルバッファは所有権移譲(malloc + CGDataProvider の
   releaseData)でコピーを避ける(MetalFXUpscaler・RetroImageDecoding 参照)。
+- 網点処理の Metal カーネル(11 種)は `.metal` ファイルも metallib も置かず、`PrintAppearanceKit/Kernels.swift`
+  の文字列を実行時に `makeLibrary(source:options:)` でコンパイルする(Metal Toolchain を要しない)。
+  `mathMode = .safe`・`mathFloatingPointFunctions = .precise` とソース側の `#pragma METAL fp contract(off)` で
+  Swift 側と同じ丸めにする。カーネルは 32 レーンの SIMD グループ(`simd_shuffle_xor`・`simd_ballot`)を
+  前提にするので、パイプラインごとに実行幅 32 とスレッドグループの大きさを確かめ、満たさない GPU では
+  エンジンが CPU だけで動く。起動のたびにコンパイルするため、網かけの表示を入れて起動したときは裏で
+  準備する(§5)。
+- 網点処理のページ大の一時領域は malloc でなく仮想記憶(`PageMemory`、`vm_allocate`)から確保し、
+  手放したらすぐ OS へ返す。`Data` に包むときも `bytesNoCopy` と `.virtualMemory` の解放で複製しない(§5)。
 
 ### 7.8 コメント規約
 

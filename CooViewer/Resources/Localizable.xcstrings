@@ -5871,6 +5871,396 @@
         }
       }
     },
+    "Halftone Display": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "網かけの表示"
+          }
+        }
+      }
+    },
+    "Halftone display:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "網かけの表示:"
+          }
+        }
+      }
+    },
+    "As scanned": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スキャンのまま"
+          }
+        }
+      }
+    },
+    "Like the printed book": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本の見え方に近づける"
+          }
+        }
+      }
+    },
+    "Strength:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "強さ:"
+          }
+        }
+      }
+    },
+    "Subtle": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "控えめ"
+          }
+        }
+      }
+    },
+    "Strong": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "強め"
+          }
+        }
+      }
+    },
+    "Toggle Halftone Display": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "網かけの表示を切り替え"
+          }
+        }
+      }
+    },
+    "Fine screen dots that paper would not show are blended into smooth tone. Coarse screens, lines and text are kept. Color pages are not changed.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "紙の本では見分けられない細かい網点をなめらかな階調にまとめます。粗い網点・線・文字はそのまま残し、カラーページは変更しません。"
+          }
+        }
+      }
+    },
+    "This Mac processes halftones on the CPU only because the GPU can’t be used. Pages may take longer to appear.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GPU を使えないため、この Mac では網点を CPU だけで処理しています。ページの表示に時間がかかることがあります。"
+          }
+        }
+      }
+    },
+    "Halftone, screentone, descreen, moire": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "網点・スクリーントーン・モアレ・halftone・screentone・descreen・moire"
+          }
+        }
+      }
+    },
+    "Setting": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設定"
+          }
+        }
+      }
+    },
+    "Engine": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エンジン"
+          }
+        }
+      }
+    },
+    "Working memory": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "作業域"
+          }
+        }
+      }
+    },
+    "Released": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "解放済み"
+          }
+        }
+      }
+    },
+    "Pages processed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "処理したページ"
+          }
+        }
+      }
+    },
+    "unchanged": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変化なし"
+          }
+        }
+      }
+    },
+    "Passed through": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "素通し"
+          }
+        }
+      }
+    },
+    "Failed / refused": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失敗 / 断り"
+          }
+        }
+      }
+    },
+    "Waiting (display / prefetch)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待ち(表示 / 先読み)"
+          }
+        }
+      }
+    },
+    "Pre-emptions / shed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追い越し / 間引き"
+          }
+        }
+      }
+    },
+    "Last page (prepare · wait · engine)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直近のページ(準備 · 待ち · エンジン)"
+          }
+        }
+      }
+    },
+    "Median of recent pages": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直近のページの中央値"
+          }
+        }
+      }
+    },
+    "Last compile": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直近のコンパイル"
+          }
+        }
+      }
+    },
+    "Prefetch depth / width": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先読みの深さ / 幅"
+          }
+        }
+      }
+    },
+    "Threads (display / prefetch)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スレッド(表示 / 先読み)"
+          }
+        }
+      }
+    },
+    "Preparing…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "準備中…"
+          }
+        }
+      }
+    },
+    "Not started": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未起動"
+          }
+        }
+      }
+    },
+    "CPU only": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CPU のみ"
+          }
+        }
+      }
+    },
+    "processing": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "処理中"
+          }
+        }
+      }
+    },
+    "Color": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "カラー"
+          }
+        }
+      }
+    },
+    "Small": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "小さい"
+          }
+        }
+      }
+    },
+    "Too large": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大きすぎる"
+          }
+        }
+      }
+    },
+    "Aspect ratio": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "縦横比"
+          }
+        }
+      }
+    },
+    "Orientation": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向き"
+          }
+        }
+      }
+    },
+    "Transparency": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "透過"
+          }
+        }
+      }
+    },
+    "requested": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指定"
+          }
+        }
+      }
+    },
+    "GPU unavailable": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GPU を使えない"
+          }
+        }
+      }
+    },
+    "repeated GPU failures": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GPU の失敗が続いた"
+          }
+        }
+      }
+    },
     "Halves prefetch depth, parallel decoding, and ML pre-resampling to save battery and reduce heat. Memory pressure limits always apply. Prefetch changes immediately; archives that are already open follow from the next time they are opened.": {
       "localizations": {
         "ja": {

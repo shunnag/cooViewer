@@ -287,7 +287,7 @@ final class NoiseReductionTests: XCTestCase {
         let view = ReaderView(frame: CGRect(x: 0, y: 0, width: 200, height: 120))
         var events: [Bool] = []
         view.onResampleActivityChanged = { events.append($0) }
-        view.setPages([blockyImage(size: 64)], readsFromLeft: false)
+        view.setPages([blockyImage(size: 64)], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(events.first, true, "リサンプル予約と同時に開始通知")
         for _ in 0..<100 where events.last != false {
@@ -296,7 +296,7 @@ final class NoiseReductionTests: XCTestCase {
         XCTAssertEqual(events.last, false, "完了で終了通知")
         // 空表示への切替は即座に false(空の本・本を閉じた場合)
         events.removeAll()
-        view.setPages([], readsFromLeft: false)
+        view.setPages([], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(events.last, false,
             "リサンプル不要でも false を再通知(コントローラの表示予約の解除手段)")
@@ -307,7 +307,7 @@ final class NoiseReductionTests: XCTestCase {
             for: [CGSize(width: source.width, height: source.height)]))
         let done = try XCTUnwrap(ImageResampler.cgResample(
             source, width: Int(targets[0].width), height: Int(targets[0].height)))
-        view.setPages([source], readsFromLeft: false,
+        view.setPages([source], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "",
                       preResampled: [ResampledPage(size: targets[0], image: done,
                           processing: view.imageProcessingSettings)])
         view.layoutSubtreeIfNeeded()

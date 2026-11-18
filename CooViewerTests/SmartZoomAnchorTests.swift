@@ -16,7 +16,7 @@ final class SmartZoomAnchorTests: XCTestCase {
         context.setFillColor(CGColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: imageSize.w, height: imageSize.h))
         let view = ReaderView(frame: CGRect(origin: .zero, size: viewSize))
-        view.setPages([context.makeImage()!], readsFromLeft: false)
+        view.setPages([context.makeImage()!], readsFromLeft: false, keyPrefix: "", printAppearanceTag: "")
         view.layoutSubtreeIfNeeded()
         return view
     }

@@ -217,6 +217,39 @@ enum MainMenuBuilder {
             keyEquivalent: "")
         interpolationItem.submenu = interpolationMenu
 
+        // 網かけの表示(設計書 §2.4・§5): 2 つの選択と、区切りの後に 3 段階の強さ。
+        // 項目は defaults を書くだけで、表示の切り替えは applySettings が受け持つ(§7.5)。
+        // 補間と同じくキーイクイバレントは付けない(切替はキー割当 55、既定 h)
+        let halftoneItem = menu.addItem(
+            withTitle: String(localized: "Halftone Display"), action: nil, keyEquivalent: "")
+        let halftoneMenu = NSMenu()
+        let halftoneModes: [(String, Int)] = [
+            (String(localized: "As scanned"), 0),
+            (String(localized: "Like the printed book"), 1),
+        ]
+        for (title, tag) in halftoneModes {
+            let item = halftoneMenu.addItem(
+                withTitle: title,
+                action: #selector(ReaderWindowController.changeHalftoneDisplayMode(_:)),
+                keyEquivalent: "")
+            item.tag = tag
+        }
+        halftoneMenu.addItem(.separator())
+        // タグは HalftoneDisplayStrength の値(0 = 控えめ / 1 = 標準 / 2 = 強め)
+        let halftoneStrengths: [(String, Int)] = [
+            (String(localized: "Subtle"), 0),
+            (String(localized: "Standard"), 1),
+            (String(localized: "Strong"), 2),
+        ]
+        for (title, tag) in halftoneStrengths {
+            let item = halftoneMenu.addItem(
+                withTitle: title,
+                action: #selector(ReaderWindowController.changeHalftoneDisplayStrength(_:)),
+                keyEquivalent: "")
+            item.tag = tag
+        }
+        halftoneItem.submenu = halftoneMenu
+
         // ページめくり効果(新機能・既定なし。設定「表示」ペインと同じ値)
         let turnItem = menu.addItem(withTitle: String(localized: "Page Turn Effect"),
                                     action: nil, keyEquivalent: "")

@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import PrintAppearanceKit
 
 /// 開いている 1 冊の本。ページ列(ソート適用済み)・現在位置・見開き判定・
 /// キャッシュ・先読みを束ねる。UI から使うため MainActor に置く。
@@ -68,8 +69,24 @@ final class Book {
     /// (設計書「キャッシュ・先読み設計」)。nil で無制限。
     private(set) var displayPixelCap: Int? = ReadingResourceDefaults.displayPixelCap
 
-    /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)
+    /// サムネイル等のディスクキャッシュ用の同一性キー(パス+更新日時+サイズ由来)。
+    /// 描いた画素を名指すキー(リサンプル・超解像・ルーペ)には renderKey を使い、
+    /// これを直接読むのは renderKey とサムネイル(網点処理の対象外)だけにする(設計書 §5)
     let cacheKey: String
+
+    /// 網点処理の段階(設計書 §5)。切っているときは nil。本を作るときの設定の値で始め、
+    /// updatePrintAppearance でだけ変える
+    private(set) var printAppearanceLevel: PrintAppearanceLevel?
+    /// キャッシュの名前空間に入れる網点処理の印。切っているときは空なので、どのキーも従来のまま
+    private(set) var printAppearanceTag: String
+    /// 描いた画素の同一性キー(cacheKey + 印)。ページキャッシュの外で画素を名指すキーはすべてここから作る
+    var renderKey: String { cacheKey + printAppearanceTag }
+    /// 表示・先読み・保持で共通のページキー "<renderKey>#<entry.id>"(印は '#' を含まない)
+    func pageKey(forEntryID id: Int) -> String { "\(renderKey)#\(id)" }
+    /// 網点処理の設定を変えるたびに進める。image(at:) は待つ前後で比べ、旧い印の画素を返さない(設計書 §5)
+    private(set) var renderEpoch = 0
+    /// この本が使った renderKey。閉じるとき、すべての原寸中間画像の保持条件を外す
+    private var usedRenderKeys: Set<String>
 
     private let cache: PageCache
     private let resampler: ImageResampler
@@ -110,6 +127,8 @@ final class Book {
     struct Spread {
         let indices: [Int]
         let images: [CGImage?]
+        /// 画像を読み込んだときの renderKey。画像とキーは同じ Book の状態から組にする(設計書 §5)
+        let renderKey: String
         /// 設計書 §5: 完成画像を元画像と区別し、ルーペや再補間へ流用しない。
         var resampledPages: [ResampledPage]? = nil
         var decodedSources: [DecodedPageInfo]? = nil
@@ -136,9 +155,12 @@ final class Book {
 
     /// 初期ソートと同一性キーはメインアクター外で済ませた結果(prepare)を受け取る。
     /// 実際に開く経路は open(source:) を使う
+    /// printAppearance は網点処理の段階(切なら nil)。最初の読み込みより前に決まるよう、
+    /// 本はいつも作るときの設定の値で作る(設計書 §5)
     init(source: any BookSource, prepared: PreparedEntries,
          sortMode: SortMode = .name, cacheByteLimit: Int = 512 * 1024 * 1024,
-         sorter: any PageSorting = StandardPageSorter(), resampler: ImageResampler = .shared) {
+         sorter: any PageSorting = StandardPageSorter(), resampler: ImageResampler = .shared,
+         printAppearance: PrintAppearanceLevel? = nil) {
         self.source = source
         self.sortMode = sortMode
         self.entries = prepared.sortedEntries
@@ -147,12 +169,17 @@ final class Book {
         self.resampler = resampler
         self.cacheKey = prepared.cacheKey
         self.sorter = sorter
+        printAppearanceLevel = printAppearance
+        let tag = PrintAppearanceTag.tag(for: printAppearance)
+        printAppearanceTag = tag
+        usedRenderKeys = [prepared.cacheKey + tag]
     }
 
     static func open(source: any BookSource, sortMode: SortMode = .name,
                      cacheByteLimit: Int = 512 * 1024 * 1024,
                      probe: any FileSystemProbing = FileManagerProbe(),
-                     sorter: any PageSorting = StandardPageSorter()) async throws -> Book {
+                     sorter: any PageSorting = StandardPageSorter(),
+                     printAppearance: PrintAppearanceLevel? = nil) async throws -> Book {
         let entries = try await source.entries()
         // 名前順ソート(2 万件で約 100ms)と本ファイルの stat(NAS では数 ms、
         // 死んだマウントでは SMB タイムアウトまで)はメインアクターを止めない
@@ -164,7 +191,7 @@ final class Book {
                            identity: identity, sorter: sorter)
         }.value
         return Book(source: source, prepared: prepared, sortMode: sortMode,
-                    cacheByteLimit: cacheByteLimit, sorter: sorter)
+                    cacheByteLimit: cacheByteLimit, sorter: sorter, printAppearance: printAppearance)
     }
 
     /// init に渡す「メインアクター外で済ませておく計算」の結果
@@ -308,8 +335,12 @@ final class Book {
     // MARK: - 画像ロード
 
     /// ソースキャッシュも縮小復号時の出力先を含む名前空間で管理する(設計書 §5)。
+    /// 網点処理を入れているときは印も足す("<色の同一性>|<印>")。切っているときは従来の文字列のまま
     private var decodeColorTarget: DisplayColorTarget?
-    private var decodeColorIdentity: String { decodeColorTarget?.identity ?? "source" }
+    private var decodeColorIdentity: String {
+        let colour = decodeColorTarget?.identity ?? "source"
+        return printAppearanceTag.isEmpty ? colour : "\(colour)|\(printAppearanceTag)"
+    }
 
     @discardableResult
     func updateDisplayColorTarget(_ target: DisplayColorTarget) -> Bool {
@@ -324,30 +355,84 @@ final class Book {
         return true
     }
 
+    /// 網点処理の設定を変える(設計書 §5)。updateDisplayColorTarget と同じく、ページキャッシュと
+    /// 寸法・省略情報を捨て、未開始の先読みを辞退させ、進行中の読み込みには以後合流させない
+    /// (遅れて届いた結果は登録の照合で捨てられる)。待っている image(at:) は renderEpoch の変化を見て
+    /// 新しい印で読み直す。旧い印の原寸中間画像は保持する集合を空にして手放す。
+    /// 走っている先読みの計画も止める: 旧い計画は網点処理を切っていたときの幅(最大 12)と的(最大 64)の
+    /// まま新しい印の読み込みを始め続け、エンジンを待つページの上限(4)を超えるため。EPUB 表示モード中は
+    /// 計画し直しが来ないので、止めなければ的を使い切るまで続く。次の currentSpread が計画し直す
+    @discardableResult
+    func updatePrintAppearance(_ level: PrintAppearanceLevel?) -> Bool {
+        guard level != printAppearanceLevel else { return false }
+        let previousRenderKey = renderKey
+        printAppearanceLevel = level
+        printAppearanceTag = PrintAppearanceTag.tag(for: level)
+        usedRenderKeys.insert(renderKey)
+        renderEpoch &+= 1
+        stateRevision &+= 1
+        cache.removeAll()
+        decodedPageInfo.removeAll()
+        evictedResampleKeys.removeAll()
+        cancelPrefetch()
+        inFlightLoads.removeAll()
+        if !isClosed { releaseStrongIntermediates(bookKey: previousRenderKey) }
+        return true
+    }
+
     /// 辞退だけを合流側で再試行できるよう、通常の復号失敗と区別する(CV5-2)。
+    /// superseded は網点処理の待ちから間引かれた読み込み(設計書 §5)。何もキャッシュせず、
+    /// 要求がまだ有効なら image(at:) が読み直す。壊れたページとして描かせないため、失敗とは分ける
     private struct ImageLoadResult: Sendable {
         let image: CGImage?
         let declined: Bool
+        var superseded = false
     }
     /// 進行中のデコード(entry.id → タスク)。表示要求が先読みの進行中
-    /// デコードに合流し、同じページを二重にデコードしないための単一飛行
-    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, promotion: DecodePromotion?, task: Task<ImageLoadResult, Never>)] = [:]
+    /// デコードに合流し、同じページを二重にデコードしないための単一飛行。
+    /// ticket は網点処理のサービスの中の仕事へ合流・辞退を伝える券(切っているときは nil。設計書 §5)
+    private var inFlightLoads: [Int: (token: Int, prefetch: Bool, promotion: DecodePromotion?,
+                                      ticket: PrintAppearanceTicket?, task: Task<ImageLoadResult, Never>)] = [:]
     private var inFlightToken = 0
+
+    /// 間引かれた読み込みを読み直す回数の上限(設計書 §5)
+    private static let supersededRetryLimit = 3
 
     func image(at index: Int) async -> CGImage? {
         guard !isClosed, entries.indices.contains(index), !Task.isCancelled else { return nil }
         let key = entries[index].id
-        if let hit = cache.image(for: key, colorSpaceIdentity: decodeColorIdentity) { return hit }
-        let joinedPrefetch = inFlightLoads[key]?.prefetch == true
-        guard let task = beginImageLoad(at: index) else { return nil }
-        let result = await task.value
-        // 辞退した先読みに合流した表示だけを再試行し、通常の復号失敗は焼き直さない(設計書 §5、§7.3)。
-        if result.declined, joinedPrefetch, !PageRequestIntent.isPrefetch, !isClosed, !Task.isCancelled {
+        // 間引かれた読み込みは、入ったときから位置・並び・条件が変わっていない間だけ読み直す(設計書 §5)
+        let revision = stateRevision
+        var supersededRetries = 0
+        while true {
+            let epoch = renderEpoch
             if let hit = cache.image(for: key, colorSpaceIdentity: decodeColorIdentity) { return hit }
-            // 再計画された先読みに戻らず、別の表示が再発行済みならそこへ合流する(設計書 §5、§7.3)。
-            return await beginImageLoad(at: index, replacingPrefetch: true)?.value.image
+            let joinedPrefetch = inFlightLoads[key]?.prefetch == true
+            guard let task = beginImageLoad(at: index) else { return nil }
+            var result = await task.value
+            // 辞退した先読みに合流した表示だけを再試行し、通常の復号失敗は焼き直さない(設計書 §5、§7.3)。
+            // 網点処理の印が変わった結果と間引かれた結果は、下でそれぞれ読み直す
+            if epoch == renderEpoch, !result.superseded, result.declined, joinedPrefetch,
+               !PageRequestIntent.isPrefetch, !isClosed, !Task.isCancelled {
+                if let hit = cache.image(for: key, colorSpaceIdentity: decodeColorIdentity) { return hit }
+                // 再計画された先読みに戻らず、別の表示が再発行済みならそこへ合流する(設計書 §5、§7.3)。
+                guard let retry = beginImageLoad(at: index, replacingPrefetch: true) else { return nil }
+                result = await retry.value
+            }
+            // 待つ間に網点処理の設定が変わった: 旧い印の画素は返さず、同じページを新しい印で読み直す(設計書 §5)
+            if epoch != renderEpoch {
+                guard !isClosed, !Task.isCancelled, entries.indices.contains(index),
+                      entries[index].id == key else { return nil }
+                continue
+            }
+            if result.superseded {
+                supersededRetries += 1
+                guard supersededRetries <= Self.supersededRetryLimit, revision == stateRevision,
+                      !isClosed, !Task.isCancelled else { return nil }
+                continue
+            }
+            return result.image
         }
-        return result.image
     }
 
     /// 待機を伴う呼び出しから所有者を切り離し、先読みが本の寿命を延ばさないようにする(設計書 §5、§7.3)。
@@ -363,6 +448,8 @@ final class Book {
                 // 待機解除より先に優先度を上げ、既に実行中の復号にも表示の優先度を届ける(設計書 §5)。
                 running.task.escalatePriority(to: .userInitiated)
                 running.promotion?.promote()
+                // 網点処理の待ちでも表示の最新へ動かし、先読みの仕事なら表示の仕事に上げる(設計書 §5)
+                running.ticket?.touch()
             }
             return running.task
         }
@@ -372,6 +459,11 @@ final class Book {
         let cap = displayPixelCap
         let colorTarget = decodeColorTarget
         let promotion = prefetch ? DecodePromotion() : nil
+        // 網点処理の要求は読み込みごとに券を付けて渡す(切っているときは要求なしで従来の経路。設計書 §5)
+        let ticket = printAppearanceLevel.map { _ in
+            PrintAppearanceTicket(book: ObjectIdentifier(self), isPrefetch: prefetch)
+        }
+        let request = printAppearanceLevel.map { PrintAppearanceRequest(level: $0, ticket: ticket) }
         inFlightToken &+= 1
         let token = inFlightToken
         let task = Task<ImageLoadResult, Never>.detached(priority: prefetch ? .utility : .userInitiated) { [weak self] in
@@ -380,13 +472,18 @@ final class Book {
                     do {
                         let image = try await PageRequestIntent.$displayColorTarget.withValue(colorTarget) {
                             try await PageRequestIntent.$decodePromotion.withValue(promotion) {
-                                try Task.checkCancellation()
-                                let image = try await source.image(for: entry, maxPixelSize: cap)
-                                try Task.checkCancellation()
-                                return image
+                                // detached は TaskLocal を受け継がないので、ここで立て直す
+                                try await PageRequestIntent.$printAppearance.withValue(request) {
+                                    try Task.checkCancellation()
+                                    let image = try await source.image(for: entry, maxPixelSize: cap)
+                                    try Task.checkCancellation()
+                                    return image
+                                }
                             }
                         }
                         return ImageLoadResult(image: image, declined: false)
+                    } catch is PrintAppearanceService.Superseded {
+                        return ImageLoadResult(image: nil, declined: true, superseded: true)
                     } catch is PrefetchDecodeGate.Declined {
                         return ImageLoadResult(image: nil, declined: true)
                     } catch BookSourceError.temporarilyUnavailable {
@@ -401,7 +498,7 @@ final class Book {
                 self?.completeImageLoad(result, for: key, token: token) ?? result
             }
         }
-        inFlightLoads[key] = (token, prefetch, promotion, task)
+        inFlightLoads[key] = (token, prefetch, promotion, ticket, task)
         decodeTasks[token] = task
         return task
     }
@@ -513,7 +610,7 @@ final class Book {
             finishCurrentSpread(spread.indices)
             return spread
         }
-        return Spread(indices: [], images: [])
+        return Spread(indices: [], images: [], renderKey: renderKey)
     }
 
     private func finishCurrentSpread(_ indices: [Int]) {
@@ -582,7 +679,7 @@ final class Book {
               candidate.indices.first == currentIndex, pages.count == candidate.indices.count else { return nil }
         noteReadingPositionIfNeeded()
         finishCurrentSpread(candidate.indices)
-        return Spread(indices: candidate.indices, images: pages.map { $0.image },
+        return Spread(indices: candidate.indices, images: pages.map { $0.image }, renderKey: renderKey,
                       resampledPages: pages, decodedSources: candidate.sources)
     }
 
@@ -616,14 +713,14 @@ final class Book {
         for index in readyIndices where entries.indices.contains(index) {
             let id = entries[index].id
             let protected = targets.contains(index) || inFlightLoads[id] != nil
-                || protectedPageKeys.contains("\(cacheKey)#\(id)")
+                || protectedPageKeys.contains(pageKey(forEntryID: id))
             if DecodedOriginalRetentionPolicy.canEvict(index: index, currentIndex: currentIndex,
                 decodeBehind: prefetchBehind, adjacentIndices: adjacent,
                 protected: protected, displayReady: true),
                cache.contains(id, colorSpaceIdentity: decodeColorIdentity),
                let position = candidate.indices.firstIndex(of: index),
                let key = ImageResampler.cacheIdentity(source: candidate.sources[position], to: pages[position].size,
-                   cacheKey: "\(cacheKey)#\(id)", processing: pages[position].processing,
+                   cacheKey: pageKey(forEntryID: id), processing: pages[position].processing,
                    displayTarget: pages[position].colorTarget), resampler.cacheResidency.contains(key) {
                 cache.remove(id, colorSpaceIdentity: decodeColorIdentity)
                 evictedResampleKeys[id] = key
@@ -658,8 +755,18 @@ final class Book {
 
     /// 忙しい描画 actor をページ表示で待たず、close では全更新の排出後に条件を外す(設計書 §5、§7.3)。
     private func scheduleStrongIntermediateRetention() {
-        let bookKey = cacheKey
+        let bookKey = renderKey
         let pageKeys = Set(strongIntermediateRetentionIndices().map { "\(bookKey)#\(entries[$0].id)" })
+        retainStrongIntermediates(bookKey: bookKey, pageKeys: pageKeys)
+    }
+
+    /// 網点処理の印を変えたとき、旧い renderKey の保持する集合を空にして原寸中間画像を手放す(設計書 §5)。
+    /// 印を戻せば次の表示がその renderKey の集合を新しい順位で置き直す
+    private func releaseStrongIntermediates(bookKey: String) {
+        retainStrongIntermediates(bookKey: bookKey, pageKeys: [])
+    }
+
+    private func retainStrongIntermediates(bookKey: String, pageKeys: Set<String>) {
         Self.strongRetentionSequence &+= 1
         let revision = Self.strongRetentionSequence
         let id = UUID()
@@ -730,9 +837,9 @@ final class Book {
                 async let secondTask = image(at: index + 1)
                 let (first, second) = await (firstTask, secondTask)
                 if first != nil, second != nil {
-                    return Spread(indices: [index, index + 1], images: [first, second])
+                    return Spread(indices: [index, index + 1], images: [first, second], renderKey: renderKey)
                 }
-                return Spread(indices: [index], images: [first])
+                return Spread(indices: [index], images: [first], renderKey: renderKey)
             }
             if firstSmall != false, secondSmall != false {
                 // solid の主復号器を競合させないため、通常先読みと同じ窓の並列可否を守る。
@@ -748,14 +855,14 @@ final class Book {
                 if isSmall(first, at: index) {
                     let second = await image(at: index + 1)
                     if isSmall(second, at: index + 1) {
-                        return Spread(indices: [index, index + 1], images: [first, second])
+                        return Spread(indices: [index, index + 1], images: [first, second], renderKey: renderKey)
                     }
                 }
-                return Spread(indices: [index], images: [first])
+                return Spread(indices: [index], images: [first], renderKey: renderKey)
             }
         }
         let first = await image(at: index)
-        return Spread(indices: [index], images: [first])
+        return Spread(indices: [index], images: [first], renderKey: renderKey)
     }
 
     // MARK: - ナビゲーション(仕様書 §4.3)
@@ -795,12 +902,13 @@ final class Book {
     }
 
     func moveNext() -> MoveResult {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard !entries.isEmpty else { return .hitEnd }
         guard currentIndex + lastDisplayCount < entries.count else { return .hitEnd }
         explicitNavigationRevision &+= 1
         currentIndex += lastDisplayCount
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
         return .moved
     }
 
@@ -852,41 +960,45 @@ final class Book {
 
     /// 見開きから 1 ページだけ進む/戻る(仕様書 §5.5 action 2/3)
     func moveHalfNext() -> MoveResult {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard currentIndex + 1 < entries.count else { return .hitEnd }
         explicitNavigationRevision &+= 1
         currentIndex += 1
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
         return .moved
     }
 
     func moveHalfPrevious() -> MoveResult {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard currentIndex > 0 else { return .hitStart }
         explicitNavigationRevision &+= 1
         currentIndex -= 1
         lastMoveForward = false
+        declinePrefetchOutsideWindow()
         return .moved
     }
 
     func goTo(index: Int) {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         guard !entries.isEmpty else { return }
         explicitNavigationRevision &+= 1
         currentIndex = min(max(0, index), entries.count - 1)
+        declinePrefetchOutsideWindow()
     }
 
     func goToFirst() {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         explicitNavigationRevision &+= 1
         currentIndex = 0
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
     }
 
     /// 末尾へ。見開きなら最終 2 枚がペアになる場合 count-2 に着地(仕様書 §4.3.3)。
     @discardableResult
     func goToLast() async -> Bool {
-        invalidatePendingNavigation()
+        invalidatePendingNavigation(replanningPrefetch: true)
         let generation = navigationGeneration
         guard !entries.isEmpty,
               let start = await precedingSpreadStart(before: entries.count,
@@ -897,6 +1009,7 @@ final class Book {
         explicitNavigationRevision &+= 1
         currentIndex = start
         lastMoveForward = true
+        declinePrefetchOutsideWindow()
         return true
     }
 
@@ -1045,9 +1158,14 @@ final class Book {
         declineQueuedPrefetchLoads()
     }
 
-    private func declineQueuedPrefetchLoads() {
-        for load in inFlightLoads.values where load.prefetch {
+    /// keeping: 辞退させない網点処理の先読み(entry.id)。keepingTicketed なら網点処理の先読みは全て残す。
+    /// 網点処理の券のない先読み(切っている本)は常に辞退させる(従来どおり)
+    private func declineQueuedPrefetchLoads(keeping kept: Set<Int> = [], keepingTicketed: Bool = false) {
+        for (key, load) in inFlightLoads where load.prefetch {
+            if load.ticket != nil && (keepingTicketed || kept.contains(key)) { continue }
             load.promotion?.declineQueuedPrefetch()
+            // 網点処理を待っている先読みも辞退させる(表示に上がった仕事と実行中の仕事は続く。設計書 §5)
+            load.ticket?.decline()
         }
     }
 
@@ -1069,11 +1187,14 @@ final class Book {
         inFlightLoads.removeAll()
         let tasks = Array(backgroundTasks.values)
         let decodes = Array(decodeTasks.values)
-        let bookKey = cacheKey
+        // 網点処理の印ごとに renderKey が違うので、この本が使ったすべての保持条件を外す(設計書 §5)
+        let bookKeys = usedRenderKeys
         return Task(priority: .utility) {
             for task in tasks { await task.value }
             for task in decodes { _ = await task.value }
-            await ImageResampler.shared.removeStrongIntermediateRetention(bookKey: bookKey)
+            for bookKey in bookKeys {
+                await ImageResampler.shared.removeStrongIntermediateRetention(bookKey: bookKey)
+            }
         }
     }
 
@@ -1083,10 +1204,39 @@ final class Book {
         for task in decodeTasks.values { task.cancel() }
     }
 
-    private func invalidatePendingNavigation() {
+    /// replanningPrefetch: ページ移動。網点処理の先読みはここでは辞退させず、移動先が決まったら
+    /// declinePrefetchOutsideWindow で窓の外のものだけを辞退させ、残りは移動先の見開きが揃ったときの
+    /// schedulePrefetch で新しい計画に残るかを決める(設計書 §5)。辞退させると、デコードと prepare を済ませて
+    /// エンジンを待つページを捨て、新しい計画がすぐ同じページを読み直すため(1 秒に 1 回の 11.1 MP の見開きで
+    /// 10 回のページ送りに 16〜19 件)。新しい計画は移動先が決まってからでないと作れない。
+    /// 本の切替・閉じる・並べ替え・見開きの条件の変更では従来どおり全て辞退させる
+    /// ページ移動で移動先が決まった後: 移動先の先読みの窓(どちらの向きにも、見開き 1 つ分の余裕を含めて
+    /// 次の計画が取りうる範囲)の外にある網点処理の先読みを、すぐ辞退させる。遠くへのジャンプで旧い計画の
+    /// 仕事を残すと、移動先のページのデコードの間にエンジンがそれを始め、パス 1 を過ぎると止められずに
+    /// 移動先の表示を待たせるため(13.4 MP の見開きで実測。設計書 §5)
+    private func declinePrefetchOutsideWindow() {
+        guard !entries.isEmpty else { return }
+        let low = max(0, currentIndex - max(0, prefetchBehind))
+        let high = min(entries.count - 1, currentIndex + 1 + max(0, prefetchAhead))
+        let window = low <= high ? Set(entries[low...high].map(\.id)) : []
+        let outside = Set(inFlightLoads.compactMap { key, load in
+            load.prefetch && load.ticket != nil && !window.contains(key) ? key : nil
+        })
+        guard !outside.isEmpty else { return }
+        let inside = Set(inFlightLoads.keys).subtracting(outside)
+        declineQueuedPrefetchLoads(keeping: inside)
+    }
+
+    private func invalidatePendingNavigation(replanningPrefetch: Bool = false) {
         navigationGeneration &+= 1
         stateRevision &+= 1
-        cancelPrefetch()
+        if replanningPrefetch {
+            prefetchTask?.cancel()
+            prefetchTask = nil
+            declineQueuedPrefetchLoads(keepingTicketed: true)
+        } else {
+            cancelPrefetch()
+        }
     }
 
     // MARK: - サブフォルダ移動(仕様書 §4.3.5: containerPath 単位で巡回)
@@ -1185,20 +1335,40 @@ final class Book {
     }
 
     private func schedulePrefetch() {
-        cancelPrefetch()
-        guard !isClosed else { return }
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        guard !isClosed else {
+            declineQueuedPrefetchLoads()
+            return
+        }
         // 同じ名前の source を宣言より前のクロージャで参照すると Xcode 26.6 のコンパイラが落ちる(ClosureLifetimeFixup)ため、クロージャより先にローカルへ取る。
         let source = source
         let entries = entries
-        let targets = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
+        let planned = Self.prefetchTargets(currentIndex: currentIndex, displayCount: lastDisplayCount,
             ahead: prefetchAhead, behind: prefetchBehind, forward: lastMoveForward, count: entries.count,
             volumeKey: { source.prefetchVolumeKey(for: entries[$0]) })
-        let captured = targets.map { (index: $0, id: entries[$0].id,
-                                      volume: source.prefetchVolumeKey(for: entries[$0])) }
-        let aheadCount = targets.filter { $0 > currentIndex }.count
-        let leadingCount = lastMoveForward ? aheadCount : targets.count - aheadCount
-        // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)
-        let width = max(1, mediaProfile.bookPrefetchConcurrency)
+        // 新しい計画に残る網点処理の先読みは辞退させず、新しい計画の順に並べ直す(設計書 §5)。
+        // 戻り読みの完成画像があるため読まないページ(beginPrefetchImageLoad が飛ばす)は残さない。
+        // 残した読み込みは計画の先頭に置いて並列幅に数え、エンジンを待つデコード済みのページを幅までに保つ
+        let kept = planned.filter { index in
+            let id = entries[index].id
+            guard let load = inFlightLoads[id], load.prefetch, load.ticket != nil else { return false }
+            return !hasCachedResampleForEvictedOriginal(at: index)
+        }
+        let keptIDs = Set(kept.map { entries[$0].id })
+        declineQueuedPrefetchLoads(keeping: keptIDs)
+        for index in kept { inFlightLoads[entries[index].id]?.ticket?.replan() }
+        let rest = planned.filter { !keptIDs.contains(entries[$0].id) }
+        let targets = kept + rest
+        let aheadCount = planned.filter { $0 > currentIndex }.count
+        let plannedLeading = Set(planned.prefix(lastMoveForward ? aheadCount : planned.count - aheadCount))
+        let captured = rest.map { (index: $0, id: entries[$0].id,
+                                   volume: source.prefetchVolumeKey(for: entries[$0])) }
+        let leadingCount = rest.filter { plannedLeading.contains($0) }.count
+        // 並列幅は置き場所の速度で決める(SSD=6 / HDD=1 / ネットワーク=2)。網点処理の要求があるときは
+        // 4 までに絞り、エンジンを待つデコード済みのページを抑える(設計書 §5)
+        let width = PreresamplePolicy.decodeWidth(mediaConcurrency: mediaProfile.bookPrefetchConcurrency,
+                                                  printAppearance: printAppearanceLevel != nil)
 
         let targetIDs = targets.map { entries[$0].id }
         let id = UUID()
@@ -1225,7 +1395,7 @@ final class Book {
                         }
                     }
                 } else {
-                    for target in Self.serialOrder(captured, aheadCount: leadingCount) {
+                    for target in kept + Self.serialOrder(captured, aheadCount: leadingCount) {
                         guard !Task.isCancelled else { return }
                         let load = self?.beginPrefetchImageLoad(at: target)
                         _ = await load?.value

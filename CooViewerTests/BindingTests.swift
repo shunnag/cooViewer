@@ -223,10 +223,10 @@ final class BindingTests: XCTestCase {
     }
 
     func testAllLegacyKeyNumbersMapped() {
-        for number in 0...54 {
+        for number in 0...55 {
             XCTAssertNotNil(ReaderAction.fromLegacyKeyNumber(number), "key action \(number)")
         }
-        XCTAssertNil(ReaderAction.fromLegacyKeyNumber(55))
+        XCTAssertNil(ReaderAction.fromLegacyKeyNumber(56))
     }
 
     func testEPUBGoBackBindingRoundTripsAndResolves() {
@@ -255,6 +255,86 @@ final class BindingTests: XCTestCase {
         let binding = bindings.resolveKey(character: "f", modifiers: 0,
                                           fitMode: 0, readsFromLeft: false)
         XCTAssertEqual(binding?.action, .toggleInterpolation)
+    }
+
+    // MARK: - 網かけの表示の切替(55)と既定 h(設計書 §2.4)
+
+    /// 既定の keyNormal に素の h → 55 があり、綴じ方向によらず切替に解決する
+    func testDefaultHKeyTogglesHalftoneDisplay() {
+        XCTAssertEqual(bindings.keyNormal.filter { $0.legacyActionNumber == 55 },
+                       [KeyBinding(legacyActionNumber: 55, key: "h", modifiers: 0,
+                                   value: nil, switchAction: false)])
+        for readsFromLeft in [false, true] {
+            XCTAssertEqual(bindings.resolveKey(character: "h", modifiers: 0, fitMode: 0,
+                                               readsFromLeft: readsFromLeft)?.action,
+                           .toggleHalftoneDisplay)
+        }
+        // 既定の割当で素の h を使うのは 55 だけ
+        let allDefaults = bindings.keyNormal + bindings.keyMode2 + bindings.keyMode3
+        XCTAssertEqual(allDefaults.filter { $0.key == "h" && $0.modifiers == 0 }.count, 1)
+        XCTAssertNotEqual(ActionNames.keyActionName(55), "#55")
+    }
+
+    private func withSavedKeyArray(_ array: [[String: Any]], edited: Bool = false,
+                                   _ body: (UserDefaults) -> Void) {
+        let suiteName = "test.cooViewer.halftoneKey.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        suite.set(array, forKey: "KeyArray")
+        if edited { suite.set(true, forKey: "KeyArrayUserEdited") }
+        body(suite)
+    }
+
+    /// 未編集の保存済み配列で、素の h が未使用かつ 55 が未割当なら、メモリ内だけで h → 55 を補う
+    func testStoredKeyArrayGainsHalftoneToggleOnlyInMemory() {
+        withSavedKeyArray([["action": 0, "key": "z", "keyname": "z", "modifier": 0]]) { suite in
+            let saved = suite.dictionaryRepresentation() as NSDictionary
+            let loaded = BindingConfiguration.load(from: suite)
+            XCTAssertEqual(loaded.keyNormal.filter { $0.legacyActionNumber == 55 },
+                           [KeyBinding(legacyActionNumber: 55, key: "h", modifiers: 0,
+                                       value: nil, switchAction: false)])
+            XCTAssertEqual(loaded.resolveKey(character: "h", modifiers: 0, fitMode: 0,
+                                            readsFromLeft: false)?.action, .toggleHalftoneDisplay)
+            XCTAssertEqual(suite.dictionaryRepresentation() as NSDictionary, saved, "書き戻さない")
+            // モード別の配列へは補わない
+            XCTAssertFalse(loaded.keyMode2.contains { $0.legacyActionNumber == 55 })
+            XCTAssertFalse(loaded.keyMode3.contains { $0.legacyActionNumber == 55 })
+        }
+    }
+
+    /// 素の h を別の操作に使っているときは補わない(利用者の割当を優先する)
+    func testHalftoneToggleIsNotInjectedWhenPlainHIsUsed() {
+        withSavedKeyArray([["action": 18, "key": "h", "keyname": "h", "modifier": 0]]) { suite in
+            let loaded = BindingConfiguration.load(from: suite)
+            XCTAssertFalse(loaded.keyNormal.contains { $0.legacyActionNumber == 55 })
+            XCTAssertEqual(loaded.resolveKey(character: "h", modifiers: 0, fitMode: 0,
+                                            readsFromLeft: false)?.action, .showThumbnail)
+        }
+        // 修飾付きの h(Shift+H)は素の h ではないので補う
+        withSavedKeyArray([["action": 18, "key": "H", "keyname": "H",
+                            "modifier": LegacyModifier.shift]]) { suite in
+            let loaded = BindingConfiguration.load(from: suite)
+            XCTAssertTrue(loaded.keyNormal.contains { $0.legacyActionNumber == 55 && $0.key == "h" })
+        }
+    }
+
+    /// 55 が既に別のキーに割り当てられているときは補わない
+    func testHalftoneToggleIsNotInjectedWhenActionIsAlreadyBound() {
+        withSavedKeyArray([["action": 55, "key": "j", "keyname": "j", "modifier": 0]]) { suite in
+            let loaded = BindingConfiguration.load(from: suite)
+            XCTAssertEqual(loaded.keyNormal.filter { $0.legacyActionNumber == 55 }.map(\.key), ["j"])
+            XCTAssertNil(loaded.resolveKey(character: "h", modifiers: 0, fitMode: 0,
+                                          readsFromLeft: false))
+        }
+    }
+
+    /// 2.0 の UI で保存した配列(KeyArrayUserEdited)には補わない(削除が定着するように)
+    func testHalftoneToggleIsNotInjectedAfterUserEdit() {
+        withSavedKeyArray([["action": 0, "key": "z", "keyname": "z", "modifier": 0]],
+                          edited: true) { suite in
+            let loaded = BindingConfiguration.load(from: suite)
+            XCTAssertFalse(loaded.keyNormal.contains { $0.legacyActionNumber == 55 })
+        }
     }
 
     func testAllLegacyMouseNumbersMapped() {

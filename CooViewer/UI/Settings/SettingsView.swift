@@ -1,3 +1,4 @@
+import PrintAppearanceKit
 import SwiftUI
 import Sparkle
 
@@ -135,6 +136,11 @@ struct SettingsView: View {
         }
     }
     @AppStorage("Interpolation") private var interpolation = 0
+    // 網かけの表示(新設キー。設計書 §2.4・§5)。強さの既定 1 は registerDefaults と同じ値
+    @AppStorage("HalftoneDisplayMode") private var halftoneDisplayMode = 0
+    @AppStorage("HalftoneDisplayStrength") private var halftoneDisplayStrength = 1
+    /// 網点処理のエンジンの状態(CPU だけで動いているときの注記用。ペインを開いたときと切り替えたときに読む)
+    @State private var halftoneEngineStatus: PrintAppearanceEngineStatus?
     @AppStorage("ShowNumber") private var showNumber = true
     @AppStorage("ShowPageBar") private var showPageBar = true
     @AppStorage("PlayAnimatedImages") private var playAnimatedImages = true
@@ -367,6 +373,10 @@ struct SettingsView: View {
             String(localized: "Page turn effect:"),
             String(localized: "Interpolation:"),
             String(localized: "Apply ML processing to:"),
+            String(localized: "Halftone display:"),
+            String(localized: "Strength:"),
+            // 行のラベルに現れない検索語(網点・スクリーントーン・モアレ)を拾う
+            String(localized: "Halftone, screentone, descreen, moire"),
             String(localized: "Play animated images (GIF, WebP, etc.)"),
             String(localized: "Background color:"),
             String(localized: "Thumbnails"),
@@ -655,6 +665,7 @@ struct SettingsView: View {
                 ColorPicker(String(localized: "Background color:"),
                             selection: backgroundColorBinding, supportsOpacity: false)
             }
+            halftoneSection
             Section(String(localized: "Thumbnails")) {
                 // 行×列の固定指定は廃止(設計書 §2.4): セルサイズだけを持ち、
                 // 行列はウインドウサイズから自動算出。開いている一覧へは
@@ -686,6 +697,60 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// 網かけの表示(設計書 §2.4・§5)。表示メニュー「網かけの表示」と同じ defaults を共有し、表示の切り替えは
+    /// applySettings が受け持つ(§7.5)。未知の保存値は既定として示し、選び直すまで書き戻さない
+    private var halftoneSection: some View {
+        Section {
+            Picker(String(localized: "Halftone display:"), selection: halftoneModeBinding) {
+                Text(String(localized: "As scanned")).tag(0)
+                Text(String(localized: "Like the printed book")).tag(1)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                // 強さは切っている間は無効(選んだ値は残す)
+                Picker(String(localized: "Strength:"), selection: halftoneStrengthBinding) {
+                    Text(String(localized: "Subtle")).tag(PrintAppearanceLevel.low.rawValue)
+                    Text(String(localized: "Standard")).tag(PrintAppearanceLevel.standard.rawValue)
+                    Text(String(localized: "Strong")).tag(PrintAppearanceLevel.strong.rawValue)
+                }
+                .disabled(halftoneModeBinding.wrappedValue != 1)
+                Text(String(localized:
+                    "Fine screen dots that paper would not show are blended into smooth tone. Coarse screens, lines and text are kept. Color pages are not changed."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let caption = Self.halftoneCPUOnlyCaption(engine: halftoneEngineStatus) {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .onAppear { halftoneEngineStatus = PrintAppearanceService.shared.stats().engine }
+        .onChange(of: halftoneDisplayMode) {
+            halftoneEngineStatus = PrintAppearanceService.shared.stats().engine
+        }
+    }
+
+    /// 1 のときだけ「本の見え方に近づける」(SettingsStore.halftoneDisplayEnabled と同じ読み方)
+    private var halftoneModeBinding: Binding<Int> {
+        Binding(get: { halftoneDisplayMode == 1 ? 1 : 0 },
+                set: { halftoneDisplayMode = $0 })
+    }
+
+    /// 未知の値は 標準 として示す(SettingsStore.halftoneDisplayStrength と同じ読み方)
+    private var halftoneStrengthBinding: Binding<Int> {
+        Binding(get: { PrintAppearanceLevel(rawValue: halftoneDisplayStrength)?.rawValue
+                           ?? PrintAppearanceLevel.standard.rawValue },
+                set: { halftoneDisplayStrength = $0 })
+    }
+
+    /// エンジンが CPU だけで動いているときの注記(GPU を用意できない・GPU の失敗が続いた)。
+    /// エンジンの状態を読むだけで作らない。まだ作っていなければ注記しない
+    static func halftoneCPUOnlyCaption(engine: PrintAppearanceEngineStatus?) -> String? {
+        guard case .cpuOnly(let reason)? = engine?.path, reason != .requested else { return nil }
+        return String(localized:
+            "This Mac processes halftones on the CPU only because the GPU can’t be used. Pages may take longer to appear.")
     }
 
     // MARK: - ページ番号

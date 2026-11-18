@@ -93,15 +93,29 @@ enum PreresamplePolicy {
     /// 「リサンプル先読み+4」(事前リサンプルが常にデコード済みへ命中し、
     /// I/O と ML 計算が直列化しない深さ)と「PageCache 予算の 1/3 に収まる
     /// 深さ」(現スプレッド・戻り分・ルーペの余裕を残す)の大きい方を採り、
-    /// 媒体別下限(SSD 12/HDD 16/ネットワーク 20)〜maxDecodePages に丸める
+    /// 媒体別下限(SSD 12/HDD 16/ネットワーク 20)〜maxDecodePages に丸める。
+    /// 網点処理の要求があるときは予算の項を使わない: 小さなグレーのページでは予算の項が上限の 64 まで
+    /// 押し上げ、ジャンプのたびに 80 枚前後を処理することになるため。「リサンプル先読み+4」と
+    /// 媒体別下限だけで 12〜20 ページになる(設計書 §5)
     static func decodeAhead(resamplePages: Int, decodedPageBytes: Int,
                             pageCacheByteLimit: Int, mediaFloor: Int,
-                            conserveEnergy: Bool = false) -> Int {
-        let byBudget = decodedPageBytes > 0
+                            conserveEnergy: Bool = false, printAppearance: Bool = false) -> Int {
+        let byBudget = decodedPageBytes > 0 && !printAppearance
             ? pageCacheByteLimit / 3 / decodedPageBytes : 0
         let wanted = max(resamplePages + 4, byBudget)
         let normal = min(maxDecodePages, max(mediaFloor, wanted))
         return conserveEnergy ? max(2, normal / 2) : normal
+    }
+
+    /// 網点処理の要求があるときのデコード先読みの並列幅の上限(設計書 §5)
+    static let printAppearanceDecodeWidth = 4
+
+    /// デコード先読みの並列幅。置き場所の速度の値(1 以上)をそのまま使い、網点処理の要求があるときは
+    /// 4 までに絞る: エンジンは 1 ページずつ処理するので、それより多く並べてもデコード済みのページが
+    /// エンジンを待って溜まるだけになるため(設計書 §5)
+    static func decodeWidth(mediaConcurrency: Int, printAppearance: Bool) -> Int {
+        let width = max(1, mediaConcurrency)
+        return printAppearance ? min(width, printAppearanceDecodeWidth) : width
     }
 
     /// デコード先読み(逆方向)。戻り読みの体感用に進行方向の 1/4(3...16)

@@ -157,6 +157,10 @@ extension ReaderWindowController {
         let generation = loupeImageGeneration
         let display = displayGeneration
         let checkpoint = book.navigationCheckpoint
+        // 網点処理の要求と renderKey は一度だけ取り、同じ印の画素とキーを組にする。ルーペの仕事は券なしの
+        // 表示の仕事として処理され、間引かれない(設計書 §5)
+        let printAppearance = book.printAppearanceLevel.map { PrintAppearanceRequest(level: $0) }
+        let renderKey = book.renderKey
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -167,6 +171,7 @@ extension ReaderWindowController {
                 !Task.isCancelled && generation == loupeImageGeneration
                     && display == displayGeneration && book === self.book
                     && book.isAtNavigationCheckpoint(checkpoint)
+                    && book.renderKey == renderKey
                     && readerViewForInput.isLoupeEnabled
             }
             guard isCurrentRequest() else { return }
@@ -175,8 +180,9 @@ extension ReaderWindowController {
             for (position, index) in spread.indices.enumerated() {
                 guard isCurrentRequest(), book.entries.indices.contains(index) else { return }
                 let entry = book.entries[index]
-                guard var image = try? await book.source.loupeImage(
-                    for: entry, pixelScale: scale) else { continue }
+                guard var image = try? await PageRequestIntent.$printAppearance.withValue(printAppearance, operation: {
+                    try await book.source.loupeImage(for: entry, pixelScale: scale)
+                }) else { continue }
                 guard isCurrentRequest() else { return }
                 // ML 高画質化(適用範囲がルーペを含むとき。全ページ対象)。
                 // 超解像で拡大する前に掛けてノイズの増幅を防ぐ
@@ -197,7 +203,7 @@ extension ReaderWindowController {
                         if let upscaled = await ImageResampler.shared.resample(
                             image, to: target,
                             // 前段のノイズ低減も画像の内容を変えるためキーに含める。
-                            cacheKey: "loupe-sr-\(book.cacheKey)-\(entry.id)-nr\(reduction.rawValue)",
+                            cacheKey: "loupe-sr-\(renderKey)-\(entry.id)-nr\(reduction.rawValue)",
                             upscaleWithMetalFX: true,
                             // パスワード付き書庫の復号済みページを平文で残さない(CWE-312)
                             superResEncrypted: encrypted) {

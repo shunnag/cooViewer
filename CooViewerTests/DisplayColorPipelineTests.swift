@@ -79,11 +79,11 @@ final class DisplayColorPipelineTests: XCTestCase {
     /// 設計書 §5: 画面移動中も直前の完成画像を保持し、変換完了後にだけ差し替える。
     func testDisplayProfileTransitionKeepsLayerContentsUntilReplacement() async throws {
         let view = ReaderView(frame: CGRect(x: 0, y: 0, width: 160, height: 240))
-        view.resampleKeyPrefix = "transition-\(UUID().uuidString)"
         let input = try image(space: srgb)
         let size = try XCTUnwrap(view.predictedResampleSizes(for: [CGSize(width: 160, height: 240)])?.first)
         let completed = try image(space: srgb, width: Int(size.width), height: Int(size.height))
-        view.setPages([input], readsFromLeft: true,
+        view.setPages([input], readsFromLeft: true, keyPrefix: "transition-\(UUID().uuidString)",
+            printAppearanceTag: "",
             preResampled: [ResampledPage(size: size, image: completed, processing: view.imageProcessingSettings)])
         let container = try XCTUnwrap(view.layer?.sublayers?.first)
         let page = try XCTUnwrap(container.sublayers?.first)

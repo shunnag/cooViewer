@@ -1,4 +1,5 @@
 import AppKit
+import PrintAppearanceKit
 
 /// 型付き設定アクセス。キー名は旧実装(仕様書 §6.1)と同一で、
 /// ドメイン jp.coo.cooViewer を引き継ぐため既存ユーザーの値がそのまま生きる。
@@ -51,6 +52,8 @@ final class SettingsStore {
             "EPUBForceFont": false,
             "EPUBHidesRuby": false,
             "EPUBShowsPrintPage": false,
+            // 網かけの表示の強さ(設計書 §5)。新設キーで、既定は 標準
+            "HalftoneDisplayStrength": PrintAppearanceLevel.standard.rawValue,
         ])
     }
 
@@ -208,6 +211,34 @@ final class SettingsStore {
             defaults.set(renderQuality.rawValue, forKey: "InterpolationBeforeNone")
             renderQuality = .none
         }
+    }
+
+    /// 網かけの表示(新設キー `HalftoneDisplayMode`。設計書 §5)。0 = スキャンのまま(既定)、
+    /// 1 = 本の見え方に近づける。描画品質と同じく全体の設定で、本ごとの状態には入れない。
+    /// 1.x はこのキーを読まない。未知の値は既定(切)として読み、書き戻さない
+    var halftoneDisplayEnabled: Bool {
+        get { defaults.integer(forKey: "HalftoneDisplayMode") == 1 }
+        set { defaults.set(newValue ? 1 : 0, forKey: "HalftoneDisplayMode") }
+    }
+
+    /// 網かけの表示の強さ(新設キー `HalftoneDisplayStrength`)。0 = 控えめ、1 = 標準(既定)、2 = 強め。
+    /// 未設定・未知の値は 標準 として読み、書き戻さない(引数ドメインの文字列も整数として読む)
+    var halftoneDisplayStrength: PrintAppearanceLevel {
+        get {
+            guard defaults.object(forKey: "HalftoneDisplayStrength") != nil else { return .standard }
+            return PrintAppearanceLevel(rawValue: defaults.integer(forKey: "HalftoneDisplayStrength")) ?? .standard
+        }
+        set { defaults.set(newValue.rawValue, forKey: "HalftoneDisplayStrength") }
+    }
+
+    /// 本のページ読み込みに渡す網点処理の段階。切っているときは nil(設計書 §5)
+    var printAppearanceRequest: PrintAppearanceLevel? {
+        halftoneDisplayEnabled ? halftoneDisplayStrength : nil
+    }
+
+    /// キー操作 55 の切り替え(設計書 §2.4)。強さは変えない。未知の保存値は切として読むので、入に変わる
+    func toggleHalftoneDisplay() {
+        halftoneDisplayEnabled.toggle()
     }
 
     /// ホイール動作(仕様書 §4.16)
