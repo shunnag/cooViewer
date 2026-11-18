@@ -195,6 +195,7 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 (控えめ/標準/強め)で、どちらのキーも引数ドメインで渡せば実 defaults を書き換えない:
 
 ```sh
+mkdir -p /tmp/ht-gray /tmp/ht-colour                                     # スクリプトは出力先を作らない
 swift Scripts/make-sample-pages.swift /tmp/ht-gray 6 --halftone gray      # 1 チャンネルのグレー
 swift Scripts/make-sample-pages.swift /tmp/ht-colour 6 --halftone colour  # 色のページ(素通しになる)
 APP=build/Debug/cooViewer.app/Contents/MacOS/cooViewer
@@ -571,7 +572,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 | 設定変更が反映されない | defaults キー名の相違か、applySettings の反映点が未実装 |
 | 検証実行後に挙動が変 | 引数ドメインの `-キー 値` 上書きが persistent に混ざった可能性。該当キーを確認 |
 | 見開きの区切りが動かない | ペア判定は現在位置から局所的(仕様書 §4.2)。設定切替時は Book.reanchorToLeadingPartition を通す |
-| 網かけの表示を入れても変わらないページがある | 素通しの条件(色・辺 128 px 未満・画素数の上限・縦横比 0.5〜1.6 の外・EXIF の向き・透明・形式)か、対象外の経路(PDF・サムネイル・原寸表示・WebKit でラスタライズする EPUB のページ)。アクティビティ窓の「網かけの表示」の節か `--dump-print-appearance-stats` の `pages.passedThrough` で理由ごとの数を見る。粗い網点・線・文字は設計どおり残る(設計書 §5) |
+| 網かけの表示を入れても変わらないページがある | 素通しの条件(色・辺 128 px 未満・画素数の上限・縦横比 0.5〜1.6 の外・EXIF の向き・透明・形式)か、処理の対象外(PDF・サムネイル・原寸表示パネル(View Original)・WebKit でラスタライズする EPUB のページ)。アクティビティ窓の「網かけの表示」の節か `--dump-print-appearance-stats` の `pages.passedThrough` で理由ごとの数を見る。粗い網点・線・文字は設計どおり残る(設計書 §5) |
 | `--then-toggle-halftone` で切り替わらない | 引数ドメインの `-HalftoneDisplayMode` が defaults への書き込みを覆い隠している。併用しない |
 | Debug で網点処理が極端に遅い / `testOptimizedEngineProcessesFullPageQuickly` が落ちる | PrintAppearanceKit の `SWIFT_OPTIMIZATION_LEVEL = -O`(Debug も)が外れた。アプリの Debug は `-Onone` なので、エンジンは最適化したフレームワークとして呼ぶ。1 画素ずつの処理(輝度・色の判定・色の復元・縮小)も Kit の中に置き、アプリ側に書かない |
 | 網点処理の出力のバイトがマシンや OS で違う | 出力は OS の vDSP・libm と GPU に依存する。テストは合成ページで性質と「CPU の経路から 1 階調以内」を確かめ、期待バイト列は持たない。GPU の検査は GPU の経路を用意できない環境では `XCTSkip` で飛ぶので、緑でも GPU の経路を通ったとは限らない。エンジンの出力を変える変更(調整値・演算、`__sincos_stret` が無くなった場合を含む)では `PrintAppearance.engineVersion` を上げ、キャッシュの印を変える |
