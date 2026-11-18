@@ -218,8 +218,9 @@ DocC カタログ記事、README は日本語を主、英語を併記**する。
   stay one-channel, non-colour RGB keeps its colour) before `PageCache`. Keys `HalftoneDisplayMode` (0/1,
   default 0) and `HalftoneDisplayStrength` (0/1/2, default 1) are global, not per book; key action 55 (default
   `h`). Cache tag `~pa<engineVersion><l|s|h>` (`PrintAppearance.engineVersion` = 1; bump it for any change of
-  the output bytes). A GPU failure reruns the page on the CPU path; two in a row make the engine CPU-only; raw
-  pixels are never stored under an "on" tag. Not applied to PDF, thumbnails or View Original; pass-through for
+  the output bytes). A GPU failure reruns the page on the CPU path; two in a row make the engine CPU-only; a failure
+  (GPU failure, allocation failure, cancel, shed, decline) throws and caches nothing, so only processed pages
+  and deterministic pass-throughs sit under an "on" tag. Not applied to PDF, thumbnails or View Original; pass-through for
   colour pages, edges < 128 px, > 16 MP (9 MP under 16 GB RAM), aspect outside 0.5–1.6, EXIF orientation,
   transparency and unsupported formats. Page-size scratch is VM-backed (`PageMemory`) and returned to the OS
   after use — never malloc it. Details: architecture §5, development-guide §2/§5.
