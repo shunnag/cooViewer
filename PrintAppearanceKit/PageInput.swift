@@ -225,8 +225,11 @@ enum PageInput {
             let row = base + y * bpr
             for x in 0..<w {
                 let p = row + x * 4
-                op[y * w + x] = UInt8((299 * Int(p[0]) + 587 * Int(p[1]) + 114 * Int(p[2]) + 500) / 1000)
-                if Int(max(p[0], p[1], p[2])) - Int(min(p[0], p[1], p[2])) >= level { colourPixels += 1 }
+                // 式を分ける: 1 つの式のままだと Xcode 26 の型検査が時間切れになる(値は同じ)
+                let r = Int(p[0]), g = Int(p[1]), b = Int(p[2])
+                let weighted: Int = 299 * r + 587 * g + 114 * b + 500
+                op[y * w + x] = UInt8(weighted / 1000)
+                if max(r, g, b) - min(r, g, b) >= level { colourPixels += 1 }
             }
         }
         if mayBeColour && Double(colourPixels) / Double(w * h) > Params.printAppearance.colourFrac { return .colour }
