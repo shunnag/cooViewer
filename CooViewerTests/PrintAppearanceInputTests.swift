@@ -331,7 +331,7 @@ final class PrintAppearanceInputTests: XCTestCase {
         XCTAssertEqual(reduced.bytesPerRow % 16, 0)
         XCTAssertGreaterThanOrEqual(reduced.bytesPerRow, 433)
         XCTAssertTrue(reduced.changed)
-        reduced.pixels.withUnsafeBytes { raw in
+        reduced.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for y in 0..<650 {
                 for x in 0..<433 where raw[y * reduced.bytesPerRow + x] != 77 {
                     return XCTFail("一様な値が変わった (\(x), \(y))")

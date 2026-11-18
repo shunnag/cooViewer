@@ -318,7 +318,7 @@ final class PrintAppearanceRecolourTests: XCTestCase {
     /// 完成画像の R, G, B(詰め物と 4 番目を除く)
     private static func rgb(_ page: PrintAppearanceRGB) -> [UInt8] {
         var out = [UInt8](repeating: 0, count: page.width * page.height * 3)
-        page.pixels.withUnsafeBytes { raw in
+        page.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for y in 0..<page.height {
                 for x in 0..<page.width {
                     let i = y * page.bytesPerRow + 4 * x, o = 3 * (y * page.width + x)
@@ -334,7 +334,7 @@ final class PrintAppearanceRecolourTests: XCTestCase {
     private static func bytes(_ gray: PrintAppearanceGray) -> [UInt8] {
         var out = [UInt8]()
         out.reserveCapacity(gray.width * gray.height)
-        gray.pixels.withUnsafeBytes { raw in
+        gray.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for y in 0..<gray.height { out += raw[(y * gray.bytesPerRow)..<(y * gray.bytesPerRow + gray.width)] }
         }
         return out
@@ -342,7 +342,7 @@ final class PrintAppearanceRecolourTests: XCTestCase {
 
     private static func assertPaddingAndFourthByte(_ page: PrintAppearanceRGB, file: StaticString = #filePath,
                                                    line: UInt = #line) throws {
-        try page.pixels.withUnsafeBytes { raw in
+        try page.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for y in 0..<page.height {
                 let row = y * page.bytesPerRow
                 for x in 0..<page.width where raw[row + 4 * x + 3] != 255 {

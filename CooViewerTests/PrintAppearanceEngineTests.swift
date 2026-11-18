@@ -171,7 +171,7 @@ final class PrintAppearanceEngineTests: XCTestCase {
         XCTAssertEqual(gray.bytesPerRow % 16, 0)
         XCTAssertGreaterThanOrEqual(gray.bytesPerRow, W)
         XCTAssertEqual(gray.pixels.count, gray.bytesPerRow * H)
-        gray.pixels.withUnsafeBytes { raw in
+        gray.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for y in 0..<H {
                 for x in W..<gray.bytesPerRow { XCTAssertEqual(raw[y * gray.bytesPerRow + x], 0) }
             }
