@@ -174,6 +174,11 @@ struct NotchEntry { float cxh; float cxl; float cyh; float cyl; int bu; int bv; 
 
 // パス B(パス 2): 行の順 FFT → ノッチの利得(ピーク順、次に符号順。保持率の下限つき)→ 差分スペクトル →
 // 行の逆 FFT。S[slot][v][x](v = 0..64)へ書く。
+// 行 v は SIMD グループで共通なので、項目の行の判定(|dv| <= e)はグループの全レーンで同じ答えになる。
+// 各レーンが 32 項目のうち 1 つを調べて simd_ballot で集め、行が当たる項目だけを項目の順に読んで 4 ビンへ当てる
+// (ビンごとに全項目の 48 バイトを読み直さない。ノッチの項目が多いページではこのカーネルが後段の大半を占める)。
+// 各ビンに掛ける項目とその順番、Float の式はビンごとに全項目を調べる形と同じなので、利得はビット単位で変わらない。
+// simd_ballot は 32 レーンを仮定する(GPUContext が Kernel.isSupported で実行幅 32 を確かめる)。
 kernel void rowNotch(device const float2 *Z [[buffer(0)]], constant float2 *tw [[buffer(1)]],
                      device float2 *S [[buffer(2)]], device const NotchTile *tiles [[buffer(3)]],
                      constant uint &listOffset [[buffer(4)]], device const NotchEntry *entries [[buffer(5)]],
@@ -188,31 +193,51 @@ kernel void rowNotch(device const float2 *Z [[buffer(0)]], constant float2 *tw [
     NotchTile nt = tiles[listOffset + slot];
     int sv = v < 64 ? int(v) : int(v) - 128;
     uint u0 = 4 * brev5(L);
+    float g[4]; bool touched[4]; bool live[4]; int n2[4];
     for (int k = 0; k < 4; k++) {
         int u = int(u0) + k;
         int su = u < 64 ? u : u - 128;
-        int n2 = su * su + sv * sv;
-        float g = 1.0f;
-        bool touched = false;
-        if (n2 >= nt.nGuard) {
-            for (uint j = 0; j < nt.entryCount; j++) {
-                NotchEntry en = entries[nt.entryStart + j];
+        n2[k] = su * su + sv * sv;
+        live[k] = n2[k] >= nt.nGuard;
+        g[k] = 1.0f; touched[k] = false;
+    }
+    device const NotchEntry *ents = entries + nt.entryStart;
+    // 項目の数はタイルごとに決まり、スレッドグループ内で共通: ループと simd_ballot はグループで揃って回る
+    for (uint base = 0; base < nt.entryCount; base += 32) {
+        uint jl = base + L;
+        bool hit = false;
+        if (jl < nt.entryCount) {
+            int bv = ents[jl].bv, ee = ents[jl].e;
+            int dvl = ((int(v) - bv + 64) & 127) - 64;
+            hit = abs(dvl) <= ee;
+        }
+        uint mask = uint(uint64_t(simd_ballot(hit)));
+        while (mask != 0) {
+            uint b = ctz(mask);              // 項目の順(下位のビットから)
+            mask &= mask - 1;
+            NotchEntry en = ents[base + b];
+            int dv = ((int(v) - en.bv + 64) & 127) - 64;
+            float dy = (float(en.bv + dv) - en.cyh) - en.cyl;
+            float dy2 = dy * dy;
+            for (int k = 0; k < 4; k++) {
+                if (!live[k]) continue;
+                int u = int(u0) + k;
                 int du = ((u - en.bu + 64) & 127) - 64;
                 if (abs(du) > en.e) continue;
-                int dv = ((int(v) - en.bv + 64) & 127) - 64;
-                if (abs(dv) > en.e) continue;
                 float dx = (float(en.bu + du) - en.cxh) - en.cxl;
-                float dy = (float(en.bv + dv) - en.cyh) - en.cyl;
-                float d = sqrt(dx * dx + dy * dy);
+                float d = sqrt(dx * dx + dy2);
                 if (d > en.extent) continue;
                 float m = 1.0f;
                 if (d > en.flat) { float t = d - en.flat; m = exp(-(t * t) * en.inv2s2); }
-                g *= 1.0f - en.omr * m;
-                touched = true;
+                g[k] *= 1.0f - en.omr * m;
+                touched[k] = true;
             }
         }
-        if (touched) g = max(g, rbBySq[n2]);
-        float gm1 = g - 1.0f;
+    }
+    for (int k = 0; k < 4; k++) {
+        float gg = g[k];
+        if (touched[k]) gg = max(gg, rbBySq[n2[k]]);
+        float gm1 = gg - 1.0f;
         val[k] = float2(val[k].x * gm1, val[k].y * gm1);
     }
     fftInvB2N(val, L, tw);
