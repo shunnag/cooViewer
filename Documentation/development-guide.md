@@ -61,6 +61,12 @@ xcodebuild -project CooViewer.xcodeproj -scheme cooViewer -configuration Debug t
   なお SwiftPM の出力レイアウトはバージョンで異なる(6.3 系:
   `Modules/` 平置き、6.4 の swiftbuild: トリプル別ディレクトリ+
   interface は Intermediates 配下)——スクリプトは両対応済み。
+- **PrintAppearanceKit**(網かけの表示の網点処理エンジン)はこのリポジトリ内のネイティブの
+  フレームワークターゲットで、兄弟チェックアウトも Run Script も要らない(設計書 §1.4)。
+  **`.metal` ファイルは無い**: カーネルは `PrintAppearanceKit/Kernels.swift` の文字列を実行時に
+  `makeLibrary(source:options:)` でコンパイルするので、Xcode の Metal Toolchain は不要で、ビルドにも
+  Metal のコンパイル段は無い(設計書 §7.7)。このターゲットだけは Debug でも `-O`・whole module で
+  ビルドする(アプリの Debug は `-Onone` のまま。外すとエンジンが極端に遅くなる。本書 §5)。
 
 framework の更新判定は `python3 Scripts/tests/framework-rebuild.py` で単独検証できる。
 3つの取得/生成フェーズは毎ビルド呼び出し、実際の更新要否をスクリプトに委ねる。
@@ -74,8 +80,8 @@ KaitoKit 側ビルダにも更新日時の省略判定があるため、内容�
 ### プロジェクトファイルの約束
 
 - pbxproj は**手書き**(objectVersion 77、filesystem-synchronized groups)。
-  `CooViewer/`・`CooViewerTests/` 配下に置いたファイルは自動で
-  ターゲットに入る。**ファイル単位のエントリを pbxproj に足さない**。
+  `CooViewer/`・`CooViewerTests/`・`PrintAppearanceKit/`(フレームワーク)配下に置いたファイルは自動で
+  それぞれのターゲットに入る。**ファイル単位のエントリを pbxproj に足さない**。
 - ターゲットは **arm64 固定**(プロジェクト設定 `ARCHS = arm64`)。
   Xcode の Signing 画面が `ARCHS = $(ARCHS_STANDARD)` を勝手に注入することが
   ある(x86_64 と KaitoKit / Washi framework のアーキテクチャ不一致でリンクエラーになる)。見つけたら削除する。
@@ -122,6 +128,8 @@ build/Debug/cooViewer.app/Contents/MacOS/cooViewer \
 | `--then-show-thumbnails` | サムネイル一覧をトグル(EPUB 入場後に開く順序制御用) |
 | `--then-rapid-thumbnails <N>` | サムネイル一覧を約 70ms 間隔で N 回トグル(t キー連打の再現。奇数なら開いた状態で終わる。`0` はトグルせず、1 秒の最低間隔と表示整定待ちの後に撮影を 2 秒延ばす)。撮影は連打の所要時間ぶん自動で遅延する |
 | `--then-side-click <button> [dx]` | サイド/中ボタンのクリックをアプリ内で同期配送(前面化不要)。EPUB・画像本のマウス処理検証用。dx で微動を再現 |
+| `--dump-print-appearance-stats <json>` | 網点処理の統計(`PrintAppearanceService.stats()` と設定・先読みの実効値)を JSON で書き出す。`--snapshot` と併用すると撮影と同じ時点、単独では `--then` の完了と表示整定から 2 秒後に書き出して終了する(単独でもスナップショット実行と同じ扱いで、更新確認・全画面起動・WebKit の予熱を起動しない)。最上位のキーは英語の固定名(`setting` / `engine` / `pages` / `queue` / `milliseconds` / `plan` / `medianWindow`)、未計測の値は null |
+| `--then-toggle-halftone` | 網かけの表示をキー操作 55 と同じ経路で切り替える(defaults を書き、applySettings が表示を差し替える)。引数ドメインの `-HalftoneDisplayMode` は書き込みを覆い隠すので併用しない。実 defaults を書き換えるので、検証の後は元の値に戻す |
 | `--dump-thumbnail-stats` | 撮影時に ThumbnailCache の内部状態(メモリ/生成中/失敗記録/生成ゲート)と本の保護コンテンツ判定を stdout へ出力(欠けセルの原因判別用) |
 | `--then-show-bubble <0-1>` | ページバーのホバーバブルを指定比率位置に表示(マウスホバーは CLI から再現できないため。EPUB では census 完了後に出すこと) |
 | `--then-play-narration` | 音声メディアオーバーレイ(SMIL)の再生をトグル(EPUB でオーバーレイを持つ項目のとき。読み上げ中テキストの active-class ハイライトの検証用。2 回で一時停止になる) |
@@ -180,6 +188,30 @@ NSSegmentedControl は写らないことがある(実表示では問題ない)�
 
 サンプル本が要るときは、縦長 PNG を数枚入れたフォルダを作ればよい
 (git 履歴の `makepages.swift` 参照)。
+
+網かけの表示(網点処理)の検証には、式で描いた合成ページだけを使う
+(`Scripts/make-sample-pages.swift --halftone gray|rgb|colour [--size <幅>x<高さ>]`: 上 3/4 に細かい網点、
+下 1/4 に白地の番号と線。既定の大きさは 1362x2046)。強さは `-HalftoneDisplayStrength 0|1|2`
+(控えめ/標準/強め)で、どちらのキーも引数ドメインで渡せば実 defaults を書き換えない:
+
+```sh
+swift Scripts/make-sample-pages.swift /tmp/ht-gray 6 --halftone gray      # 1 チャンネルのグレー
+swift Scripts/make-sample-pages.swift /tmp/ht-colour 6 --halftone colour  # 色のページ(素通しになる)
+APP=build/Debug/cooViewer.app/Contents/MacOS/cooViewer
+$APP --open /tmp/ht-gray -HalftoneDisplayMode 0 --snapshot /tmp/ht-off.png
+$APP --open /tmp/ht-gray -HalftoneDisplayMode 1 -HalftoneDisplayStrength 1 --snapshot /tmp/ht-on.png
+$APP --open /tmp/ht-colour -HalftoneDisplayMode 0 --snapshot /tmp/ht-colour-off.png
+$APP --open /tmp/ht-colour -HalftoneDisplayMode 1 --snapshot /tmp/ht-colour-on.png
+$APP --open /tmp/ht-gray -HalftoneDisplayMode 1 --show-activity --snapshot /tmp/ht-activity.png
+$APP --open /tmp/ht-gray -HalftoneDisplayMode 1 --then-next-page \
+  --dump-print-appearance-stats /tmp/ht-stats.json
+```
+
+グレー(と `rgb`)の本では ht-off.png と ht-on.png が異なり、`colour` の本では ht-colour-off.png と
+ht-colour-on.png が同じになることを確かめる。
+アクティビティ窓の「網かけの表示」の節と JSON の `pages` で、処理したページ数・素通しの理由ごとの数・
+断り・失敗を見る。
+表示を切り替える経路そのものは `-HalftoneDisplayMode` を付けずに `--then-toggle-halftone` で確かめる。
 
 EPUB の検証: `--open x.epub --snapshot` はリフローなら EPUB 表示モードを
 WKWebView の takeSnapshot 合成で、固定レイアウトなら通常の contentView で撮る
@@ -539,3 +571,9 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
 | 設定変更が反映されない | defaults キー名の相違か、applySettings の反映点が未実装 |
 | 検証実行後に挙動が変 | 引数ドメインの `-キー 値` 上書きが persistent に混ざった可能性。該当キーを確認 |
 | 見開きの区切りが動かない | ペア判定は現在位置から局所的(仕様書 §4.2)。設定切替時は Book.reanchorToLeadingPartition を通す |
+| 網かけの表示を入れても変わらないページがある | 素通しの条件(色・辺 128 px 未満・画素数の上限・縦横比 0.5〜1.6 の外・EXIF の向き・透明・形式)か、対象外の経路(PDF・サムネイル・原寸表示・WebKit でラスタライズする EPUB のページ)。アクティビティ窓の「網かけの表示」の節か `--dump-print-appearance-stats` の `pages.passedThrough` で理由ごとの数を見る。粗い網点・線・文字は設計どおり残る(設計書 §5) |
+| `--then-toggle-halftone` で切り替わらない | 引数ドメインの `-HalftoneDisplayMode` が defaults への書き込みを覆い隠している。併用しない |
+| Debug で網点処理が極端に遅い / `testOptimizedEngineProcessesFullPageQuickly` が落ちる | PrintAppearanceKit の `SWIFT_OPTIMIZATION_LEVEL = -O`(Debug も)が外れた。アプリの Debug は `-Onone` なので、エンジンは最適化したフレームワークとして呼ぶ。1 画素ずつの処理(輝度・色の判定・色の復元・縮小)も Kit の中に置き、アプリ側に書かない |
+| 網点処理の出力のバイトがマシンや OS で違う | 出力は OS の vDSP・libm と GPU に依存する。テストは合成ページで性質と「CPU の経路から 1 階調以内」を確かめ、期待バイト列は持たない。GPU の検査は GPU の経路を用意できない環境では `XCTSkip` で飛ぶので、緑でも GPU の経路を通ったとは限らない。エンジンの出力を変える変更(調整値・演算、`__sincos_stret` が無くなった場合を含む)では `PrintAppearance.engineVersion` を上げ、キャッシュの印を変える |
+| 網点処理を入れた本で、ページ送りを止めてもメモリが戻らない | ページ大の一時領域を malloc で確保すると、手放した後も large-entry キャッシュに汚れたまま残り使用量に数えられる。Kit の `PageMemory`(`vm_allocate`)から確保する。疑わしいときは環境変数 `MallocLargeCache=0` で差が消えるかを見る(設計書 §5) |
+| 網点処理の素通しのページが、切ったときと JPEG で ±1 違う | 同じ `CGImageSource` で先にヘッダやゲインマップを問い合わせると、JPEG によってはデコード結果が ±1 変わる。prepare はヘッダを読んだソースとは別の、何も問い合わせていないソースでデコードし、上限付きの素通しは `ImageDecoding.decode` を呼び直す。この順序を崩さない |
