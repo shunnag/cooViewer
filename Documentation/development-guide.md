@@ -496,7 +496,7 @@ StuffIt 統合時(2026-09-13)の旧エンジンとの比較記録は
    (7.1 → 10.5 MB)。付けた場合は `ENABLE_CODE_COVERAGE=NO CLANG_COVERAGE_MAPPING=NO` を足し、
    `nm -j build/Release/cooViewer.app/Contents/MacOS/cooViewer | grep -c __covrec` が 0 であることを確認する。
 5. zip 前に `ls build/Release/cooViewer.app/Contents/Frameworks` が
-   `KaitoKit.framework` / `Sparkle.framework` / `Washi.framework` の 3 つだけであることと、
+   `KaitoKit.framework` / `PrintAppearanceKit.framework` / `Sparkle.framework` / `Washi.framework` の 4 つだけであることと、
    `build/Release/cooViewer.app/Contents/Resources` に不要なライセンス文書が無いことを確認する。
    確認後に `ditto -c -k --keepParent cooViewer.app out.zip` →
    `xcrun notarytool submit out.zip --keychain-profile KaitoFinder --wait` →
