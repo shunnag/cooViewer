@@ -330,7 +330,8 @@ kernel void highpassSq(device const float *lin [[buffer(0)]], device float *a [[
 // 窓は左上を (x - ox, y - oy)(ox, oy は 0..2、y が外側・x が内側、0 で打ち切り)に置き、
 // (min(W-1, ax + dx), min(H-1, ay + dy)) まで広がる。平らさは enc[src] の hi - lo
 // (enc = encodeByte(eotf[v]) は lin を符号化し直した値)。同点は先の窓を残す(厳密な <)。
-// 整数だけなので CPU の実装とビット単位で一致する。src だけに依存するので、CPU がパス 1 を行う間に走る。
+// 整数だけなので CPU の実装とビット単位で一致する。src だけに依存するので、GPU の前段としてパス 1 の後に積み、
+// 近傍の一致と A2 の間に走らせる(Descreener.commitFrontWork)。
 kernel void q3Window(device const uchar *src [[buffer(0)]], device uchar2 *bounds [[buffer(1)]],
                      constant uchar *enc [[buffer(2)]], constant PageInfo &pg [[buffer(3)]],
                      uint2 gid [[thread_position_in_grid]]) {

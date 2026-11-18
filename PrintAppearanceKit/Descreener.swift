@@ -186,8 +186,7 @@ final class Descreener {
         var pg = PageInfo(W: Int32(W), H: Int32(H), nx: Int32(nx), ny: Int32(ny))
         memcpy(srcS.raw, src, count)
         let lin = linS.f()
-        // ---- 段 0: 線形化は CPU で行う(パス 1 のスペクトルと A2 の位相揃いが CPU で lin を読む。GPU と同じ表で同じ値)。
-        // GPU にはタイル平均と、ゲートの高域エネルギー(lin だけに依存)を先に積んで、CPU の解析と並行して走らせる
+        // ---- 段 0: 線形化は CPU で行う(パス 1 のスペクトルと A2 の位相揃いが CPU で lin を読む。GPU と同じ表で同じ値)
         eotf.withUnsafeBufferPointer { e in
             let ep = e.baseAddress!
             parallelFor(H, grain: 64, threads: threads) { y in
@@ -195,37 +194,13 @@ final class Descreener {
                 for x in 0..<W { o[x] = ep[Int(s[x])] }
             }
         }
-        if let g = gpu {
-            let cb = try g.makeCommandBuffer()
-            let enc = try g.makeEncoder(cb)
-            if opts.pass2 == .gpu {
-                enc.set([linS.buffer]); enc.bytes(pg, 1); enc.setBuffer(meansS.buffer, offset: 0, index: 2)
-                enc.grid1D(g.pipe(.tileMeans), T)
-            }
-            if opts.post == .gpu {
-                encodeBlur(enc, g, src: linS.buffer, dst: aS.buffer, sigma: p.gateHighpassSigmaPx, pg: &pg)
-                enc.set([linS.buffer, aS.buffer]); enc.bytes(UInt32(count), 2)
-                enc.grid1D(g.pipe(.highpassSq), count)
-                encodeBlur(enc, g, src: aS.buffer, dst: exS.buffer, sigma: p.gateSigmaPx, pg: &pg)
-            }
-            enc.endEncoding()
-            commit(cb)   // CPU の解析と並行して走る。同じキューなので後の段より先に終わる
-        }
-        // q3 の窓の選択は src だけに依存する: 別のコマンドバッファで今積み、CPU のパス 1 と並行して走らせる
-        // (同じキューなので、それを読む後段より先に終わる)
-        var cbQ: MTLCommandBuffer?
-        if q3OnGPU, let g = gpu {
-            let cb = try g.makeCommandBuffer()
-            let enc = try g.makeEncoder(cb)
-            enc.set([srcS.buffer, qS.buffer, g.q3EncBuf]); enc.bytes(pg, 3)
-            enc.grid2D(g.pipe(.q3Window), W, H)
-            enc.endEncoding()
-            commit(cb)
-            cbQ = cb
-        }
         // ---- パス 1: スペクトルと検出
         let peaks = try pass1(detector: detector, W: W, H: H, nx: nx, T: T, K: K, stop: stop)
         try stop(.afterPass1)
+        // ---- GPU の前段(lin と src だけに依存する)。パス 1 の後に積み、近傍の一致・A2・パス 2 の準備で GPU が
+        // 空いている間に走らせる(パス 1 の前に積むと、パス 1 の最初のチャンクの絞り込みが同じキューで前段の後ろに
+        // 並んで待つ)。止める位置の後に積むので、ここで止めるときは前段の完了を待たない
+        try commitFrontWork(count: count, T: T, pg: &pg)
         // ---- 近傍の一致(タイルをまたぐ唯一の同期点)。残したピークは peaks の印で表す
         res.dropped = NeighbourGateA(p: p, threads: threads).gate(peaks, nx: nx, ny: ny)
         try stop(.afterNeighbourGate)
@@ -296,9 +271,12 @@ final class Descreener {
                 res.q3Touched = pr.q3Touched
             }
         }
-        if let cbQ {
-            cbQ.waitUntilCompleted()      // 後段が同じキューで後に走ったので、もう終わっている
-            try checkStatus(cbQ)
+        // 前段(タイル平均・delta の 0 埋め・ゲートの高域エネルギー・q3 の窓)の結果も出力に入るので、積んだ
+        // すべてのコマンドバッファの成否を確かめる(失敗は GPU の失敗として CPU でやり直させる)。
+        // 出力の段が同じキューで後に走ったので、どれももう終わっている
+        for cb in committed {
+            cb.waitUntilCompleted()
+            try checkStatus(cb)
         }
         if opts.post == .gpu {
             let c = cntS.u32()
@@ -315,6 +293,40 @@ final class Descreener {
     func checkStatus(_ cb: MTLCommandBuffer) throws {
         if cb.status != .completed {
             throw PrintAppearanceError.gpuFailed("コマンドバッファが失敗: \(String(describing: cb.error))")
+        }
+    }
+
+    /// GPU の前段を積む。パス 2 が GPU のとき: タイル平均(colFwd が引く)と delta の 0 埋め(colInvScatter が
+    /// 足し込む先。出力の段から外して GPU が空いている間に済ませる)。後段が GPU のとき: ゲートの高域エネルギーと、
+    /// 別のコマンドバッファで q3 の窓の選択。どれも lin と src だけに依存し、同じキューで後に積む出力の段が読む。
+    /// 例外を投げうる呼び出しはエンコードの外に置く(積み終えたものは run の出口の drain() が待つ)
+    private func commitFrontWork(count: Int, T: Int, pg: inout PageInfo) throws {
+        guard let g = gpu, opts.pass2 == .gpu || opts.post == .gpu else { return }
+        let cb = try g.makeCommandBuffer()
+        let enc = try g.makeEncoder(cb)
+        if opts.pass2 == .gpu {
+            enc.set([linS.buffer]); enc.bytes(pg, 1); enc.setBuffer(meansS.buffer, offset: 0, index: 2)
+            enc.grid1D(g.pipe(.tileMeans), T)
+        }
+        if opts.post == .gpu {
+            encodeBlur(enc, g, src: linS.buffer, dst: aS.buffer, sigma: p.gateHighpassSigmaPx, pg: &pg)
+            enc.set([linS.buffer, aS.buffer]); enc.bytes(UInt32(count), 2)
+            enc.grid1D(g.pipe(.highpassSq), count)
+            encodeBlur(enc, g, src: aS.buffer, dst: exS.buffer, sigma: p.gateSigmaPx, pg: &pg)
+        }
+        if opts.pass2 == .gpu {
+            enc.setBuffer(deltaS.buffer, offset: 0, index: 0); enc.bytes(UInt32(count), 1)
+            enc.grid1D(g.pipe(.fillZero), count)
+        }
+        enc.endEncoding()
+        commit(cb)
+        if q3OnGPU {
+            let cbQ = try g.makeCommandBuffer()
+            let encQ = try g.makeEncoder(cbQ)
+            encQ.set([srcS.buffer, qS.buffer, g.q3EncBuf]); encQ.bytes(pg, 3)
+            encQ.grid2D(g.pipe(.q3Window), Int(pg.W), Int(pg.H))
+            encQ.endEncoding()
+            commit(cbQ)
         }
     }
 
@@ -422,7 +434,6 @@ final class Descreener {
 
     private func encodePass2(_ cb: MTLCommandBuffer, _ g: GPUContext, active: UnsafeBufferPointer<Int>, kept: PeakLists,
                              geo: Geometry, W: Int, H: Int, nx: Int, K: Int, pg: inout PageInfo) throws {
-        let count = W * H
         // タイルの順: 位相 (tx mod 4, ty mod 4) を主キーにして、1 回のディスパッチに重なるタイルが入らないようにする
         // (比較は全順序なので、並べ替えの方法によらず同じ並びになる。並びは 1 ページの間の作業域に置く)
         var orderSlots = try arena.take(Int.self, active.count)
@@ -487,9 +498,8 @@ final class Descreener {
         for n2 in 0...8192 {
             rb[n2] = p.floorAtBinRetention ? Float(retention(geo.cpd(Double(n2).squareRoot() / Double(N)))) : 0
         }
+        // delta の 0 埋めは前段で済ませてある(commitFrontWork。同じキューで先に走る)
         let enc = try g.makeEncoder(cb)
-        enc.setBuffer(deltaS.buffer, offset: 0, index: 0); enc.bytes(UInt32(count), 1)
-        enc.grid1D(g.pipe(.fillZero), count)
         var start = 0
         while start < A {
             let n = min(K, A - start)

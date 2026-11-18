@@ -352,6 +352,51 @@ final class PrintAppearanceEngineTests: XCTestCase {
         XCTAssertEqual(store.length, 3 << 20)
     }
 
+    /// 段ごとに GPU と CPU を選ぶ混在の経路(EngineOptions)。前段を積む位置を変えても、絞り込みつきの CPU の段は
+    /// CPU だけの経路と、CPU のパス 1 と GPU の段は既定の経路とバイト単位で一致する。どの組み合わせも CPU だけの
+    /// 経路から 1 階調以内で、別のページの後に処理しても新しい作業域と同じバイトになる(delta の 0 埋めや前段の
+    /// 結果が前のページから残らない)
+    func testMixedStageOptionsKeepTheirReferences() throws {
+        try Self.requireGPUPath()
+        let g = try GPUContext()
+        let W = 512, H = 1024
+        let pageA = PrintAppearanceTestPages.mix(width: W, height: H, seed: 21)
+        let pageB = PrintAppearanceTestPages.mix(width: W, height: H, seed: 22)
+        let geo = Geometry(pageHeightMM: PrintAppearance.pageHeightMM,
+                           distanceMM: PrintAppearance.effectiveLevel(.standard, heightPx: H).distanceMM, pageHeightPx: H)
+        /// pages を順に同じ作業域で処理し、最後のページの出力を返す
+        func run(_ options: EngineOptions, _ pages: [[UInt8]]) throws -> [UInt8] {
+            let engine = try Descreener(params: .printAppearance, a2: .printAppearance, options: options,
+                                        gpu: options.needsGPU ? g : nil, threads: 4)
+            var out: [UInt8] = []
+            for luma in pages {
+                _ = try luma.withUnsafeBufferPointer {
+                    try engine.run(src: $0.baseAddress!, W: W, H: H, geo: geo, threads: 4)
+                }
+                out = Array(UnsafeBufferPointer(start: engine.output, count: W * H))
+            }
+            return out
+        }
+        let cpu = try run(.cpuOnly, [pageB]), automatic = try run(.automatic, [pageB])
+        XCTAssertNotEqual(cpu, pageB, "網点のあるページなのに変わらない")
+        let mixed: [EngineOptions] = [
+            EngineOptions(prefilter: true, pass2: .cpu, post: .cpu),
+            EngineOptions(prefilter: false, pass2: .gpu, post: .gpu),
+            EngineOptions(prefilter: true, pass2: .gpu, post: .cpu),
+            EngineOptions(prefilter: true, pass2: .cpu, post: .gpu),
+            .automatic,
+        ]
+        for options in mixed {
+            let fresh = try run(options, [pageB])
+            XCTAssertEqual(try run(options, [pageA, pageB]), fresh, "\(options)")
+            var maxDifference = 0
+            for i in 0..<(W * H) { maxDifference = max(maxDifference, abs(Int(fresh[i]) - Int(cpu[i]))) }
+            XCTAssertLessThanOrEqual(maxDifference, 1, "\(options)")
+        }
+        XCTAssertEqual(try run(mixed[0], [pageB]), cpu)
+        XCTAssertEqual(try run(mixed[1], [pageB]), automatic)
+    }
+
     // MARK: - GPU の失敗からの回復
 
     /// GPU の経路が失敗したページは CPU の厳密な経路で処理し直し、その結果を返す(生の画素は返さない)。
